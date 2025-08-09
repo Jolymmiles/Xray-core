@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"context"
-	"crypto/tls"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +20,6 @@ import (
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport/internet"
-	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tcp"
 	"github.com/xtls/xray-core/transport/internet/udp"
@@ -57,18 +55,6 @@ func getTProxyType(s *internet.MemoryStreamConfig) internet.SocketConfig_TProxyM
 		return internet.SocketConfig_Off
 	}
 	return s.SocketSettings.Tproxy
-}
-
-func extractSNI(conn net.Conn) string {
-	if tlsConn, ok := conn.(*tls.Conn); ok {
-		state := tlsConn.ConnectionState()
-		return state.ServerName
-	}
-	if realityConn, ok := conn.(*reality.Conn); ok {
-		state := realityConn.ConnectionState()
-		return state.ServerName
-	}
-	return ""
 }
 
 func (w *tcpWorker) callback(conn stat.Connection) {
@@ -119,13 +105,6 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 		content.SniffingRequest.MetadataOnly = w.sniffingConfig.MetadataOnly
 		content.SniffingRequest.RouteOnly = w.sniffingConfig.RouteOnly
 	}
-
-	if sni := extractSNI(conn); sni != "" {
-		content.SNI = sni
-		errors.LogDebug(ctx, "Extracted incoming SNI: ", sni)
-	}
-
-
 	ctx = session.ContextWithContent(ctx, content)
 
 	if err := w.proxy.Process(ctx, net.Network_TCP, conn, w.dispatcher); err != nil {
