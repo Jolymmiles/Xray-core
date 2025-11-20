@@ -610,7 +610,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 				fallthrough // we will break Mux connections that contain TCP requests
 			case protocol.RequestCommandTCP:
 				var p uintptr
-				var t reflect.Type
+				var inputOffset, rawInputOffset uintptr
 
 				if commonConn, ok := connection.(*encryption.CommonConn); ok {
 					if _, ok := commonConn.Conn.(*encryption.XorConn); ok || !proxy.IsRAWTransportWithoutSecurity(iConn) {
@@ -618,11 +618,23 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 					}
 					p = uintptr(unsafe.Pointer(commonConn))
 
-					// Use cached type and offsets for CommonConn (most common in hot path)
-					if cachedType, ok := h.connTypeCache["CommonConn"]; ok && h.fieldOffsets["CommonConn"] != nil {
-						t = cachedType
+					// Use cached offsets for CommonConn (hot path - NO reflection)
+					if offsets, ok := h.fieldOffsets["CommonConn"]; ok {
+						inputOffset = offsets["input"]
+						rawInputOffset = offsets["rawInput"]
 					} else {
-						t = reflect.TypeOf(commonConn).Elem()
+						// Fallback: compute offsets if cache is unavailable
+						t := reflect.TypeOf(commonConn).Elem()
+						if i, ok := t.FieldByName("input"); ok {
+							inputOffset = i.Offset
+						} else {
+							return errors.New("field 'input' not found in CommonConn").AtWarning()
+						}
+						if r, ok := t.FieldByName("rawInput"); ok {
+							rawInputOffset = r.Offset
+						} else {
+							return errors.New("field 'rawInput' not found in CommonConn").AtWarning()
+						}
 					}
 				} else if tlsConn, ok := iConn.(*tls.Conn); ok {
 					if tlsConn.ConnectionState().Version != gotls.VersionTLS13 {
@@ -630,11 +642,31 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 					}
 					p = uintptr(unsafe.Pointer(tlsConn.Conn))
 					// TLS Conn: use reflection (not in hot path)
-					t = reflect.TypeOf(tlsConn.Conn).Elem()
+					t := reflect.TypeOf(tlsConn.Conn).Elem()
+					if i, ok := t.FieldByName("input"); ok {
+						inputOffset = i.Offset
+					} else {
+						return errors.New("field 'input' not found in TLS Conn").AtWarning()
+					}
+					if r, ok := t.FieldByName("rawInput"); ok {
+						rawInputOffset = r.Offset
+					} else {
+						return errors.New("field 'rawInput' not found in TLS Conn").AtWarning()
+					}
 				} else if realityConn, ok := iConn.(*reality.Conn); ok {
 					p = uintptr(unsafe.Pointer(realityConn.Conn))
 					// Reality Conn: use reflection (not in hot path)
-					t = reflect.TypeOf(realityConn.Conn).Elem()
+					t := reflect.TypeOf(realityConn.Conn).Elem()
+					if i, ok := t.FieldByName("input"); ok {
+						inputOffset = i.Offset
+					} else {
+						return errors.New("field 'input' not found in Reality Conn").AtWarning()
+					}
+					if r, ok := t.FieldByName("rawInput"); ok {
+						rawInputOffset = r.Offset
+					} else {
+						return errors.New("field 'rawInput' not found in Reality Conn").AtWarning()
+					}
 				} else {
 					return errors.New("XTLS only supports TLS and REALITY directly for now.").AtWarning()
 				}
@@ -643,18 +675,8 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 					return errors.New("invalid connection pointer").AtWarning()
 				}
 
-				i, ok := t.FieldByName("input")
-				if !ok {
-					return errors.New("field 'input' not found in connection type").AtWarning()
-				}
-
-				r, ok := t.FieldByName("rawInput")
-				if !ok {
-					return errors.New("field 'rawInput' not found in connection type").AtWarning()
-				}
-
-				input = (*bytes.Reader)(unsafe.Pointer(p + i.Offset))
-				rawInput = (*bytes.Buffer)(unsafe.Pointer(p + r.Offset))
+				input = (*bytes.Reader)(unsafe.Pointer(p + inputOffset))
+				rawInput = (*bytes.Buffer)(unsafe.Pointer(p + rawInputOffset))
 			}
 		} else {
 			return errors.New("account " + account.ID.String() + " is not able to use the flow " + requestAddons.Flow).AtWarning()
