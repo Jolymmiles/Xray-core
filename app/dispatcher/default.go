@@ -93,11 +93,12 @@ func (r *cachedReader) Interrupt() {
 
 // DefaultDispatcher is a default implementation of Dispatcher.
 type DefaultDispatcher struct {
-	ohm    outbound.Manager
-	router routing.Router
-	policy policy.Manager
-	stats  stats.Manager
-	fdns   dns.FakeDNSEngine
+	ohm              outbound.Manager
+	router           routing.Router
+	policy           policy.Manager
+	stats            stats.Manager
+	fdns             dns.FakeDNSEngine
+	presenceProvider session.PresenceProvider
 }
 
 func init() {
@@ -121,7 +122,14 @@ func (d *DefaultDispatcher) Init(config *Config, om outbound.Manager, router rou
 	d.router = router
 	d.policy = pm
 	d.stats = sm
+	d.presenceProvider = newDefaultPresenceProvider(&onlinePresenceTracker{policy: pm, stats: sm})
 	return nil
+}
+
+// PresenceProvider exposes the authenticated structural presence provider to
+// built-in long-lived owners without extending the stable routing interface.
+func (d *DefaultDispatcher) PresenceProvider() session.PresenceProvider {
+	return d.presenceProvider
 }
 
 // Type implements common.HasType.
@@ -179,8 +187,8 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			}
 		}
 
-		if p.Stats.UserOnline {
-			trackOnlineIP(ctx, d.stats, user.Email, sessionInbound.Source.Address.String())
+		if p.Stats.UserOnline && session.PresenceModeFromContext(ctx) == session.PresenceModeLegacy {
+			trackPresence(ctx, d.presenceProvider)
 		}
 	}
 
@@ -213,12 +221,20 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 				}
 			}
 		}
-		if p.Stats.UserOnline {
+		if p.Stats.UserOnline && session.PresenceModeFromContext(ctx) == session.PresenceModeLegacy {
 			trackOnlineIP(ctx, statsManager, user.Email, sessionInbound.Source.Address.String())
 		}
 	}
 
 	return link
+}
+
+func trackPresence(ctx context.Context, provider session.PresenceProvider) {
+	if provider == nil {
+		return
+	}
+	lease := provider.SnapshotPresence(ctx).Prepare().Activate()
+	context.AfterFunc(ctx, lease.Close)
 }
 
 func trackOnlineIP(ctx context.Context, sm stats.Manager, email, ip string) {

@@ -37,6 +37,9 @@ func ExportIDToError(ctx context.Context) errors.ExportOption {
 type Inbound struct {
 	// Source address of the inbound connection.
 	Source net.Destination
+	// CarrierSource is the immutable physical peer of the inbound carrier.
+	// Unlike Source, it is never replaced by client-supplied per-frame metadata.
+	CarrierSource net.Destination
 	// Local address of the inbound connection.
 	Local net.Destination
 	// Gateway address.

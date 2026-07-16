@@ -61,7 +61,7 @@ func (p *Portal) Start() error {
 }
 
 func (p *Portal) Close() error {
-	return p.ohm.RemoveHandler(context.Background(), p.tag)
+	return errors.Combine(p.ohm.RemoveHandler(context.Background(), p.tag), p.picker.Close())
 }
 
 func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) error {
@@ -82,7 +82,9 @@ func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) err
 			return errors.New("failed to create portal worker").Base(err)
 		}
 
-		p.picker.AddWorker(worker)
+		if !p.picker.AddWorker(worker) {
+			return errors.New("portal picker is closed")
+		}
 
 		if _, ok := link.Reader.(*pipe.Reader); !ok {
 			select {
@@ -140,6 +142,7 @@ type StaticMuxPicker struct {
 	access  sync.Mutex
 	workers []*PortalWorker
 	cTask   *task.Periodic
+	closed  bool
 }
 
 func NewStaticMuxPicker() (*StaticMuxPicker, error) {
@@ -177,6 +180,9 @@ func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
 	defer p.access.Unlock()
 
 	if len(p.workers) == 0 {
+		if p.closed {
+			return nil, errors.New("mux picker is closed")
+		}
 		return nil, errors.New("empty worker list")
 	}
 
@@ -214,11 +220,39 @@ func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
 	return nil, errors.New("no mux client worker available")
 }
 
-func (p *StaticMuxPicker) AddWorker(worker *PortalWorker) {
+func (p *StaticMuxPicker) AddWorker(worker *PortalWorker) bool {
+	if worker == nil {
+		return false
+	}
 	p.access.Lock()
-	defer p.access.Unlock()
-
+	if p.closed {
+		p.access.Unlock()
+		_ = worker.Close()
+		return false
+	}
 	p.workers = append(p.workers, worker)
+	p.access.Unlock()
+	return true
+}
+
+func (p *StaticMuxPicker) Close() error {
+	if err := p.cTask.Close(); err != nil {
+		return err
+	}
+	p.access.Lock()
+	if p.closed {
+		p.access.Unlock()
+		return nil
+	}
+	p.closed = true
+	workers := append([]*PortalWorker(nil), p.workers...)
+	p.workers = nil
+	p.access.Unlock()
+	var errs []error
+	for _, worker := range workers {
+		errs = append(errs, worker.Close())
+	}
+	return errors.Combine(errs...)
 }
 
 type PortalWorker struct {
@@ -305,4 +339,22 @@ func (w *PortalWorker) IsFull() bool {
 
 func (w *PortalWorker) Closed() bool {
 	return w.client.Closed()
+}
+
+func (w *PortalWorker) Close() error {
+	var errs []error
+	if w.control != nil {
+		errs = append(errs, w.control.Close())
+	}
+	if w.timer != nil {
+		w.timer.SetTimeout(0)
+	}
+	common.Interrupt(w.reader)
+	if w.writer != nil {
+		errs = append(errs, common.Close(w.writer))
+		w.writer = nil
+	}
+	errs = append(errs, w.client.Close())
+	<-w.client.WaitClosed()
+	return errors.Combine(errs...)
 }

@@ -26,6 +26,7 @@ const (
 	fullHandlerKey            ctx.SessionKey = 10 // outbound gets full handler
 	mitmAlpn11Key             ctx.SessionKey = 11 // used by TLS dialer
 	mitmServerNameKey         ctx.SessionKey = 12 // used by TLS dialer
+	presenceModeKey           ctx.SessionKey = 14
 
 	streamSettingsKey ctx.SessionKey = 13
 )
@@ -201,4 +202,15 @@ func ContextWithStreamSettings(ctx context.Context, streamSettings any) context.
 
 func StreamSettingsFromContext(ctx context.Context) any {
 	return ctx.Value(streamSettingsKey)
+}
+
+func ContextWithPresenceMode(ctx context.Context, mode PresenceMode) context.Context {
+	return context.WithValue(ctx, presenceModeKey, mode)
+}
+
+func PresenceModeFromContext(ctx context.Context) PresenceMode {
+	if mode, ok := ctx.Value(presenceModeKey).(PresenceMode); ok {
+		return mode
+	}
+	return PresenceModeLegacy
 }

@@ -117,6 +117,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 			dispatcher: v.GetFeature(routing.DispatcherType()).(routing.Dispatcher),
 			ctx:        rvsCtx,
 			handler:    handler,
+			runtime:    mux.NewRuntime(),
 		}
 		handler.reverse.monitorTask = &task.Periodic{
 			Execute:  handler.reverse.monitor,
@@ -431,6 +432,7 @@ type Reverse struct {
 	handler     *Handler
 	workers     []*reverse.BridgeWorker
 	monitorTask *task.Periodic
+	runtime     *mux.Runtime
 }
 
 func (r *Reverse) monitor() error {
@@ -461,7 +463,10 @@ func (r *Reverse) monitor() error {
 			Tag:        r.tag,
 			Dispatcher: r.dispatcher,
 		}
-		worker, err := mux.NewServerWorker(session.ContextWithIsReverseMux(r.ctx, true), w, link1)
+		worker, err := mux.NewServerWorkerWithOptions(session.ContextWithIsReverseMux(r.ctx, true), w, link1, mux.ServerWorkerOptions{
+			Runtime:      r.runtime,
+			PresenceMode: session.PresenceModeUntracked,
+		})
 		if err != nil {
 			errors.LogWarningInner(r.ctx, err, "failed to create mux server worker")
 			return nil
@@ -485,5 +490,13 @@ func (r *Reverse) Start() error {
 }
 
 func (r *Reverse) Close() error {
-	return r.monitorTask.Close()
+	var errs []error
+	errs = append(errs, r.monitorTask.Close())
+	for _, worker := range r.workers {
+		errs = append(errs, worker.Close())
+	}
+	if r.runtime != nil {
+		errs = append(errs, r.runtime.Close())
+	}
+	return errors.Combine(errs...)
 }

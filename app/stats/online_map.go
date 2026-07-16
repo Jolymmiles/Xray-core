@@ -70,6 +70,38 @@ func (om *OnlineMap) RemoveIP(ip string) {
 	}
 }
 
+// HandoffIP atomically transfers one reference from oldIP to newIP.
+// It is an internal capability used by structural online-presence tracking.
+func (om *OnlineMap) HandoffIP(oldIP, newIP string) {
+	now := time.Now().Unix()
+	om.access.Lock()
+	defer om.access.Unlock()
+	if oldIP == newIP {
+		if entry, found := om.entries[oldIP]; found {
+			entry.lastSeen = now
+			om.entries[oldIP] = entry
+		}
+		return
+	}
+	if oldEntry, found := om.entries[oldIP]; found {
+		oldEntry.refCount--
+		if oldEntry.refCount <= 0 {
+			delete(om.entries, oldIP)
+			om.count.Add(-1)
+		} else {
+			om.entries[oldIP] = oldEntry
+		}
+	}
+	if newEntry, found := om.entries[newIP]; found {
+		newEntry.refCount++
+		newEntry.lastSeen = now
+		om.entries[newIP] = newEntry
+	} else {
+		om.entries[newIP] = ipEntry{refCount: 1, lastSeen: now}
+		om.count.Add(1)
+	}
+}
+
 // Count implements stats.OnlineMap.
 func (om *OnlineMap) Count() int {
 	return int(om.count.Load())

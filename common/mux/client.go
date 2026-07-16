@@ -174,11 +174,14 @@ type ClientStrategy struct {
 }
 
 type ClientWorker struct {
-	sessionManager *SessionManager
+	sessionManager *ClientSessionManager
 	link           transport.Link
 	done           *done.Instance
+	drained        *done.Instance
 	timer          *time.Ticker
 	strategy       ClientStrategy
+	presenceMode   session.PresenceMode
+	presenceScope  session.PresenceScope
 }
 
 var (
@@ -188,12 +191,26 @@ var (
 
 // NewClientWorker creates a new mux.Client.
 func NewClientWorker(stream transport.Link, s ClientStrategy) (*ClientWorker, error) {
+	return NewClientWorkerWithOptions(context.Background(), stream, s, ClientWorkerOptions{PresenceMode: session.PresenceModeLegacy})
+}
+
+type ClientWorkerOptions struct {
+	PresenceProvider session.PresenceProvider
+	PresenceMode     session.PresenceMode
+}
+
+func NewClientWorkerWithOptions(ctx context.Context, stream transport.Link, s ClientStrategy, options ClientWorkerOptions) (*ClientWorker, error) {
 	c := &ClientWorker{
-		sessionManager: NewSessionManager(),
+		sessionManager: NewClientSessionManager(),
 		link:           stream,
 		done:           done.New(),
+		drained:        done.New(),
 		timer:          time.NewTicker(time.Second * 16),
 		strategy:       s,
+		presenceMode:   options.PresenceMode,
+	}
+	if options.PresenceMode == session.PresenceModeStructural && options.PresenceProvider != nil {
+		c.presenceScope = options.PresenceProvider.SnapshotPresence(ctx)
 	}
 
 	go c.fetchOutput()
@@ -216,7 +233,7 @@ func (m *ClientWorker) Closed() bool {
 }
 
 func (m *ClientWorker) WaitClosed() <-chan struct{} {
-	return m.done.Wait()
+	return m.drained.Wait()
 }
 
 func (m *ClientWorker) Close() error {
@@ -225,6 +242,7 @@ func (m *ClientWorker) Close() error {
 
 func (m *ClientWorker) monitor() {
 	defer m.timer.Stop()
+	defer func() { common.Must(m.drained.Close()) }()
 
 	for {
 		checkSize := m.sessionManager.Size()
@@ -314,9 +332,21 @@ func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool 
 	}
 
 	sm := m.sessionManager
-	s := sm.Allocate(&m.strategy)
+	structuralRVS := session.IsReverseMuxFromContext(ctx) && m.presenceMode == session.PresenceModeStructural
+	var s *Session
+	if structuralRVS {
+		s = sm.allocateActivating(&m.strategy)
+	} else {
+		s = sm.Allocate(&m.strategy)
+	}
 	if s == nil {
 		return false
+	}
+	if structuralRVS {
+		s.completePresenceActivation(m.presenceScope.Prepare().Activate())
+		if s.Closed() {
+			return false
+		}
 	}
 	s.input = link.Reader
 	s.output = link.Writer

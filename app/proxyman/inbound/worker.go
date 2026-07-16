@@ -58,6 +58,19 @@ func getTProxyType(s *internet.MemoryStreamConfig) internet.SocketConfig_TProxyM
 	return s.SocketSettings.Tproxy
 }
 
+func carrierSourceFromConn(conn net.Conn) net.Destination {
+	if rawRemoteAddr, ok := internet.RawRemoteAddr(conn); ok {
+		return net.DestinationFromAddr(rawRemoteAddr)
+	}
+	if rawConn, _, _ := proxy.UnwrapRawConn(conn); rawConn != nil && rawConn != conn {
+		if rawRemoteAddr, ok := internet.RawRemoteAddr(rawConn); ok {
+			return net.DestinationFromAddr(rawRemoteAddr)
+		}
+		return net.DestinationFromAddr(rawConn.RemoteAddr())
+	}
+	return net.DestinationFromAddr(conn.RemoteAddr())
+}
+
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
@@ -100,6 +113,7 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 		}
 	}
 	ctx = session.ContextWithOutbounds(ctx, outbounds)
+	carrierSource := carrierSourceFromConn(conn)
 
 	if w.uplinkCounter != nil || w.downlinkCounter != nil {
 		conn = &stat.CounterConnection{
@@ -109,11 +123,12 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 		}
 	}
 	ctx = session.ContextWithInbound(ctx, &session.Inbound{
-		Source:  net.DestinationFromAddr(conn.RemoteAddr()),
-		Local:   net.DestinationFromAddr(conn.LocalAddr()),
-		Gateway: net.TCPDestination(w.address, w.port),
-		Tag:     w.tag,
-		Conn:    conn,
+		Source:        net.DestinationFromAddr(conn.RemoteAddr()),
+		CarrierSource: carrierSource,
+		Local:         net.DestinationFromAddr(conn.LocalAddr()),
+		Gateway:       net.TCPDestination(w.address, w.port),
+		Tag:           w.tag,
+		Conn:          conn,
 	})
 
 	content := new(session.Content)
@@ -350,10 +365,11 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 			}
 
 			ctx = session.ContextWithInbound(ctx, &session.Inbound{
-				Source:  source,
-				Local:   local, // Due to some limitations, in UDP connections, localIP is always equal to listen interface IP
-				Gateway: net.UDPDestination(w.address, w.port),
-				Tag:     w.tag,
+				Source:        source,
+				CarrierSource: source,
+				Local:         local, // Due to some limitations, in UDP connections, localIP is always equal to listen interface IP
+				Gateway:       net.UDPDestination(w.address, w.port),
+				Tag:           w.tag,
 			})
 			content := new(session.Content)
 			content.SniffingRequest = w.sniffingRequest
@@ -493,12 +509,14 @@ func (w *dsWorker) callback(conn stat.Connection) {
 			WriteCounter: w.downlinkCounter,
 		}
 	}
+	carrierSource := carrierSourceFromConn(conn)
 	ctx = session.ContextWithInbound(ctx, &session.Inbound{
-		Source:  net.DestinationFromAddr(conn.RemoteAddr()),
-		Local:   net.DestinationFromAddr(conn.LocalAddr()),
-		Gateway: net.UnixDestination(w.address),
-		Tag:     w.tag,
-		Conn:    conn,
+		Source:        net.DestinationFromAddr(conn.RemoteAddr()),
+		CarrierSource: carrierSource,
+		Local:         net.DestinationFromAddr(conn.LocalAddr()),
+		Gateway:       net.UnixDestination(w.address),
+		Tag:           w.tag,
+		Conn:          conn,
 	})
 
 	content := new(session.Content)

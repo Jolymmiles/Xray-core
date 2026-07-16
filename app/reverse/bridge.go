@@ -23,6 +23,7 @@ type Bridge struct {
 	domain      string
 	workers     []*BridgeWorker
 	monitorTask *task.Periodic
+	runtime     *mux.Runtime
 }
 
 // NewBridge creates a new Bridge instance.
@@ -38,6 +39,7 @@ func NewBridge(config *BridgeConfig, dispatcher routing.Dispatcher) (*Bridge, er
 		dispatcher: dispatcher,
 		tag:        config.Tag,
 		domain:     config.Domain,
+		runtime:    mux.NewRuntime(),
 	}
 	b.monitorTask = &task.Periodic{
 		Execute:  b.monitor,
@@ -79,7 +81,7 @@ func (b *Bridge) monitor() error {
 	}
 
 	if numWorker == 0 || numConnections/numWorker > 16 {
-		worker, err := NewBridgeWorker(b.domain, b.tag, b.dispatcher)
+		worker, err := NewBridgeWorkerWithRuntime(b.domain, b.tag, b.dispatcher, b.runtime)
 		if err != nil {
 			errors.LogWarningInner(context.Background(), err, "failed to create bridge worker")
 			return nil
@@ -95,7 +97,13 @@ func (b *Bridge) Start() error {
 }
 
 func (b *Bridge) Close() error {
-	return b.monitorTask.Close()
+	var errs []error
+	errs = append(errs, b.monitorTask.Close())
+	for _, worker := range b.workers {
+		errs = append(errs, worker.Close())
+	}
+	errs = append(errs, b.runtime.Close())
+	return errors.Combine(errs...)
 }
 
 type BridgeWorker struct {
@@ -107,6 +115,10 @@ type BridgeWorker struct {
 }
 
 func NewBridgeWorker(domain string, tag string, d routing.Dispatcher) (*BridgeWorker, error) {
+	return NewBridgeWorkerWithRuntime(domain, tag, d, nil)
+}
+
+func NewBridgeWorkerWithRuntime(domain string, tag string, d routing.Dispatcher, runtime *mux.Runtime) (*BridgeWorker, error) {
 	ctx := context.Background()
 	ctx = session.ContextWithInbound(ctx, &session.Inbound{
 		Tag: tag,
@@ -125,7 +137,10 @@ func NewBridgeWorker(domain string, tag string, d routing.Dispatcher) (*BridgeWo
 		Tag:        tag,
 	}
 
-	worker, err := mux.NewServerWorker(context.Background(), w, link)
+	worker, err := mux.NewServerWorkerWithOptions(context.Background(), w, link, mux.ServerWorkerOptions{
+		Runtime:      runtime,
+		PresenceMode: session.PresenceModeUntracked,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +162,13 @@ func (w *BridgeWorker) Start() error {
 }
 
 func (w *BridgeWorker) Close() error {
+	if w.Worker == nil {
+		return nil
+	}
+	if err := w.Worker.Close(); err != nil {
+		return err
+	}
+	<-w.Worker.WaitClosed()
 	return nil
 }
 
