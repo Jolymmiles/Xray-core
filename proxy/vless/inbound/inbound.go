@@ -283,10 +283,10 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		return errors.New("unable to set read deadline").Base(err).AtWarning()
 	}
 
-	first := buf.FromBytes(make([]byte, buf.Size))
-	first.Clear()
+	first := buf.New()
 	firstLen, errR := first.ReadFrom(connection)
 	if errR != nil {
+		first.Release()
 		return errR
 	}
 	errors.LogInfo(ctx, "firstLen = ", firstLen)
@@ -295,6 +295,9 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		Reader: buf.NewReader(connection),
 		Buffer: buf.MultiBuffer{first},
 	}
+	defer func() {
+		reader.Buffer = buf.ReleaseMulti(reader.Buffer)
+	}()
 
 	var userSentID []byte // not MemoryAccount.ID
 	var request *protocol.RequestHeader
