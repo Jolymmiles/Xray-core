@@ -46,7 +46,7 @@ func TestStreamRoundTripAllocationBudget(t *testing.T) {
 	if operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	if allocations > 4 {
-		t.Fatalf("32 KiB round-trip allocations = %.1f, budget is 4", allocations)
+	if allocations != 0 {
+		t.Fatalf("32 KiB round-trip allocations = %.1f, budget is zero", allocations)
 	}
 }

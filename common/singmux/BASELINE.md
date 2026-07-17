@@ -129,3 +129,65 @@ The final Linux performance runs use nine alternating rounds each:
 
 All VLESS runs pass the `<= 1.10` release gate. Trojan remains diagnostic for
 the same cross-TLS/cross-carrier reason documented above.
+
+## 20-pass performance result
+
+Performance result ID: `smux-mpl-v1-performance-20-2026-07-17`
+
+The final SMUX production/spec digest is SHA-256
+`9f3e27e9ee8134b541ccee17c0b1179e387c392b20061e499848198b2963d526`.
+
+Twenty bounded optimization passes were run against the hardened result. Each code
+variant was measured independently and reverted when it did not improve the
+relevant single-stream, multi-stream, lifecycle, or Linux process workload.
+
+| Pass | Hypothesis | Result |
+| ---: | --- | --- |
+| 1 | Skip receive timestamps when keepalive is disabled | kept |
+| 2 | Encode the frame header directly into the pooled frame | kept |
+| 3 | Reuse the per-stream data completion channel | kept |
+| 4 | Use an RWMutex for the stream map | reverted |
+| 5 | Split receive and transmit buffer pools | reverted |
+| 6 | Replace receive accounting mutexes with atomics | reverted |
+| 7 | Signal session backpressure only when blocked | reverted |
+| 8 | Signal stream backpressure only when blocked | kept |
+| 9 | Signal readers only when blocked | reverted |
+| 10 | Reduce the write backlog from 1024 to 256 | kept |
+| 11 | Reduce the write backlog to 64 | reverted |
+| 12 | Match the accept backlog to the 512-stream server limit | kept |
+| 13 | Reduce the write backlog to 128 | reverted |
+| 14 | Reduce the write backlog to 192 | reverted |
+| 15 | Replace the zero-deadline no-op stopper with a nil fast path | reverted |
+| 16 | Allow concurrent submit readers with an RWMutex | reverted |
+| 17 | Add lifecycle and concurrent-stream benchmark coverage | kept |
+| 18 | Reuse completion channels for stream open and close | kept |
+| 19 | Reuse one completion channel for the keepalive loop | kept |
+| 20 | Tighten the hot-path allocation release gate to zero | kept |
+
+The committed-state local 32 KiB round-trip median was 12.141 us, 4 allocs/op,
+and 282--289 B/op. The final five-run snapshot is 10.025 us, 0 allocs/op, and
+0--1 B/op: a 17.4% latency reduction with all measured heap allocations
+removed. The new lifecycle benchmark records a 5.283 us median, 2,338 B/op,
+and 28 allocs/op; its pre-reuse snapshot was 5.638 us, 2,723 B/op, and 34
+allocs/op. Matching the accept backlog to the server limit reduced a session
+pair snapshot from 41,283 to 32,067 B/op.
+
+Fresh linux/arm64 binaries from the final tree passed the 32/32 sing-box and
+Mihomo interoperability matrix in 2.16 s. The three-cycle reconnect suite
+passed all eight topologies (24/24 cycles) in 22.00 s. Historical loopback
+counters were not cleared; RX/TX errors, RX/TX drops, RX CRC errors, TX carrier
+errors, collisions, and carrier changes all had zero delta.
+
+Three final nine-round Linux server comparisons produced:
+
+| Run | VLESS ratio | Trojan ratio |
+| ---: | ---: | ---: |
+| 1 | 0.953 | 1.168 |
+| 2 | 1.006 | 1.170 |
+| 3 | 1.015 | 1.117 |
+
+The VLESS median ratio is 1.006 and all runs remain below the 1.10 release
+limit. The local engine baseline is decisively surpassed; the process-level
+peer ratio remains scheduling-sensitive and this final snapshot is 2.4% above
+the hardened snapshot's 0.982 median. Trojan remains diagnostic because it also
+measures different TLS and Trojan implementations.

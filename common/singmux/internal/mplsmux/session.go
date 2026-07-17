@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	acceptBacklog = 1024
-	writeBacklog  = 1024
+	acceptBacklog = 512
+	writeBacklog  = 256
 )
 
 type outboundFrame struct {
@@ -74,7 +74,9 @@ func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session,
 	if client {
 		session.nextStreamID.Store(1)
 	}
-	session.lastReceive.Store(time.Now().UnixNano())
+	if !session.config.KeepAliveDisabled {
+		session.lastReceive.Store(time.Now().UnixNano())
+	}
 	go session.writeLoop()
 	go session.readLoop()
 	if !session.config.KeepAliveDisabled {
@@ -95,7 +97,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streamsMu.Lock()
 	s.streams[streamID] = stream
 	s.streamsMu.Unlock()
-	if err := s.submit(frameOpen, streamID, nil, time.Time{}); err != nil {
+	if err := s.submitResult(frameOpen, streamID, nil, time.Time{}, stream.writeResult); err != nil {
 		s.removeStream(streamID)
 		stream.sessionStopped()
 		return nil, err
@@ -223,22 +225,20 @@ func (s *Session) writeFrame(encoded []byte) error {
 	return nil
 }
 
-func (s *Session) submit(command frameCommand, streamID uint32, payload []byte, deadline time.Time) error {
-	return s.submitWithState(command, streamID, payload, func() (time.Time, <-chan struct{}, error) {
+func (s *Session) submitResult(command frameCommand, streamID uint32, payload []byte, deadline time.Time, result chan error) error {
+	return s.submitWithStateResult(command, streamID, payload, func() (time.Time, <-chan struct{}, error) {
 		return deadline, nil, nil
-	})
+	}, result)
 }
 
-func (s *Session) submitWithState(command frameCommand, streamID uint32, payload []byte, state func() (time.Time, <-chan struct{}, error)) error {
+func (s *Session) submitWithStateResult(command frameCommand, streamID uint32, payload []byte, state func() (time.Time, <-chan struct{}, error), result chan error) error {
 	// A timed-out or failed submit may return while the writer is still finishing
 	// the queued frame. Give the writer private storage so callers may immediately
 	// reuse their buffer without racing the carrier write.
 	encoded := acquireFrameBuffer(frameHeaderSize + len(payload))
-	var header [frameHeaderSize]byte
-	encodeFrameHeader(&header, command, streamID, len(payload))
-	copy(encoded, header[:])
+	encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), command, streamID, len(payload))
 	copy(encoded[frameHeaderSize:], payload)
-	request := outboundFrame{encoded: encoded, result: make(chan error, 1)}
+	request := outboundFrame{encoded: encoded, result: result}
 	for {
 		deadline, changed, err := state()
 		if err != nil {
@@ -272,8 +272,8 @@ func (s *Session) submitWithState(command frameCommand, streamID uint32, payload
 queued:
 	for {
 		// Once a frame is queued, its carrier write decides whether those bytes
-		// were accepted. A concurrent peer close must not turn a completed write
-		// into a spurious EOF; state still supplies live deadline notifications.
+		// were accepted. Prefer a concurrently completed write over the terminal
+		// session error, while still letting Close unblock a stuck carrier.
 		deadline, changed, _ := state()
 		deadlineChannel, stopTimer := deadlineSignal(deadline)
 		select {
@@ -287,7 +287,12 @@ queued:
 			stopTimer()
 		case <-s.done:
 			stopTimer()
-			return s.terminalError()
+			select {
+			case err := <-request.result:
+				return err
+			default:
+				return s.terminalError()
+			}
 		}
 	}
 }
@@ -310,7 +315,9 @@ func (s *Session) readLoop() {
 			s.fail(err)
 			return
 		}
-		s.lastReceive.Store(time.Now().UnixNano())
+		if !s.config.KeepAliveDisabled {
+			s.lastReceive.Store(time.Now().UnixNano())
+		}
 		header, err := decodeFrameHeader(&s.readHeader)
 		if err != nil || !s.validInboundFrame(header) {
 			s.fail(ErrInvalidProtocol)
@@ -463,6 +470,7 @@ func (s *Session) terminalError() error {
 func (s *Session) keepaliveLoop() {
 	ticker := time.NewTicker(s.config.KeepAliveInterval)
 	defer ticker.Stop()
+	result := make(chan error, 1)
 	for {
 		select {
 		case now := <-ticker.C:
@@ -474,7 +482,7 @@ func (s *Session) keepaliveLoop() {
 			// A heartbeat is only late once the peer-liveness window expires. Using
 			// the (usually much shorter) send interval here makes a healthy session
 			// fail merely because the writer or scheduler was delayed for one tick.
-			if err := s.submit(frameKeepalive, 0, nil, now.Add(s.config.KeepAliveTimeout)); err != nil {
+			if err := s.submitResult(frameKeepalive, 0, nil, now.Add(s.config.KeepAliveTimeout), result); err != nil {
 				s.fail(err)
 				return
 			}
