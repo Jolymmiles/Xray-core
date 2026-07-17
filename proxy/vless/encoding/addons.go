@@ -94,6 +94,14 @@ type MultiLengthPacketWriter struct {
 	buf.Writer
 }
 
+// NewTrafficStateForFlow creates the shared Vision state only when the flow uses it.
+func NewTrafficStateForFlow(userUUID []byte, flow string) *proxy.TrafficState {
+	if flow != vless.XRV {
+		return nil
+	}
+	return proxy.NewTrafficState(userUUID)
+}
+
 func (w *MultiLengthPacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	defer buf.ReleaseMulti(mb)
 	mb2Write := make(buf.MultiBuffer, 0, len(mb)+1)

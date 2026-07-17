@@ -63,9 +63,19 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 		}
 		errors.LogInfo(ctx, "listening TCP on ", address, ":", port)
 	}
+	closeListener := true
+	defer func() {
+		if closeListener {
+			_ = listener.Close()
+		}
+	}()
 
 	if streamSettings.TcpmaskManager != nil {
-		listener, _ = streamSettings.TcpmaskManager.WrapListener(listener)
+		wrappedListener, err := streamSettings.TcpmaskManager.WrapListener(listener)
+		if err != nil {
+			return nil, errors.New("failed to wrap TCP listener").Base(err)
+		}
+		listener = wrappedListener
 	}
 
 	if streamSettings.SocketSettings != nil && streamSettings.SocketSettings.AcceptProxyProtocol {
@@ -95,6 +105,7 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 	}
 
 	go l.keepAccepting()
+	closeListener = false
 	return l, nil
 }
 
@@ -117,10 +128,13 @@ func (v *Listener) keepAccepting() {
 			if v.tlsConfig != nil {
 				conn = tls.Server(conn, v.tlsConfig)
 			} else if v.realityConfig != nil {
-				if conn, err = reality.Server(conn, v.realityConfig); err != nil {
+				realityConn, err := reality.Server(conn, v.realityConfig)
+				if err != nil {
 					errors.LogInfo(context.Background(), err.Error())
+					_ = conn.Close()
 					return
 				}
+				conn = realityConn
 			}
 			if v.authConfig != nil {
 				conn = v.authConfig.Server(conn)
