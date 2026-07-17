@@ -171,6 +171,15 @@ func LogErrorInner(ctx context.Context, inner error, msg ...interface{}) {
 }
 
 func doLog(ctx context.Context, inner error, severity log.Severity, msg ...interface{}) {
+	effectiveSeverity := severity
+	if inner != nil {
+		if innerSeverity := GetSeverity(inner); innerSeverity < effectiveSeverity {
+			effectiveSeverity = innerSeverity
+		}
+	}
+	if !log.ShouldLog(effectiveSeverity) {
+		return
+	}
 	pc, _, _, _ := runtime.Caller(2)
 	details := runtime.FuncForPC(pc).Name()
 	if len(details) >= trim {

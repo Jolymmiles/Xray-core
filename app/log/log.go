@@ -141,6 +141,13 @@ func (g *Instance) Handle(msg log.Message) {
 	}
 }
 
+// Enabled implements log.SeverityFilter.
+func (g *Instance) Enabled(severity log.Severity) bool {
+	g.RLock()
+	defer g.RUnlock()
+	return g.active && g.errorLogger != nil && severity <= g.config.ErrorLogLevel
+}
+
 // Close implements common.Closable.Close().
 func (g *Instance) Close() error {
 	errors.LogDebug(context.Background(), "Logger closing")

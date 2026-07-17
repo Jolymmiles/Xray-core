@@ -68,6 +68,10 @@ func (l *serverityLogger) Handle(msg Message) {
 	}
 }
 
+func (l *serverityLogger) Enabled(severity Severity) bool {
+	return severity <= l.logLevel
+}
+
 func (l *generalLogger) run() {
 	defer l.access.Signal()
 

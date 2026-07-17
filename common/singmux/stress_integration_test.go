@@ -174,7 +174,7 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 		serverBinary = binaries.xray
 		serverArgs = []string{"run", "-config", "server.json"}
 		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, true, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, true)
+		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, true, certificate)
 	}
 	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
 	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))
@@ -187,8 +187,14 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 
 	server := startE2EProcess(t, serverBinary, serverArgs...)
 	waitTCP(t, server, serverPort)
+	if peer == "mihomo" && direction == "xray-client" {
+		waitProcessLog(t, server, "Initial configuration complete")
+	}
 	client := startE2EProcess(t, clientBinary, clientArgs...)
-	waitTCP(t, client, socksPort)
+	waitSOCKS(t, client, socksPort)
+	if peer == "mihomo" && direction == "xray-server" {
+		waitProcessLog(t, client, "Initial configuration complete")
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("stress server logs:\n%s", server.logs.String())

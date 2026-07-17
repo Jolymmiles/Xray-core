@@ -16,6 +16,11 @@ type Handler interface {
 	Handle(msg Message)
 }
 
+// SeverityFilter reports whether a handler accepts a general message severity.
+type SeverityFilter interface {
+	Enabled(severity Severity) bool
+}
+
 // GeneralMessage is a general log message that can contain all kind of content.
 type GeneralMessage struct {
 	Severity Severity
@@ -30,6 +35,12 @@ func (m *GeneralMessage) String() string {
 // Record writes a message into log stream.
 func Record(msg Message) {
 	logHandler.Handle(msg)
+}
+
+// ShouldLog reports whether the current handler accepts a general message severity.
+// Handlers without a SeverityFilter keep the historical behavior and accept all severities.
+func ShouldLog(severity Severity) bool {
+	return logHandler.Enabled(severity)
 }
 
 var logHandler syncHandler
@@ -54,6 +65,19 @@ func (h *syncHandler) Handle(msg Message) {
 	if h.Handler != nil {
 		h.Handler.Handle(msg)
 	}
+}
+
+func (h *syncHandler) Enabled(severity Severity) bool {
+	h.RLock()
+	defer h.RUnlock()
+
+	if h.Handler == nil {
+		return false
+	}
+	if filter, ok := h.Handler.(SeverityFilter); ok {
+		return filter.Enabled(severity)
+	}
+	return true
 }
 
 func (h *syncHandler) Set(handler Handler) {

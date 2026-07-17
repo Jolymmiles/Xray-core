@@ -127,6 +127,10 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 	conn.Close()
 }
 
+func (w *tcpWorker) handleConnection(conn stat.Connection) {
+	w.callback(conn)
+}
+
 func (w *tcpWorker) Proxy() proxy.Inbound {
 	return w.proxy
 }
@@ -138,9 +142,7 @@ func (w *tcpWorker) Start() error {
 		ctx = hysteria.ContextWithValidator(ctx, v.HysteriaInboundValidator())
 	}
 
-	hub, err := internet.ListenTCP(ctx, w.address, w.port, w.stream, func(conn stat.Connection) {
-		go w.callback(conn)
-	})
+	hub, err := internet.ListenTCP(ctx, w.address, w.port, w.stream, w.handleConnection)
 	if err != nil {
 		return errors.New("failed to listen TCP on ", w.port).AtWarning().Base(err)
 	}

@@ -58,3 +58,26 @@ func TestActivityTimerZeroTimeout(t *testing.T) {
 	}
 	runtime.KeepAlive(timer)
 }
+
+func TestActivityTimerSetTimeoutReusesTimer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := CancelAfterInactivity(ctx, cancel, time.Hour)
+	allocations := testing.AllocsPerRun(100, func() {
+		timer.SetTimeout(time.Hour)
+	})
+	timer.SetTimeout(0)
+	if allocations != 0 {
+		t.Fatalf("SetTimeout allocations = %v, want 0", allocations)
+	}
+}
+
+func BenchmarkActivityTimerSetTimeout(b *testing.B) {
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := CancelAfterInactivity(ctx, cancel, time.Hour)
+	b.Cleanup(func() { timer.SetTimeout(0) })
+
+	b.ReportAllocs()
+	for b.Loop() {
+		timer.SetTimeout(time.Hour)
+	}
+}
