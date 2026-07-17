@@ -16,7 +16,7 @@ go test ./common/singmux/... -count=50
 go test ./common/singmux/internal/mplsmux -run '^$' -bench '^BenchmarkStreamRoundTrip32KiB$' -benchmem -count=5
 ```
 
-The 32 KiB hot-path allocation gate is four allocations per round trip and is
+The 32 KiB hot-path allocation gate is zero allocations per round trip and is
 compiled only without `-race`, because race instrumentation changes allocation
 behavior. Frame, padding, and outer-protocol decoders also have Go fuzz targets.
 

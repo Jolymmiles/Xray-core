@@ -33,8 +33,10 @@ type Stream struct {
 	readChanged   chan struct{}
 	writeChanged  chan struct{}
 	bufferChanged chan struct{}
+	bufferWaiting bool
 	readDeadline  time.Time
 	writeDeadline time.Time
+	writeResult   chan error
 }
 
 func newStream(session *Session, streamID uint32) *Stream {
@@ -44,6 +46,7 @@ func newStream(session *Session, streamID uint32) *Stream {
 		readChanged:   make(chan struct{}, 1),
 		writeChanged:  make(chan struct{}, 1),
 		bufferChanged: make(chan struct{}, 1),
+		writeResult:   make(chan error, 1),
 	}
 }
 
@@ -76,7 +79,10 @@ func (s *Stream) Read(destination []byte) (int, error) {
 					s.chunks = s.chunks[1:]
 				}
 			}
-			notify(s.bufferChanged)
+			if s.bufferWaiting {
+				s.bufferWaiting = false
+				notify(s.bufferChanged)
+			}
 			s.stateMu.Unlock()
 			s.session.releaseReceive(count)
 			if released != nil {
@@ -126,7 +132,13 @@ func (s *Stream) Write(source []byte) (int, error) {
 		if frameSize > s.session.config.MaxFrameSize {
 			frameSize = s.session.config.MaxFrameSize
 		}
-		if err := s.session.submitWithState(frameData, s.id, source[:frameSize], s.writeState); err != nil {
+		if err := s.session.submitWithStateResult(frameData, s.id, source[:frameSize], s.writeState, s.writeResult); err != nil {
+			if err == ErrTimeout {
+				// The timed-out carrier write may still complete asynchronously.
+				// Retire its completion channel instead of consuming that stale result
+				// in a later Write.
+				s.writeResult = make(chan error, 1)
+			}
 			return written, err
 		}
 		written += frameSize
@@ -174,7 +186,7 @@ func (s *Stream) Close() error {
 	}
 	s.session.releaseReceive(queuedBytes)
 
-	err := s.session.submit(frameClose, s.id, nil, deadline)
+	err := s.session.submitResult(frameClose, s.id, nil, deadline, s.writeResult)
 	s.session.removeStream(s.id)
 	if s.session.IsClosed() {
 		return nil
@@ -225,6 +237,7 @@ func (s *Stream) enqueue(buffer []byte) bool {
 			s.stateMu.Unlock()
 			return true
 		}
+		s.bufferWaiting = true
 		changed := s.bufferChanged
 		s.stateMu.Unlock()
 		select {
