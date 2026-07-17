@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/common"
@@ -20,16 +21,32 @@ type Manager struct {
 	taggedHandler    map[string]outbound.Handler
 	untaggedHandlers []outbound.Handler
 	running          bool
-	tagsCache        *sync.Map
+	tagsCache        atomic.Pointer[sync.Map]
+	lookup           atomic.Pointer[handlerSnapshot]
+}
+
+type handlerSnapshot struct {
+	defaultHandler outbound.Handler
+	taggedHandler  map[string]outbound.Handler
 }
 
 // New creates a new Manager.
 func New(ctx context.Context, config *proxyman.OutboundConfig) (*Manager, error) {
-	m := &Manager{
-		taggedHandler: make(map[string]outbound.Handler),
-		tagsCache:     &sync.Map{},
-	}
+	m := &Manager{taggedHandler: make(map[string]outbound.Handler)}
+	m.tagsCache.Store(&sync.Map{})
+	m.publishSnapshotLocked()
 	return m, nil
+}
+
+func (m *Manager) publishSnapshotLocked() {
+	taggedHandler := make(map[string]outbound.Handler, len(m.taggedHandler))
+	for tag, handler := range m.taggedHandler {
+		taggedHandler[tag] = handler
+	}
+	m.lookup.Store(&handlerSnapshot{
+		defaultHandler: m.defaultHandler,
+		taggedHandler:  taggedHandler,
+	})
 }
 
 // Type implements common.HasType.
@@ -80,31 +97,29 @@ func (m *Manager) Close() error {
 
 // GetDefaultHandler implements outbound.Manager.
 func (m *Manager) GetDefaultHandler() outbound.Handler {
-	m.access.RLock()
-	defer m.access.RUnlock()
-
-	if m.defaultHandler == nil {
+	snapshot := m.lookup.Load()
+	if snapshot == nil {
 		return nil
 	}
-	return m.defaultHandler
+	return snapshot.defaultHandler
 }
 
 // GetHandler implements outbound.Manager.
 func (m *Manager) GetHandler(tag string) outbound.Handler {
-	m.access.RLock()
-	defer m.access.RUnlock()
-	if handler, found := m.taggedHandler[tag]; found {
-		return handler
+	snapshot := m.lookup.Load()
+	if snapshot == nil {
+		return nil
 	}
-	return nil
+	return snapshot.taggedHandler[tag]
 }
 
 // AddHandler implements outbound.Manager.
 func (m *Manager) AddHandler(ctx context.Context, handler outbound.Handler) error {
 	m.access.Lock()
 	defer m.access.Unlock()
+	defer m.publishSnapshotLocked()
 
-	m.tagsCache = &sync.Map{}
+	m.tagsCache.Store(&sync.Map{})
 
 	if m.defaultHandler == nil {
 		m.defaultHandler = handler
@@ -134,8 +149,9 @@ func (m *Manager) RemoveHandler(ctx context.Context, tag string) error {
 	}
 	m.access.Lock()
 	defer m.access.Unlock()
+	defer m.publishSnapshotLocked()
 
-	m.tagsCache = &sync.Map{}
+	m.tagsCache.Store(&sync.Map{})
 
 	delete(m.taggedHandler, tag)
 	if m.defaultHandler != nil && m.defaultHandler.Tag() == tag {
@@ -163,12 +179,20 @@ func (m *Manager) ListHandlers(ctx context.Context) []outbound.Handler {
 // Select implements outbound.HandlerSelector.
 func (m *Manager) Select(selectors []string) []string {
 	key := strings.Join(selectors, ",")
-	if cache, ok := m.tagsCache.Load(key); ok {
-		return cache.([]string)
+	if cache := m.tagsCache.Load(); cache != nil {
+		if tags, ok := cache.Load(key); ok {
+			return tags.([]string)
+		}
 	}
 
 	m.access.RLock()
 	defer m.access.RUnlock()
+	cache := m.tagsCache.Load()
+	if cache != nil {
+		if tags, ok := cache.Load(key); ok {
+			return tags.([]string)
+		}
+	}
 
 	tags := make([]string, 0, len(selectors))
 
@@ -182,7 +206,9 @@ func (m *Manager) Select(selectors []string) []string {
 	}
 
 	sort.Strings(tags)
-	m.tagsCache.Store(key, tags)
+	if cache != nil {
+		cache.Store(key, tags)
+	}
 
 	return tags
 }

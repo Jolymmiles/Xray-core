@@ -5,9 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/xtls/xray-core/common"
-	"github.com/xtls/xray-core/common/task"
 )
 
 type ActivityUpdater interface {
@@ -15,9 +12,10 @@ type ActivityUpdater interface {
 }
 
 type ActivityTimer struct {
-	mu        sync.RWMutex
+	mu        sync.Mutex
 	updated   chan struct{}
-	checkTask *task.Periodic
+	checkTask *time.Timer
+	timeout   time.Duration
 	onTimeout func()
 	consumed  atomic.Bool
 	once      sync.Once
@@ -30,22 +28,31 @@ func (t *ActivityTimer) Update() {
 	}
 }
 
-func (t *ActivityTimer) check() error {
+func (t *ActivityTimer) check() {
+	t.mu.Lock()
+	if t.consumed.Load() {
+		t.mu.Unlock()
+		return
+	}
 	select {
 	case <-t.updated:
+		t.checkTask.Reset(t.timeout)
+		t.mu.Unlock()
 	default:
+		t.mu.Unlock()
 		t.finish()
 	}
-	return nil
 }
 
 func (t *ActivityTimer) finish() {
 	t.once.Do(func() {
 		t.consumed.Store(true)
 		t.mu.Lock()
-		defer t.mu.Unlock()
-
-		common.CloseIfExists(t.checkTask)
+		if t.checkTask != nil {
+			t.checkTask.Stop()
+			t.checkTask = nil
+		}
+		t.mu.Unlock()
 		t.onTimeout()
 	})
 }
@@ -65,14 +72,17 @@ func (t *ActivityTimer) SetTimeout(timeout time.Duration) {
 	if t.consumed.Load() {
 		return
 	}
-	newCheckTask := &task.Periodic{
-		Interval: timeout,
-		Execute:  t.check,
+	t.timeout = timeout
+	select {
+	case <-t.updated:
+	default:
 	}
-	common.CloseIfExists(t.checkTask)
-	t.checkTask = newCheckTask
-	t.Update()
-	common.Must(newCheckTask.Start())
+	if t.checkTask == nil {
+		t.checkTask = time.AfterFunc(timeout, t.check)
+	} else {
+		t.checkTask.Stop()
+		t.checkTask.Reset(timeout)
+	}
 }
 
 func CancelAfterInactivity(ctx context.Context, cancel context.CancelFunc, timeout time.Duration) *ActivityTimer {

@@ -73,8 +73,12 @@ func TestSMUXProcessInteropMatrix(t *testing.T) {
 	tcpEcho := startTCPEcho(t)
 	udpEcho := startUDPEcho(t)
 
-	for _, peer := range []string{"sing-box", "mihomo"} {
-		for _, direction := range []string{"xray-client", "xray-server"} {
+	for _, peer := range []string{"xray", "sing-box", "mihomo"} {
+		directions := []string{"xray-client", "xray-server"}
+		if peer == "xray" {
+			directions = []string{"xray-server"}
+		}
+		for _, direction := range directions {
 			for _, carrier := range []string{"vless", "trojan"} {
 				for _, network := range []string{"tcp", "udp"} {
 					for _, padding := range []bool{false, true} {
@@ -143,7 +147,7 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 		serverBinary = binaries.xray
 		serverArgs = []string{"run", "-config", filepath.Join(scenarioDir, "server.json")}
 		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, padding, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, padding)
+		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, padding, certificate)
 	}
 
 	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
@@ -160,8 +164,14 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 
 	server := startE2EProcess(t, serverBinary, serverArgs...)
 	waitTCP(t, server, serverPort)
+	if peer == "mihomo" && direction == "xray-client" {
+		waitProcessLog(t, server, "Initial configuration complete")
+	}
 	client := startE2EProcess(t, clientBinary, clientArgs...)
-	waitTCP(t, client, socksPort)
+	waitSOCKS(t, client, socksPort)
+	if peer == "mihomo" && direction == "xray-server" {
+		waitProcessLog(t, client, "Initial configuration complete")
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("server logs:\n%s", server.logs.String())
@@ -176,7 +186,7 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 }
 
 func configExtension(peer string, xray bool) string {
-	if xray || peer == "sing-box" {
+	if xray || peer == "xray" || peer == "sing-box" {
 		return ".json"
 	}
 	return ".yaml"
@@ -202,8 +212,11 @@ func peerServerConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, 
 	return binaries.mihomo, []string{"-d", ".", "-f", "server.yaml"}, mihomoServerConfig(carrier, port, padding, certificate, privateKey)
 }
 
-func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, padding bool) (string, []string, []byte) {
+func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, padding bool, certificate string) (string, []string, []byte) {
 	t.Helper()
+	if peer == "xray" {
+		return binaries.xray, []string{"run", "-config", "client.json"}, xrayConfig(t, false, carrier, serverPort, socksPort, padding, certificate, "")
+	}
 	if peer == "sing-box" {
 		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, padding, "", "")
 	}
@@ -429,6 +442,49 @@ func waitTCP(t *testing.T, process *e2eProcess, port int) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("process did not listen on %s\n%s", address, process.logs.String())
+}
+
+func waitProcessLog(t *testing.T, process *e2eProcess, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(process.logs.String(), marker) {
+			return
+		}
+		select {
+		case processErr := <-process.done:
+			t.Fatalf("process exited before logging %q: %v\n%s", marker, processErr, process.logs.String())
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process did not log %q\n%s", marker, process.logs.String())
+}
+
+func waitSOCKS(t *testing.T, process *e2eProcess, port int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	address := fmt.Sprintf("127.0.0.1:%d", port)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+		if err == nil {
+			_ = connection.SetDeadline(time.Now().Add(200 * time.Millisecond))
+			err = socksGreeting(connection)
+			_ = connection.Close()
+			if err == nil {
+				return
+			}
+		}
+		lastErr = err
+		select {
+		case processErr := <-process.done:
+			t.Fatalf("process exited before SOCKS readiness on %s: %v\n%s", address, processErr, process.logs.String())
+		default:
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("SOCKS endpoint did not become ready on %s: %v\n%s", address, lastErr, process.logs.String())
 }
 
 func freeTCPPort(t *testing.T) int {

@@ -188,20 +188,32 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 }
 
 func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager stats.Manager, link *transport.Link) *transport.Link {
+	return wrapLink(ctx, policyManager, statsManager, link, true)
+}
+
+func wrapLink(ctx context.Context, policyManager policy.Manager, statsManager stats.Manager, link *transport.Link, needTimeout bool) *transport.Link {
 	sessionInbound := session.InboundFromContext(ctx)
 	var user *protocol.MemoryUser
 	if sessionInbound != nil {
 		user = sessionInbound.User
 	}
 
-	link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
+	var timeoutReader *buf.TimeoutWrapperReader
+	if needTimeout {
+		timeoutReader = &buf.TimeoutWrapperReader{Reader: link.Reader}
+		link.Reader = timeoutReader
+	}
 
 	if user != nil && len(user.Email) > 0 {
 		p := policyManager.ForLevel(user.Level)
 		if p.Stats.UserUplink {
 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
 			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
-				link.Reader.(*buf.TimeoutWrapperReader).Counter = c
+				if timeoutReader == nil {
+					timeoutReader = &buf.TimeoutWrapperReader{Reader: link.Reader}
+					link.Reader = timeoutReader
+				}
+				timeoutReader.Counter = c
 			}
 		}
 		if p.Stats.UserDownlink {
@@ -338,8 +350,8 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		content = new(session.Content)
 		ctx = session.ContextWithContent(ctx, content)
 	}
-	outbound = WrapLink(ctx, d.policy, d.stats, outbound)
 	sniffingRequest := content.SniffingRequest
+	outbound = wrapLink(ctx, d.policy, d.stats, outbound, sniffingRequest.Enabled)
 	if !sniffingRequest.Enabled {
 		d.routedDispatch(ctx, outbound, destination)
 	} else {
