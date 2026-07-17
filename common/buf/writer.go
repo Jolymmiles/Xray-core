@@ -144,6 +144,23 @@ func (w *BufferedWriter) WriteMultiBuffer(b MultiBuffer) error {
 	if !w.buffered {
 		return w.writer.WriteMultiBuffer(b)
 	}
+	if w.flushNext {
+		w.buffered = false
+		w.flushNext = false
+		if w.buffer == nil || w.buffer.IsEmpty() {
+			if w.buffer != nil {
+				w.buffer.Release()
+				w.buffer = nil
+			}
+			return w.writer.WriteMultiBuffer(b)
+		}
+
+		combined := make(MultiBuffer, len(b)+1)
+		combined[0] = w.buffer
+		copy(combined[1:], b)
+		w.buffer = nil
+		return w.writer.WriteMultiBuffer(combined)
+	}
 
 	reader := MultiBufferContainer{
 		MultiBuffer: b,
@@ -160,12 +177,6 @@ func (w *BufferedWriter) WriteMultiBuffer(b MultiBuffer) error {
 				return err
 			}
 		}
-	}
-
-	if w.flushNext {
-		w.buffered = false
-		w.flushNext = false
-		return w.flushInternal()
 	}
 
 	return nil

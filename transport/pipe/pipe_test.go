@@ -137,6 +137,66 @@ func TestInterfaces(t *testing.T) {
 	_ = common.Closable(new(Writer))
 }
 
+func TestPipeReadMultiBufferTimeout(t *testing.T) {
+	t.Run("ready", func(t *testing.T) {
+		reader, writer := New(WithoutSizeLimit())
+		payload := buf.New()
+		payload.WriteString("ready")
+		common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{payload}))
+
+		mb, err := reader.ReadMultiBufferTimeout(0)
+		common.Must(err)
+		defer buf.ReleaseMulti(mb)
+		if diff := cmp.Diff("ready", mb.String()); diff != "" {
+			t.Fatal(diff)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		reader, _ := New(WithoutSizeLimit())
+		mb, err := reader.ReadMultiBufferTimeout(time.Millisecond)
+		if !errors.Is(err, buf.ErrReadTimeout) {
+			t.Fatalf("expected read timeout, got %v", err)
+		}
+		if !mb.IsEmpty() {
+			buf.ReleaseMulti(mb)
+			t.Fatal("expected no data after timeout")
+		}
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		reader, writer := New(WithoutSizeLimit())
+		common.Must(writer.Close())
+		mb, err := reader.ReadMultiBufferTimeout(time.Hour)
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("expected EOF, got %v", err)
+		}
+		if !mb.IsEmpty() {
+			buf.ReleaseMulti(mb)
+			t.Fatal("expected no data after close")
+		}
+	})
+}
+
+func TestPipeReadMultiBufferTimeoutReadyAllocations(t *testing.T) {
+	reader, writer := New(WithoutSizeLimit())
+	payload := buf.New()
+	payload.Extend(buf.Size)
+	mb := buf.MultiBuffer{payload}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		common.Must(writer.WriteMultiBuffer(mb))
+		read, err := reader.ReadMultiBufferTimeout(time.Hour)
+		common.Must(err)
+		mb = read
+	})
+	buf.ReleaseMulti(mb)
+
+	if allocs != 0 {
+		t.Fatalf("ready read allocated %.2f objects per call; want 0", allocs)
+	}
+}
+
 func BenchmarkPipeReadWrite(b *testing.B) {
 	reader, writer := New(WithoutSizeLimit())
 	a := buf.New()
@@ -149,5 +209,22 @@ func BenchmarkPipeReadWrite(b *testing.B) {
 		d, err := reader.ReadMultiBuffer()
 		common.Must(err)
 		c = d
+	}
+}
+
+func BenchmarkPipeReadMultiBufferTimeoutReady(b *testing.B) {
+	reader, writer := New(WithoutSizeLimit())
+	payload := buf.New()
+	payload.Extend(buf.Size)
+	mb := buf.MultiBuffer{payload}
+	b.Cleanup(func() { buf.ReleaseMulti(mb) })
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		common.Must(writer.WriteMultiBuffer(mb))
+		read, err := reader.ReadMultiBufferTimeout(time.Hour)
+		common.Must(err)
+		mb = read
 	}
 }

@@ -13,6 +13,22 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
+type releasingMultiBufferWriter struct{}
+
+func (releasingMultiBufferWriter) WriteMultiBuffer(mb MultiBuffer) error {
+	ReleaseMulti(mb)
+	return nil
+}
+
+type recordingMultiBufferWriter struct {
+	calls []MultiBuffer
+}
+
+func (w *recordingMultiBufferWriter) WriteMultiBuffer(mb MultiBuffer) error {
+	w.calls = append(w.calls, mb)
+	return nil
+}
+
 func TestWriter(t *testing.T) {
 	lb := New()
 	common.Must2(lb.ReadFrom(rand.Reader))
@@ -92,6 +108,59 @@ func TestWriterInterface(t *testing.T) {
 		case Writer, io.Writer, io.ReaderFrom, io.ByteWriter:
 		default:
 			t.Error("BufferedWriter is not Writer, io.Writer, io.ReaderFrom or io.ByteWriter")
+		}
+	}
+}
+
+func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
+	underlying := new(recordingMultiBufferWriter)
+	writer := NewBufferedWriter(underlying)
+	if _, err := writer.Write([]byte("header")); err != nil {
+		t.Fatal(err)
+	}
+	writer.SetFlushNext()
+
+	payload := FromBytes([]byte("payload"))
+	if err := writer.WriteMultiBuffer(MultiBuffer{payload}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 1 {
+		t.Fatalf("underlying writes = %d, want 1", len(underlying.calls))
+	}
+	firstWrite := underlying.calls[0]
+	defer ReleaseMulti(firstWrite)
+	if got := firstWrite.String(); got != "headerpayload" {
+		t.Fatalf("wire output = %q, want %q", got, "headerpayload")
+	}
+	if len(firstWrite) != 2 || firstWrite[1] != payload {
+		t.Fatal("first payload buffer was copied instead of transferred")
+	}
+
+	next := FromBytes([]byte("next"))
+	if err := writer.WriteMultiBuffer(MultiBuffer{next}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 2 || len(underlying.calls[1]) != 1 || underlying.calls[1][0] != next {
+		t.Fatal("writer did not remain in pass-through mode after flush-next")
+	}
+	ReleaseMulti(underlying.calls[1])
+}
+
+func BenchmarkBufferedWriterHeaderAndFirstPayload(b *testing.B) {
+	underlying := releasingMultiBufferWriter{}
+	header := []byte("vless-request-header")
+	payload := make([]byte, 1400)
+	b.SetBytes(int64(len(header) + len(payload)))
+	b.ReportAllocs()
+
+	for b.Loop() {
+		writer := NewBufferedWriter(underlying)
+		if _, err := writer.Write(header); err != nil {
+			b.Fatal(err)
+		}
+		writer.SetFlushNext()
+		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

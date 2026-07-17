@@ -11,9 +11,12 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/uuid"
+	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/proxy/vless"
 	. "github.com/xtls/xray-core/proxy/vless/encoding"
 )
+
+var trafficStateBenchmarkSink *proxy.TrafficState
 
 const (
 	behaviorUserID       = "00112233-4455-6677-8899-aabbccddeeff"
@@ -218,6 +221,21 @@ func TestPlainTCPBodyAddonsArePassThrough(t *testing.T) {
 	}
 }
 
+func TestNewTrafficStateForFlow(t *testing.T) {
+	userID := decodeWire(t, "00112233445566778899aabbccddeeff")
+	if state := NewTrafficStateForFlow(userID, ""); state != nil {
+		t.Fatal("plain VLESS unexpectedly allocated Vision traffic state")
+	}
+
+	state := NewTrafficStateForFlow(userID, vless.XRV)
+	if state == nil {
+		t.Fatal("Vision traffic state is nil")
+	}
+	if !bytes.Equal(state.UserUUID, userID) || state.NumberOfPacketToFilter != 8 {
+		t.Fatalf("unexpected Vision traffic state: %+v", state)
+	}
+}
+
 func BenchmarkEncodeRequestHeaderTCPDomain(b *testing.B) {
 	request := behaviorRequest(b, protocol.RequestCommandTCP)
 	output := buf.StackNew()
@@ -229,6 +247,30 @@ func BenchmarkEncodeRequestHeaderTCPDomain(b *testing.B) {
 		if err := EncodeRequestHeader(&output, request, &Addons{}); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkNewTrafficStateBaseline(b *testing.B) {
+	userID := decodeWire(b, "00112233445566778899aabbccddeeff")
+	b.ReportAllocs()
+	for b.Loop() {
+		trafficStateBenchmarkSink = proxy.NewTrafficState(userID)
+	}
+}
+
+func BenchmarkNewTrafficStateForFlowPlain(b *testing.B) {
+	userID := decodeWire(b, "00112233445566778899aabbccddeeff")
+	b.ReportAllocs()
+	for b.Loop() {
+		trafficStateBenchmarkSink = NewTrafficStateForFlow(userID, "")
+	}
+}
+
+func BenchmarkNewTrafficStateForFlowVision(b *testing.B) {
+	userID := decodeWire(b, "00112233445566778899aabbccddeeff")
+	b.ReportAllocs()
+	for b.Loop() {
+		trafficStateBenchmarkSink = NewTrafficStateForFlow(userID, vless.XRV)
 	}
 }
 

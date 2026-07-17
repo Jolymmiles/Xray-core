@@ -147,8 +147,41 @@ binaries:
   then passed five independent runs (15/15 cycles), so the reset is recorded
   as a non-reproduced process-test flake rather than hidden.
 
-Worklist items 1-4 are complete. Items 5 and 6 remain deferred: the current
-process measurements do not attribute meaningful cost to orchestration, and
-changing the 500 ms first-payload coalescing window without a dedicated
-connection-latency profile would alter behavior rather than perform a proven
-optimization.
+Worklist items 1-4 are complete. The broader context/task orchestration in item
+5 remains deferred, and the 500 ms coalescing window in item 6 is unchanged.
+
+## TCP setup optimization pass (2026-07-18)
+
+This pass measured and optimized three costs on the plain VLESS TCP setup path.
+Results are medians on the baseline host; each steady-state benchmark was run
+ten times unless noted otherwise.
+
+| Operation | Before | After | Allocated bytes | Allocations |
+| --- | ---: | ---: | ---: | ---: |
+| Ready first-payload pipe read | 139.0 ns | 18.27 ns | 248 -> 0 | 3 -> 0 |
+| Plain-flow traffic-state selection | 26.6 ns | 1.97 ns | 112 -> 0 | 1 -> 0 |
+| Header + 1400-byte first payload | 151.4 ns | 131.9 ns | 184 -> 192 | 6 -> 6 |
+
+The pipe fast path checks already-buffered data before allocating a timer. The
+timeout duration and timeout/EOF behavior are unchanged. Plain VLESS no longer
+creates the Vision-only traffic state; the Vision control benchmark remains at
+112 B and one allocation. `BufferedWriter.SetFlushNext` now transfers the first
+payload buffers alongside the header rather than copying their bytes into the
+header buffer. It still makes one underlying multi-buffer write; the additional
+eight bytes are slice metadata, not payload storage.
+
+TCP lifecycle characterization also found and fixed two resource leaks:
+failed TLS/REALITY/header setup now closes the dialed connection, and listener
+wrapping or post-listen configuration errors close the bound listener. These
+are correctness fixes and are not counted as throughput improvements.
+
+Acceptance gates for this pass:
+
+- race tests passed for TCP transport, pipe, common buffers, and all VLESS
+  packages;
+- all local `TestVless*` scenarios passed, including plain, TLS, Vision, and
+  REALITY variants;
+- Linux/amd64 test binaries cross-compiled for TCP transport, pipe, common
+  buffers, VLESS encoding, and VLESS inbound;
+- `go vet` reports only the four pre-existing Vision `unsafe.Pointer`
+  diagnostics in inbound and outbound.
