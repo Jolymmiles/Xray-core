@@ -2,6 +2,7 @@ package log
 
 import (
 	"context"
+	stderrors "errors"
 	"net"
 	"regexp"
 	"strconv"
@@ -17,37 +18,70 @@ import (
 // Instance is a log.Handler that handles logs.
 type Instance struct {
 	sync.RWMutex
-	config       *Config
-	accessLogger log.Handler
-	errorLogger  log.Handler
-	active       bool
-	dns          bool
-	mask4        int
-	mask6        int
-	state        atomic.Pointer[instanceState]
+	config           *Config
+	accessLogger     log.Handler
+	errorLogger      log.Handler
+	structuredLogger log.Handler
+	active           bool
+	dns              bool
+	mask4            int
+	mask6            int
+	state            atomic.Pointer[instanceState]
 }
 
 type instanceState struct {
-	active       bool
-	maskAddress  bool
-	mask4        int
-	mask6        int
-	dns          bool
-	accessLogger log.Handler
-	errorLogger  log.Handler
-	errorLevel   log.Severity
+	usage            sync.RWMutex
+	retired          bool
+	active           bool
+	maskAddress      bool
+	mask4            int
+	mask6            int
+	dns              bool
+	accessLogger     log.Handler
+	errorLogger      log.Handler
+	structuredLogger log.Handler
+	errorLevel       log.Severity
+}
+
+func (g *Instance) acquireState() *instanceState {
+	for {
+		state := g.state.Load()
+		if state == nil {
+			return nil
+		}
+		state.usage.RLock()
+		if !state.retired {
+			return state
+		}
+		state.usage.RUnlock()
+	}
+}
+
+func closeState(state *instanceState) error {
+	if state == nil {
+		return nil
+	}
+	state.usage.Lock()
+	state.retired = true
+	state.usage.Unlock()
+	return stderrors.Join(
+		common.Close(state.accessLogger),
+		common.Close(state.errorLogger),
+		common.Close(state.structuredLogger),
+	)
 }
 
 func (g *Instance) publishState() {
 	g.state.Store(&instanceState{
-		active:       g.active,
-		maskAddress:  g.config != nil && g.config.MaskAddress != "",
-		mask4:        g.mask4,
-		mask6:        g.mask6,
-		dns:          g.dns,
-		accessLogger: g.accessLogger,
-		errorLogger:  g.errorLogger,
-		errorLevel:   g.config.GetErrorLogLevel(),
+		active:           g.active,
+		maskAddress:      g.config != nil && g.config.MaskAddress != "",
+		mask4:            g.mask4,
+		mask6:            g.mask6,
+		dns:              g.dns,
+		accessLogger:     g.accessLogger,
+		errorLogger:      g.errorLogger,
+		structuredLogger: g.structuredLogger,
+		errorLevel:       g.config.GetErrorLogLevel(),
 	})
 }
 
@@ -77,26 +111,21 @@ func New(ctx context.Context, config *Config) (*Instance, error) {
 	return g, nil
 }
 
-func (g *Instance) initAccessLogger() error {
-	handler, err := createHandler(g.config.AccessLogType, HandlerCreatorOptions{
-		Path: g.config.AccessLogPath,
-	})
-	if err != nil {
-		return err
+func (g *Instance) buildHandlers() (access, errorLog, structured log.Handler, err error) {
+	if len(g.config.Outputs) > 0 {
+		structured, err = createStructuredHandler(g.config.Outputs, g.config.MaskAddress != "", g.mask4, g.mask6)
+		return
 	}
-	g.accessLogger = handler
-	return nil
-}
-
-func (g *Instance) initErrorLogger() error {
-	handler, err := createHandler(g.config.ErrorLogType, HandlerCreatorOptions{
-		Path: g.config.ErrorLogPath,
-	})
+	access, err = createHandler(g.config.AccessLogType, HandlerCreatorOptions{Path: g.config.AccessLogPath})
 	if err != nil {
-		return err
+		return nil, nil, nil, errors.New("failed to initialize access logger").Base(err).AtWarning()
 	}
-	g.errorLogger = handler
-	return nil
+	errorLog, err = createHandler(g.config.ErrorLogType, HandlerCreatorOptions{Path: g.config.ErrorLogPath})
+	if err != nil {
+		common.Close(access)
+		return nil, nil, nil, errors.New("failed to initialize error logger").Base(err).AtWarning()
+	}
+	return
 }
 
 // Type implements common.HasType.
@@ -112,17 +141,40 @@ func (g *Instance) startInternal() error {
 		return nil
 	}
 
+	accessLogger, errorLogger, structuredLogger, err := g.buildHandlers()
+	if err != nil {
+		return errors.New("failed to initialize logger").Base(err).AtWarning()
+	}
+	g.accessLogger = accessLogger
+	g.errorLogger = errorLogger
+	g.structuredLogger = structuredLogger
 	g.active = true
-
-	if err := g.initAccessLogger(); err != nil {
-		return errors.New("failed to initialize access logger").Base(err).AtWarning()
-	}
-	if err := g.initErrorLogger(); err != nil {
-		return errors.New("failed to initialize error logger").Base(err).AtWarning()
-	}
 	g.publishState()
 
 	return nil
+}
+
+// Restart builds and publishes a complete replacement before draining the old
+// handlers. A replacement failure leaves the current runtime active.
+func (g *Instance) Restart() error {
+	g.Lock()
+	if !g.active {
+		g.Unlock()
+		return g.startInternal()
+	}
+	accessLogger, errorLogger, structuredLogger, err := g.buildHandlers()
+	if err != nil {
+		g.Unlock()
+		return err
+	}
+	oldState := g.state.Load()
+	g.accessLogger = accessLogger
+	g.errorLogger = errorLogger
+	g.structuredLogger = structuredLogger
+	g.publishState()
+	g.Unlock()
+
+	return closeState(oldState)
 }
 
 // Start implements common.Runnable.Start().
@@ -132,8 +184,15 @@ func (g *Instance) Start() error {
 
 // Handle implements log.Handler.
 func (g *Instance) Handle(msg log.Message) {
-	state := g.state.Load()
+	state := g.acquireState()
+	if state != nil {
+		defer state.usage.RUnlock()
+	}
 	if state == nil || !state.active {
+		return
+	}
+	if state.structuredLogger != nil {
+		state.structuredLogger.Handle(msg)
 		return
 	}
 
@@ -168,8 +227,34 @@ func (g *Instance) Handle(msg log.Message) {
 
 // Enabled implements log.SeverityFilter.
 func (g *Instance) Enabled(severity log.Severity) bool {
-	state := g.state.Load()
+	state := g.acquireState()
+	if state != nil {
+		defer state.usage.RUnlock()
+	}
+	if state != nil && state.active && state.structuredLogger != nil {
+		if filter, ok := state.structuredLogger.(log.SeverityFilter); ok {
+			return filter.Enabled(severity)
+		}
+		return true
+	}
 	return state != nil && state.active && state.errorLogger != nil && severity <= state.errorLevel
+}
+
+// StructuredStats returns a point-in-time operational snapshot for every
+// configured structured output. Legacy logger configurations return nil.
+func (g *Instance) StructuredStats() []log.OutputStats {
+	state := g.acquireState()
+	if state != nil {
+		defer state.usage.RUnlock()
+	}
+	if state == nil || state.structuredLogger == nil {
+		return nil
+	}
+	provider, ok := state.structuredLogger.(interface{ Runtime() *log.Runtime })
+	if !ok {
+		return nil
+	}
+	return provider.Runtime().Stats()
 }
 
 // Close implements common.Closable.Close().
@@ -177,23 +262,21 @@ func (g *Instance) Close() error {
 	errors.LogDebug(context.Background(), "Logger closing")
 
 	g.Lock()
-	defer g.Unlock()
 
 	if !g.active {
+		g.Unlock()
 		return nil
 	}
 
+	oldState := g.state.Load()
 	g.active = false
-	g.publishState()
-
-	common.Close(g.accessLogger)
 	g.accessLogger = nil
-
-	common.Close(g.errorLogger)
 	g.errorLogger = nil
+	g.structuredLogger = nil
 	g.publishState()
+	g.Unlock()
 
-	return nil
+	return closeState(oldState)
 }
 
 func ParseMaskAddress(c string) (int, int, error) {

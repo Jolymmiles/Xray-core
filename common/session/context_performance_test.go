@@ -97,6 +97,9 @@ func TestContextWithAccessMessagePreservesWrapperSemantics(t *testing.T) {
 	if got := AccessMessageFromContext(ctx); got != message {
 		t.Fatalf("access message = %p, want %p", got, message)
 	}
+	if message.SessionID != 42 {
+		t.Fatalf("access session ID = %d, want 42", message.SessionID)
+	}
 }
 
 func TestConnectionRoutingViewDoesNotBypassMetadataOverride(t *testing.T) {

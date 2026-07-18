@@ -117,6 +117,12 @@ func (err *Error) Severity() log.Severity {
 	return err.severity
 }
 
+// LogComponent returns the stable package name captured when the error was
+// created. Structured log adapters use it without parsing the rendered error.
+func (err *Error) LogComponent() string {
+	return err.caller
+}
+
 // AtDebug sets the severity to debug.
 func (err *Error) AtDebug() *Error {
 	return err.atSeverity(log.Severity_Debug)

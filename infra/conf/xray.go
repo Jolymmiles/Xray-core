@@ -618,7 +618,11 @@ func (c *Config) Build() (*core.Config, error) {
 
 	var logConfMsg *serial.TypedMessage
 	if c.LogConfig != nil {
-		logConfMsg = serial.ToTypedMessage(c.LogConfig.Build())
+		logConfig, err := c.LogConfig.Build()
+		if err != nil {
+			return nil, errors.New("failed to build log configuration").Base(err)
+		}
+		logConfMsg = serial.ToTypedMessage(logConfig)
 	} else {
 		logConfMsg = serial.ToTypedMessage(DefaultLogConfig())
 	}
