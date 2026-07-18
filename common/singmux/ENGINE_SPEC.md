@@ -43,3 +43,8 @@ enabled, each side sends a stream-zero keepalive at the configured interval and
 closes the session if no inbound frame arrives before the timeout. A heartbeat
 send is allowed the full keepalive timeout; a single delayed scheduler interval
 does not terminate an otherwise healthy carrier.
+
+Session shutdown closes and interrupts the carrier, then waits for the read,
+write, and optional keepalive loops to exit before `Close` returns. A caller
+may release pooled carrier adapters after `Close` without a background SMUX
+loop retaining or reading them.

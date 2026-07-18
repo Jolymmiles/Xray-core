@@ -129,3 +129,41 @@ func TestReaderInterface(t *testing.T) {
 	_ = io.ByteReader(new(BufferedReader))
 	_ = io.WriterTo(new(BufferedReader))
 }
+
+type closeTrackingReader struct {
+	closed bool
+}
+
+func (*closeTrackingReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (r *closeTrackingReader) Close() error {
+	r.closed = true
+	return nil
+}
+
+func TestReaderInterruptReachesUnderlyingCloser(t *testing.T) {
+	t.Run("regular", func(t *testing.T) {
+		underlying := new(closeTrackingReader)
+		reader := NewReader(underlying)
+
+		if err := common.Interrupt(reader); err != nil {
+			t.Fatal(err)
+		}
+		if !underlying.closed {
+			t.Fatal("interrupt did not reach the underlying reader")
+		}
+	})
+
+	t.Run("pooled", func(t *testing.T) {
+		underlying := new(closeTrackingReader)
+		reader := NewPooledReader(underlying)
+		defer ReleasePooledReader(reader)
+
+		if err := common.Interrupt(reader); err != nil {
+			t.Fatal(err)
+		}
+		if !underlying.closed {
+			t.Fatal("interrupt did not reach the underlying pooled reader")
+		}
+	})
+}

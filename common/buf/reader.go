@@ -214,6 +214,12 @@ type SingleReader struct {
 	io.Reader
 }
 
+// Interrupt stops the underlying reader when it owns an interruptible or
+// closable resource, such as a network connection.
+func (r *SingleReader) Interrupt() {
+	common.Interrupt(r.Reader)
+}
+
 // ReadMultiBuffer implements Reader.
 func (r *SingleReader) ReadMultiBuffer() (MultiBuffer, error) {
 	b, err := ReadBuffer(r.Reader)
@@ -223,6 +229,11 @@ func (r *SingleReader) ReadMultiBuffer() (MultiBuffer, error) {
 // PacketReader is a Reader that read one Buffer every time.
 type PacketReader struct {
 	io.Reader
+}
+
+// Interrupt stops the underlying packet reader.
+func (r *PacketReader) Interrupt() {
+	common.Interrupt(r.Reader)
 }
 
 // ReadMultiBuffer implements Reader.

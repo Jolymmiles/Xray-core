@@ -37,6 +37,83 @@ func testSessionPair(t *testing.T, configure func(*Config)) (*Session, *Session)
 	return client, server
 }
 
+type delayedReadCloseConnection struct {
+	readStarted     chan struct{}
+	closeCalled     chan struct{}
+	allowReadReturn chan struct{}
+	readStartedOnce sync.Once
+	closeOnce       sync.Once
+}
+
+func newDelayedReadCloseConnection() *delayedReadCloseConnection {
+	return &delayedReadCloseConnection{
+		readStarted:     make(chan struct{}),
+		closeCalled:     make(chan struct{}),
+		allowReadReturn: make(chan struct{}),
+	}
+}
+
+func (c *delayedReadCloseConnection) Read([]byte) (int, error) {
+	c.readStartedOnce.Do(func() { close(c.readStarted) })
+	<-c.allowReadReturn
+	return 0, io.EOF
+}
+
+func (*delayedReadCloseConnection) Write(payload []byte) (int, error) {
+	return len(payload), nil
+}
+
+func (c *delayedReadCloseConnection) Close() error {
+	c.closeOnce.Do(func() { close(c.closeCalled) })
+	return nil
+}
+
+func TestSessionCloseWaitsForCarrierLoops(t *testing.T) {
+	connection := newDelayedReadCloseConnection()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(connection, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-connection.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("carrier read loop did not start")
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- session.Close() }()
+	select {
+	case <-connection.closeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("session close did not close the carrier")
+	}
+
+	returnedBeforeReadLoop := false
+	var closeErr error
+	select {
+	case closeErr = <-closeResult:
+		returnedBeforeReadLoop = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(connection.allowReadReturn)
+	if !returnedBeforeReadLoop {
+		select {
+		case closeErr = <-closeResult:
+		case <-time.After(time.Second):
+			t.Fatal("session close did not finish after the carrier read returned")
+		}
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if returnedBeforeReadLoop {
+		t.Fatal("session Close returned while its carrier read loop was still running")
+	}
+}
+
 func TestSessionRoundTripAndStreamIDs(t *testing.T) {
 	client, server := testSessionPair(t, nil)
 	clientStream, err := client.OpenStream()
