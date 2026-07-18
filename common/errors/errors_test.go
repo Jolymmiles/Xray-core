@@ -53,3 +53,10 @@ func TestErrorMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestErrorExposesStableLogComponent(t *testing.T) {
+	err := New("component")
+	if got, want := err.LogComponent(), "common/errors_test"; got != want {
+		t.Fatalf("LogComponent() = %q, want %q", got, want)
+	}
+}

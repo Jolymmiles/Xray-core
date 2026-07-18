@@ -2,8 +2,10 @@ package log
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
+	commonctx "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/serial"
 )
 
@@ -20,15 +22,53 @@ const (
 	AccessRejected = AccessStatus("rejected")
 )
 
+type stringAddress interface {
+	String() string
+}
+
+// AccessTarget stores a routed destination without importing the common/net
+// package or formatting it on the dispatcher hot path.
+type AccessTarget struct {
+	Network string
+	Address stringAddress
+	Port    uint16
+}
+
+func (t AccessTarget) String() string {
+	if t.Address == nil {
+		return ""
+	}
+	address := t.Address.String()
+	capacity := len(t.Network) + 1 + len(address) + 1 + 5
+	var builder strings.Builder
+	builder.Grow(capacity)
+	if t.Network != "" {
+		builder.WriteString(t.Network)
+		builder.WriteByte(':')
+	}
+	builder.WriteString(address)
+	if t.Network != "unix" {
+		builder.WriteByte(':')
+		builder.WriteString(strconv.FormatUint(uint64(t.Port), 10))
+	}
+	return builder.String()
+}
+
 type AccessMessage struct {
+	Component  string
 	From       interface{}
 	To         interface{}
 	FromString string
 	ToString   string
+	Target     AccessTarget
+	HasTarget  bool
 	Status     AccessStatus
 	Reason     interface{}
 	Email      string
 	Detour     string
+	Inbound    string
+	Outbound   string
+	SessionID  uint32
 }
 
 type accessMessageCarrier interface {
@@ -42,7 +82,9 @@ func (m *AccessMessage) String() string {
 		from = accessValueString(m.From)
 	}
 	to := m.ToString
-	if to == "" {
+	if m.HasTarget {
+		to = m.Target.String()
+	} else if to == "" {
 		to = accessValueString(m.To)
 	}
 	var reason string
@@ -105,7 +147,19 @@ func accessValueString(value any) string {
 	}
 }
 
+// RecordAccess stamps context-owned metadata before publishing an access
+// record. Callers still provide protocol-specific component and inbound data.
+func RecordAccess(ctx context.Context, accessMessage *AccessMessage) {
+	if accessMessage.SessionID == 0 {
+		accessMessage.SessionID = uint32(commonctx.IDFromContext(ctx))
+	}
+	Record(accessMessage)
+}
+
 func ContextWithAccessMessage(ctx context.Context, accessMessage *AccessMessage) context.Context {
+	if accessMessage.SessionID == 0 {
+		accessMessage.SessionID = uint32(commonctx.IDFromContext(ctx))
+	}
 	if carrier, ok := ctx.(accessMessageCarrier); ok {
 		carrier.SetAccessMessage(accessMessage)
 		return ctx

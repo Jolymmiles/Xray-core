@@ -744,10 +744,22 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	handlerTag := handler.Tag()
 	ob.Tag = handlerTag
 	if accessMessage := session.AccessMessageFromContext(ctx); accessMessage != nil {
-		if tag := handlerTag; tag != "" {
-			accessMessage.Detour = d.detour(inTag, tag, isPickRoute)
+		accessRecord := *accessMessage
+		accessRecord.To = nil
+		accessRecord.ToString = ""
+		accessRecord.Target = log.AccessTarget{
+			Network: destination.Network.SystemString(),
+			Address: destination.Address,
+			Port:    destination.Port.Value(),
 		}
-		log.Record(accessMessage)
+		accessRecord.HasTarget = true
+		accessRecord.Component = "app/dispatcher"
+		accessRecord.Inbound = inTag
+		accessRecord.Outbound = handlerTag
+		if tag := handlerTag; tag != "" {
+			accessRecord.Detour = d.detour(inTag, tag, isPickRoute)
+		}
+		log.Record(&accessRecord)
 	}
 
 	handler.Dispatch(ctx, link)

@@ -15,6 +15,63 @@ enum LogType {
   Event = 3;
 }
 
+enum OutputType {
+  OutputUnknown = 0;
+  OutputConsole = 1;
+  OutputFile = 2;
+  OutputUnix = 3;
+}
+
+enum LogFormat {
+  FormatUnknown = 0;
+  FormatConsole = 1;
+  FormatJSON = 2;
+  FormatLegacy = 3;
+}
+
+enum ColorMode {
+  ColorAuto = 0;
+  ColorAlways = 1;
+  ColorNever = 2;
+}
+
+enum Backpressure {
+  BackpressureDropNew = 0;
+  BackpressureBlock = 1;
+  BackpressureSync = 2;
+}
+
+enum EventType {
+  EventGeneral = 0;
+  EventAccess = 1;
+  EventDNS = 2;
+  EventInternal = 3;
+}
+
+enum ConsoleStream {
+  StreamStdout = 0;
+  StreamStderr = 1;
+}
+
+message OutputConfig {
+  string name = 1;
+  OutputType type = 2;
+  string path = 3;
+  ConsoleStream stream = 4;
+  LogFormat format = 5;
+  ColorMode color = 6;
+  repeated EventType events = 7;
+  xray.common.log.Severity level = 8;
+  uint32 queue_size = 9;
+  uint32 batch_size = 10;
+  int64 flush_interval = 11;
+  Backpressure backpressure = 12;
+  int64 block_timeout = 13;
+  uint32 max_record_size = 14;
+  uint32 file_buffer_size = 15;
+  int64 connect_timeout = 16;
+}
+
 message Config {
   LogType error_log_type = 1;
   xray.common.log.Severity error_log_level = 2;
@@ -24,4 +81,5 @@ message Config {
   string access_log_path = 5;
   bool enable_dns_log = 6;
   string mask_address= 7;
+  repeated OutputConfig outputs = 8;
 }

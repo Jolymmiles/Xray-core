@@ -48,6 +48,19 @@ var (
 	DNSCacheOptimiste = dnsStatus("cache OPTIMISTE:")
 )
 
+func (s dnsStatus) structuredName() string {
+	switch s {
+	case DNSQueried:
+		return "queried"
+	case DNSCacheHit:
+		return "cache_hit"
+	case DNSCacheOptimiste:
+		return "cache_optimistic"
+	default:
+		return string(s)
+	}
+}
+
 func joinNetIP(ips []net.IP) string {
 	if len(ips) == 0 {
 		return ""

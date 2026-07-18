@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
@@ -90,6 +91,70 @@ func TestSMUXProcessInteropMatrix(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestStructuredRejectedAccessProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level structured rejection logging")
+	}
+	workDir := t.TempDir()
+	xrayRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	xray := buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main")
+	certificate, privateKey := generateCertificate(t, workDir)
+
+	for _, carrier := range []string{"vless", "trojan"} {
+		t.Run(carrier, func(t *testing.T) {
+			port := freeTCPPort(t)
+			configPath := filepath.Join(workDir, carrier+"-rejected.json")
+			writeConfig(t, configPath, xrayConfig(t, true, carrier, port, 0, false, certificate, privateKey))
+			server := startE2EProcess(t, xray, "run", "-config", configPath)
+			waitTCP(t, server, port)
+
+			var connection net.Conn
+			var err error
+			if carrier == "trojan" {
+				connection, err = tls.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port), &tls.Config{InsecureSkipVerify: true}) // #nosec G402 -- isolated test certificate
+			} else {
+				connection, err = net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 3*time.Second)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := connection.Write(bytes.Repeat([]byte{0xff}, 128)); err != nil {
+				_ = connection.Close()
+				t.Fatal(err)
+			}
+			_ = connection.Close()
+			waitProcessLog(t, server, `"status":"rejected"`)
+
+			wantComponent := "proxy/" + carrier
+			if carrier == "vless" {
+				wantComponent += "/inbound"
+			}
+			for _, line := range strings.Split(server.logs.String(), "\n") {
+				var record struct {
+					Type      string `json:"type"`
+					Status    string `json:"status"`
+					Component string `json:"component"`
+					Inbound   string `json:"inbound"`
+					SessionID uint32 `json:"session_id"`
+					Source    string `json:"source"`
+					Reason    string `json:"reason"`
+				}
+				if json.Unmarshal([]byte(line), &record) != nil || record.Status != "rejected" {
+					continue
+				}
+				if record.Type != "access" || record.Component != wantComponent || record.Inbound != "e2e-in" || record.SessionID == 0 || record.Source == "" || record.Reason == "" {
+					t.Fatalf("incomplete rejected access record: %+v\nserver logs:\n%s", record, server.logs.String())
+				}
+				return
+			}
+			t.Fatalf("missing rejected access record\nserver logs:\n%s", server.logs.String())
+		})
 	}
 }
 
@@ -185,6 +250,9 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 	} else {
 		testSOCKSUDP(t, socksPort, udpEcho.(*net.UDPAddr))
 	}
+	if direction == "xray-server" {
+		assertStructuredAccessDestination(t, server, network, tcpEcho, udpEcho)
+	}
 }
 
 func configExtension(peer string, xray bool) string {
@@ -229,13 +297,21 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 	t.Helper()
 	config := map[string]any{"log": map[string]any{"loglevel": "debug"}}
 	if server {
+		config["log"] = map[string]any{
+			"loglevel": "warning",
+			"outputs": []any{map[string]any{
+				"name": "access-e2e", "type": "console", "stream": "stdout",
+				"events": []string{"access"}, "format": "json", "color": "never",
+				"level": "info", "backpressure": "sync", "maxRecordSize": 65536,
+			}},
+		}
 		inboundSettings := map[string]any{}
 		if carrier == "vless" {
 			inboundSettings = map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": testUUID}}}
 		} else {
 			inboundSettings = map[string]any{"clients": []any{map[string]any{"password": testPassword}}}
 		}
-		inbound := map[string]any{"listen": "127.0.0.1", "port": serverPort, "protocol": carrier, "settings": inboundSettings}
+		inbound := map[string]any{"tag": "e2e-in", "listen": "127.0.0.1", "port": serverPort, "protocol": carrier, "settings": inboundSettings}
 		if carrier == "trojan" {
 			inbound["streamSettings"] = xrayTLSSettings(true, certificate, privateKey)
 		}
@@ -275,6 +351,36 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func assertStructuredAccessDestination(t *testing.T, process *e2eProcess, network string, tcpEcho, udpEcho net.Addr) {
+	t.Helper()
+	waitProcessLog(t, process, `"type":"access"`)
+	wantDestination := network + ":"
+	if network == "tcp" {
+		wantDestination += tcpEcho.String()
+	} else {
+		wantDestination += udpEcho.String()
+	}
+	var acceptedDestinations []string
+	for _, line := range strings.Split(process.logs.String(), "\n") {
+		var record struct {
+			Type        string `json:"type"`
+			Status      string `json:"status"`
+			Destination string `json:"destination"`
+		}
+		if json.Unmarshal([]byte(line), &record) != nil || record.Type != "access" || record.Status != "accepted" {
+			continue
+		}
+		acceptedDestinations = append(acceptedDestinations, record.Destination)
+		if record.Destination == "tcp:sp.mux.sing-box.arpa:444" {
+			t.Fatalf("structured access log exposed the SMUX carrier instead of its logical stream: %s", line)
+		}
+		if record.Destination == wantDestination {
+			return
+		}
+	}
+	t.Fatalf("missing structured access destination %q; accepted destinations=%q\nserver logs:\n%s", wantDestination, acceptedDestinations, process.logs.String())
 }
 
 func xrayTLSSettings(server bool, certificate, privateKey string) map[string]any {

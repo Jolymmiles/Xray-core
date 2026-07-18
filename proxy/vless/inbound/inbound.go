@@ -532,11 +532,17 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		}
 
 		if errors.Cause(err) != io.EOF {
-			log.Record(&log.AccessMessage{
-				From:   connection.RemoteAddr(),
-				To:     "",
-				Status: log.AccessRejected,
-				Reason: err,
+			inboundTag := ""
+			if inbound := session.InboundFromContext(ctx); inbound != nil {
+				inboundTag = inbound.Tag
+			}
+			log.RecordAccess(ctx, &log.AccessMessage{
+				Component: "proxy/vless/inbound",
+				From:      connection.RemoteAddr(),
+				To:        "",
+				Status:    log.AccessRejected,
+				Reason:    err,
+				Inbound:   inboundTag,
 			})
 			err = errors.New("invalid request from ", connection.RemoteAddr()).Base(err).AtInfo()
 		}

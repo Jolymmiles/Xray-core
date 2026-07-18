@@ -116,6 +116,9 @@ func AccessMessageFromContext(parent context.Context) *log.AccessMessage {
 // ContextWithAccessMessage sets access metadata directly on the standard
 // connection context and preserves generic context behavior for wrappers.
 func ContextWithAccessMessage(parent context.Context, message *log.AccessMessage) context.Context {
+	if message.SessionID == 0 {
+		message.SessionID = uint32(ctx.IDFromContext(parent))
+	}
 	if combined, ok := parent.(*connectionContext); ok {
 		combined.accessMessage = message
 		return parent

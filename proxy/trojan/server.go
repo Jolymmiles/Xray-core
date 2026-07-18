@@ -176,12 +176,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	if firstLen < 58 || first.Byte(56) != '\r' {
 		// invalid protocol
 		err = errors.New("not trojan protocol")
-		log.Record(&log.AccessMessage{
-			From:   conn.RemoteAddr(),
-			To:     "",
-			Status: log.AccessRejected,
-			Reason: err,
-		})
+		recordRejectedAccess(ctx, conn.RemoteAddr(), err)
 
 		shouldFallback = true
 	} else {
@@ -189,12 +184,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 		if user == nil {
 			// invalid user, let's fallback
 			err = errors.New("not a valid user")
-			log.Record(&log.AccessMessage{
-				From:   conn.RemoteAddr(),
-				To:     "",
-				Status: log.AccessRejected,
-				Reason: err,
-			})
+			recordRejectedAccess(ctx, conn.RemoteAddr(), err)
 
 			shouldFallback = true
 		}
@@ -208,12 +198,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 
 	clientReader := &ConnReader{Reader: bufferedReader}
 	if err := clientReader.ParseHeader(); err != nil {
-		log.Record(&log.AccessMessage{
-			From:   conn.RemoteAddr(),
-			To:     "",
-			Status: log.AccessRejected,
-			Reason: err,
-		})
+		recordRejectedAccess(ctx, conn.RemoteAddr(), err)
 		return errors.New("failed to create request from: ", conn.RemoteAddr()).Base(err)
 	}
 
@@ -242,6 +227,21 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 
 	errors.LogInfo(ctx, "received request for ", destination)
 	return s.handleConnection(ctx, sessionPolicy, destination, clientReader, buf.NewWriter(conn), dispatcher)
+}
+
+func recordRejectedAccess(ctx context.Context, source any, reason error) {
+	inboundTag := ""
+	if inbound := session.InboundFromContext(ctx); inbound != nil {
+		inboundTag = inbound.Tag
+	}
+	log.RecordAccess(ctx, &log.AccessMessage{
+		Component: "proxy/trojan",
+		From:      source,
+		To:        "",
+		Status:    log.AccessRejected,
+		Reason:    reason,
+		Inbound:   inboundTag,
+	})
 }
 
 func (s *Server) handleUDPPayload(ctx context.Context, sessionPolicy policy.Session, clientReader *PacketReader, clientWriter *PacketWriter, dispatcher routing.Dispatcher) error {

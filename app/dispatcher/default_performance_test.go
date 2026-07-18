@@ -31,6 +31,18 @@ func (discardLogHandler) Enabled(severity corelog.Severity) bool {
 	return severity <= corelog.Severity_Warning
 }
 
+type accessCaptureLogHandler struct {
+	messages chan *corelog.AccessMessage
+}
+
+func (h accessCaptureLogHandler) Handle(message corelog.Message) {
+	if access, ok := message.(*corelog.AccessMessage); ok {
+		h.messages <- access
+	}
+}
+
+func (accessCaptureLogHandler) Enabled(corelog.Severity) bool { return false }
+
 func init() {
 	corelog.RegisterHandler(discardLogHandler{})
 }
@@ -120,6 +132,15 @@ func (r fixedSniffResult) Domain() string   { return r.domain }
 type captureOutbound struct {
 	reader buf.Reader
 }
+
+type statelessOutbound struct{}
+
+func (*statelessOutbound) Start() error                              { return nil }
+func (*statelessOutbound) Close() error                              { return nil }
+func (*statelessOutbound) Tag() string                               { return "direct" }
+func (*statelessOutbound) SenderSettings() *serial.TypedMessage      { return nil }
+func (*statelessOutbound) ProxySettings() *serial.TypedMessage       { return nil }
+func (*statelessOutbound) Dispatch(context.Context, *transport.Link) {}
 
 func (*captureOutbound) Start() error                         { return nil }
 func (*captureOutbound) Close() error                         { return nil }
@@ -211,6 +232,100 @@ func TestDispatchLinkRecordsHandlerTagOnCurrentOutbound(t *testing.T) {
 	}
 	if outbounds[0].Tag != handler.Tag() {
 		t.Fatalf("outbound tag = %q, want %q", outbounds[0].Tag, handler.Tag())
+	}
+}
+
+func TestDispatchLinkSnapshotsAccessMessageWithActualStreamDestination(t *testing.T) {
+	capture := accessCaptureLogHandler{messages: make(chan *corelog.AccessMessage, 1)}
+	corelog.RegisterHandler(capture)
+	t.Cleanup(func() { corelog.RegisterHandler(discardLogHandler{}) })
+
+	handler := new(captureOutbound)
+	dispatcher := newPerformanceDispatcher(handler)
+	destination := net.TCPDestination(net.IPAddress([]byte{100, 85, 127, 181}), 80)
+	ctx := session.ContextWithConnection(
+		context.Background(), 42, session.Inbound{Tag: "vless-in"},
+		session.Outbound{Target: destination}, session.Content{},
+	)
+	carrier := &corelog.AccessMessage{
+		FromString: "tcp:192.0.2.1:50000",
+		ToString:   "tcp:sp.mux.sing-box.arpa:444",
+		Status:     corelog.AccessAccepted,
+	}
+	ctx = corelog.ContextWithAccessMessage(ctx, carrier)
+	link := &transport.Link{Reader: new(performanceReader), Writer: buf.Discard}
+
+	if err := dispatcher.DispatchLink(ctx, destination, link); err != nil {
+		t.Fatal(err)
+	}
+	recorded := <-capture.messages
+	if recorded == carrier {
+		t.Fatal("dispatcher recorded the shared carrier AccessMessage pointer")
+	}
+	if carrier.ToString != "tcp:sp.mux.sing-box.arpa:444" || carrier.Detour != "" {
+		t.Fatalf("shared carrier message was mutated: %+v", carrier)
+	}
+	if !recorded.HasTarget || recorded.Target.String() != "tcp:100.85.127.181:80" {
+		t.Fatalf("recorded destination = %#v, want actual SMUX stream destination", recorded.Target)
+	}
+	if recorded.Detour != "vless-in >> direct" {
+		t.Fatalf("recorded detour = %q, want %q", recorded.Detour, "vless-in >> direct")
+	}
+	if recorded.Component != "app/dispatcher" || recorded.Inbound != "vless-in" || recorded.Outbound != "direct" || recorded.SessionID != 42 {
+		t.Fatalf("structured route metadata = %+v", recorded)
+	}
+}
+
+func TestConcurrentMuxStreamsDoNotMutateSharedAccessCarrier(t *testing.T) {
+	capture := accessCaptureLogHandler{messages: make(chan *corelog.AccessMessage, 2)}
+	corelog.RegisterHandler(capture)
+	t.Cleanup(func() { corelog.RegisterHandler(discardLogHandler{}) })
+
+	dispatcher := newPerformanceDispatcher(new(statelessOutbound))
+	carrier := &corelog.AccessMessage{
+		FromString: "tcp:192.0.2.1:50000",
+		ToString:   "tcp:sp.mux.sing-box.arpa:444",
+		Status:     corelog.AccessAccepted,
+	}
+	ctx := session.ContextWithConnection(
+		context.Background(), 42, session.Inbound{Tag: "vless-in"},
+		session.Outbound{}, session.Content{},
+	)
+	ctx = corelog.ContextWithAccessMessage(ctx, carrier)
+	destinations := []net.Destination{
+		net.TCPDestination(net.IPAddress([]byte{100, 85, 127, 181}), 80),
+		net.TCPDestination(net.DomainAddress("example.com"), 443),
+	}
+	var dispatches sync.WaitGroup
+	for _, destination := range destinations {
+		destination := destination
+		streamContext := session.SubContextFromMuxInbound(ctx)
+		dispatches.Add(1)
+		go func() {
+			defer dispatches.Done()
+			link := &transport.Link{Reader: new(performanceReader), Writer: buf.Discard}
+			if err := dispatcher.DispatchLink(streamContext, destination, link); err != nil {
+				t.Errorf("DispatchLink(%s): %v", destination, err)
+			}
+		}()
+	}
+	dispatches.Wait()
+
+	got := make(map[string]struct{}, len(destinations))
+	for range destinations {
+		recorded := <-capture.messages
+		got[recorded.Target.String()] = struct{}{}
+		if recorded.Detour != "vless-in >> direct" {
+			t.Fatalf("recorded detour = %q", recorded.Detour)
+		}
+	}
+	for _, destination := range destinations {
+		if _, found := got[destination.String()]; !found {
+			t.Fatalf("missing logical stream destination %q; got=%v", destination, got)
+		}
+	}
+	if carrier.ToString != "tcp:sp.mux.sing-box.arpa:444" || carrier.Detour != "" || carrier.HasTarget {
+		t.Fatalf("shared SMUX carrier was mutated: %+v", carrier)
 	}
 }
 
