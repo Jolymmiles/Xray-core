@@ -185,3 +185,46 @@ Acceptance gates for this pass:
   buffers, VLESS encoding, and VLESS inbound;
 - `go vet` reports only the four pre-existing Vision `unsafe.Pointer`
   diagnostics in inbound and outbound.
+
+## TLS, REALITY, and Vision process baseline (2026-07-18)
+
+This baseline starts a local Xray VLESS TCP server and a long-lived local Xray
+SOCKS/VLESS client. Every measured operation opens a fresh SOCKS connection,
+which creates a fresh VLESS transport connection, completes TLS or REALITY,
+round-trips an echo payload, and closes the connection. Process startup and
+the readiness warm-up are outside the timed region.
+
+The host is darwin/arm64, Apple M3 Max, Go 1.26.5. These are medians of five
+fixed 50-connection samples:
+
+| Server mode | Connection round trip |
+| --- | ---: |
+| TLS, no flow | 3.296 ms/op |
+| TLS, Vision | 3.223 ms/op |
+| REALITY, no flow | 3.728 ms/op |
+| REALITY, Vision | 3.838 ms/op |
+
+The command is deliberately bounded to avoid exhausting the macOS ephemeral
+port range during rapid TLS/REALITY connection churn:
+
+```sh
+go test -tags integration ./common/singmux -run '^$' \
+  -bench '^BenchmarkVLESSTCPProcess$' -benchtime=50x -count=5
+```
+
+The corresponding correctness gate covers Xray, sing-box, and Mihomo clients
+across all four modes (12 scenarios). Three complete post-change runs passed,
+for 36/36 scenario executions.
+
+The first measured Vision optimization replaces two reflection field searches
+per connection with checked, per-concrete-type cached offsets shared by the
+inbound and outbound paths. Its isolated five-run median changed from 51.97 ns
+to 12.34 ns (76.3% lower), with zero allocations before and after. Invalid or
+changed TLS layouts are now rejected instead of silently interpreting offset
+zero as a `bytes.Reader` or `bytes.Buffer`.
+
+The process numbers are regression baselines, not evidence for a 40 ns change:
+cryptographic handshake and scheduling noise dominate their millisecond scale.
+Linux runtime measurements remain required before making release-level server
+capacity claims; the Darwin gate proves behavior and gives a reproducible local
+directional signal only.
