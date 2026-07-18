@@ -232,12 +232,12 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 		return s.handleUDPPayload(ctx, sessionPolicy, &PacketReader{Reader: clientReader}, &PacketWriter{Writer: conn}, dispatcher)
 	}
 
+	from, to := net.FormatAccessEndpointsFromAddr(conn.RemoteAddr(), destination)
 	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-		From:   conn.RemoteAddr(),
-		To:     destination,
-		Status: log.AccessAccepted,
-		Reason: "",
-		Email:  user.Email,
+		FromString: from,
+		ToString:   to,
+		Status:     log.AccessAccepted,
+		Email:      user.Email,
 	})
 
 	errors.LogInfo(ctx, "received request for ", destination)
@@ -292,12 +292,12 @@ func (s *Server) handleUDPPayload(ctx context.Context, sessionPolicy policy.Sess
 
 				currentPacketCtx := ctx
 				if inbound.Source.IsValid() {
+					from, to := net.FormatAccessEndpoints(inbound.Source, destination)
 					currentPacketCtx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-						From:   inbound.Source,
-						To:     destination,
-						Status: log.AccessAccepted,
-						Reason: "",
-						Email:  user.Email,
+						FromString: from,
+						ToString:   to,
+						Status:     log.AccessAccepted,
+						Email:      user.Email,
 					})
 				}
 				errors.LogInfo(ctx, "tunnelling request to ", destination)
@@ -351,7 +351,7 @@ func (s *Server) handleConnection(ctx context.Context, sessionPolicy policy.Sess
 		return nil
 	}
 
-	requestDonePost := task.OnSuccess(requestDone, task.Close(link.Writer))
+	requestDonePost := task.OnSuccessClose(requestDone, link.Writer)
 	if err := task.Run(ctx, requestDonePost, responseDone); err != nil {
 		common.Must(common.Interrupt(link.Reader))
 		common.Must(common.Interrupt(link.Writer))
@@ -539,7 +539,7 @@ func (s *Server) fallback(ctx context.Context, err error, sessionPolicy policy.S
 		return nil
 	}
 
-	if err := task.Run(ctx, task.OnSuccess(postRequest, task.Close(serverWriter)), task.OnSuccess(getResponse, task.Close(writer))); err != nil {
+	if err := task.Run(ctx, task.OnSuccessClose(postRequest, serverWriter), task.OnSuccessClose(getResponse, writer)); err != nil {
 		common.Must(common.Interrupt(serverReader))
 		common.Must(common.Interrupt(serverWriter))
 		return errors.New("fallback ends").Base(err).AtInfo()

@@ -5,14 +5,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/session"
 	featureoutbound "github.com/xtls/xray-core/features/outbound"
+	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
+	"github.com/xtls/xray-core/transport/internet"
 )
 
 type lookupHandler struct {
 	tag string
 }
+
+type performanceOutbound struct{}
+
+func (*performanceOutbound) Process(context.Context, *transport.Link, internet.Dialer) error {
+	return nil
+}
+
+type performanceLinkReader struct{}
+
+func (*performanceLinkReader) ReadMultiBuffer() (buf.MultiBuffer, error) { return nil, nil }
+
+var _ proxy.Outbound = (*performanceOutbound)(nil)
 
 func (*lookupHandler) Start() error                              { return nil }
 func (*lookupHandler) Close() error                              { return nil }
@@ -84,5 +101,20 @@ func BenchmarkGetHandler(b *testing.B) {
 		if manager.GetHandler("direct") == nil {
 			b.Fatal("handler not found")
 		}
+	}
+}
+
+func BenchmarkHandlerDispatchWithoutSenderSettings(b *testing.B) {
+	handler := &Handler{proxy: new(performanceOutbound)}
+	destination := net.TCPDestination(net.DomainAddress("example.com"), 443)
+	ctx := session.ContextWithConnection(
+		context.Background(), 42, session.Inbound{},
+		session.Outbound{Target: destination}, session.Content{},
+	)
+	reader := new(performanceLinkReader)
+	link := &transport.Link{Reader: reader, Writer: buf.Discard}
+	b.ReportAllocs()
+	for b.Loop() {
+		handler.Dispatch(ctx, link)
 	}
 }

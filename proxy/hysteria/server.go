@@ -2,6 +2,8 @@ package hysteria
 
 import (
 	"context"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -15,7 +17,6 @@ import (
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/proxy/hysteria/account"
-	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/hysteria"
 	"github.com/xtls/xray-core/transport/internet/stat"
@@ -25,7 +26,10 @@ type Server struct {
 	config        *ServerConfig
 	validator     *account.Validator
 	policyManager policy.Manager
+	sessionPolicy policy.Session
 }
+
+var anonymousHysteriaUser = new(protocol.MemoryUser)
 
 func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	v := core.MustFromContext(ctx)
@@ -47,11 +51,13 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 			return nil, errors.New("failed to add user").Base(err).AtError()
 		}
 	}
+	validator.Warmup()
 
 	return &Server{
 		config:        config,
 		validator:     validator,
 		policyManager: p,
+		sessionPolicy: p.ForLevel(0),
 	}, nil
 }
 
@@ -87,7 +93,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "hysteria"
 	inbound.CanSpliceCopy = 3
-	inbound.User = &protocol.MemoryUser{}
+	inbound.User = anonymousHysteriaUser
 
 	iConn := stat.TryUnwrapStatsConn(conn)
 
@@ -100,37 +106,28 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 
 	if _, ok := iConn.(*hysteria.InterConn); ok {
-		reader := &UDPReader{
-			reader: conn,
-			df:     &Defragger{},
-		}
+		reader := newPooledUDPReader(conn)
+		defer releasePooledUDPReader(reader)
 
-		b := buf.New()
-		b.Resize(0, buf.Size)
-		n, addr, err := reader.ReadFrom(b.Bytes())
+		b, packetDestination, err := reader.readBufferPacket()
 		if err != nil {
-			b.Release()
 			return err
 		}
-		b.Resize(0, int32(n))
-		b.UDP = addr
+		destination := reader.serverPacketDestination(packetDestination)
 
 		reader.firstBuf = b
 
-		writer := &UDPWriter{
-			writer: conn,
-			addr:   addr.NetAddr(),
-		}
-
-		return dispatcher.DispatchLink(ctx, *addr, &transport.Link{
-			Reader: reader,
-			Writer: writer,
-		})
+		writer := &reader.serverWriter
+		writer.writer = conn
+		writer.addr = reader.serverPacketAddress(packetDestination)
+		reader.link.Reader = reader
+		reader.link.Writer = writer
+		return dispatcher.DispatchLink(ctx, destination, &reader.link)
 	} else {
-		sessionPolicy := s.policyManager.ForLevel(inbound.User.Level)
+		sessionPolicy := s.policyForLevel(inbound.User.Level)
 
 		common.Must(conn.SetReadDeadline(time.Now().Add(sessionPolicy.Timeouts.Handshake)))
-		addr, err := ReadTCPRequest(conn)
+		request, err := readServerTCPRequest(conn)
 		if err != nil {
 			log.Record(&log.AccessMessage{
 				From:   conn.RemoteAddr(),
@@ -140,35 +137,139 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			})
 			return errors.New("failed to create request from: ", conn.RemoteAddr()).Base(err)
 		}
+		defer releaseServerTCPRequest(request)
 		common.Must(conn.SetReadDeadline(time.Time{}))
 
-		dest, err := net.ParseDestination("tcp:" + addr)
-		if err != nil {
-			return err
-		}
+		dest := request.destination
+		from, to := net.FormatAccessEndpointsFromAddr(conn.RemoteAddr(), dest)
 		ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-			From:   conn.RemoteAddr(),
-			To:     dest,
-			Status: log.AccessAccepted,
-			Reason: "",
-			Email:  inbound.User.Email,
+			FromString: from,
+			ToString:   to,
+			Status:     log.AccessAccepted,
+			Email:      inbound.User.Email,
 		})
-		errors.LogInfo(ctx, "tunnelling request to ", dest)
+		if log.ShouldLog(log.Severity_Info) {
+			errors.LogInfo(ctx, "tunnelling request to ", dest)
+		}
 
-		bufferedWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
-		err = WriteTCPResponse(bufferedWriter, true, "")
+		wireWriter := buf.NewPooledWriter(conn)
+		defer buf.ReleasePooledWriter(wireWriter)
+		responseWriter, ok := wireWriter.(io.Writer)
+		if !ok {
+			return errors.New("failed to create byte response writer")
+		}
+		err = writeTCPResponseOK(responseWriter)
 		if err != nil {
 			return errors.New("failed to write response").Base(err)
 		}
-		if err := bufferedWriter.SetBuffered(false); err != nil {
-			return err
-		}
 
-		return dispatcher.DispatchLink(ctx, dest, &transport.Link{
-			Reader: buf.NewReader(conn),
-			Writer: bufferedWriter,
-		})
+		reader := buf.NewPooledReader(conn)
+		defer buf.ReleasePooledReader(reader)
+		request.link.Reader = reader
+		request.link.Writer = wireWriter
+		return dispatcher.DispatchLink(ctx, dest, &request.link)
 	}
+}
+
+func (s *Server) policyForLevel(level uint32) policy.Session {
+	if level == 0 {
+		return s.sessionPolicy
+	}
+	return s.policyManager.ForLevel(level)
+}
+
+func parseServerTCPDestination(address string) (net.Destination, error) {
+	if len(address) > 0 && address[0] != '[' {
+		colon := strings.LastIndexByte(address, ':')
+		if colon >= 0 && strings.IndexByte(address[:colon], ':') < 0 {
+			if port, ok := parseServerPort(address[colon+1:]); ok {
+				parsedAddress := net.AnyIP
+				if colon > 0 {
+					host := address[:colon]
+					if first := host[0]; first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' {
+						parsedAddress = net.DomainAddress(host)
+					} else {
+						parsedAddress = net.ParseAddress(host)
+					}
+				}
+				return net.TCPDestination(parsedAddress, port), nil
+			}
+		}
+	}
+	host, portString, err := net.SplitHostPort(address)
+	if err != nil {
+		return net.Destination{}, err
+	}
+	parsedAddress := net.AnyIP
+	if host != "" {
+		parsedAddress = net.ParseAddress(host)
+	}
+	var port net.Port
+	if portString != "" {
+		port, err = net.PortFromString(portString)
+		if err != nil {
+			return net.Destination{}, err
+		}
+	}
+	return net.TCPDestination(parsedAddress, port), nil
+}
+
+func parseServerPort(port string) (net.Port, bool) {
+	if len(port) == 0 {
+		return 0, true
+	}
+	if len(port) == 1 {
+		digit := port[0] - '0'
+		if digit <= 9 {
+			return net.Port(digit), true
+		}
+		return 0, false
+	}
+	if len(port) == 2 {
+		tens, ones := port[0]-'0', port[1]-'0'
+		if tens <= 9 && ones <= 9 {
+			return net.Port(tens)*10 + net.Port(ones), true
+		}
+		return 0, false
+	}
+	if len(port) == 3 {
+		hundreds, tens, ones := port[0]-'0', port[1]-'0', port[2]-'0'
+		if hundreds <= 9 && tens <= 9 && ones <= 9 {
+			return net.Port(hundreds)*100 + net.Port(tens)*10 + net.Port(ones), true
+		}
+		return 0, false
+	}
+	if len(port) == 4 {
+		thousands, hundreds := port[0]-'0', port[1]-'0'
+		tens, ones := port[2]-'0', port[3]-'0'
+		if thousands <= 9 && hundreds <= 9 && tens <= 9 && ones <= 9 {
+			return net.Port(thousands)*1000 + net.Port(hundreds)*100 + net.Port(tens)*10 + net.Port(ones), true
+		}
+		return 0, false
+	}
+	if len(port) == 5 {
+		tenThousands, thousands := port[0]-'0', port[1]-'0'
+		hundreds, tens, ones := port[2]-'0', port[3]-'0', port[4]-'0'
+		if tenThousands <= 9 && thousands <= 9 && hundreds <= 9 && tens <= 9 && ones <= 9 {
+			value := uint32(tenThousands)*10000 + uint32(thousands)*1000 + uint32(hundreds)*100 + uint32(tens)*10 + uint32(ones)
+			if value <= 65535 {
+				return net.Port(value), true
+			}
+		}
+		return 0, false
+	}
+	value := 0
+	for index := range len(port) {
+		digit := port[index]
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		value = value*10 + int(digit-'0')
+		if value > 65535 {
+			return 0, false
+		}
+	}
+	return net.Port(value), true
 }
 
 func init() {

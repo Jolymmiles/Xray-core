@@ -204,8 +204,11 @@ func (h *Handler) Tag() string {
 func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
-	content := session.ContentFromContext(ctx)
-	if h.senderSettings != nil && h.senderSettings.TargetStrategy.HasStrategy() && ob.Target.Address.Family().IsDomain() && (content == nil || !content.SkipDNSResolve) {
+	if h.senderSettings != nil && h.senderSettings.TargetStrategy.HasStrategy() && ob.Target.Address.Family().IsDomain() {
+		content := session.ContentFromContext(ctx)
+		if content != nil && content.SkipDNSResolve {
+			goto targetResolved
+		}
 		strategy := h.senderSettings.TargetStrategy
 		if ob.Target.Network == net.Network_UDP && ob.OriginalTarget.Address != nil {
 			strategy = strategy.GetDynamicStrategy(ob.OriginalTarget.Address.Family())
@@ -227,6 +230,7 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 			errors.LogInfo(ctx, "target: ", unchangedDomain, " resolved to: ", ob.Target.Address.String())
 		}
 	}
+targetResolved:
 	if ob.Target.Network == net.Network_UDP && ob.OriginalTarget.Address != nil && ob.OriginalTarget.Address != ob.Target.Address {
 		link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}

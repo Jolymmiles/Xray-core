@@ -2,6 +2,7 @@ package geodata
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 
@@ -74,7 +75,9 @@ func newIPRegistry() *IPRegistry {
 var IPReg = newIPRegistry()
 
 type ipMatcherState struct {
-	matcher IPMatcher
+	matcher   IPMatcher
+	heuristic *HeuristicIPMatcher
+	multi     *HeuristicMultiIPMatcher
 }
 
 type DynamicIPMatcher struct {
@@ -88,6 +91,17 @@ type DynamicIPMatcher struct {
 // Match implements IPMatcher.
 func (d *DynamicIPMatcher) Match(ip net.IP) bool {
 	return d.state.Load().matcher.Match(ip)
+}
+
+func (d *DynamicIPMatcher) MatchAddr(ip netip.Addr) bool {
+	state := d.state.Load()
+	if state.heuristic != nil {
+		return state.heuristic.MatchAddr(ip)
+	}
+	if state.multi != nil {
+		return state.multi.MatchAddr(ip)
+	}
+	return state.matcher.MatchAddr(ip)
 }
 
 // AnyMatch implements IPMatcher.
@@ -133,7 +147,10 @@ func (d *DynamicIPMatcher) Reload(newMatcher IPMatcher) {
 	} else if d.reverse {
 		newMatcher.ToggleReverse()
 	}
-	d.state.Store(&ipMatcherState{matcher: newMatcher})
+	state := &ipMatcherState{matcher: newMatcher}
+	state.heuristic, _ = newMatcher.(*HeuristicIPMatcher)
+	state.multi, _ = newMatcher.(*HeuristicMultiIPMatcher)
+	d.state.Store(state)
 }
 
 func NewDynamicIPMatcher(rules []*IPRule, matcher IPMatcher) *DynamicIPMatcher {

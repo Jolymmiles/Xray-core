@@ -2,6 +2,10 @@ package buf
 
 import (
 	"io"
+	stdnet "net"
+	"net/netip"
+	"sync"
+	"unsafe"
 
 	"github.com/xtls/xray-core/common/bytespool"
 	"github.com/xtls/xray-core/common/errors"
@@ -15,7 +19,26 @@ const (
 
 var ErrBufferFull = errors.New("buffer is full")
 
-var pool = bytespool.GetPool(Size)
+var fixedBufferPool sync.Pool
+var managedBufferPool sync.Pool
+
+type managedBuffer struct {
+	buffer    Buffer
+	udp       net.Destination
+	udpIPv4   bufferIPv4Address
+	udpDomain bufferDomainAddress
+	udpIsIPv4 bool
+	single    [1]*Buffer
+	storage   [Size]byte
+}
+
+func acquireFixedBuffer() []byte {
+	storage, _ := fixedBufferPool.Get().(*[Size]byte)
+	if storage == nil {
+		storage = new([Size]byte)
+	}
+	return storage[:]
+}
 
 // ownership represents the data owner of the buffer.
 type ownership uint8
@@ -34,21 +57,19 @@ type Buffer struct {
 	start     int32
 	end       int32
 	ownership ownership
+	slab      bool
 	UDP       *net.Destination
 }
 
 // New creates a Buffer with 0 length and 8K capacity, managed.
 func New() *Buffer {
-	buf := pool.Get().([]byte)
-	if cap(buf) >= Size {
-		buf = buf[:Size]
-	} else {
-		buf = make([]byte, Size)
+	slab, _ := managedBufferPool.Get().(*managedBuffer)
+	if slab == nil {
+		slab = new(managedBuffer)
 	}
-
-	return &Buffer{
-		v: buf,
-	}
+	buffer := &slab.buffer
+	*buffer = Buffer{v: slab.storage[:], slab: true}
+	return buffer
 }
 
 // NewExisted creates a standard size Buffer with an existed bytearray, managed.
@@ -80,12 +101,7 @@ func FromBytes(b []byte) *Buffer {
 // StackNew creates a new Buffer object on stack, managed.
 // This method is for buffers that is released in the same function.
 func StackNew() Buffer {
-	buf := pool.Get().([]byte)
-	if cap(buf) >= Size {
-		buf = buf[:Size]
-	} else {
-		buf = make([]byte, Size)
-	}
+	buf := acquireFixedBuffer()
 
 	return Buffer{
 		v: buf,
@@ -107,18 +123,138 @@ func (b *Buffer) Release() {
 	}
 
 	p := b.v
-	b.v = nil
-	b.Clear()
 
 	switch b.ownership {
 	case managed:
+		if b.slab {
+			slab := managedBufferFromStorage(p)
+			*b = Buffer{}
+			slab.udp = net.Destination{}
+			slab.udpIPv4 = bufferIPv4Address{}
+			slab.udpDomain = bufferDomainAddress{}
+			slab.udpIsIPv4 = false
+			slab.single[0] = nil
+			managedBufferPool.Put(slab)
+			return
+		}
 		if cap(p) == Size {
-			pool.Put(p)
+			fixedBufferPool.Put((*[Size]byte)(p[:Size]))
 		}
 	case bytespools:
 		bytespool.Free(p)
 	}
-	b.UDP = nil
+	*b = Buffer{}
+}
+
+func managedBufferFromStorage(storage []byte) *managedBuffer {
+	return (*managedBuffer)(unsafe.Add(unsafe.Pointer(&storage[0]), -int(unsafe.Offsetof(managedBuffer{}.storage))))
+}
+
+// SetUDPDestination stores packet metadata inline for managed buffers, avoiding
+// a per-packet Destination allocation. Unmanaged buffers retain value ownership
+// through a regular heap-backed pointer.
+func (b *Buffer) SetUDPDestination(destination net.Destination) {
+	if b.slab {
+		b.SetManagedUDPDestination(destination)
+		return
+	}
+	b.UDP = &destination
+}
+
+// SetManagedUDPDestination stores packet metadata without a heap fallback.
+// The receiver must have been created by New.
+func (b *Buffer) SetManagedUDPDestination(destination net.Destination) {
+	if !b.slab {
+		panic("SetManagedUDPDestination called on unmanaged buffer")
+	}
+	slab := managedBufferFromStorage(b.v)
+	slab.udp = destination
+	slab.udpDomain.domain = ""
+	slab.udpIsIPv4 = false
+	b.UDP = &slab.udp
+}
+
+type bufferIPv4Address [4]byte
+
+func (a *bufferIPv4Address) IP() stdnet.IP           { return stdnet.IP(a[:]) }
+func (*bufferIPv4Address) Domain() string            { panic("Calling Domain() on an IPv4Address.") }
+func (*bufferIPv4Address) Family() net.AddressFamily { return net.AddressFamilyIPv4 }
+func (a *bufferIPv4Address) String() string          { return a.IP().String() }
+func (a *bufferIPv4Address) NetIPAddr() netip.Addr   { return netip.AddrFrom4([4]byte(*a)) }
+func (a *bufferIPv4Address) RawIPv4() [4]byte        { return [4]byte(*a) }
+
+type bufferDomainAddress struct {
+	domain string
+}
+
+func (*bufferDomainAddress) IP() stdnet.IP             { panic("Calling IP() on a DomainAddress.") }
+func (a *bufferDomainAddress) Domain() string          { return a.domain }
+func (*bufferDomainAddress) Family() net.AddressFamily { return net.AddressFamilyDomain }
+func (a *bufferDomainAddress) String() string          { return a.domain }
+
+// SetManagedUDPIPv4 stores an IPv4 packet destination entirely in the managed
+// slab, including the Address interface target.
+func (b *Buffer) SetManagedUDPIPv4(ip [4]byte, port net.Port) {
+	if !b.slab {
+		panic("SetManagedUDPIPv4 called on unmanaged buffer")
+	}
+	slab := managedBufferFromStorage(b.v)
+	slab.udpIPv4 = bufferIPv4Address(ip)
+	slab.udpDomain.domain = ""
+	slab.udp = net.UDPDestination(&slab.udpIPv4, port)
+	slab.udpIsIPv4 = true
+	b.UDP = &slab.udp
+}
+
+// SetManagedUDPDomain stores domain packet metadata in the managed slab,
+// avoiding an interface box allocation. The domain string must own its bytes.
+func (b *Buffer) SetManagedUDPDomain(domain string, port net.Port) {
+	if !b.slab {
+		panic("SetManagedUDPDomain called on unmanaged buffer")
+	}
+	slab := managedBufferFromStorage(b.v)
+	slab.udpDomain.domain = domain
+	slab.udp = net.UDPDestination(&slab.udpDomain, port)
+	slab.udpIsIPv4 = false
+	b.UDP = &slab.udp
+}
+
+// ManagedUDPIPv4 returns inline IPv4 packet metadata without going through
+// the Address interface. The result is available only after SetManagedUDPIPv4.
+func (b *Buffer) ManagedUDPIPv4() ([4]byte, net.Port, bool) {
+	if !b.slab {
+		return [4]byte{}, 0, false
+	}
+	slab := managedBufferFromStorage(b.v)
+	if !slab.udpIsIPv4 {
+		return [4]byte{}, 0, false
+	}
+	return [4]byte(slab.udpIPv4), slab.udp.Port, true
+}
+
+// ManagedUDPDomain returns inline domain metadata without going through the
+// generic Address interface. It succeeds only after SetManagedUDPDomain.
+func (b *Buffer) ManagedUDPDomain() (string, net.Port, bool) {
+	if !b.slab || b.UDP == nil {
+		return "", 0, false
+	}
+	slab := managedBufferFromStorage(b.v)
+	address, ok := slab.udp.Address.(*bufferDomainAddress)
+	if !ok || address != &slab.udpDomain {
+		return "", 0, false
+	}
+	return slab.udpDomain.domain, slab.udp.Port, true
+}
+
+// SingleMultiBuffer returns an owned one-element view backed by the managed
+// slab. The view is valid until the buffer is released.
+func (b *Buffer) SingleMultiBuffer() MultiBuffer {
+	if b.slab {
+		slab := managedBufferFromStorage(b.v)
+		slab.single[0] = b
+		return slab.single[:]
+	}
+	return MultiBuffer{b}
 }
 
 // Clear clears the content of the buffer, results an empty buffer with

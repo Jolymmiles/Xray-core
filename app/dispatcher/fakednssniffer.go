@@ -12,6 +12,8 @@ import (
 	"github.com/xtls/xray-core/features/dns"
 )
 
+var errFakeDNSNotInitialized = errors.New("FakeDNSEngine is not initialized, but such a sniffer is used").AtError()
+
 // newFakeDNSSniffer Creates a Fake DNS metadata sniffer
 func newFakeDNSSniffer(ctx context.Context) (protocolSnifferWithMetadata, error) {
 	var fakeDNSEngine dns.FakeDNSEngine
@@ -23,8 +25,7 @@ func newFakeDNSSniffer(ctx context.Context) (protocolSnifferWithMetadata, error)
 	}
 
 	if fakeDNSEngine == nil {
-		errNotInit := errors.New("FakeDNSEngine is not initialized, but such a sniffer is used").AtError()
-		return protocolSnifferWithMetadata{}, errNotInit
+		return protocolSnifferWithMetadata{}, errFakeDNSNotInitialized
 	}
 	return protocolSnifferWithMetadata{protocolSniffer: func(ctx context.Context, bytes []byte) (SniffResult, error) {
 		outbounds := session.OutboundsFromContext(ctx)

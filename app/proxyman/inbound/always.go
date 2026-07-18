@@ -131,7 +131,6 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 			for port := pr.From; port <= pr.To; port++ {
 				if net.HasNetwork(nl, net.Network_TCP) {
 					errors.LogDebug(ctx, "creating stream worker on ", address, ":", port)
-
 					worker := &tcpWorker{
 						address:         address,
 						port:            net.Port(port),

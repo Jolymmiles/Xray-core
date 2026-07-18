@@ -309,7 +309,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		return transferResponse(timer, svrSession, request, response, link.Reader, writer)
 	}
 
-	requestDonePost := task.OnSuccess(requestDone, task.Close(link.Writer))
+	requestDonePost := task.OnSuccessClose(requestDone, link.Writer)
 	if err := task.Run(ctx, requestDonePost, responseDone); err != nil {
 		common.Interrupt(link.Reader)
 		common.Interrupt(link.Writer)

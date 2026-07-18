@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"io"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -17,6 +18,10 @@ import (
 )
 
 var trafficStateBenchmarkSink *proxy.TrafficState
+var behaviorStringSink string
+var behaviorReaderSink buf.Reader
+var behaviorWriterSink buf.Writer
+var behaviorFlow string
 
 const (
 	behaviorUserID       = "00112233-4455-6677-8899-aabbccddeeff"
@@ -193,6 +198,183 @@ func TestDecodeRequestHeaderFragmentedFirstBuffer(t *testing.T) {
 	}
 }
 
+func TestDecodeRequestHeaderFromFirstWithoutFallback(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+
+	validWire := decodeWire(t, requestTCPDomainWire)
+	first := buf.FromBytes(validWire)
+	reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil)), Buffer: buf.MultiBuffer{first}}
+	sentID, request, _, fallback, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback || request.Address.String() != "example.com" || request.Port != 443 {
+		t.Fatalf("request = %+v, fallback = %v", request, fallback)
+	}
+	if got := hex.EncodeToString(sentID[:]); got != "00112233445566778899aabbccddeeff" {
+		t.Fatalf("sent UUID = %s", got)
+	}
+
+	invalidWire := bytes.Clone(validWire)
+	invalidWire[1] ^= 0xff
+	first = buf.FromBytes(invalidWire)
+	reader = &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil)), Buffer: buf.MultiBuffer{first}}
+	_, _, _, fallback, err = DecodeRequestHeaderFromFirst(first, reader, validator, false)
+	if err == nil {
+		t.Fatal("invalid user ID was accepted")
+	}
+	if fallback {
+		t.Fatal("no-fallback decode classified invalid user ID as fallback")
+	}
+}
+
+func TestDecodeRequestHeaderRejectsEmptyDomainWithoutPanic(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+	wire := decodeWire(t, "0000112233445566778899aabbccddeeff000101bb0200")
+	first := buf.FromBytes(wire[:17])
+	defer first.Release()
+	reader := bytes.NewReader(wire[17:])
+	if _, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false); err == nil || request != nil {
+		t.Fatalf("empty domain decoded as request %+v with error %v", request, err)
+	}
+}
+
+func TestDecodeRequestHeaderIPv4DoesNotAliasFirstBuffer(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+	first := buf.FromBytes(decodeWire(t, requestTCPIPv4Wire))
+	storage := first.Bytes()
+	reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil)), Buffer: buf.MultiBuffer{first}}
+	_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ReleaseRequestHeader(request)
+	defer first.Release()
+	for index := 22; index < 26; index++ {
+		storage[index] = 0
+	}
+	if got := request.Address.String(); got != "192.0.2.1" {
+		t.Fatalf("IPv4 address aliases first buffer: %q", got)
+	}
+}
+
+func TestDecodeRequestHeaderIPv6DoesNotAliasFirstBuffer(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+	first := buf.FromBytes(decodeWire(t, requestTCPIPv6Wire))
+	storage := first.Bytes()
+	reader := bytes.NewReader(nil)
+	_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ReleaseRequestHeader(request)
+	defer first.Release()
+	for index := 22; index < 38; index++ {
+		storage[index] = 0
+	}
+	if got := request.Address.String(); got != "[2001:db8::1]" {
+		t.Fatalf("IPv6 address aliases first buffer: %q", got)
+	}
+}
+
+func TestDecodeRequestHeaderDomainDoesNotAliasFirstBuffer(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+	first := buf.FromBytes(decodeWire(t, requestTCPDomainWire))
+	storage := first.Bytes()
+	reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil)), Buffer: buf.MultiBuffer{first}}
+	_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ReleaseRequestHeader(request)
+	for index := 23; index < len(storage); index++ {
+		storage[index] = 'x'
+	}
+	if got := request.Address.String(); got != "example.com" {
+		t.Fatalf("domain address aliases first buffer: %q", got)
+	}
+}
+
+func TestDecodeRequestHeaderPooledDomainBoundaries(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+	for _, domain := range []string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 64),
+		"example.org",
+	} {
+		request := behaviorRequest(t, protocol.RequestCommandTCP)
+		request.Address = net.DomainAddress(domain)
+		wire := buf.StackNew()
+		if err := EncodeRequestHeader(&wire, request, &Addons{}); err != nil {
+			wire.Release()
+			t.Fatal(err)
+		}
+		first := buf.FromBytes(append([]byte(nil), wire.Bytes()...))
+		wire.Release()
+		storage := first.Bytes()
+		reader := bytes.NewReader(nil)
+		_, decoded, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+		if err != nil {
+			first.Release()
+			t.Fatal(err)
+		}
+		for index := 23; index < len(storage); index++ {
+			storage[index] = 'x'
+		}
+		if got := decoded.Address.Domain(); got != domain {
+			t.Fatalf("domain length %d aliases input or pool state: %q", len(domain), got)
+		}
+		ReleaseRequestHeader(decoded)
+		first.Release()
+	}
+}
+
+func TestDecodeRequestHeaderFromFirstAllocationBudget(t *testing.T) {
+	user := behaviorUser(t)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		t.Fatal(err)
+	}
+	wire := decodeWire(t, requestTCPDomainWire)
+	allocations := testing.AllocsPerRun(1000, func() {
+		first := buf.FromBytes(wire)
+		reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil)), Buffer: buf.MultiBuffer{first}}
+		_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ReleaseRequestHeader(request)
+		reader.Buffer = buf.ReleaseMulti(reader.Buffer)
+	})
+	if allocations > 6 {
+		t.Fatalf("no-fallback first-buffer decode allocations = %.0f, want at most 6", allocations)
+	}
+}
+
 type behaviorWriter struct{}
 
 func (*behaviorWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -292,6 +474,35 @@ func BenchmarkDecodeRequestHeaderTCPDomain(b *testing.B) {
 	}
 }
 
+func BenchmarkDecodeRequestHeaderInvalidUser(b *testing.B) {
+	wire := decodeWire(b, requestTCPDomainWire)
+	validator := new(vless.MemoryValidator)
+	var reader bytes.Reader
+	b.ReportAllocs()
+	b.SetBytes(int64(len(wire)))
+	for b.Loop() {
+		reader.Reset(wire)
+		if _, request, _, _, err := DecodeRequestHeader(false, nil, &reader, validator); err == nil || request != nil {
+			b.Fatalf("DecodeRequestHeader = (request=%v, err=%v), want nil request and error", request, err)
+		}
+	}
+}
+
+func BenchmarkDecodeRequestHeaderInvalidUserErrorString(b *testing.B) {
+	wire := decodeWire(b, requestTCPDomainWire)
+	validator := new(vless.MemoryValidator)
+	var reader bytes.Reader
+	b.ReportAllocs()
+	for b.Loop() {
+		reader.Reset(wire)
+		_, _, _, _, err := DecodeRequestHeader(false, nil, &reader, validator)
+		if err == nil {
+			b.Fatal("DecodeRequestHeader unexpectedly succeeded")
+		}
+		behaviorStringSink = err.Error()
+	}
+}
+
 func BenchmarkDecodeRequestHeaderTCPDomainFirstBuffer(b *testing.B) {
 	user := behaviorUser(b)
 	validator := new(vless.MemoryValidator)
@@ -313,6 +524,148 @@ func BenchmarkDecodeRequestHeaderTCPDomainFirstBuffer(b *testing.B) {
 	}
 }
 
+func BenchmarkDecodeRequestHeaderTCPDomainReusableFirstBuffer(b *testing.B) {
+	benchmarkDecodeRequestHeaderReusableFirstBuffer(b, requestTCPDomainWire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPIPv4ReusableFirstBuffer(b *testing.B) {
+	benchmarkDecodeRequestHeaderReusableFirstBuffer(b, requestTCPIPv4Wire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPIPv6ReusableFirstBuffer(b *testing.B) {
+	benchmarkDecodeRequestHeaderReusableFirstBuffer(b, requestTCPIPv6Wire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPDomainFragmentedFirstBuffer(b *testing.B) {
+	benchmarkDecodeRequestHeaderFragmentedFirstBuffer(b, requestTCPDomainWire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPIPv4FragmentedFirstBuffer(b *testing.B) {
+	benchmarkDecodeRequestHeaderFragmentedFirstBuffer(b, requestTCPIPv4Wire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPIPv6FragmentedFirstBuffer(b *testing.B) {
+	benchmarkDecodeRequestHeaderFragmentedFirstBuffer(b, requestTCPIPv6Wire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPDomainFragmentedBufferedReader(b *testing.B) {
+	user := behaviorUser(b)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		b.Fatal(err)
+	}
+	wire := decodeWire(b, requestTCPDomainWire)
+	first := buf.FromBytes(make([]byte, 17))
+	defer first.Release()
+	remainder := buf.FromBytes(make([]byte, len(wire)-17))
+	defer remainder.Release()
+	reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil))}
+	buffered := make(buf.MultiBuffer, 2)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(wire)))
+	for b.Loop() {
+		first.Clear()
+		_, _ = first.Write(wire[:17])
+		remainder.Clear()
+		_, _ = remainder.Write(wire[17:])
+		buffered[0] = first
+		buffered[1] = remainder
+		reader.Buffer = buffered
+		_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+		if err != nil {
+			b.Fatal(err)
+		}
+		ReleaseRequestHeader(request)
+		reader.Buffer = nil
+	}
+}
+
+func benchmarkDecodeRequestHeaderFragmentedFirstBuffer(b *testing.B, encodedWire string) {
+	b.Helper()
+	user := behaviorUser(b)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		b.Fatal(err)
+	}
+	wire := decodeWire(b, encodedWire)
+	first := buf.New()
+	defer first.Release()
+	reader := bytes.NewReader(nil)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(wire)))
+	for b.Loop() {
+		first.Clear()
+		_, _ = first.Write(wire[:17])
+		reader.Reset(wire[17:])
+		_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+		if err != nil {
+			b.Fatal(err)
+		}
+		ReleaseRequestHeader(request)
+	}
+}
+
+func benchmarkDecodeRequestHeaderReusableFirstBuffer(b *testing.B, encodedWire string) {
+	b.Helper()
+	user := behaviorUser(b)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		b.Fatal(err)
+	}
+	wire := decodeWire(b, encodedWire)
+	first := buf.New()
+	defer first.Release()
+	reader := bytes.NewReader(nil)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(wire)))
+	for b.Loop() {
+		first.Clear()
+		_, _ = first.Write(wire)
+		_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+		if err != nil {
+			b.Fatal(err)
+		}
+		ReleaseRequestHeader(request)
+	}
+}
+
+func BenchmarkDecodeRequestHeaderTCPDomainBufferedNoFallback(b *testing.B) {
+	benchmarkDecodeRequestHeaderBufferedNoFallback(b, requestTCPDomainWire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPIPv4BufferedNoFallback(b *testing.B) {
+	benchmarkDecodeRequestHeaderBufferedNoFallback(b, requestTCPIPv4Wire)
+}
+
+func BenchmarkDecodeRequestHeaderTCPIPv6BufferedNoFallback(b *testing.B) {
+	benchmarkDecodeRequestHeaderBufferedNoFallback(b, requestTCPIPv6Wire)
+}
+
+func benchmarkDecodeRequestHeaderBufferedNoFallback(b *testing.B, encodedWire string) {
+	b.Helper()
+	user := behaviorUser(b)
+	validator := new(vless.MemoryValidator)
+	if err := validator.Add(user); err != nil {
+		b.Fatal(err)
+	}
+	wire := decodeWire(b, encodedWire)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(wire)))
+	for b.Loop() {
+		first := buf.FromBytes(wire)
+		reader := &buf.BufferedReader{
+			Reader: buf.NewReader(bytes.NewReader(nil)),
+			Buffer: buf.MultiBuffer{first},
+		}
+		_, request, _, _, err := DecodeRequestHeaderFromFirst(first, reader, validator, false)
+		if err != nil {
+			b.Fatal(err)
+		}
+		ReleaseRequestHeader(request)
+		reader.Buffer = buf.ReleaseMulti(reader.Buffer)
+	}
+}
+
 func BenchmarkEncodeResponseHeader(b *testing.B) {
 	request := behaviorRequest(b, protocol.RequestCommandTCP)
 	output := buf.StackNew()
@@ -322,6 +675,31 @@ func BenchmarkEncodeResponseHeader(b *testing.B) {
 	for b.Loop() {
 		output.Clear()
 		if err := EncodeResponseHeader(&output, request, &Addons{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestEncodeResponseHeaderNilAddons(t *testing.T) {
+	request := behaviorRequest(t, protocol.RequestCommandTCP)
+	var output bytes.Buffer
+	if err := EncodeResponseHeader(&output, request, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.Bytes(); !bytes.Equal(got, []byte{Version, 0}) {
+		t.Fatalf("response header = %x, want %x", got, []byte{Version, 0})
+	}
+}
+
+func BenchmarkEncodePlainResponseHeaderNilAddons(b *testing.B) {
+	request := behaviorRequest(b, protocol.RequestCommandTCP)
+	output := buf.StackNew()
+	defer output.Release()
+	b.ReportAllocs()
+	b.SetBytes(2)
+	for b.Loop() {
+		output.Clear()
+		if err := EncodeResponseHeader(&output, request, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -338,5 +716,43 @@ func BenchmarkDecodeResponseHeader(b *testing.B) {
 		if _, err := DecodeResponseHeader(&reader, request); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkDecodeBodyAddonsPlainHeader(b *testing.B) {
+	request := behaviorRequest(b, protocol.RequestCommandTCP)
+	reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil))}
+	b.ReportAllocs()
+	for b.Loop() {
+		behaviorReaderSink = DecodeBody(reader, request)
+	}
+}
+
+func BenchmarkEncodeBodyAddonsPlainHeader(b *testing.B) {
+	request := behaviorRequest(b, protocol.RequestCommandTCP)
+	writer := new(behaviorWriter)
+	addons := HeaderAddons{}
+	b.ReportAllocs()
+	for b.Loop() {
+		behaviorWriterSink = EncodeBodyAddonsFlow(writer, request, addons.Flow, nil, false, nil, nil, nil)
+	}
+}
+
+func BenchmarkPlainBodyFlowDecision(b *testing.B) {
+	request := behaviorRequest(b, protocol.RequestCommandTCP)
+	reader := &buf.BufferedReader{Reader: buf.NewReader(bytes.NewReader(nil))}
+	writer := new(behaviorWriter)
+	userID := decodeWire(b, "00112233445566778899aabbccddeeff")
+	behaviorFlow = ""
+	b.ReportAllocs()
+	for b.Loop() {
+		flow := behaviorFlow
+		vision := flow == vless.XRV
+		trafficStateBenchmarkSink = NewTrafficStateForVision(userID, vision)
+		behaviorReaderSink = DecodeBody(reader, request)
+		if vision {
+			behaviorStringSink = flow
+		}
+		behaviorWriterSink = EncodeBody(writer, request, vision, nil, false, nil, nil, nil)
 	}
 }

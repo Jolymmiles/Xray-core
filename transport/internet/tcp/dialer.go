@@ -8,6 +8,7 @@ import (
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/transport/internet"
@@ -18,7 +19,7 @@ import (
 
 // Dial dials a new TCP connection to the given destination.
 func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
-	errors.LogInfo(ctx, "dialing TCP to ", dest)
+	logTCPDialDestination(ctx, dest)
 	conn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
 	if err != nil {
 		return nil, err
@@ -120,6 +121,12 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		conn = auth.Client(conn)
 	}
 	return stat.Connection(conn), nil
+}
+
+func logTCPDialDestination(ctx context.Context, destination net.Destination) {
+	if log.ShouldLog(log.Severity_Info) {
+		errors.LogInfo(ctx, "dialing TCP to ", destination)
+	}
 }
 
 func init() {

@@ -82,10 +82,16 @@ type SniffingRequest struct {
 	ExcludeForDomain               geodata.DomainMatcher
 	ExcludeForIP                   geodata.IPMatcher
 	OverrideDestinationForProtocol []string
+	OverrideProtocolMask           uint8
 	Enabled                        bool
 	MetadataOnly                   bool
 	RouteOnly                      bool
 }
+
+const (
+	SniffingOverrideHTTP uint8 = 1 << iota
+	SniffingOverrideTLS
+)
 
 // Content is the metadata of the connection content. Mainly used for routing.
 type Content struct {
@@ -96,6 +102,9 @@ type Content struct {
 
 	// HTTP traffic sniffed headers
 	Attributes map[string]string
+	// SkipSniffingAttributes avoids collecting HTTP attributes when the active
+	// router has no attribute-based rules. The Host result is still parsed.
+	SkipSniffingAttributes bool
 
 	// SkipDNSResolve is set from DNS module. the DOH remote server maybe a domain name, this prevents cycle resolving dead loop
 	SkipDNSResolve bool

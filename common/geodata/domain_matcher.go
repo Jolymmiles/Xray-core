@@ -218,6 +218,9 @@ func parseDomain(d *Domain) (strmatcher.Matcher, error) {
 	case Domain_Substr:
 		return strmatcher.Substr.New(strings.ToLower(d.Value))
 	case Domain_Regex:
+		if domain, ok := canonicalSuffixRegexDomain(d.Value); ok {
+			return strmatcher.Domain.New(domain)
+		}
 		return strmatcher.Regex.New(d.Value)
 	case Domain_Domain:
 		return strmatcher.Domain.New(strings.ToLower(d.Value))
@@ -226,6 +229,47 @@ func parseDomain(d *Domain) (strmatcher.Matcher, error) {
 	default:
 		return nil, errors.New("unknown domain type: ", d.Type)
 	}
+}
+
+// canonicalSuffixRegexDomain recognizes the common regexp spelling of a
+// domain-and-subdomains rule. Keeping this deliberately narrow preserves the
+// semantics of every other regular expression while allowing the domain rule
+// to use the MPH matcher on server hot paths.
+func canonicalSuffixRegexDomain(pattern string) (string, bool) {
+	const prefix = `(^|\.)`
+	if !strings.HasPrefix(pattern, prefix) || !strings.HasSuffix(pattern, "$") {
+		return "", false
+	}
+
+	literal := pattern[len(prefix) : len(pattern)-1]
+	if literal == "" {
+		return "", false
+	}
+
+	var domain strings.Builder
+	domain.Grow(len(literal))
+	labelBytes := 0
+	for i := 0; i < len(literal); i++ {
+		c := literal[i]
+		switch {
+		case c == '\\':
+			if i+1 >= len(literal) || literal[i+1] != '.' || labelBytes == 0 {
+				return "", false
+			}
+			domain.WriteByte('.')
+			labelBytes = 0
+			i++
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			domain.WriteByte(c)
+			labelBytes++
+		default:
+			return "", false
+		}
+	}
+	if labelBytes == 0 {
+		return "", false
+	}
+	return domain.String(), true
 }
 
 func newDomainMatcherFactory() DomainMatcherFactory {

@@ -11,6 +11,12 @@ const (
 	idSessionKey SessionKey = 0
 )
 
+// IsIDKey reports whether key is the private session-ID context key.
+func IsIDKey(key any) bool {
+	sessionKey, ok := key.(SessionKey)
+	return ok && sessionKey == idSessionKey
+}
+
 // ContextWithID returns a new context with the given ID.
 func ContextWithID(ctx context.Context, id ID) context.Context {
 	return context.WithValue(ctx, idSessionKey, id)

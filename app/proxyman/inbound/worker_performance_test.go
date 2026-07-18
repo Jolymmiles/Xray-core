@@ -36,20 +36,43 @@ func (p *benchmarkInbound) Process(context.Context, net.Network, stat.Connection
 	return nil
 }
 
+type contextCapturingInbound struct {
+	done <-chan struct{}
+}
+
+func (*contextCapturingInbound) Network() []net.Network { return []net.Network{net.Network_TCP} }
+
+func (p *contextCapturingInbound) Process(ctx context.Context, _ net.Network, _ stat.Connection, _ routing.Dispatcher) error {
+	p.done = ctx.Done()
+	return nil
+}
+
+type childCancelInbound struct{}
+
+func (*childCancelInbound) Network() []net.Network { return []net.Network{net.Network_TCP} }
+
+func (*childCancelInbound) Process(ctx context.Context, _ net.Network, _ stat.Connection, _ routing.Dispatcher) error {
+	child, cancel := context.WithCancel(ctx)
+	cancel()
+	<-child.Done()
+	return nil
+}
+
 type inertConnection struct{}
+
+var (
+	inertLocalAddress  = &stdnet.TCPAddr{IP: stdnet.IP{127, 0, 0, 1}, Port: 1}
+	inertRemoteAddress = &stdnet.TCPAddr{IP: stdnet.IP{127, 0, 0, 1}, Port: 2}
+)
 
 func (*inertConnection) Read([]byte) (int, error)          { return 0, io.EOF }
 func (*inertConnection) Write(payload []byte) (int, error) { return len(payload), nil }
 func (*inertConnection) Close() error                      { return nil }
-func (*inertConnection) LocalAddr() stdnet.Addr {
-	return &stdnet.TCPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: 1}
-}
-func (*inertConnection) RemoteAddr() stdnet.Addr {
-	return &stdnet.TCPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: 2}
-}
-func (*inertConnection) SetDeadline(time.Time) error      { return nil }
-func (*inertConnection) SetReadDeadline(time.Time) error  { return nil }
-func (*inertConnection) SetWriteDeadline(time.Time) error { return nil }
+func (*inertConnection) LocalAddr() stdnet.Addr            { return inertLocalAddress }
+func (*inertConnection) RemoteAddr() stdnet.Addr           { return inertRemoteAddress }
+func (*inertConnection) SetDeadline(time.Time) error       { return nil }
+func (*inertConnection) SetReadDeadline(time.Time) error   { return nil }
+func (*inertConnection) SetWriteDeadline(time.Time) error  { return nil }
 
 func TestTCPWorkerHandlesAcceptedConnectionInline(t *testing.T) {
 	proxy := &blockingInbound{started: make(chan struct{}), release: make(chan struct{})}
@@ -87,5 +110,43 @@ func BenchmarkTCPWorkerAcceptedConnection(b *testing.B) {
 	for b.Loop() {
 		worker.handleConnection(connection)
 		<-proxy.processed
+	}
+}
+
+func BenchmarkTCPWorkerWithChildCancelContext(b *testing.B) {
+	worker := &tcpWorker{ctx: context.Background(), proxy: new(childCancelInbound)}
+	connection := new(inertConnection)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		worker.handleConnection(connection)
+	}
+}
+
+func TestTCPWorkerAcceptedConnectionAllocationBudget(t *testing.T) {
+	proxy := &benchmarkInbound{processed: make(chan struct{}, 1)}
+	worker := &tcpWorker{ctx: context.Background(), proxy: proxy}
+	connection := new(inertConnection)
+	allocations := testing.AllocsPerRun(1000, func() {
+		worker.handleConnection(connection)
+		<-proxy.processed
+	})
+	if allocations > 11 {
+		t.Fatalf("TCP accepted connection allocations = %.0f, want at most 11", allocations)
+	}
+}
+
+func TestTCPWorkerClosesContextDoneAfterProcessReturns(t *testing.T) {
+	proxy := new(contextCapturingInbound)
+	worker := &tcpWorker{ctx: context.Background(), proxy: proxy}
+	worker.handleConnection(new(inertConnection))
+
+	if proxy.done == nil {
+		t.Fatal("inbound context has no Done channel")
+	}
+	select {
+	case <-proxy.done:
+	default:
+		t.Fatal("context Done remains open after connection processing")
 	}
 }

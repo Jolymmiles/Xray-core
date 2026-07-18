@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"sync"
 	_ "unsafe"
 
 	"github.com/xtls/xray-core/common/ctx"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
@@ -28,13 +30,233 @@ const (
 	mitmServerNameKey         ctx.SessionKey = 12 // used by TLS dialer
 
 	streamSettingsKey ctx.SessionKey = 13
+	routingContextKey ctx.SessionKey = 14
 )
 
+type connectionContext struct {
+	context.Context
+	id            ctx.ID
+	inbound       Inbound
+	outbound      Outbound
+	content       Content
+	outbounds     [1]*Outbound
+	accessMessage *log.AccessMessage
+}
+
+type metadataContext struct {
+	context.Context
+	key   ctx.SessionKey
+	value any
+}
+
+var connectionContextPool sync.Pool
+
+func (c *metadataContext) Value(key any) any {
+	if sessionKey, ok := key.(ctx.SessionKey); ok {
+		if sessionKey == routingContextKey {
+			return nil
+		}
+		if sessionKey == c.key {
+			return c.value
+		}
+	}
+	return c.Context.Value(key)
+}
+
+func (c *connectionContext) Value(key any) any {
+	if log.IsAccessMessageKey(key) {
+		return c.accessMessage
+	}
+	if ctx.IsIDKey(key) {
+		return c.id
+	}
+	sessionKey, ok := key.(ctx.SessionKey)
+	if ok {
+		switch sessionKey {
+		case inboundSessionKey:
+			return &c.inbound
+		case outboundSessionKey:
+			return c.outbounds[:]
+		case contentSessionKey:
+			return &c.content
+		case routingContextKey:
+			return c
+		}
+	}
+	return c.Context.Value(key)
+}
+
+func (c *connectionContext) SetAccessMessage(message *log.AccessMessage) {
+	c.accessMessage = message
+}
+
+func (c *connectionContext) GetAccessMessage() *log.AccessMessage {
+	return c.accessMessage
+}
+
+// ConnectionMetadataFromContext returns the metadata read together by the
+// dispatcher. The standard connection context needs only one type assertion;
+// wrapper contexts retain the individual lookup semantics.
+func ConnectionMetadataFromContext(parent context.Context) (*Inbound, []*Outbound, *Content, routing.Context) {
+	if combined, ok := parent.(*connectionContext); ok {
+		return &combined.inbound, combined.outbounds[:], &combined.content, combined
+	}
+	return InboundFromContext(parent), OutboundsFromContext(parent), ContentFromContext(parent), RoutingContextFromContext(parent)
+}
+
+// AccessMessageFromContext avoids the generic carrier lookup on the standard
+// per-connection context while preserving context wrapper compatibility.
+func AccessMessageFromContext(parent context.Context) *log.AccessMessage {
+	if combined, ok := parent.(*connectionContext); ok {
+		return combined.accessMessage
+	}
+	return log.AccessMessageFromContext(parent)
+}
+
+// ContextWithAccessMessage sets access metadata directly on the standard
+// connection context and preserves generic context behavior for wrappers.
+func ContextWithAccessMessage(parent context.Context, message *log.AccessMessage) context.Context {
+	if combined, ok := parent.(*connectionContext); ok {
+		combined.accessMessage = message
+		return parent
+	}
+	return log.ContextWithAccessMessage(parent, message)
+}
+
+// RoutingContextFromContext returns the allocation-free routing view carried
+// by a connection context, including through intervening context wrappers.
+func RoutingContextFromContext(parent context.Context) routing.Context {
+	if combined, ok := parent.(*connectionContext); ok {
+		return combined
+	}
+	routingContext, _ := parent.Value(routingContextKey).(routing.Context)
+	return routingContext
+}
+
+func (c *connectionContext) GetInboundTag() string { return c.inbound.Tag }
+
+func (c *connectionContext) GetSourceIPs() []net.IP {
+	if !c.inbound.Source.IsValid() || !c.inbound.Source.Address.Family().IsIP() {
+		return nil
+	}
+	return []net.IP{c.inbound.Source.Address.IP()}
+}
+
+func (c *connectionContext) GetSourcePort() net.Port {
+	if !c.inbound.Source.IsValid() {
+		return 0
+	}
+	return c.inbound.Source.Port
+}
+
+func (c *connectionContext) GetTargetIPs() []net.IP {
+	if !c.outbound.Target.IsValid() || !c.outbound.Target.Address.Family().IsIP() {
+		return nil
+	}
+	return []net.IP{c.outbound.Target.Address.IP()}
+}
+
+func (c *connectionContext) GetTargetPort() net.Port {
+	if !c.outbound.Target.IsValid() {
+		return 0
+	}
+	return c.outbound.Target.Port
+}
+
+func (c *connectionContext) GetLocalIPs() []net.IP {
+	if !c.inbound.Local.IsValid() || !c.inbound.Local.Address.Family().IsIP() {
+		return nil
+	}
+	return []net.IP{c.inbound.Local.Address.IP()}
+}
+
+func (c *connectionContext) GetLocalPort() net.Port {
+	if !c.inbound.Local.IsValid() {
+		return 0
+	}
+	return c.inbound.Local.Port
+}
+
+func (c *connectionContext) GetTargetDomain() string {
+	destination := c.outbound.RouteTarget
+	if destination.IsValid() && destination.Address.Family().IsDomain() {
+		return destination.Address.Domain()
+	}
+	destination = c.outbound.Target
+	if !destination.IsValid() || !destination.Address.Family().IsDomain() {
+		return ""
+	}
+	return destination.Address.Domain()
+}
+
+func (c *connectionContext) GetNetwork() net.Network { return c.outbound.Target.Network }
+func (c *connectionContext) GetProtocol() string     { return c.content.Protocol }
+
+func (c *connectionContext) GetUser() string {
+	if c.inbound.User == nil {
+		return ""
+	}
+	return c.inbound.User.Email
+}
+
+func (c *connectionContext) GetVlessRoute() net.Port { return c.inbound.VlessRoute }
+func (c *connectionContext) GetAttributes() map[string]string {
+	return c.content.Attributes
+}
+func (c *connectionContext) GetSkipDNSResolve() bool { return c.content.SkipDNSResolve }
+
+func (c *connectionContext) GetSourceAddress() net.Address { return c.inbound.Source.Address }
+func (c *connectionContext) GetTargetAddress() net.Address { return c.outbound.Target.Address }
+func (c *connectionContext) GetLocalAddress() net.Address  { return c.inbound.Local.Address }
+
+// ContextWithConnection installs the per-connection metadata used by inbound
+// workers in one context node instead of a chain of independent value nodes.
+func ContextWithConnection(parent context.Context, id ctx.ID, inbound Inbound, outbound Outbound, content Content) context.Context {
+	combined := &connectionContext{
+		Context:  parent,
+		id:       id,
+		inbound:  inbound,
+		outbound: outbound,
+		content:  content,
+	}
+	combined.outbounds[0] = &combined.outbound
+	return combined
+}
+
+// NewPooledConnectionContext installs connection metadata in a recyclable
+// context whose synchronous owner must release it after all users return.
+func NewPooledConnectionContext(parent context.Context, id ctx.ID, inbound Inbound, outbound Outbound, content Content) context.Context {
+	combined, _ := connectionContextPool.Get().(*connectionContext)
+	if combined == nil {
+		combined = new(connectionContext)
+	}
+	combined.Context = parent
+	combined.id = id
+	combined.inbound = inbound
+	combined.outbound = outbound
+	combined.content = content
+	combined.outbounds[0] = &combined.outbound
+	return combined
+}
+
+// ReleasePooledConnectionContext clears retained per-connection state.
+func ReleasePooledConnectionContext(parent context.Context) {
+	combined, ok := parent.(*connectionContext)
+	if !ok || combined == nil {
+		return
+	}
+	*combined = connectionContext{}
+	connectionContextPool.Put(combined)
+}
+
 func ContextWithInbound(ctx context.Context, inbound *Inbound) context.Context {
-	return context.WithValue(ctx, inboundSessionKey, inbound)
+	return &metadataContext{Context: ctx, key: inboundSessionKey, value: inbound}
 }
 
 func InboundFromContext(ctx context.Context) *Inbound {
+	if combined, ok := ctx.(*connectionContext); ok {
+		return &combined.inbound
+	}
 	if inbound, ok := ctx.Value(inboundSessionKey).(*Inbound); ok {
 		return inbound
 	}
@@ -42,7 +264,7 @@ func InboundFromContext(ctx context.Context) *Inbound {
 }
 
 func ContextWithOutbounds(ctx context.Context, outbounds []*Outbound) context.Context {
-	return context.WithValue(ctx, outboundSessionKey, outbounds)
+	return &metadataContext{Context: ctx, key: outboundSessionKey, value: outbounds}
 }
 
 func SubContextFromMuxInbound(ctx context.Context) context.Context {
@@ -60,6 +282,12 @@ func SubContextFromMuxInbound(ctx context.Context) context.Context {
 }
 
 func OutboundsFromContext(ctx context.Context) []*Outbound {
+	if combined, ok := ctx.(*connectionContext); ok {
+		return combined.outbounds[:]
+	}
+	if combined, ok := ctx.Value(routingContextKey).(*connectionContext); ok {
+		return combined.outbounds[:]
+	}
 	if outbounds, ok := ctx.Value(outboundSessionKey).([]*Outbound); ok {
 		return outbounds
 	}
@@ -67,10 +295,13 @@ func OutboundsFromContext(ctx context.Context) []*Outbound {
 }
 
 func ContextWithContent(ctx context.Context, content *Content) context.Context {
-	return context.WithValue(ctx, contentSessionKey, content)
+	return &metadataContext{Context: ctx, key: contentSessionKey, value: content}
 }
 
 func ContentFromContext(ctx context.Context) *Content {
+	if combined, ok := ctx.(*connectionContext); ok {
+		return &combined.content
+	}
 	if content, ok := ctx.Value(contentSessionKey).(*Content); ok {
 		return content
 	}
@@ -99,18 +330,35 @@ func SockoptFromContext(ctx context.Context) *Sockopt {
 	return nil
 }
 
+const forcedOutboundTagAttribute = "forcedOutboundTag"
+
 func GetForcedOutboundTagFromContext(ctx context.Context) string {
-	if ContentFromContext(ctx) == nil {
+	content := ContentFromContext(ctx)
+	if content == nil {
 		return ""
 	}
-	return ContentFromContext(ctx).Attribute("forcedOutboundTag")
+	return content.Attribute(forcedOutboundTagAttribute)
+}
+
+// TakeForcedOutboundTagFromContent returns and clears a one-shot forced route.
+func TakeForcedOutboundTagFromContent(content *Content) string {
+	if content == nil {
+		return ""
+	}
+	tag := content.Attribute(forcedOutboundTagAttribute)
+	if tag != "" {
+		content.SetAttribute(forcedOutboundTagAttribute, "")
+	}
+	return tag
 }
 
 func SetForcedOutboundTagToContext(ctx context.Context, tag string) context.Context {
-	if contentFromContext := ContentFromContext(ctx); contentFromContext == nil {
-		ctx = ContextWithContent(ctx, &Content{})
+	content := ContentFromContext(ctx)
+	if content == nil {
+		content = new(Content)
+		ctx = ContextWithContent(ctx, content)
 	}
-	ContentFromContext(ctx).SetAttribute("forcedOutboundTag", tag)
+	content.SetAttribute(forcedOutboundTagAttribute, tag)
 	return ctx
 }
 

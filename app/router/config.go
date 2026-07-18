@@ -6,16 +6,22 @@ import (
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/geodata/strmatcher"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
 )
 
 type Rule struct {
-	Tag       string
-	RuleTag   string
-	Balancer  *Balancer
-	Condition Condition
-	Webhook   *WebhookNotifier
+	Tag             string
+	RuleTag         string
+	Balancer        *Balancer
+	Condition       Condition
+	Webhook         *WebhookNotifier
+	needsTargetIPs  bool
+	needsAttributes bool
+	domainMatcher   *DomainMatcher
+	domainAggregate []strmatcher.Matcher
+	targetIPMatcher *IPMatcher
 }
 
 func (r *Rule) GetTag() (string, error) {
@@ -112,6 +118,9 @@ func (rr *RoutingRule) BuildCondition() (Condition, error) {
 
 	if conds.Len() == 0 {
 		return nil, errors.New("this rule has no effective fields").AtWarning()
+	}
+	if conds.Len() == 1 {
+		return (*conds)[0], nil
 	}
 
 	return conds, nil

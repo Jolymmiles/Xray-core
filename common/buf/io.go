@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -83,6 +85,30 @@ type Writer interface {
 	WriteMultiBuffer(MultiBuffer) error
 }
 
+type pooledSingleReader struct{ SingleReader }
+type pooledPacketReader struct{ PacketReader }
+
+var pooledSingleReaders sync.Pool
+var pooledPacketReaders sync.Pool
+
+func newPooledSingleReader(reader io.Reader) Reader {
+	pooled, _ := pooledSingleReaders.Get().(*pooledSingleReader)
+	if pooled == nil {
+		pooled = new(pooledSingleReader)
+	}
+	pooled.Reader = reader
+	return pooled
+}
+
+func newPooledPacketReader(reader io.Reader) Reader {
+	pooled, _ := pooledPacketReaders.Get().(*pooledPacketReader)
+	if pooled == nil {
+		pooled = new(pooledPacketReader)
+	}
+	pooled.Reader = reader
+	return pooled
+}
+
 // WriteAllBytes ensures all bytes are written into the given writer.
 func WriteAllBytes(writer io.Writer, payload []byte, c stats.Counter) error {
 	wc := 0
@@ -114,6 +140,22 @@ func NewReader(reader io.Reader) Reader {
 	if mr, ok := reader.(Reader); ok {
 		return mr
 	}
+	if statConn, ok := reader.(*stat.CounterConnection); ok {
+		if isPacketReader(statConn.Connection) {
+			return &PacketReader{Reader: reader}
+		}
+		if runtime.GOOS == "linux" && useReadV() {
+			if sc, ok := statConn.Connection.(syscall.Conn); ok {
+				rawConn, err := sc.SyscallConn()
+				if err != nil {
+					errors.LogInfoInner(context.Background(), err, "failed to get sysconn")
+				} else {
+					return NewReadVReader(statConn.Connection, rawConn, statConn.ReadCounter)
+				}
+			}
+		}
+		return &SingleReader{Reader: reader}
+	}
 
 	if isPacketReader(reader) {
 		return &PacketReader{
@@ -128,19 +170,69 @@ func NewReader(reader io.Reader) Reader {
 			if err != nil {
 				errors.LogInfoInner(context.Background(), err, "failed to get sysconn")
 			} else {
-				var counter stats.Counter
-
-				if statConn, ok := reader.(*stat.CounterConnection); ok {
-					reader = statConn.Connection
-					counter = statConn.ReadCounter
-				}
-				return NewReadVReader(reader, rawConn, counter)
+				return NewReadVReader(reader, rawConn, nil)
 			}
 		}
 	}
 
 	return &SingleReader{
 		Reader: reader,
+	}
+}
+
+// NewPooledReader is an opt-in variant of NewReader for connection-scoped
+// users whose owner calls ReleasePooledReader when the reader is unreachable.
+func NewPooledReader(reader io.Reader) Reader {
+	if mr, ok := reader.(Reader); ok {
+		return mr
+	}
+	if statConn, ok := reader.(*stat.CounterConnection); ok {
+		if isPacketReader(statConn.Connection) {
+			return newPooledPacketReader(reader)
+		}
+		if runtime.GOOS == "linux" && useReadV() {
+			if sc, ok := statConn.Connection.(syscall.Conn); ok {
+				rawConn, err := sc.SyscallConn()
+				if err != nil {
+					errors.LogInfoInner(context.Background(), err, "failed to get sysconn")
+				} else {
+					return NewPooledReadVReader(statConn.Connection, rawConn, statConn.ReadCounter)
+				}
+			}
+		}
+		return newPooledSingleReader(reader)
+	}
+	if isPacketReader(reader) {
+		return newPooledPacketReader(reader)
+	}
+	_, isFile := reader.(*os.File)
+	if !isFile && useReadV() {
+		if sc, ok := reader.(syscall.Conn); ok {
+			rawConn, err := sc.SyscallConn()
+			if err != nil {
+				errors.LogInfoInner(context.Background(), err, "failed to get sysconn")
+			} else {
+				return NewPooledReadVReader(reader, rawConn, nil)
+			}
+		}
+	}
+	return newPooledSingleReader(reader)
+}
+
+// ReleasePooledReader clears retained connection state and returns readers
+// created by NewPooledReader to their pools. Other Reader values are ignored.
+func ReleasePooledReader(reader Reader) {
+	switch reader := reader.(type) {
+	case *pooledSingleReader:
+		reader.Reader = nil
+		pooledSingleReaders.Put(reader)
+	case *pooledPacketReader:
+		reader.Reader = nil
+		pooledPacketReaders.Put(reader)
+	default:
+		if reader, ok := reader.(interface{ releasePooledReader() }); ok {
+			reader.releasePooledReader()
+		}
 	}
 }
 
@@ -167,30 +259,89 @@ func isPacketWriter(writer io.Writer) bool {
 	return false
 }
 
+type pooledSequentialWriter struct{ SequentialWriter }
+type pooledBufferToBytesWriter struct{ BufferToBytesWriter }
+
+var pooledSequentialWriters sync.Pool
+var pooledBufferToBytesWriters sync.Pool
+
+// NewPooledWriter is an opt-in variant of NewWriter for connection-scoped
+// users that call ReleasePooledWriter after the writer is no longer reachable.
+func NewPooledWriter(writer io.Writer) Writer {
+	if mw, ok := writer.(Writer); ok {
+		return mw
+	}
+	if statConn, ok := writer.(*stat.CounterConnection); ok {
+		if isPacketWriter(statConn.Connection) {
+			pooled, _ := pooledSequentialWriters.Get().(*pooledSequentialWriter)
+			if pooled == nil {
+				pooled = new(pooledSequentialWriter)
+			}
+			pooled.Writer = writer
+			return pooled
+		}
+		pooled, _ := pooledBufferToBytesWriters.Get().(*pooledBufferToBytesWriter)
+		if pooled == nil {
+			pooled = new(pooledBufferToBytesWriter)
+		}
+		pooled.Writer = statConn.Connection
+		pooled.counter = statConn.WriteCounter
+		return pooled
+	}
+	if isPacketWriter(writer) {
+		pooled, _ := pooledSequentialWriters.Get().(*pooledSequentialWriter)
+		if pooled == nil {
+			pooled = new(pooledSequentialWriter)
+		}
+		pooled.Writer = writer
+		return pooled
+	}
+	pooled, _ := pooledBufferToBytesWriters.Get().(*pooledBufferToBytesWriter)
+	if pooled == nil {
+		pooled = new(pooledBufferToBytesWriter)
+	}
+	pooled.Writer = writer
+	return pooled
+}
+
+// ReleasePooledWriter clears retained connection state and returns writers
+// created by NewPooledWriter to their pools. Other Writer values are ignored.
+func ReleasePooledWriter(writer Writer) {
+	switch writer := writer.(type) {
+	case *pooledSequentialWriter:
+		writer.Writer = nil
+		pooledSequentialWriters.Put(writer)
+	case *pooledBufferToBytesWriter:
+		writer.Writer = nil
+		writer.counter = nil
+		clear(writer.inline[:])
+		writer.cache = writer.cache[:0]
+		pooledBufferToBytesWriters.Put(writer)
+	}
+}
+
 // NewWriter creates a new Writer.
 func NewWriter(writer io.Writer) Writer {
 	if mw, ok := writer.(Writer); ok {
 		return mw
 	}
 
-	iConn := writer
 	if statConn, ok := writer.(*stat.CounterConnection); ok {
-		iConn = statConn.Connection
+		if isPacketWriter(statConn.Connection) {
+			return &SequentialWriter{Writer: writer}
+		}
+		return &BufferToBytesWriter{
+			Writer:  statConn.Connection,
+			counter: statConn.WriteCounter,
+		}
 	}
 
-	if isPacketWriter(iConn) {
+	if isPacketWriter(writer) {
 		return &SequentialWriter{
 			Writer: writer,
 		}
 	}
-
-	var counter stats.Counter
-
-	if statConn, ok := writer.(*stat.CounterConnection); ok {
-		counter = statConn.WriteCounter
-	}
 	return &BufferToBytesWriter{
-		Writer:  iConn,
-		counter: counter,
+		Writer: writer,
 	}
 }

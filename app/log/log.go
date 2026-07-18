@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
@@ -23,6 +24,31 @@ type Instance struct {
 	dns          bool
 	mask4        int
 	mask6        int
+	state        atomic.Pointer[instanceState]
+}
+
+type instanceState struct {
+	active       bool
+	maskAddress  bool
+	mask4        int
+	mask6        int
+	dns          bool
+	accessLogger log.Handler
+	errorLogger  log.Handler
+	errorLevel   log.Severity
+}
+
+func (g *Instance) publishState() {
+	g.state.Store(&instanceState{
+		active:       g.active,
+		maskAddress:  g.config != nil && g.config.MaskAddress != "",
+		mask4:        g.mask4,
+		mask6:        g.mask6,
+		dns:          g.dns,
+		accessLogger: g.accessLogger,
+		errorLogger:  g.errorLogger,
+		errorLevel:   g.config.GetErrorLogLevel(),
+	})
 }
 
 // New creates a new log.Instance based on the given config.
@@ -94,6 +120,7 @@ func (g *Instance) startInternal() error {
 	if err := g.initErrorLogger(); err != nil {
 		return errors.New("failed to initialize error logger").Base(err).AtWarning()
 	}
+	g.publishState()
 
 	return nil
 }
@@ -105,19 +132,17 @@ func (g *Instance) Start() error {
 
 // Handle implements log.Handler.
 func (g *Instance) Handle(msg log.Message) {
-	g.RLock()
-	defer g.RUnlock()
-
-	if !g.active {
+	state := g.state.Load()
+	if state == nil || !state.active {
 		return
 	}
 
 	var Msg log.Message
-	if g.config.MaskAddress != "" {
+	if state.maskAddress {
 		Msg = &MaskedMsgWrapper{
 			Message: msg,
-			Mask4:   g.mask4,
-			Mask6:   g.mask6,
+			Mask4:   state.mask4,
+			Mask6:   state.mask6,
 		}
 	} else {
 		Msg = msg
@@ -125,16 +150,16 @@ func (g *Instance) Handle(msg log.Message) {
 
 	switch msg := msg.(type) {
 	case *log.AccessMessage:
-		if g.accessLogger != nil {
-			g.accessLogger.Handle(Msg)
+		if state.accessLogger != nil {
+			state.accessLogger.Handle(Msg)
 		}
 	case *log.DNSLog:
-		if g.dns && g.accessLogger != nil {
-			g.accessLogger.Handle(Msg)
+		if state.dns && state.accessLogger != nil {
+			state.accessLogger.Handle(Msg)
 		}
 	case *log.GeneralMessage:
-		if g.errorLogger != nil && msg.Severity <= g.config.ErrorLogLevel {
-			g.errorLogger.Handle(Msg)
+		if state.errorLogger != nil && msg.Severity <= state.errorLevel {
+			state.errorLogger.Handle(Msg)
 		}
 	default:
 		// Swallow
@@ -143,9 +168,8 @@ func (g *Instance) Handle(msg log.Message) {
 
 // Enabled implements log.SeverityFilter.
 func (g *Instance) Enabled(severity log.Severity) bool {
-	g.RLock()
-	defer g.RUnlock()
-	return g.active && g.errorLogger != nil && severity <= g.config.ErrorLogLevel
+	state := g.state.Load()
+	return state != nil && state.active && state.errorLogger != nil && severity <= state.errorLevel
 }
 
 // Close implements common.Closable.Close().
@@ -160,12 +184,14 @@ func (g *Instance) Close() error {
 	}
 
 	g.active = false
+	g.publishState()
 
 	common.Close(g.accessLogger)
 	g.accessLogger = nil
 
 	common.Close(g.errorLogger)
 	g.errorLogger = nil
+	g.publishState()
 
 	return nil
 }

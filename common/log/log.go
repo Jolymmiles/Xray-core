@@ -1,7 +1,9 @@
 package log // import "github.com/xtls/xray-core/common/log"
 
 import (
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common/serial"
 )
@@ -29,7 +31,15 @@ type GeneralMessage struct {
 
 // String implements Message.
 func (m *GeneralMessage) String() string {
-	return serial.Concat("[", m.Severity, "] ", m.Content)
+	severity := m.Severity.String()
+	content := serial.ToString(m.Content)
+	var builder strings.Builder
+	builder.Grow(len(severity) + len(content) + len("[] "))
+	builder.WriteByte('[')
+	builder.WriteString(severity)
+	builder.WriteString("] ")
+	builder.WriteString(content)
+	return builder.String()
 }
 
 // Record writes a message into log stream.
@@ -54,28 +64,29 @@ func RegisterHandler(handler Handler) {
 }
 
 type syncHandler struct {
-	sync.RWMutex
-	Handler
+	sync.Mutex
+	snapshot atomic.Pointer[handlerSnapshot]
+}
+
+type handlerSnapshot struct {
+	handler Handler
+	filter  SeverityFilter
 }
 
 func (h *syncHandler) Handle(msg Message) {
-	h.RLock()
-	defer h.RUnlock()
-
-	if h.Handler != nil {
-		h.Handler.Handle(msg)
+	snapshot := h.snapshot.Load()
+	if snapshot != nil && snapshot.handler != nil {
+		snapshot.handler.Handle(msg)
 	}
 }
 
 func (h *syncHandler) Enabled(severity Severity) bool {
-	h.RLock()
-	defer h.RUnlock()
-
-	if h.Handler == nil {
+	snapshot := h.snapshot.Load()
+	if snapshot == nil || snapshot.handler == nil {
 		return false
 	}
-	if filter, ok := h.Handler.(SeverityFilter); ok {
-		return filter.Enabled(severity)
+	if snapshot.filter != nil {
+		return snapshot.filter.Enabled(severity)
 	}
 	return true
 }
@@ -84,5 +95,9 @@ func (h *syncHandler) Set(handler Handler) {
 	h.Lock()
 	defer h.Unlock()
 
-	h.Handler = handler
+	snapshot := &handlerSnapshot{handler: handler}
+	if filter, ok := handler.(SeverityFilter); ok {
+		snapshot.filter = filter
+	}
+	h.snapshot.Store(snapshot)
 }

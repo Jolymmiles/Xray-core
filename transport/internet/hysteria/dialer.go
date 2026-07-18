@@ -241,7 +241,7 @@ func (c *client) dial(ctx context.Context) error {
 	c.conn = conn
 	c.udpSM = &udpSessionManager{
 		conn: conn,
-		m:    make(map[uint32]*InterConn),
+		m:    newUDPSessionMap(),
 		next: 1,
 	}
 	go c.udpSM.run()

@@ -2,11 +2,34 @@ package net_test
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	. "github.com/xtls/xray-core/common/net"
 )
+
+func TestAddressToNetIPAddr(t *testing.T) {
+	tests := []struct {
+		name    string
+		address Address
+		want    netip.Addr
+		valid   bool
+	}{
+		{"IPv4", IPv4Address([4]byte{192, 0, 2, 1}), netip.MustParseAddr("192.0.2.1"), true},
+		{"IPv6", IPv6Address([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}), netip.MustParseAddr("2001:db8::1"), true},
+		{"domain", DomainAddress("example.com"), netip.Addr{}, false},
+		{"nil", nil, netip.Addr{}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, valid := AddressToNetIPAddr(test.address)
+			if got != test.want || valid != test.valid {
+				t.Fatalf("AddressToNetIPAddr() = (%v, %v), want (%v, %v)", got, valid, test.want, test.valid)
+			}
+		})
+	}
+}
 
 func TestAddressProperty(t *testing.T) {
 	type addrProprty struct {
@@ -165,29 +188,66 @@ func TestInvalidAddressConvertion(t *testing.T) {
 	}
 }
 
+var parseAddressBenchmarkSink Address
+
+func TestParseAddressAllocationBudgets(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		max   float64
+	}{
+		{value: "8.8.8.8", max: 1},
+		{value: "2001:4860:0:2001::68", max: 1},
+		{value: "example.com", max: 1},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			allocations := testing.AllocsPerRun(1000, func() {
+				parseAddressBenchmarkSink = ParseAddress(test.value)
+			})
+			if allocations > test.max {
+				t.Fatalf("ParseAddress(%q) allocations = %.0f, want at most %.0f", test.value, allocations, test.max)
+			}
+		})
+	}
+}
+
+func TestParseAddressHexLikeDomainAndIPv6(t *testing.T) {
+	if family := ParseAddress("dead.beef").Family(); family != AddressFamilyDomain {
+		t.Fatalf("dead.beef family = %v, want domain", family)
+	}
+	if family := ParseAddress("dead::beef").Family(); family != AddressFamilyIPv6 {
+		t.Fatalf("dead::beef family = %v, want IPv6", family)
+	}
+}
+
 func BenchmarkParseAddressIPv4(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		addr := ParseAddress("8.8.8.8")
 		if addr.Family() != AddressFamilyIPv4 {
 			panic("not ipv4")
 		}
+		parseAddressBenchmarkSink = addr
 	}
 }
 
 func BenchmarkParseAddressIPv6(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		addr := ParseAddress("2001:4860:0:2001::68")
 		if addr.Family() != AddressFamilyIPv6 {
 			panic("not ipv6")
 		}
+		parseAddressBenchmarkSink = addr
 	}
 }
 
 func BenchmarkParseAddressDomain(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		addr := ParseAddress("example.com")
 		if addr.Family() != AddressFamilyDomain {
 			panic("not domain")
 		}
+		parseAddressBenchmarkSink = addr
 	}
 }

@@ -21,23 +21,59 @@ const (
 )
 
 type AccessMessage struct {
-	From   interface{}
-	To     interface{}
-	Status AccessStatus
-	Reason interface{}
-	Email  string
-	Detour string
+	From       interface{}
+	To         interface{}
+	FromString string
+	ToString   string
+	Status     AccessStatus
+	Reason     interface{}
+	Email      string
+	Detour     string
+}
+
+type accessMessageCarrier interface {
+	SetAccessMessage(*AccessMessage)
+	GetAccessMessage() *AccessMessage
 }
 
 func (m *AccessMessage) String() string {
+	from := m.FromString
+	if from == "" {
+		from = accessValueString(m.From)
+	}
+	to := m.ToString
+	if to == "" {
+		to = accessValueString(m.To)
+	}
+	var reason string
+	if m.Reason != nil {
+		reason = accessValueString(m.Reason)
+	}
+	capacity := len("from ") + len(from) + 1 + len(m.Status) + 1 + len(to)
+	if len(m.Detour) > 0 {
+		capacity += len(" [") + len(m.Detour) + len("]")
+	}
+	if len(reason) > 0 {
+		capacity += 1 + len(reason)
+	}
+	if len(m.Email) > 0 {
+		capacity += len(" email: ") + len(m.Email)
+	}
 	builder := strings.Builder{}
-	builder.WriteString("from")
-	builder.WriteByte(' ')
-	builder.WriteString(serial.ToString(m.From))
-	builder.WriteByte(' ')
-	builder.WriteString(string(m.Status))
-	builder.WriteByte(' ')
-	builder.WriteString(serial.ToString(m.To))
+	builder.Grow(capacity)
+	builder.WriteString("from ")
+	builder.WriteString(from)
+	switch m.Status {
+	case AccessAccepted:
+		builder.WriteString(" accepted ")
+	case AccessRejected:
+		builder.WriteString(" rejected ")
+	default:
+		builder.WriteByte(' ')
+		builder.WriteString(string(m.Status))
+		builder.WriteByte(' ')
+	}
+	builder.WriteString(to)
 
 	if len(m.Detour) > 0 {
 		builder.WriteString(" [")
@@ -45,7 +81,7 @@ func (m *AccessMessage) String() string {
 		builder.WriteByte(']')
 	}
 
-	if reason := serial.ToString(m.Reason); len(reason) > 0 {
+	if len(reason) > 0 {
 		builder.WriteString(" ")
 		builder.WriteString(reason)
 	}
@@ -58,13 +94,35 @@ func (m *AccessMessage) String() string {
 	return builder.String()
 }
 
+func accessValueString(value any) string {
+	switch value := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	default:
+		return serial.ToString(value)
+	}
+}
+
 func ContextWithAccessMessage(ctx context.Context, accessMessage *AccessMessage) context.Context {
+	if carrier, ok := ctx.(accessMessageCarrier); ok {
+		carrier.SetAccessMessage(accessMessage)
+		return ctx
+	}
 	return context.WithValue(ctx, accessMessageKey, accessMessage)
 }
 
 func AccessMessageFromContext(ctx context.Context) *AccessMessage {
+	if carrier, ok := ctx.(accessMessageCarrier); ok {
+		return carrier.GetAccessMessage()
+	}
 	if accessMessage, ok := ctx.Value(accessMessageKey).(*AccessMessage); ok {
 		return accessMessage
 	}
 	return nil
 }
+
+// IsAccessMessageKey allows optimized context implementations to preserve
+// access-message lookup through later context wrappers.
+func IsAccessMessageKey(key any) bool { return key == accessMessageKey }

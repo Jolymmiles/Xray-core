@@ -189,19 +189,15 @@ func BenchmarkAddressReadingDomain(b *testing.B) {
 	cache := buf.New()
 	defer cache.Release()
 
-	payload := buf.New()
-	defer payload.Release()
-
 	raw := []byte{3, 9, 118, 50, 114, 97, 121, 46, 99, 111, 109, 0, 80}
-	payload.Write(raw)
+	var payload bytes.Reader
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _, err := parser.ReadAddressPort(cache, payload)
+	b.ReportAllocs()
+	for b.Loop() {
+		payload.Reset(raw)
+		_, _, err := parser.ReadAddressPort(cache, &payload)
 		common.Must(err)
 		cache.Clear()
-		payload.Clear()
-		payload.Extend(int32(len(raw)))
 	}
 }
 

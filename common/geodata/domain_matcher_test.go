@@ -10,6 +10,70 @@ import (
 	"github.com/xtls/xray-core/common/utils"
 )
 
+func TestParseDomainOptimizesCanonicalSuffixRegex(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{`(^|\.)wa\.me$`, "wa.me"},
+		{`(^|\.)whatsapp-plus\.info$`, "whatsapp-plus.info"},
+		{`(^|\.)Example\.COM$`, "Example.COM"},
+	}
+	for _, test := range tests {
+		matcher, err := parseDomain(&Domain{Type: Domain_Regex, Value: test.pattern})
+		if err != nil {
+			t.Fatalf("parseDomain(%q) failed: %v", test.pattern, err)
+		}
+		domainMatcher, ok := matcher.(strmatcher.DomainMatcher)
+		if !ok {
+			t.Fatalf("parseDomain(%q) returned %T, want strmatcher.DomainMatcher", test.pattern, matcher)
+		}
+		if got := domainMatcher.Pattern(); got != test.want {
+			t.Fatalf("parseDomain(%q) pattern = %q, want %q", test.pattern, got, test.want)
+		}
+	}
+}
+
+func TestParseDomainKeepsGeneralRegex(t *testing.T) {
+	patterns := []string{
+		`(?i)(^|\.)example\.com$`,
+		`^example\.com$`,
+		`(^|\.)example[.]com$`,
+		`(^|\.)example\.com.*$`,
+	}
+	for _, pattern := range patterns {
+		matcher, err := parseDomain(&Domain{Type: Domain_Regex, Value: pattern})
+		if err != nil {
+			t.Fatalf("parseDomain(%q) failed: %v", pattern, err)
+		}
+		if _, ok := matcher.(*strmatcher.RegexMatcher); !ok {
+			t.Fatalf("parseDomain(%q) returned %T, want *strmatcher.RegexMatcher", pattern, matcher)
+		}
+	}
+}
+
+func TestOptimizedSuffixRegexBehavior(t *testing.T) {
+	matcher, err := parseDomain(&Domain{Type: Domain_Regex, Value: `(^|\.)whatsapp\.com$`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		domain string
+		want   bool
+	}{
+		{"whatsapp.com", true},
+		{"web.whatsapp.com", true},
+		{"notwhatsapp.com", false},
+		{"whatsapp.com.example", false},
+		{"WHATSAPP.COM", false},
+	}
+	for _, test := range tests {
+		if got := matcher.Match(test.domain); got != test.want {
+			t.Errorf("Match(%q) = %v, want %v", test.domain, got, test.want)
+		}
+	}
+}
+
 func TestCompactDomainMatcher_PreservesCustomRuleIndices(t *testing.T) {
 	factory := &CompactDomainMatcherFactory{shared: utils.NewWeakCacheMap[string, strmatcher.LinearAnyMatcher]()}
 	matcher, err := factory.BuildMatcher([]*DomainRule{

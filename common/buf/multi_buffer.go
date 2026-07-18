@@ -56,8 +56,9 @@ func MergeBytes(dest MultiBuffer, src []byte) MultiBuffer {
 // ReleaseMulti releases all content of the MultiBuffer, and returns an empty MultiBuffer.
 func ReleaseMulti(mb MultiBuffer) MultiBuffer {
 	for i := range mb {
-		mb[i].Release()
+		buffer := mb[i]
 		mb[i] = nil
+		buffer.Release()
 	}
 	return mb[:0]
 }

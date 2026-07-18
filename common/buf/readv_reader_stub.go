@@ -17,3 +17,7 @@ func useReadV() bool {
 func NewReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Counter) Reader {
 	panic("not implemented")
 }
+
+func NewPooledReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Counter) Reader {
+	panic("not implemented")
+}

@@ -47,8 +47,12 @@ func TestRequestSerialization(t *testing.T) {
 
 	_, actualRequest, actualAddons, _, err := DecodeRequestHeader(false, nil, &buffer, Validator)
 	common.Must(err)
+	defer ReleaseRequestHeader(actualRequest)
 
-	if r := cmp.Diff(actualRequest, expectedRequest, cmp.AllowUnexported(protocol.ID{})); r != "" {
+	addressComparer := func(x, y net.Address) bool {
+		return x.Family() == y.Family() && x.String() == y.String()
+	}
+	if r := cmp.Diff(actualRequest, expectedRequest, cmp.AllowUnexported(protocol.ID{}), cmp.Comparer(addressComparer)); r != "" {
 		t.Error(r)
 	}
 

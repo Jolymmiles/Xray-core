@@ -63,3 +63,27 @@ func BenchmarkExecuteTwo(b *testing.B) {
 		common.Must(Run(context.Background(), noop, noop))
 	}
 }
+
+type benchmarkCloser struct{}
+
+func (*benchmarkCloser) Close() error { return nil }
+
+func BenchmarkExecuteTwoOnSuccessCloseLegacy(b *testing.B) {
+	noop := func() error { return nil }
+	closer := new(benchmarkCloser)
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		common.Must(Run(ctx, noop, OnSuccess(noop, Close(closer))))
+	}
+}
+
+func BenchmarkExecuteTwoOnSuccessClose(b *testing.B) {
+	noop := func() error { return nil }
+	closer := new(benchmarkCloser)
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		common.Must(Run(ctx, noop, OnSuccessClose(noop, closer)))
+	}
+}

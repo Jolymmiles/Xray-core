@@ -14,6 +14,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// HeaderAddons is the decoded, lock-free view used by the server hot path.
+// Addons is a protobuf message and must not be copied after first use.
+type HeaderAddons struct {
+	Flow string
+	Seed []byte
+}
+
+func (a HeaderAddons) GetFlow() string { return a.Flow }
+
+type flowAddons interface {
+	GetFlow() string
+}
+
 func EncodeHeaderAddons(buffer *buf.Buffer, addons *Addons) error {
 	switch addons.Flow {
 	case vless.XRV:
@@ -62,24 +75,74 @@ func DecodeHeaderAddons(buffer *buf.Buffer, reader io.Reader) (*Addons, error) {
 	return addons, nil
 }
 
+func decodeHeaderAddonsValue(buffer *buf.Buffer, reader io.Reader) (HeaderAddons, error) {
+	var length byte
+	if byteReader, ok := reader.(io.ByteReader); ok {
+		value, err := byteReader.ReadByte()
+		if err != nil {
+			return HeaderAddons{}, errors.New("failed to read addons protobuf length").Base(err)
+		}
+		length = value
+	} else {
+		buffer.Clear()
+		if _, err := buffer.ReadFullFrom(reader, 1); err != nil {
+			return HeaderAddons{}, errors.New("failed to read addons protobuf length").Base(err)
+		}
+		length = buffer.Byte(0)
+	}
+	if length == 0 {
+		return HeaderAddons{}, nil
+	}
+
+	buffer.Clear()
+	if _, err := buffer.ReadFullFrom(reader, int32(length)); err != nil {
+		return HeaderAddons{}, errors.New("failed to read addons protobuf value").Base(err)
+	}
+	var addons Addons
+	if err := proto.Unmarshal(buffer.Bytes(), &addons); err != nil {
+		return HeaderAddons{}, errors.New("failed to unmarshal addons protobuf value").Base(err)
+	}
+	return HeaderAddons{Flow: addons.Flow, Seed: addons.Seed}, nil
+}
+
 // EncodeBodyAddons returns a Writer that auto-encrypt content written by caller.
-func EncodeBodyAddons(writer buf.Writer, request *protocol.RequestHeader, requestAddons *Addons, state *proxy.TrafficState, isUplink bool, context context.Context, conn net.Conn, ob *session.Outbound) buf.Writer {
+func EncodeBodyAddons(writer buf.Writer, request *protocol.RequestHeader, requestAddons flowAddons, state *proxy.TrafficState, isUplink bool, context context.Context, conn net.Conn, ob *session.Outbound) buf.Writer {
+	return EncodeBodyAddonsFlow(writer, request, requestAddons.GetFlow(), state, isUplink, context, conn, ob)
+}
+
+// EncodeBodyAddonsFlow avoids boxing the server's lock-free HeaderAddons value.
+func EncodeBodyAddonsFlow(writer buf.Writer, request *protocol.RequestHeader, flow string, state *proxy.TrafficState, isUplink bool, context context.Context, conn net.Conn, ob *session.Outbound) buf.Writer {
+	return EncodeBody(writer, request, flow == vless.XRV, state, isUplink, context, conn, ob)
+}
+
+// EncodeBody uses the caller's already-classified Vision mode.
+func EncodeBody(writer buf.Writer, request *protocol.RequestHeader, vision bool, state *proxy.TrafficState, isUplink bool, context context.Context, conn net.Conn, ob *session.Outbound) buf.Writer {
 	if request.Command == protocol.RequestCommandUDP {
 		return NewMultiLengthPacketWriter(writer)
 	}
-	if requestAddons.Flow == vless.XRV {
+	if vision {
 		return proxy.NewVisionWriter(writer, state, isUplink, context, conn, ob, request.User.Account.(*vless.MemoryAccount).Testseed)
 	}
 	return writer
 }
 
 // DecodeBodyAddons returns a Reader from which caller can fetch decrypted body.
-func DecodeBodyAddons(reader io.Reader, request *protocol.RequestHeader, addons *Addons) buf.Reader {
-	switch addons.Flow {
-	default:
-		if request.Command == protocol.RequestCommandUDP {
-			return NewLengthPacketReader(reader)
-		}
+func DecodeBodyAddons(reader io.Reader, request *protocol.RequestHeader, addons flowAddons) buf.Reader {
+	_ = addons.GetFlow()
+	return DecodeBody(reader, request)
+}
+
+// DecodeBodyAddonsFlow avoids boxing the server's lock-free HeaderAddons value.
+func DecodeBodyAddonsFlow(reader io.Reader, request *protocol.RequestHeader, flow string) buf.Reader {
+	_ = flow
+	return DecodeBody(reader, request)
+}
+
+// DecodeBody selects framing solely from the request command. VLESS response
+// flow does not alter body decoding.
+func DecodeBody(reader io.Reader, request *protocol.RequestHeader) buf.Reader {
+	if request.Command == protocol.RequestCommandUDP {
+		return NewLengthPacketReader(reader)
 	}
 	return buf.NewReader(reader)
 }
@@ -96,7 +159,12 @@ type MultiLengthPacketWriter struct {
 
 // NewTrafficStateForFlow creates the shared Vision state only when the flow uses it.
 func NewTrafficStateForFlow(userUUID []byte, flow string) *proxy.TrafficState {
-	if flow != vless.XRV {
+	return NewTrafficStateForVision(userUUID, flow == vless.XRV)
+}
+
+// NewTrafficStateForVision uses an already-classified flow mode.
+func NewTrafficStateForVision(userUUID []byte, vision bool) *proxy.TrafficState {
+	if !vision {
 		return nil
 	}
 	return proxy.NewTrafficState(userUUID)

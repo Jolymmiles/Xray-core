@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/dns"
 	"github.com/xtls/xray-core/features/outbound"
@@ -47,7 +48,7 @@ func resolveSrcAddr(network net.Network, src net.Address) net.Addr {
 }
 
 func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *SocketConfig) (net.Conn, error) {
-	errors.LogDebug(ctx, "dialing to "+dest.String())
+	logDialDestination(ctx, dest)
 
 	if dest.Network == net.Network_UDP {
 		srcAddr := resolveSrcAddr(net.Network_UDP, src)
@@ -136,6 +137,12 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 	}
 
 	return dialer.DialContext(ctx, dest.Network.SystemString(), dest.NetAddr())
+}
+
+func logDialDestination(ctx context.Context, dest net.Destination) {
+	if log.ShouldLog(log.Severity_Debug) {
+		errors.LogDebug(ctx, "dialing to "+dest.String())
+	}
 }
 
 func (d *DefaultSystemDialer) DestIpAddress() net.IP {

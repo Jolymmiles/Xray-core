@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,6 +93,10 @@ func NewIPMatcher(rules []*geodata.IPRule, asType MatcherAsType) (*IPMatcher, er
 
 // Apply implements Condition.
 func (m *IPMatcher) Apply(ctx routing.Context) bool {
+	if ip, ok := directRoutingIP(ctx, m.asType); ok {
+		return m.matcher.MatchAddr(ip)
+	}
+
 	var ips []net.IP
 
 	switch m.asType {
@@ -106,6 +111,34 @@ func (m *IPMatcher) Apply(ctx routing.Context) bool {
 	}
 
 	return m.matcher.AnyMatch(ips)
+}
+
+func directRoutingIP(ctx routing.Context, asType MatcherAsType) (netip.Addr, bool) {
+	if asType == MatcherAsType_Target {
+		if target, ok := ctx.(interface{ GetTargetNetIPAddr() (netip.Addr, bool) }); ok {
+			return target.GetTargetNetIPAddr()
+		}
+	}
+	type addressContext interface {
+		GetLocalAddress() net.Address
+		GetSourceAddress() net.Address
+		GetTargetAddress() net.Address
+	}
+	if sessionContext, ok := ctx.(addressContext); ok {
+		var address net.Address
+		switch asType {
+		case MatcherAsType_Local:
+			address = sessionContext.GetLocalAddress()
+		case MatcherAsType_Source:
+			address = sessionContext.GetSourceAddress()
+		case MatcherAsType_Target:
+			address = sessionContext.GetTargetAddress()
+		}
+		if ip, ok := net.AddressToNetIPAddr(address); ok {
+			return ip, true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 type PortMatcher struct {

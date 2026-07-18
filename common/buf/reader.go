@@ -2,6 +2,7 @@ package buf
 
 import (
 	"io"
+	"sync"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
@@ -45,6 +46,34 @@ type BufferedReader struct {
 	Splitter func(MultiBuffer, []byte) (MultiBuffer, int)
 }
 
+var bufferedReaderPool sync.Pool
+
+// NewPooledBufferedReader creates a connection-scoped buffered reader whose
+// owned buffers are released by Release.
+func NewPooledBufferedReader(reader Reader, buffer MultiBuffer) *BufferedReader {
+	bufferedReader, _ := bufferedReaderPool.Get().(*BufferedReader)
+	if bufferedReader == nil {
+		bufferedReader = new(BufferedReader)
+	}
+	bufferedReader.Reader = reader
+	bufferedReader.Buffer = buffer
+	bufferedReader.Splitter = nil
+	return bufferedReader
+}
+
+// Release releases unread owned buffers, clears the underlying reader, and
+// returns this connection-scoped reader for reuse.
+func (r *BufferedReader) Release() {
+	if r == nil {
+		return
+	}
+	r.Buffer = ReleaseMulti(r.Buffer)
+	ReleasePooledReader(r.Reader)
+	r.Reader = nil
+	r.Splitter = nil
+	bufferedReaderPool.Put(r)
+}
+
 // BufferedBytes returns the number of bytes that is cached in this reader.
 func (r *BufferedReader) BufferedBytes() int32 {
 	return r.Buffer.Len()
@@ -52,6 +81,38 @@ func (r *BufferedReader) BufferedBytes() int32 {
 
 // ReadByte implements io.ByteReader.
 func (r *BufferedReader) ReadByte() (byte, error) {
+	if r.Splitter == nil {
+		fetched := false
+		for {
+			if len(r.Buffer) == 0 {
+				if fetched {
+					return 0, nil
+				}
+				mb, err := r.Reader.ReadMultiBuffer()
+				if len(mb) == 0 {
+					return 0, err
+				}
+				r.Buffer = mb
+				fetched = true
+			}
+			buffer := r.Buffer[0]
+			if buffer.IsEmpty() {
+				r.Buffer, buffer = SplitFirst(r.Buffer)
+				buffer.Release()
+				continue
+			}
+			value := buffer.Byte(0)
+			buffer.Advance(1)
+			if buffer.IsEmpty() {
+				r.Buffer, buffer = SplitFirst(r.Buffer)
+				buffer.Release()
+				if len(r.Buffer) == 0 {
+					r.Buffer = nil
+				}
+			}
+			return value, nil
+		}
+	}
 	var b [1]byte
 	_, err := r.Read(b[:])
 	return b[0], err
