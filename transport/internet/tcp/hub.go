@@ -130,7 +130,7 @@ func (v *Listener) keepAccepting() {
 			} else if v.realityConfig != nil {
 				realityConn, err := reality.Server(conn, v.realityConfig)
 				if err != nil {
-					errors.LogInfo(context.Background(), err.Error())
+					logRealityHandshakeError(err)
 					_ = conn.Close()
 					return
 				}
@@ -142,6 +142,10 @@ func (v *Listener) keepAccepting() {
 			v.addConn(stat.Connection(conn))
 		}()
 	}
+}
+
+func logRealityHandshakeError(err error) {
+	errors.LogInfo(context.Background(), err)
 }
 
 // Addr implements internet.Listener.Addr.

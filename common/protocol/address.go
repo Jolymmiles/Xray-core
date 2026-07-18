@@ -156,9 +156,35 @@ func maybeIPPrefix(b byte) bool {
 	return b == '[' || (b >= '0' && b <= '9')
 }
 
+var validDomainByte = func() [256]bool {
+	var allowed [256]bool
+	for c := byte('0'); c <= '9'; c++ {
+		allowed[c] = true
+	}
+	for c := byte('a'); c <= 'z'; c++ {
+		allowed[c] = true
+	}
+	for c := byte('A'); c <= 'Z'; c++ {
+		allowed[c] = true
+	}
+	allowed['-'] = true
+	allowed['.'] = true
+	allowed['_'] = true
+	return allowed
+}()
+
 func isValidDomain(d string) bool {
-	for _, c := range d {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '.' || c == '_') {
+	i := 0
+	for ; i+4 <= len(d); i += 4 {
+		if !validDomainByte[d[i]] ||
+			!validDomainByte[d[i+1]] ||
+			!validDomainByte[d[i+2]] ||
+			!validDomainByte[d[i+3]] {
+			return false
+		}
+	}
+	for ; i < len(d); i++ {
+		if !validDomainByte[d[i]] {
 			return false
 		}
 	}

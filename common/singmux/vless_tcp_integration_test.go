@@ -192,7 +192,11 @@ func xrayVLESSTCPConfig(t testing.TB, server bool, serverPort, socksPort int, se
 	if server {
 		config["inbounds"] = []any{map[string]any{
 			"listen": "127.0.0.1", "port": serverPort, "protocol": "vless",
-			"settings":       map[string]any{"decryption": "none", "clients": []any{user}},
+			"settings": map[string]any{"decryption": "none", "clients": []any{user}},
+			"sniffing": map[string]any{
+				"enabled": true, "destOverride": []string{"http", "tls"},
+				"domainsExcluded": []string{`regexp:(^|\.)whatsapp\.com$`},
+			},
 			"streamSettings": xrayVLESSTCPStreamSettings(true, security, certificate, privateKey, realityTarget),
 		}}
 		config["outbounds"] = []any{map[string]any{

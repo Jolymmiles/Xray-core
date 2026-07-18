@@ -225,7 +225,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		return buf.Copy(reader, link.Writer, buf.UpdateActivity(timer))
 	}
 
-	responseDonePost := task.OnSuccess(responseFunc, task.Close(link.Writer))
+	responseDonePost := task.OnSuccessClose(responseFunc, link.Writer)
 	if err := task.Run(ctx, requestFunc, responseDonePost); err != nil {
 		common.Interrupt(link.Reader)
 		common.Interrupt(link.Writer)

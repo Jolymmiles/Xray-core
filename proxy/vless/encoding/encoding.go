@@ -3,6 +3,10 @@ package encoding
 import (
 	"context"
 	"io"
+	stdnet "net"
+	"net/netip"
+	"sync"
+	"unsafe"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
@@ -20,6 +24,219 @@ const (
 )
 
 var plainV0ResponseHeader = [2]byte{Version, 0}
+
+var requestHeaderPool sync.Pool
+var domainRequestPool sync.Pool
+var ipv4RequestPool sync.Pool
+var ipv6RequestPool sync.Pool
+
+const pooledDomainCapacity = 63
+
+type pooledDomainRequest struct {
+	header  protocol.RequestHeader
+	address pooledDomainAddress
+}
+
+type pooledDomainAddress struct {
+	owner  *pooledDomainRequest
+	length byte
+	bytes  [pooledDomainCapacity]byte
+	long   string
+}
+
+type pooledIPv4Request struct {
+	header  protocol.RequestHeader
+	address pooledIPv4Address
+}
+
+type pooledIPv4Address struct {
+	owner *pooledIPv4Request
+	bytes [4]byte
+}
+
+type pooledIPv6Request struct {
+	header  protocol.RequestHeader
+	address pooledIPv6Address
+}
+
+type pooledIPv6Address struct {
+	owner *pooledIPv6Request
+	bytes [16]byte
+}
+
+func (a *pooledIPv4Address) IP() stdnet.IP {
+	return a.bytes[:]
+}
+
+func (*pooledIPv4Address) Domain() string {
+	panic("Calling Domain() on an IPv4Address.")
+}
+
+func (*pooledIPv4Address) Family() net.AddressFamily {
+	return net.AddressFamilyIPv4
+}
+
+func (a *pooledIPv4Address) String() string {
+	return stdnet.IP(a.bytes[:]).String()
+}
+
+func (a *pooledIPv4Address) NetIPAddr() netip.Addr {
+	return netip.AddrFrom4(a.bytes)
+}
+
+func (a *pooledIPv4Address) releaseRequest() {
+	request := a.owner
+	request.header = protocol.RequestHeader{}
+	ipv4RequestPool.Put(request)
+}
+
+func (a *pooledIPv6Address) IP() stdnet.IP {
+	return a.bytes[:]
+}
+
+func (*pooledIPv6Address) Domain() string {
+	panic("Calling Domain() on an IPv6Address.")
+}
+
+func (*pooledIPv6Address) Family() net.AddressFamily {
+	return net.AddressFamilyIPv6
+}
+
+func (a *pooledIPv6Address) String() string {
+	return "[" + stdnet.IP(a.bytes[:]).String() + "]"
+}
+
+func (a *pooledIPv6Address) NetIPAddr() netip.Addr {
+	return netip.AddrFrom16(a.bytes)
+}
+
+func (a *pooledIPv6Address) releaseRequest() {
+	request := a.owner
+	request.header = protocol.RequestHeader{}
+	ipv6RequestPool.Put(request)
+}
+
+func (*pooledDomainAddress) IP() stdnet.IP {
+	panic("Calling IP() on a DomainAddress.")
+}
+
+func (a *pooledDomainAddress) Domain() string {
+	if a.long != "" {
+		return a.long
+	}
+	return unsafe.String(&a.bytes[0], a.length)
+}
+
+func (*pooledDomainAddress) Family() net.AddressFamily {
+	return net.AddressFamilyDomain
+}
+
+func (a *pooledDomainAddress) String() string {
+	if a.long != "" {
+		return a.long
+	}
+	return unsafe.String(&a.bytes[0], a.length)
+}
+
+func (a *pooledDomainAddress) releaseRequest() {
+	request := a.owner
+	a.length = 0
+	a.long = ""
+	request.header = protocol.RequestHeader{}
+	domainRequestPool.Put(request)
+}
+
+func newPooledDomainRequest(domain []byte) *protocol.RequestHeader {
+	request, _ := domainRequestPool.Get().(*pooledDomainRequest)
+	if request == nil {
+		request = new(pooledDomainRequest)
+		request.address.owner = request
+	}
+	address := &request.address
+	if len(domain) <= len(address.bytes) {
+		address.length = byte(copy(address.bytes[:], domain))
+		address.long = ""
+	} else {
+		address.length = 0
+		address.long = string(domain)
+	}
+	request.header.Address = address
+	return &request.header
+}
+
+func newPooledIPv4Request(ip []byte) *protocol.RequestHeader {
+	request, _ := ipv4RequestPool.Get().(*pooledIPv4Request)
+	if request == nil {
+		request = new(pooledIPv4Request)
+		request.address.owner = request
+	}
+	copy(request.address.bytes[:], ip)
+	request.header.Address = &request.address
+	return &request.header
+}
+
+func newPooledIPv6Request(ip []byte) *protocol.RequestHeader {
+	request, _ := ipv6RequestPool.Get().(*pooledIPv6Request)
+	if request == nil {
+		request = new(pooledIPv6Request)
+		request.address.owner = request
+	}
+	copy(request.address.bytes[:], ip)
+	request.header.Address = &request.address
+	return &request.header
+}
+
+func newRequestHeader() *protocol.RequestHeader {
+	request, _ := requestHeaderPool.Get().(*protocol.RequestHeader)
+	if request == nil {
+		request = new(protocol.RequestHeader)
+	}
+	return request
+}
+
+// ReleaseRequestHeader clears authentication and destination references before
+// returning a connection-scoped decoded request for reuse.
+func ReleaseRequestHeader(request *protocol.RequestHeader) {
+	if request == nil {
+		return
+	}
+	if address, ok := request.Address.(interface{ releaseRequest() }); ok {
+		address.releaseRequest()
+		return
+	}
+	*request = protocol.RequestHeader{}
+	requestHeaderPool.Put(request)
+}
+
+var plainDomainByte = func() [256]bool {
+	var allowed [256]bool
+	for c := byte('0'); c <= '9'; c++ {
+		allowed[c] = true
+	}
+	for c := byte('a'); c <= 'z'; c++ {
+		allowed[c] = true
+	}
+	for c := byte('A'); c <= 'Z'; c++ {
+		allowed[c] = true
+	}
+	allowed['-'] = true
+	allowed['.'] = true
+	allowed['_'] = true
+	return allowed
+}()
+
+var plainDomainPair = func() [1 << 16]bool {
+	var allowed [1 << 16]bool
+	for first := 0; first < 256; first++ {
+		if !plainDomainByte[first] {
+			continue
+		}
+		for second := 0; second < 256; second++ {
+			allowed[first<<8|second] = plainDomainByte[second]
+		}
+	}
+	return allowed
+}()
 
 var addrParser = protocol.NewAddressParser(
 	protocol.AddressFamilyByte(byte(protocol.AddressTypeIPv4), net.AddressFamilyIPv4),
@@ -128,27 +345,34 @@ func encodeRequestHeaderBuffered(writer io.Writer, request *protocol.RequestHead
 
 // DecodeRequestHeader decodes and returns (if successful) a RequestHeader from an input stream.
 func DecodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validator vless.Validator) ([]byte, *protocol.RequestHeader, *Addons, bool, error) {
-	if isfb {
+	id, request, addons, fallback, err := decodeRequestHeader(isfb, first, reader, validator, true)
+	if err != nil {
+		return nil, request, nil, fallback, err
+	}
+	return id[:], request, &Addons{Flow: addons.Flow, Seed: addons.Seed}, fallback, nil
+}
+
+func decodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validator vless.Validator, probePlain bool) ([16]byte, *protocol.RequestHeader, HeaderAddons, bool, error) {
+	if probePlain && isfb {
 		if id, request, addons, fallback, err, handled := decodePlainRequestHeaderFromFirst(first, validator); handled {
 			return id, request, addons, fallback, err
 		}
 	}
 
-	buffer := buf.StackNew()
-	defer buffer.Release()
+	buffer := buf.New()
 
-	request := new(protocol.RequestHeader)
-
+	var version byte
 	if isfb {
-		request.Version = first.Byte(0)
+		version = first.Byte(0)
 	} else {
 		if _, err := buffer.ReadFullFrom(reader, 1); err != nil {
-			return nil, nil, nil, false, errors.New("failed to read request version").Base(err)
+			buffer.Release()
+			return [16]byte{}, nil, HeaderAddons{}, false, errors.New("failed to read request version").Base(err)
 		}
-		request.Version = buffer.Byte(0)
+		version = buffer.Byte(0)
 	}
 
-	switch request.Version {
+	switch version {
 	case 0:
 
 		var id [16]byte
@@ -158,55 +382,97 @@ func DecodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validat
 		} else {
 			buffer.Clear()
 			if _, err := buffer.ReadFullFrom(reader, 16); err != nil {
-				return nil, nil, nil, false, errors.New("failed to read request user id").Base(err)
+				buffer.Release()
+				return [16]byte{}, nil, HeaderAddons{}, false, errors.New("failed to read request user id").Base(err)
 			}
 			copy(id[:], buffer.Bytes())
 		}
 
-		if request.User = validator.Get(id); request.User == nil {
+		user := validator.Get(id)
+		if user == nil {
 			u := uuid.UUID(id)
-			return nil, nil, nil, isfb, errors.New("invalid request user id: " + u.String())
+			buffer.Release()
+			return [16]byte{}, nil, HeaderAddons{}, isfb, errors.New("invalid request user id: ", &u)
 		}
 
 		if isfb {
 			first.Advance(17)
 		}
 
-		requestAddons, err := DecodeHeaderAddons(&buffer, reader)
+		requestAddons, err := decodeHeaderAddonsValue(buffer, reader)
 		if err != nil {
-			return nil, nil, nil, false, errors.New("failed to decode request header addons").Base(err)
+			buffer.Release()
+			return [16]byte{}, nil, HeaderAddons{}, false, errors.New("failed to decode request header addons").Base(err)
 		}
 
-		buffer.Clear()
-		if _, err := buffer.ReadFullFrom(reader, 1); err != nil {
-			return nil, nil, nil, false, errors.New("failed to read request command").Base(err)
+		var commandByte byte
+		if byteReader, ok := reader.(io.ByteReader); ok {
+			value, err := byteReader.ReadByte()
+			if err != nil {
+				buffer.Release()
+				return [16]byte{}, nil, HeaderAddons{}, false, errors.New("failed to read request command").Base(err)
+			}
+			commandByte = value
+		} else {
+			buffer.Clear()
+			if _, err := buffer.ReadFullFrom(reader, 1); err != nil {
+				buffer.Release()
+				return [16]byte{}, nil, HeaderAddons{}, false, errors.New("failed to read request command").Base(err)
+			}
+			commandByte = buffer.Byte(0)
 		}
 
-		request.Command = protocol.RequestCommand(buffer.Byte(0))
-		switch request.Command {
+		command := protocol.RequestCommand(commandByte)
+		var request *protocol.RequestHeader
+		switch command {
 		case protocol.RequestCommandMux:
+			request = newRequestHeader()
 			request.Address = net.DomainAddress("v1.mux.cool")
 		case protocol.RequestCommandRvs:
+			request = newRequestHeader()
 			request.Address = net.DomainAddress("v1.rvs.cool")
 		case protocol.RequestCommandTCP, protocol.RequestCommandUDP:
-			if addr, port, err := addrParser.ReadAddressPort(&buffer, reader); err == nil {
-				request.Address = addr
-				request.Port = port
-			}
+			request = readPooledRequestAddress(buffer, reader)
 		}
-		if request.Address == nil {
-			return nil, nil, nil, false, errors.New("invalid request address")
+		if request == nil {
+			buffer.Release()
+			return [16]byte{}, nil, HeaderAddons{}, false, errors.New("invalid request address")
 		}
-		return id[:], request, requestAddons, false, nil
+		request.Version = version
+		request.User = user
+		request.Command = command
+		buffer.Release()
+		return id, request, requestAddons, false, nil
 	default:
-		return nil, nil, nil, isfb, errors.New("invalid request version")
+		buffer.Release()
+		return [16]byte{}, nil, HeaderAddons{}, isfb, errors.New("invalid request version")
 	}
 }
 
-func decodePlainRequestHeaderFromFirst(first *buf.Buffer, validator vless.Validator) ([]byte, *protocol.RequestHeader, *Addons, bool, error, bool) {
+// DecodeRequestHeaderFromFirst uses an already-buffered VLESS prefix when it
+// contains the complete user ID. allowFallback controls only error routing;
+// disabling it never turns an invalid UUID or version into a fallback request.
+func DecodeRequestHeaderFromFirst(first *buf.Buffer, reader io.Reader, validator vless.Validator, allowFallback bool) ([16]byte, *protocol.RequestHeader, HeaderAddons, bool, error) {
+	useFirst := first != nil && first.Len() >= 17
+	if useFirst {
+		if id, request, addons, fallback, err, handled := decodePlainRequestHeaderFromFirst(first, validator); handled {
+			if !allowFallback {
+				fallback = false
+			}
+			return id, request, addons, fallback, err
+		}
+	}
+	id, request, addons, fallback, err := decodeRequestHeader(useFirst, first, reader, validator, false)
+	if !allowFallback {
+		fallback = false
+	}
+	return id, request, addons, fallback, err
+}
+
+func decodePlainRequestHeaderFromFirst(first *buf.Buffer, validator vless.Validator) ([16]byte, *protocol.RequestHeader, HeaderAddons, bool, error, bool) {
 	data := first.Bytes()
 	if len(data) < 19 || data[0] != Version || data[17] != 0 {
-		return nil, nil, nil, false, nil, false
+		return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 	}
 
 	var id [16]byte
@@ -214,75 +480,200 @@ func decodePlainRequestHeaderFromFirst(first *buf.Buffer, validator vless.Valida
 	user := validator.Get(id)
 	if user == nil {
 		u := uuid.UUID(id)
-		return nil, nil, nil, true, errors.New("invalid request user id: " + u.String()), true
+		return [16]byte{}, nil, HeaderAddons{}, true, errors.New("invalid request user id: ", &u), true
 	}
 
-	request := &protocol.RequestHeader{
-		Version: Version,
-		User:    user,
-		Command: protocol.RequestCommand(data[18]),
-	}
+	command := protocol.RequestCommand(data[18])
+	var request *protocol.RequestHeader
+	var port net.Port
 	headerLength := 19
 
-	switch request.Command {
+	switch command {
 	case protocol.RequestCommandMux:
+		request = newRequestHeader()
 		request.Address = net.DomainAddress("v1.mux.cool")
 	case protocol.RequestCommandRvs:
+		request = newRequestHeader()
 		request.Address = net.DomainAddress("v1.rvs.cool")
 	case protocol.RequestCommandTCP, protocol.RequestCommandUDP:
 		if len(data) < 22 {
-			return nil, nil, nil, false, nil, false
+			return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 		}
-		request.Port = net.PortFromBytes(data[19:21])
+		port = net.PortFromBytes(data[19:21])
 		switch protocol.AddressType(data[21]) {
 		case protocol.AddressTypeIPv4:
 			headerLength = 26
 			if len(data) < headerLength {
-				return nil, nil, nil, false, nil, false
+				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			request.Address = net.IPAddress(data[22:headerLength])
+			request = newPooledIPv4Request(data[22:headerLength])
 		case protocol.AddressTypeIPv6:
 			headerLength = 38
 			if len(data) < headerLength {
-				return nil, nil, nil, false, nil, false
+				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			request.Address = net.IPAddress(data[22:headerLength])
+			request = newPooledIPv6Request(data[22:headerLength])
 		case protocol.AddressTypeDomain:
 			if len(data) < 23 {
-				return nil, nil, nil, false, nil, false
+				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
 			domainLength := int(data[22])
 			headerLength = 23 + domainLength
 			if domainLength == 0 || len(data) < headerLength {
-				return nil, nil, nil, false, nil, false
+				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			domain := string(data[23:headerLength])
+			domainBytes := data[23:headerLength]
+			domain := unsafe.String(&domainBytes[0], len(domainBytes))
 			if domain[0] == '[' || domain[0] >= '0' && domain[0] <= '9' {
 				address := net.ParseAddress(domain)
 				if address.Family().IsIP() {
+					request = newRequestHeader()
 					request.Address = address
 					break
 				}
 			}
 			if !isPlainDomain(domain) {
-				return nil, nil, nil, false, nil, false
+				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			request.Address = net.DomainAddress(domain)
+			request = newPooledDomainRequest(domainBytes)
 		default:
-			return nil, nil, nil, false, nil, false
+			return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 		}
 	default:
-		return nil, nil, nil, false, nil, false
+		return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 	}
 
 	first.Advance(int32(headerLength))
-	return id[:], request, &Addons{}, false, nil, true
+	request.Version = Version
+	request.User = user
+	request.Command = command
+	request.Port = port
+	return id, request, HeaderAddons{}, false, nil, true
+}
+
+func readPooledRequestAddress(buffer *buf.Buffer, reader io.Reader) *protocol.RequestHeader {
+	buffer.Clear()
+	if _, err := buffer.ReadFullFrom(reader, 3); err != nil {
+		return nil
+	}
+	data := buffer.Bytes()
+	port := net.PortFromBytes(data[:2])
+	var request *protocol.RequestHeader
+	switch protocol.AddressType(data[2]) {
+	case protocol.AddressTypeIPv4:
+		pooled, _ := ipv4RequestPool.Get().(*pooledIPv4Request)
+		if pooled == nil {
+			pooled = new(pooledIPv4Request)
+			pooled.address.owner = pooled
+		}
+		if _, err := io.ReadFull(reader, pooled.address.bytes[:]); err != nil {
+			pooled.address.releaseRequest()
+			return nil
+		}
+		pooled.header.Address = &pooled.address
+		request = &pooled.header
+	case protocol.AddressTypeIPv6:
+		pooled, _ := ipv6RequestPool.Get().(*pooledIPv6Request)
+		if pooled == nil {
+			pooled = new(pooledIPv6Request)
+			pooled.address.owner = pooled
+		}
+		if _, err := io.ReadFull(reader, pooled.address.bytes[:]); err != nil {
+			pooled.address.releaseRequest()
+			return nil
+		}
+		pooled.header.Address = &pooled.address
+		request = &pooled.header
+	case protocol.AddressTypeDomain:
+		var domainLength byte
+		domainStart := int32(3)
+		if byteReader, ok := reader.(io.ByteReader); ok {
+			value, err := byteReader.ReadByte()
+			if err != nil {
+				return nil
+			}
+			domainLength = value
+		} else {
+			if _, err := buffer.ReadFullFrom(reader, 1); err != nil {
+				return nil
+			}
+			domainLength = buffer.Byte(3)
+			domainStart = 4
+		}
+		if domainLength == 0 {
+			return nil
+		}
+		var pooledDomain *pooledDomainRequest
+		var domainBytes []byte
+		if int(domainLength) <= pooledDomainCapacity {
+			pooledDomain, _ = domainRequestPool.Get().(*pooledDomainRequest)
+			if pooledDomain == nil {
+				pooledDomain = new(pooledDomainRequest)
+				pooledDomain.address.owner = pooledDomain
+			}
+			domainBytes = pooledDomain.address.bytes[:domainLength]
+			if _, err := io.ReadFull(reader, domainBytes); err != nil {
+				pooledDomain.address.releaseRequest()
+				return nil
+			}
+		} else {
+			if _, err := buffer.ReadFullFrom(reader, int32(domainLength)); err != nil {
+				return nil
+			}
+			domainBytes = buffer.BytesRange(domainStart, domainStart+int32(domainLength))
+		}
+		domain := unsafe.String(&domainBytes[0], len(domainBytes))
+		if domain[0] == '[' || domain[0] >= '0' && domain[0] <= '9' {
+			candidate := domain
+			if len(candidate) > 1 && candidate[0] == '[' && candidate[len(candidate)-1] == ']' {
+				candidate = candidate[1 : len(candidate)-1]
+			}
+			if ip, err := netip.ParseAddr(candidate); err == nil && ip.Zone() == "" {
+				ip = ip.Unmap()
+				if ip.Is4() {
+					value := ip.As4()
+					request = newPooledIPv4Request(value[:])
+				} else {
+					value := ip.As16()
+					request = newPooledIPv6Request(value[:])
+				}
+				if pooledDomain != nil {
+					pooledDomain.address.releaseRequest()
+				}
+				break
+			}
+		}
+		if !isPlainDomain(domain) {
+			if pooledDomain != nil {
+				pooledDomain.address.releaseRequest()
+			}
+			return nil
+		}
+		if pooledDomain != nil {
+			pooledDomain.address.length = domainLength
+			pooledDomain.address.long = ""
+			pooledDomain.header.Address = &pooledDomain.address
+			request = &pooledDomain.header
+		} else {
+			request = newPooledDomainRequest(domainBytes)
+		}
+	default:
+		return nil
+	}
+	request.Port = port
+	return request
 }
 
 func isPlainDomain(domain string) bool {
-	for i := 0; i < len(domain); i++ {
-		c := domain[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '.' || c == '_') {
+	i := 0
+	for ; i+4 <= len(domain); i += 4 {
+		if !plainDomainPair[uint16(domain[i])<<8|uint16(domain[i+1])] ||
+			!plainDomainPair[uint16(domain[i+2])<<8|uint16(domain[i+3])] {
+			return false
+		}
+	}
+	for ; i < len(domain); i++ {
+		if !plainDomainByte[domain[i]] {
 			return false
 		}
 	}
@@ -291,7 +682,7 @@ func isPlainDomain(domain string) bool {
 
 // EncodeResponseHeader writes encoded response header into the given writer.
 func EncodeResponseHeader(writer io.Writer, request *protocol.RequestHeader, responseAddons *Addons) error {
-	if responseAddons.Flow == "" {
+	if responseAddons == nil || responseAddons.Flow == "" {
 		header := plainV0ResponseHeader[:]
 		if request.Version != Version {
 			header = []byte{request.Version, 0}

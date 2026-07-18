@@ -15,27 +15,56 @@ type BufferToBytesWriter struct {
 	io.Writer
 
 	counter stats.Counter
+	inline  [2][]byte
 	cache   [][]byte
 }
 
 // WriteMultiBuffer implements Writer. This method takes ownership of the given buffer.
 func (w *BufferToBytesWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	defer ReleaseMulti(mb)
+	return w.writeMultiBuffer(nil, mb)
+}
 
+// WriteMultiBufferWithPrefix writes an owned prefix and MultiBuffer without
+// first allocating a combined MultiBuffer slice.
+func (w *BufferToBytesWriter) WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error {
+	defer prefix.Release()
+	defer ReleaseMulti(mb)
+	return w.writeMultiBuffer(prefix, mb)
+}
+
+func (w *BufferToBytesWriter) writeMultiBuffer(prefix *Buffer, mb MultiBuffer) error {
 	size := mb.Len()
+	if prefix != nil {
+		size += prefix.Len()
+	}
 	if size == 0 {
 		return nil
 	}
 
-	if len(mb) == 1 {
+	if prefix == nil && len(mb) == 1 {
 		return WriteAllBytes(w.Writer, mb[0].Bytes(), w.counter)
 	}
-
-	if cap(w.cache) < len(mb) {
-		w.cache = make([][]byte, 0, len(mb))
+	if prefix != nil && len(mb) == 0 {
+		return WriteAllBytes(w.Writer, prefix.Bytes(), w.counter)
 	}
 
-	bs := w.cache
+	bufferCount := len(mb)
+	if prefix != nil {
+		bufferCount++
+	}
+	var bs [][]byte
+	if bufferCount <= len(w.inline) {
+		bs = w.inline[:0]
+	} else {
+		if cap(w.cache) < bufferCount {
+			w.cache = make([][]byte, 0, bufferCount)
+		}
+		bs = w.cache
+	}
+	if prefix != nil {
+		bs = append(bs, prefix.Bytes())
+	}
 	for _, b := range mb {
 		bs = append(bs, b.Bytes())
 	}
@@ -79,6 +108,13 @@ type BufferedWriter struct {
 	buffer    *Buffer
 	buffered  bool
 	flushNext bool
+	pooled    bool
+}
+
+var bufferedWriterPool sync.Pool
+
+type prefixMultiBufferWriter interface {
+	WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error
 }
 
 // NewBufferedWriter creates a new BufferedWriter.
@@ -88,6 +124,62 @@ func NewBufferedWriter(writer Writer) *BufferedWriter {
 		buffer:   New(),
 		buffered: true,
 	}
+}
+
+// NewBufferedWriterWithPrefix initializes a writer before it is shared with
+// consumers. The first MultiBuffer write flushes the prefix and enters the
+// regular synchronized pass-through mode.
+func NewBufferedWriterWithPrefix(writer Writer, prefix []byte) (*BufferedWriter, error) {
+	buffer := New()
+	if _, err := buffer.Write(prefix); err != nil {
+		buffer.Release()
+		return nil, err
+	}
+	return &BufferedWriter{
+		writer:    writer,
+		buffer:    buffer,
+		buffered:  true,
+		flushNext: true,
+	}, nil
+}
+
+// NewPooledBufferedWriterWithPrefix returns a writer whose lifetime must end
+// with Release after all consumers have stopped using it.
+func NewPooledBufferedWriterWithPrefix(writer Writer, prefix []byte) (*BufferedWriter, error) {
+	buffer := New()
+	if _, err := buffer.Write(prefix); err != nil {
+		buffer.Release()
+		return nil, err
+	}
+	bufferedWriter, _ := bufferedWriterPool.Get().(*BufferedWriter)
+	if bufferedWriter == nil {
+		bufferedWriter = new(BufferedWriter)
+	}
+	bufferedWriter.writer = writer
+	bufferedWriter.buffer = buffer
+	bufferedWriter.buffered = true
+	bufferedWriter.flushNext = true
+	bufferedWriter.pooled = true
+	return bufferedWriter, nil
+}
+
+// Release discards any unflushed prefix, clears connection references, and
+// returns a pooled writer for reuse. It is a no-op for non-pooled writers.
+func (w *BufferedWriter) Release() {
+	if w == nil || !w.pooled {
+		return
+	}
+	w.Lock()
+	if w.buffer != nil {
+		w.buffer.Release()
+	}
+	w.writer = nil
+	w.buffer = nil
+	w.buffered = false
+	w.flushNext = false
+	w.pooled = false
+	w.Unlock()
+	bufferedWriterPool.Put(w)
 }
 
 // WriteByte implements io.ByteWriter.
@@ -153,6 +245,11 @@ func (w *BufferedWriter) WriteMultiBuffer(b MultiBuffer) error {
 				w.buffer = nil
 			}
 			return w.writer.WriteMultiBuffer(b)
+		}
+		if writer, ok := w.writer.(prefixMultiBufferWriter); ok {
+			prefix := w.buffer
+			w.buffer = nil
+			return writer.WriteMultiBufferWithPrefix(prefix, b)
 		}
 
 		combined := make(MultiBuffer, len(b)+1)
@@ -248,6 +345,18 @@ func (w *BufferedWriter) Close() error {
 // SequentialWriter is a Writer that writes MultiBuffer sequentially into the underlying io.Writer.
 type SequentialWriter struct {
 	io.Writer
+}
+
+// WriteMultiBufferWithPrefix writes the owned prefix before the owned payload
+// without allocating a temporary combined MultiBuffer slice.
+func (w *SequentialWriter) WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error {
+	if err := WriteAllBytes(w.Writer, prefix.Bytes(), nil); err != nil {
+		prefix.Release()
+		ReleaseMulti(mb)
+		return err
+	}
+	prefix.Release()
+	return w.WriteMultiBuffer(mb)
 }
 
 // WriteMultiBuffer implements Writer.

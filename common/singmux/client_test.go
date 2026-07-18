@@ -23,6 +23,15 @@ type echoDispatcher struct {
 	target chan X.Destination
 }
 
+type wrappedDomainAddress struct {
+	domain string
+}
+
+func (*wrappedDomainAddress) IP() net.IP              { return nil }
+func (a *wrappedDomainAddress) Domain() string        { return a.domain }
+func (*wrappedDomainAddress) Family() X.AddressFamily { return X.AddressFamilyDomain }
+func (a *wrappedDomainAddress) String() string        { return a.domain }
+
 func (*echoDispatcher) Dispatch(context.Context, X.Destination) (*transport.Link, error) {
 	return nil, io.ErrClosedPipe
 }
@@ -423,6 +432,9 @@ func TestClientCloseIsTerminal(t *testing.T) {
 func TestMagicDestination(t *testing.T) {
 	if !IsDestination(X.TCPDestination(X.DomainAddress("sp.mux.sing-box.arpa"), 444)) {
 		t.Fatal("magic SMUX destination was not recognized")
+	}
+	if !IsDestination(X.TCPDestination(&wrappedDomainAddress{domain: "sp.mux.sing-box.arpa"}, 444)) {
+		t.Fatal("magic SMUX destination with wrapped domain was not recognized")
 	}
 	if IsDestination(X.TCPDestination(X.DomainAddress("example.com"), 444)) {
 		t.Fatal("ordinary destination must not be recognized as SMUX")

@@ -276,3 +276,21 @@ func TestEmptyMphMatcherGroup(t *testing.T) {
 		t.Error("Expect [], but ", r)
 	}
 }
+
+func TestMphMatcherGroupMatchFirst(t *testing.T) {
+	group := NewMphMatcherGroup()
+	group.AddDomainMatcher(common.Must2(Domain.New("example.com")).(DomainMatcher), 7)
+	group.AddDomainMatcher(common.Must2(Domain.New("sub.example.com")).(DomainMatcher), 3)
+	group.AddFullMatcher(common.Must2(Full.New("www.sub.example.com")).(FullMatcher), 5)
+	if err := group.Build(); err != nil {
+		t.Fatal(err)
+	}
+
+	value, found := group.MatchFirst("www.sub.example.com")
+	if !found || value != 3 {
+		t.Fatalf("MatchFirst = (%d, %t), want (3, true)", value, found)
+	}
+	if _, found := group.MatchFirst("example.net"); found {
+		t.Fatal("MatchFirst matched unrelated domain")
+	}
+}

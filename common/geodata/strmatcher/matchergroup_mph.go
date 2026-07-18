@@ -38,13 +38,16 @@ type mphRuleInfo struct {
 // MphMatcherGroup is an implementation of MatcherGroup.
 // It implements Rabin-Karp algorithm and minimal perfect hash table for Full and Domain matcher.
 type MphMatcherGroup struct {
-	rules      []string   // RuleIdx -> pattern string, index 0 reserved for failed lookup
-	values     [][]uint32 // RuleIdx -> registered matcher values for the pattern (Full Matcher takes precedence)
-	level0     []uint32   // RollingHash & Mask -> seed for Memhash
-	level0Mask uint32     // Mask restricting RollingHash to 0 ~ len(level0)
-	level1     []uint32   // Memhash<seed> & Mask -> stored index for rules
-	level1Mask uint32     // Mask for restricting Memhash<seed> to 0 ~ len(level1)
-	ruleInfos  *map[string]mphRuleInfo
+	rules         []string   // RuleIdx -> pattern string, index 0 reserved for failed lookup
+	values        [][]uint32 // RuleIdx -> registered matcher values for the pattern (Full Matcher takes precedence)
+	level0        []uint32   // RollingHash & Mask -> seed for Memhash
+	level0Mask    uint32     // Mask restricting RollingHash to 0 ~ len(level0)
+	level1        []uint32   // Memhash<seed> & Mask -> stored index for rules
+	level1Mask    uint32     // Mask for restricting Memhash<seed> to 0 ~ len(level1)
+	minRuleLength int
+	maxRuleLength int
+	ruleLengths   []bool
+	ruleInfos     *map[string]mphRuleInfo
 }
 
 func NewMphMatcherGroup() *MphMatcherGroup {
@@ -88,6 +91,20 @@ func (g *MphMatcherGroup) addPattern(suffixHash uint32, suffixPattern string, pa
 // Build builds a minimal perfect hash table for insert rules.
 // Algorithm used: Hash, displace, and compress. See http://cmph.sourceforge.net/papers/esa09.pdf
 func (g *MphMatcherGroup) Build() error {
+	g.minRuleLength = 0
+	g.maxRuleLength = 0
+	for _, rule := range g.rules[1:] {
+		if g.minRuleLength == 0 || len(rule) < g.minRuleLength {
+			g.minRuleLength = len(rule)
+		}
+		if len(rule) > g.maxRuleLength {
+			g.maxRuleLength = len(rule)
+		}
+	}
+	g.ruleLengths = make([]bool, g.maxRuleLength+1)
+	for _, rule := range g.rules[1:] {
+		g.ruleLengths[len(rule)] = true
+	}
 	ruleCount := len(*g.ruleInfos)
 	g.level0 = make([]uint32, nextPow2(ruleCount/4))
 	g.level0Mask = uint32(len(g.level0) - 1)
@@ -154,34 +171,90 @@ func (g *MphMatcherGroup) Lookup(rollingHash uint32, input string) uint32 {
 
 // Match implements MatcherGroup.Match.
 func (g *MphMatcherGroup) Match(input string) []uint32 {
+	if len(input) < g.minRuleLength {
+		return nil
+	}
 	matches := make([][]uint32, 0, 5)
 	hash := uint32(0)
 	for i := len(input) - 1; i >= 0; i-- {
 		hash = hash*PrimeRK + uint32(input[i])
-		if input[i] == '.' {
+		candidateLength := len(input) - i
+		if input[i] == '.' && candidateLength < len(g.ruleLengths) && g.ruleLengths[candidateLength] {
 			if mphIdx := g.Lookup(hash, input[i:]); mphIdx != 0 {
 				matches = append(matches, g.values[mphIdx])
 			}
 		}
 	}
-	if mphIdx := g.Lookup(hash, input); mphIdx != 0 {
-		matches = append(matches, g.values[mphIdx])
+	if len(input) < len(g.ruleLengths) && g.ruleLengths[len(input)] {
+		if mphIdx := g.Lookup(hash, input); mphIdx != 0 {
+			matches = append(matches, g.values[mphIdx])
+		}
 	}
 	return CompositeMatchesReverse(matches)
 }
 
 // MatchAny implements MatcherGroup.MatchAny.
 func (g *MphMatcherGroup) MatchAny(input string) bool {
+	if len(input) < g.minRuleLength {
+		return false
+	}
 	hash := uint32(0)
 	for i := len(input) - 1; i >= 0; i-- {
 		hash = hash*PrimeRK + uint32(input[i])
-		if input[i] == '.' {
+		candidateLength := len(input) - i
+		if input[i] == '.' && candidateLength < len(g.ruleLengths) && g.ruleLengths[candidateLength] {
 			if g.Lookup(hash, input[i:]) != 0 {
 				return true
 			}
 		}
 	}
-	return g.Lookup(hash, input) != 0
+	return len(input) < len(g.ruleLengths) && g.ruleLengths[len(input)] && g.Lookup(hash, input) != 0
+}
+
+// MatchFirst returns the smallest value associated with any full or domain
+// match. It avoids building the result slices used by Match.
+func (g *MphMatcherGroup) MatchFirst(input string) (uint32, bool) {
+	if len(input) < g.minRuleLength {
+		return 0, false
+	}
+	var first uint32
+	found := false
+	hash := uint32(0)
+	for i := len(input) - 1; i >= 0; i-- {
+		hash = hash*PrimeRK + uint32(input[i])
+		if input[i] != '.' {
+			continue
+		}
+		candidateLength := len(input) - i
+		if candidateLength >= len(g.ruleLengths) || !g.ruleLengths[candidateLength] {
+			continue
+		}
+		if mphIdx := g.Lookup(hash, input[i:]); mphIdx != 0 {
+			for _, value := range g.values[mphIdx] {
+				if value == 0 {
+					return 0, true
+				}
+				if !found || value < first {
+					first = value
+					found = true
+				}
+			}
+		}
+	}
+	if len(input) < len(g.ruleLengths) && g.ruleLengths[len(input)] {
+		if mphIdx := g.Lookup(hash, input); mphIdx != 0 {
+			for _, value := range g.values[mphIdx] {
+				if value == 0 {
+					return 0, true
+				}
+				if !found || value < first {
+					first = value
+					found = true
+				}
+			}
+		}
+	}
+	return first, found
 }
 
 func nextPow2(v int) int {

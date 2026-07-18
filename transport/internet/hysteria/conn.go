@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apernet/quic-go"
@@ -73,15 +74,14 @@ type InterConn struct {
 	local  net.Addr
 	remote net.Addr
 
-	id     uint32
-	ch     chan []byte
-	time   time.Time
-	mutex  sync.Mutex
-	closed bool
+	id      uint32
+	ch      chan []byte
+	active  atomic.Int64
+	closed  atomic.Bool
+	clock   *atomic.Int64
+	manager *udpSessionManager
 
-	write func(p []byte) error
-	close func()
-	user  *protocol.MemoryUser
+	user *protocol.MemoryUser
 }
 
 func (i *InterConn) User() *protocol.MemoryUser {
@@ -89,16 +89,15 @@ func (i *InterConn) User() *protocol.MemoryUser {
 }
 
 func (c *InterConn) Time() time.Time {
-	c.mutex.Lock()
-	v := c.time
-	c.mutex.Unlock()
-	return v
+	return time.Unix(0, c.active.Load())
 }
 
 func (c *InterConn) Update() {
-	c.mutex.Lock()
-	c.time = time.Now()
-	c.mutex.Unlock()
+	if c.clock != nil {
+		c.active.Store(c.clock.Load())
+		return
+	}
+	c.active.Store(time.Now().UnixNano())
 }
 
 func (c *InterConn) Read(p []byte) (int, error) {
@@ -114,11 +113,19 @@ func (c *InterConn) Read(p []byte) (int, error) {
 }
 
 func (c *InterConn) Write(p []byte) (int, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return 0, io.ErrClosedPipe
 	}
 	binary.BigEndian.PutUint32(p, c.id)
-	if err := c.write(p); err != nil {
+	var err error
+	if c.manager != nil && c.manager.conn != nil {
+		err = c.manager.conn.SendDatagram(p)
+	} else if c.manager != nil && c.manager.send != nil {
+		err = c.manager.send(p)
+	} else {
+		err = io.ErrClosedPipe
+	}
+	if err != nil {
 		return 0, err
 	}
 	c.Update()
@@ -126,7 +133,16 @@ func (c *InterConn) Write(p []byte) (int, error) {
 }
 
 func (c *InterConn) Close() error {
-	c.close()
+	if c.closed.Load() {
+		return nil
+	}
+	if c.manager != nil {
+		c.manager.Lock()
+		c.manager.close(c)
+		c.manager.Unlock()
+	} else {
+		c.closed.Store(true)
+	}
 	return nil
 }
 
@@ -156,16 +172,23 @@ type udpSessionManager struct {
 	conn   *quic.Conn
 	m      map[uint32]*InterConn
 	next   uint32
-	closed bool
+	closed atomic.Bool
+	clock  atomic.Int64
 
 	addConn        internet.ConnHandler
 	udpIdleTimeout time.Duration
 	user           *protocol.MemoryUser
+	send           func([]byte) error
+}
+
+const initialUDPSessionCapacity = 16
+
+func newUDPSessionMap() map[uint32]*InterConn {
+	return make(map[uint32]*InterConn, initialUDPSessionCapacity)
 }
 
 func (m *udpSessionManager) close(udpConn *InterConn) {
-	if !udpConn.closed {
-		udpConn.closed = true
+	if udpConn.closed.CompareAndSwap(false, true) {
 		close(udpConn.ch)
 		delete(m.m, udpConn.id)
 	}
@@ -174,28 +197,31 @@ func (m *udpSessionManager) close(udpConn *InterConn) {
 func (m *udpSessionManager) clean() {
 	ticker := time.NewTicker(idleCleanupInterval)
 	defer ticker.Stop()
+	m.clock.Store(time.Now().UnixNano())
 
 	for range ticker.C {
-		if m.closed {
+		if m.isClosed() {
 			return
 		}
-
-		m.RLock()
 		now := time.Now()
-		timeoutConn := make([]*InterConn, 0, len(m.m))
-		for _, udpConn := range m.m {
-			if now.Sub(udpConn.Time()) > m.udpIdleTimeout {
-				timeoutConn = append(timeoutConn, udpConn)
-			}
-		}
-		m.RUnlock()
+		m.clock.Store(now.UnixNano())
+		m.cleanInactive(now)
+	}
+}
 
-		for _, udpConn := range timeoutConn {
-			m.Lock()
+func (m *udpSessionManager) cleanInactive(now time.Time) {
+	m.Lock()
+	activeBefore := now.UnixNano() - m.udpIdleTimeout.Nanoseconds()
+	for _, udpConn := range m.m {
+		if udpConn.active.Load() < activeBefore {
 			m.close(udpConn)
-			m.Unlock()
 		}
 	}
+	m.Unlock()
+}
+
+func (m *udpSessionManager) isClosed() bool {
+	return m.closed.Load()
 }
 
 func (m *udpSessionManager) run() {
@@ -216,7 +242,7 @@ func (m *udpSessionManager) run() {
 	m.Lock()
 	defer m.Unlock()
 
-	m.closed = true
+	m.closed.Store(true)
 
 	for _, udpConn := range m.m {
 		m.close(udpConn)
@@ -227,7 +253,7 @@ func (m *udpSessionManager) udp() (*InterConn, error) {
 	m.Lock()
 	defer m.Unlock()
 
-	if m.closed {
+	if m.closed.Load() {
 		return nil, errors.New("closed")
 	}
 
@@ -235,14 +261,9 @@ func (m *udpSessionManager) udp() (*InterConn, error) {
 		local:  m.conn.LocalAddr(),
 		remote: m.conn.RemoteAddr(),
 
-		id: m.next,
-		ch: make(chan []byte, udpMessageChanSize),
-	}
-	udpConn.write = m.conn.SendDatagram
-	udpConn.close = func() {
-		m.Lock()
-		m.close(udpConn)
-		m.Unlock()
+		id:      m.next,
+		ch:      make(chan []byte, udpMessageChanSize),
+		manager: m,
 	}
 	m.m[m.next] = udpConn
 	m.next++
@@ -268,31 +289,30 @@ func (m *udpSessionManager) feed(id uint32, d []byte) {
 	}
 
 	m.Lock()
-	defer m.Unlock()
-
 	udpConn, ok = m.m[id]
+	created := !ok
 	if !ok {
 		udpConn = &InterConn{
 			local:  m.conn.LocalAddr(),
 			remote: m.conn.RemoteAddr(),
 
-			id:   id,
-			ch:   make(chan []byte, udpMessageChanSize),
-			time: time.Now(),
+			id:      id,
+			ch:      make(chan []byte, udpMessageChanSize),
+			manager: m,
 		}
-		udpConn.write = m.conn.SendDatagram
-		udpConn.close = func() {
-			m.Lock()
-			m.close(udpConn)
-			m.Unlock()
-		}
+		udpConn.clock = &m.clock
+		udpConn.Update()
 		udpConn.user = m.user
 		m.m[id] = udpConn
-		m.addConn(udpConn)
 	}
 
 	select {
 	case udpConn.ch <- d:
 	default:
+	}
+	m.Unlock()
+
+	if created {
+		m.addConn(udpConn)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -87,10 +88,33 @@ func ParseAddress(addr string) Address {
 	if lenAddr > 0 && (!isAlphaNum(addr[0]) || !isAlphaNum(addr[len(addr)-1])) {
 		addr = strings.TrimSpace(addr)
 	}
+	hasHexLetter := false
+	hasColon := false
+addressScan:
+	for index := range len(addr) {
+		value := addr[index]
+		switch {
+		case value == ':':
+			hasColon = true
+			break addressScan
+		case (value >= '0' && value <= '9') || value == '.':
+		case (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F'):
+			hasHexLetter = true
+		default:
+			return DomainAddress(addr)
+		}
+	}
+	if hasHexLetter && !hasColon {
+		return DomainAddress(addr)
+	}
 
-	ip := net.ParseIP(addr)
-	if ip != nil {
-		return IPAddress(ip)
+	ip, err := netip.ParseAddr(addr)
+	if err == nil && ip.Zone() == "" {
+		ip = ip.Unmap()
+		if ip.Is4() {
+			return IPv4Address(ip.As4())
+		}
+		return IPv6Address(ip.As16())
 	}
 	return DomainAddress(addr)
 }
@@ -101,22 +125,47 @@ var bytes0 = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 func IPAddress(ip []byte) Address {
 	switch len(ip) {
 	case net.IPv4len:
-		var addr ipv4Address = [4]byte{ip[0], ip[1], ip[2], ip[3]}
-		return addr
+		return IPv4Address([4]byte{ip[0], ip[1], ip[2], ip[3]})
 	case net.IPv6len:
 		if bytes.Equal(ip[:10], bytes0) && ip[10] == 0xff && ip[11] == 0xff {
 			return IPAddress(ip[12:16])
 		}
-		var addr ipv6Address = [16]byte{
+		return IPv6Address([16]byte{
 			ip[0], ip[1], ip[2], ip[3],
 			ip[4], ip[5], ip[6], ip[7],
 			ip[8], ip[9], ip[10], ip[11],
 			ip[12], ip[13], ip[14], ip[15],
-		}
-		return addr
+		})
 	default:
 		errors.LogError(context.Background(), "invalid IP format: ", ip)
 		return nil
+	}
+}
+
+// IPv4Address creates an IPv4 address without converting through a byte slice.
+func IPv4Address(ip [4]byte) Address {
+	return ipv4Address(ip)
+}
+
+// IPv6Address creates an IPv6 address without converting through a byte slice.
+func IPv6Address(ip [16]byte) Address {
+	return ipv6Address(ip)
+}
+
+// AddressToNetIPAddr returns an allocation-free value representation for the
+// built-in IP address types.
+func AddressToNetIPAddr(address Address) (netip.Addr, bool) {
+	switch address := address.(type) {
+	case ipv4Address:
+		return netip.AddrFrom4([4]byte(address)), true
+	case ipv6Address:
+		return netip.AddrFrom16([16]byte(address)), true
+	default:
+		if provider, ok := address.(interface{ NetIPAddr() netip.Addr }); ok {
+			ip := provider.NetIPAddr()
+			return ip, ip.IsValid()
+		}
+		return netip.Addr{}, false
 	}
 }
 

@@ -102,7 +102,7 @@ func buildE2EBinaries(t *testing.T, workDir string) e2eBinaries {
 	coresRoot := filepath.Dir(xrayRoot)
 	return e2eBinaries{
 		xray:    buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main"),
-		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box", "-tags=with_utls"),
+		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box", "-tags=with_utls,with_quic"),
 		mihomo:  buildE2EBinary(t, "MIHOMO_E2E_BIN", filepath.Join(workDir, "mihomo"), filepath.Join(coresRoot, "mihomo"), "."),
 	}
 }

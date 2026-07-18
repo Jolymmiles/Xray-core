@@ -22,19 +22,31 @@ type retryer struct {
 // On implements Strategy.On.
 func (r *retryer) On(method func() error) error {
 	attempt := 0
-	accumulatedError := make([]error, 0, r.totalAttempt)
+	var firstError error
+	var accumulatedError []error
 	for attempt < r.totalAttempt {
 		err := method()
 		if err == nil {
 			return nil
 		}
-		numErrors := len(accumulatedError)
-		if numErrors == 0 || err.Error() != accumulatedError[numErrors-1].Error() {
+		if firstError == nil {
+			firstError = err
+		} else if accumulatedError == nil {
+			if err.Error() != firstError.Error() {
+				accumulatedError = make([]error, 0, r.totalAttempt)
+				accumulatedError = append(accumulatedError, firstError, err)
+			}
+		} else if err.Error() != accumulatedError[len(accumulatedError)-1].Error() {
 			accumulatedError = append(accumulatedError, err)
 		}
 		delay := r.nextDelay()
-		time.Sleep(time.Duration(delay) * time.Millisecond)
+		if delay != 0 {
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+		}
 		attempt++
+	}
+	if accumulatedError == nil && firstError != nil {
+		accumulatedError = []error{firstError}
 	}
 	return errors.New(accumulatedError).Base(ErrRetryFailed)
 }

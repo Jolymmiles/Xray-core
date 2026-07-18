@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"io"
+	stdnet "net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/common/dice"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/geodata"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/platform"
 	"github.com/xtls/xray-core/common/retry"
@@ -137,6 +139,9 @@ func (r *FinalRule) matchPort(port net.Port) bool {
 func (r *FinalRule) matchIP(addr net.Address) bool {
 	if r.ip == nil {
 		return true
+	}
+	if ip, ok := net.AddressToNetIPAddr(addr); ok {
+		return r.ip.MatchAddr(ip)
 	}
 	return addr != nil && addr.Family().IsIP() && r.ip.Match(addr.IP())
 }
@@ -304,7 +309,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 					Address: net.IPAddress(ips[dice.Roll(len(ips))]),
 					Port:    dialDest.Port,
 				}
-				errors.LogInfo(ctx, "dialing to ", dialDest)
+				logFreedomDialDestination(ctx, dialDest)
 			}
 		} else if h.shouldResolveDomainBeforeFinalRules(dialDest, defaultRule) { // asis + domain + hasrules
 			domain := dialDest.Address.Domain()
@@ -329,7 +334,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			}
 			if addr := net.IPAddress(ips[dice.Roll(len(ips))]); addr != nil {
 				dialDest.Address = addr
-				errors.LogInfo(ctx, "dialing to ", dialDest)
+				logFreedomDialDestination(ctx, dialDest)
 			}
 		}
 		if rule := h.matchFinalRule(dialDest.Network, dialDest.Address, dialDest.Port, defaultRule); rule != nil && rule.action == RuleAction_Block {
@@ -375,7 +380,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 	}
 	defer conn.Close()
-	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+	logFreedomConnectionOpened(ctx, destination, conn)
 
 	var newCtx context.Context
 	var newCancel context.CancelFunc
@@ -455,11 +460,23 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		ctx = newCtx
 	}
 
-	if err := task.Run(ctx, requestDone, task.OnSuccess(responseDone, task.Close(output))); err != nil {
+	if err := task.Run(ctx, requestDone, task.OnSuccessClose(responseDone, output)); err != nil {
 		return errors.New("connection ends").Base(err)
 	}
 
 	return nil
+}
+
+func logFreedomDialDestination(ctx context.Context, destination net.Destination) {
+	if log.ShouldLog(log.Severity_Info) {
+		errors.LogInfo(ctx, "dialing to ", destination)
+	}
+}
+
+func logFreedomConnectionOpened(ctx context.Context, destination net.Destination, conn stdnet.Conn) {
+	if log.ShouldLog(log.Severity_Info) {
+		errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+	}
 }
 
 func NewPacketReader(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination) buf.Reader {

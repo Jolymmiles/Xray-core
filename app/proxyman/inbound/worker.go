@@ -61,9 +61,8 @@ func getTProxyType(s *internet.MemoryStreamConfig) internet.SocketConfig_TProxyM
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
-	ctx = c.ContextWithID(ctx, sid)
 
-	outbounds := []*session.Outbound{{}}
+	outbound := session.Outbound{}
 	if w.recvOrigDest {
 		var dest net.Destination
 		switch getTProxyType(w.stream) {
@@ -96,10 +95,9 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 				errors.LogError(ctx, errors.New("loopback connection detected"))
 				return
 			}
-			outbounds[0].Target = dest
+			outbound.Target = dest
 		}
 	}
-	ctx = session.ContextWithOutbounds(ctx, outbounds)
 
 	if w.uplinkCounter != nil || w.downlinkCounter != nil {
 		conn = &stat.CounterConnection{
@@ -108,17 +106,29 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 			WriteCounter: w.downlinkCounter,
 		}
 	}
-	ctx = session.ContextWithInbound(ctx, &session.Inbound{
-		Source:  net.DestinationFromAddr(conn.RemoteAddr()),
-		Local:   net.DestinationFromAddr(conn.LocalAddr()),
+	remoteAddr := conn.RemoteAddr()
+	localAddr := conn.LocalAddr()
+	connectionAddresses := net.AcquireTCPConnectionAddresses(remoteAddr, localAddr)
+	var source, local net.Destination
+	if connectionAddresses != nil {
+		defer connectionAddresses.Release()
+		source = connectionAddresses.Source()
+		local = connectionAddresses.Local()
+	} else {
+		source = net.DestinationFromAddr(remoteAddr)
+		local = net.DestinationFromAddr(localAddr)
+	}
+	inbound := session.Inbound{
+		Source:  source,
+		Local:   local,
 		Gateway: net.TCPDestination(w.address, w.port),
 		Tag:     w.tag,
 		Conn:    conn,
-	})
+	}
 
-	content := new(session.Content)
+	content := session.Content{}
 	content.SniffingRequest = w.sniffingRequest
-	ctx = session.ContextWithContent(ctx, content)
+	ctx = session.ContextWithConnection(ctx, sid, inbound, outbound, content)
 
 	if err := w.proxy.Process(ctx, net.Network_TCP, conn, w.dispatcher); err != nil {
 		errors.LogInfoInner(ctx, err, "connection ends")

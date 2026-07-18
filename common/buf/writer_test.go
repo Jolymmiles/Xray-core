@@ -5,13 +5,57 @@ import (
 	"bytes"
 	"crypto/rand"
 	"io"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	statsapp "github.com/xtls/xray-core/app/stats"
 	"github.com/xtls/xray-core/common"
 	. "github.com/xtls/xray-core/common/buf"
+	X "github.com/xtls/xray-core/common/net"
+	transportstat "github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/pipe"
 )
+
+type benchmarkStreamConn struct{}
+
+func (*benchmarkStreamConn) Read([]byte) (int, error)          { return 0, io.EOF }
+func (*benchmarkStreamConn) Write(payload []byte) (int, error) { return len(payload), nil }
+func (*benchmarkStreamConn) Close() error                      { return nil }
+func (*benchmarkStreamConn) LocalAddr() net.Addr               { return nil }
+func (*benchmarkStreamConn) RemoteAddr() net.Addr              { return nil }
+func (*benchmarkStreamConn) SetDeadline(time.Time) error       { return nil }
+func (*benchmarkStreamConn) SetReadDeadline(time.Time) error   { return nil }
+func (*benchmarkStreamConn) SetWriteDeadline(time.Time) error  { return nil }
+
+var writerBenchmarkSink Writer
+
+func TestManagedUDPIPv4Metadata(t *testing.T) {
+	buffer := New()
+	defer buffer.Release()
+	if _, _, ok := buffer.ManagedUDPIPv4(); ok {
+		t.Fatal("fresh buffer reported managed IPv4 metadata")
+	}
+	wantIP := [4]byte{192, 0, 2, 1}
+	wantPort := X.Port(5353)
+	buffer.SetManagedUDPIPv4(wantIP, wantPort)
+	gotIP, gotPort, ok := buffer.ManagedUDPIPv4()
+	if !ok || gotIP != wantIP || gotPort != wantPort {
+		t.Fatalf("managed IPv4 = %v:%d, ok=%v", gotIP, gotPort, ok)
+	}
+	buffer.SetManagedUDPDestination(X.UDPDestination(X.DomainAddress("example.com"), 53))
+	if _, _, ok := buffer.ManagedUDPIPv4(); ok {
+		t.Fatal("domain destination retained managed IPv4 metadata")
+	}
+	buffer.SetManagedUDPDomain("managed.example", 5353)
+	if buffer.UDP == nil || buffer.UDP.Address.Domain() != "managed.example" || buffer.UDP.Port != 5353 {
+		t.Fatalf("managed domain destination = %v", buffer.UDP)
+	}
+	if domain, port, ok := buffer.ManagedUDPDomain(); !ok || domain != "managed.example" || port != 5353 {
+		t.Fatalf("managed domain metadata = %q:%d, ok=%v", domain, port, ok)
+	}
+}
 
 type releasingMultiBufferWriter struct{}
 
@@ -112,6 +156,37 @@ func TestWriterInterface(t *testing.T) {
 	}
 }
 
+func TestNewWriterPreservesStreamCounter(t *testing.T) {
+	counter := new(statsapp.Counter)
+	connection := &transportstat.CounterConnection{
+		Connection:   new(benchmarkStreamConn),
+		WriteCounter: counter,
+	}
+	writer := NewWriter(connection)
+	if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes([]byte("payload"))}); err != nil {
+		t.Fatal(err)
+	}
+	if got := counter.Value(); got != 7 {
+		t.Fatalf("write counter = %d, want 7", got)
+	}
+}
+
+func TestNewPooledWriterPreservesStreamCounter(t *testing.T) {
+	counter := new(statsapp.Counter)
+	connection := &transportstat.CounterConnection{
+		Connection:   new(benchmarkStreamConn),
+		WriteCounter: counter,
+	}
+	writer := NewPooledWriter(connection)
+	if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes([]byte("payload"))}); err != nil {
+		t.Fatal(err)
+	}
+	ReleasePooledWriter(writer)
+	if got := counter.Value(); got != 7 {
+		t.Fatalf("write counter = %d, want 7", got)
+	}
+}
+
 func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
 	underlying := new(recordingMultiBufferWriter)
 	writer := NewBufferedWriter(underlying)
@@ -146,6 +221,39 @@ func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
 	ReleaseMulti(underlying.calls[1])
 }
 
+func TestBufferedWriterWithPrefixPreservesFirstPayloadBuffers(t *testing.T) {
+	underlying := new(recordingMultiBufferWriter)
+	writer, err := NewBufferedWriterWithPrefix(underlying, []byte("header"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := FromBytes([]byte("payload"))
+	if err := writer.WriteMultiBuffer(MultiBuffer{payload}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 1 || underlying.calls[0].String() != "headerpayload" {
+		t.Fatalf("first write = %v, want headerpayload", underlying.calls)
+	}
+	if len(underlying.calls[0]) != 2 || underlying.calls[0][1] != payload {
+		t.Fatal("first payload buffer was copied instead of transferred")
+	}
+	ReleaseMulti(underlying.calls[0])
+}
+
+func TestSequentialWriterConsumesPrefixAndPayload(t *testing.T) {
+	var output bytes.Buffer
+	writer, err := NewBufferedWriterWithPrefix(&SequentialWriter{Writer: &output}, []byte("header"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes([]byte("payload"))}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "headerpayload" {
+		t.Fatalf("wire output = %q, want headerpayload", got)
+	}
+}
+
 func BenchmarkBufferedWriterHeaderAndFirstPayload(b *testing.B) {
 	underlying := releasingMultiBufferWriter{}
 	header := []byte("vless-request-header")
@@ -162,5 +270,89 @@ func BenchmarkBufferedWriterHeaderAndFirstPayload(b *testing.B) {
 		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkBufferedTCPWriterHeaderAndFirstPayload(b *testing.B) {
+	header := []byte("vless-response-header")
+	payload := make([]byte, 1400)
+	b.SetBytes(int64(len(header) + len(payload)))
+	b.ReportAllocs()
+
+	for b.Loop() {
+		underlying := &BufferToBytesWriter{Writer: io.Discard}
+		writer := NewBufferedWriter(underlying)
+		if _, err := writer.Write(header); err != nil {
+			b.Fatal(err)
+		}
+		writer.SetFlushNext()
+		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPrefixedBufferedTCPWriterHeaderAndFirstPayload(b *testing.B) {
+	header := []byte("vless-response-header")
+	payload := make([]byte, 1400)
+	b.SetBytes(int64(len(header) + len(payload)))
+	b.ReportAllocs()
+
+	for b.Loop() {
+		underlying := &BufferToBytesWriter{Writer: io.Discard}
+		writer, err := NewBufferedWriterWithPrefix(underlying, header)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPrefixedBufferedSequentialWriter(b *testing.B) {
+	header := []byte("vless-response-header")
+	payload := make([]byte, 1400)
+	b.SetBytes(int64(len(header) + len(payload)))
+	b.ReportAllocs()
+
+	for b.Loop() {
+		underlying := &SequentialWriter{Writer: io.Discard}
+		writer, err := NewPooledBufferedWriterWithPrefix(underlying, header)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
+			b.Fatal(err)
+		}
+		writer.Release()
+	}
+}
+
+func BenchmarkNewStreamWriter(b *testing.B) {
+	connection := new(benchmarkStreamConn)
+	b.ReportAllocs()
+	for b.Loop() {
+		writerBenchmarkSink = NewWriter(connection)
+	}
+}
+
+func BenchmarkPooledVLESSResponseWriterSetup(b *testing.B) {
+	connection := new(benchmarkStreamConn)
+	payload := make([]byte, 1400)
+	header := []byte{0, 0}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(header) + len(payload)))
+	for b.Loop() {
+		underlying := NewPooledWriter(connection)
+		writer, err := NewPooledBufferedWriterWithPrefix(underlying, header)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
+			b.Fatal(err)
+		}
+		writer.Release()
+		ReleasePooledWriter(underlying)
 	}
 }

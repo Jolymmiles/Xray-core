@@ -145,7 +145,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return buf.Copy(responseReader, link.Writer, buf.UpdateActivity(timer))
 		}
 
-		responseDoneAndCloseWriter := task.OnSuccess(responseDone, task.Close(link.Writer))
+		responseDoneAndCloseWriter := task.OnSuccessClose(responseDone, link.Writer)
 		if err := task.Run(ctx, requestDone, responseDoneAndCloseWriter); err != nil {
 			return errors.New("connection ends").Base(err)
 		}
@@ -183,7 +183,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return nil
 		}
 
-		responseDoneAndCloseWriter := task.OnSuccess(responseDone, task.Close(link.Writer))
+		responseDoneAndCloseWriter := task.OnSuccessClose(responseDone, link.Writer)
 		if err := task.Run(ctx, requestDone, responseDoneAndCloseWriter); err != nil {
 			return errors.New("connection ends").Base(err)
 		}

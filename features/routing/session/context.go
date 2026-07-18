@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	stdnetip "net/netip"
 
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
@@ -153,6 +154,9 @@ func (ctx *Context) GetSkipDNSResolve() bool {
 
 // AsRoutingContext creates a context from context.context with session info.
 func AsRoutingContext(ctx context.Context) routing.Context {
+	if routingContext := session.RoutingContextFromContext(ctx); routingContext != nil {
+		return routingContext
+	}
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 	return &Context{
@@ -160,4 +164,32 @@ func AsRoutingContext(ctx context.Context) routing.Context {
 		Outbound: ob,
 		Content:  session.ContentFromContext(ctx),
 	}
+}
+
+func (ctx *Context) GetSourceAddress() net.Address {
+	if ctx.Inbound == nil {
+		return nil
+	}
+	return ctx.Inbound.Source.Address
+}
+
+func (ctx *Context) GetTargetAddress() net.Address {
+	if ctx.Outbound == nil {
+		return nil
+	}
+	return ctx.Outbound.Target.Address
+}
+
+func (ctx *Context) GetTargetNetIPAddr() (stdnetip.Addr, bool) {
+	if ctx.Outbound == nil {
+		return stdnetip.Addr{}, false
+	}
+	return net.AddressToNetIPAddr(ctx.Outbound.Target.Address)
+}
+
+func (ctx *Context) GetLocalAddress() net.Address {
+	if ctx.Inbound == nil {
+		return nil
+	}
+	return ctx.Inbound.Local.Address
 }

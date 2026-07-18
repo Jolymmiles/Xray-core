@@ -211,7 +211,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		ctx = newCtx
 	}
 
-	responseDonePost := task.OnSuccess(responseDone, task.Close(output))
+	responseDonePost := task.OnSuccessClose(responseDone, output)
 	if err := task.Run(ctx, requestDone, responseDonePost); err != nil {
 		return errors.New("connection ends").Base(err)
 	}

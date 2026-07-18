@@ -17,6 +17,10 @@ type Writer interface {
 	io.Closer
 }
 
+type lineWriter interface {
+	WriteLine(string) error
+}
+
 // WriterCreator is a function to create LogWriters.
 type WriterCreator func() Writer
 
@@ -90,7 +94,7 @@ func (l *generalLogger) run() {
 		case <-l.done.Wait():
 			return
 		case msg := <-l.buffer:
-			logger.Write(msg.String() + platform.LineSeparator())
+			writeLogMessage(logger, msg)
 			dataWritten = true
 		case <-ticker.C:
 			if !dataWritten {
@@ -99,6 +103,14 @@ func (l *generalLogger) run() {
 			dataWritten = false
 		}
 	}
+}
+
+func writeLogMessage(writer Writer, message Message) error {
+	formatted := message.String()
+	if writer, ok := writer.(lineWriter); ok {
+		return writer.WriteLine(formatted)
+	}
+	return writer.Write(formatted + platform.LineSeparator())
 }
 
 func (l *generalLogger) Handle(msg Message) {
@@ -127,6 +139,8 @@ func (w *consoleLogWriter) Write(s string) error {
 	return nil
 }
 
+func (w *consoleLogWriter) WriteLine(s string) error { return w.Write(s) }
+
 func (w *consoleLogWriter) Close() error {
 	return nil
 }
@@ -140,6 +154,8 @@ func (w *fileLogWriter) Write(s string) error {
 	w.logger.Print(s)
 	return nil
 }
+
+func (w *fileLogWriter) WriteLine(s string) error { return w.Write(s) }
 
 func (w *fileLogWriter) Close() error {
 	return w.file.Close()

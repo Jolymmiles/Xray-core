@@ -16,6 +16,14 @@ func BuildSniffingRequest(config *SniffingConfig) (session.SniffingRequest, erro
 		MetadataOnly:                   config.MetadataOnly,
 		RouteOnly:                      config.RouteOnly,
 	}
+	for _, protocol := range config.DestinationOverride {
+		switch protocol {
+		case "http":
+			request.OverrideProtocolMask |= session.SniffingOverrideHTTP
+		case "tls":
+			request.OverrideProtocolMask |= session.SniffingOverrideTLS
+		}
+	}
 	if len(config.DomainsExcluded) > 0 {
 		excludeForDomain, err := geodata.DomainReg.BuildDomainMatcher(config.DomainsExcluded)
 		if err != nil {

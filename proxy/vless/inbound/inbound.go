@@ -65,6 +65,7 @@ func init() {
 				return nil, errors.New("failed to initiate user").Base(err).AtError()
 			}
 		}
+		validator.Warmup()
 
 		return New(ctx, c, dc, validator)
 	}))
@@ -74,6 +75,7 @@ func init() {
 type Handler struct {
 	inboundHandlerManager  feature_inbound.Manager
 	policyManager          policy.Manager
+	sessionPolicy          policy.Session
 	stats                  stats.Manager
 	validator              vless.Validator
 	decryption             *encryption.ServerInstance
@@ -85,12 +87,26 @@ type Handler struct {
 	// regexps               map[string]*regexp.Regexp       // or nil
 }
 
+func logFirstBufferLength(ctx context.Context, length int64) {
+	if log.ShouldLog(log.Severity_Info) {
+		errors.LogInfo(ctx, "firstLen = ", length)
+	}
+}
+
+func logReceivedRequest(ctx context.Context, request *protocol.RequestHeader) {
+	if log.ShouldLog(log.Severity_Info) {
+		errors.LogInfo(ctx, "received request for ", request.Destination())
+	}
+}
+
 // New creates a new VLess inbound handler.
 func New(ctx context.Context, config *Config, dc dns.Client, validator vless.Validator) (*Handler, error) {
 	v := core.MustFromContext(ctx)
+	policyManager := v.GetFeature(policy.ManagerType()).(policy.Manager)
 	handler := &Handler{
 		inboundHandlerManager:  v.GetFeature(feature_inbound.ManagerType()).(feature_inbound.Manager),
-		policyManager:          v.GetFeature(policy.ManagerType()).(policy.Manager),
+		policyManager:          policyManager,
+		sessionPolicy:          policyManager.ForLevel(0),
 		stats:                  v.GetFeature(stats.ManagerType()).(stats.Manager),
 		validator:              validator,
 		outboundHandlerManager: v.GetFeature(outbound.ManagerType()).(outbound.Manager),
@@ -276,7 +292,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		}
 	}
 
-	sessionPolicy := h.policyManager.ForLevel(0)
+	sessionPolicy := h.sessionPolicy
 	if err := connection.SetReadDeadline(time.Now().Add(sessionPolicy.Timeouts.Handshake)); err != nil {
 		return errors.New("unable to set read deadline").Base(err).AtWarning()
 	}
@@ -287,28 +303,24 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		first.Release()
 		return errR
 	}
-	errors.LogInfo(ctx, "firstLen = ", firstLen)
+	logFirstBufferLength(ctx, firstLen)
 
-	reader := &buf.BufferedReader{
-		Reader: buf.NewReader(connection),
-		Buffer: buf.MultiBuffer{first},
-	}
-	defer func() {
-		reader.Buffer = buf.ReleaseMulti(reader.Buffer)
-	}()
+	reader := buf.NewPooledBufferedReader(buf.NewPooledReader(connection), buf.MultiBuffer{first})
+	defer reader.Release()
 
-	var userSentID []byte // not MemoryAccount.ID
+	var userSentID [16]byte // not MemoryAccount.ID
 	var request *protocol.RequestHeader
-	var requestAddons *encoding.Addons
+	var requestAddons encoding.HeaderAddons
 	var err error
 
 	napfb := h.fallbacks
-	isfb := napfb != nil
+	fallbackEnabled := napfb != nil
+	isfb := fallbackEnabled
 
-	if isfb && firstLen < 18 {
+	if fallbackEnabled && firstLen < 18 {
 		err = errors.New("fallback directly")
 	} else {
-		userSentID, request, requestAddons, isfb, err = encoding.DecodeRequestHeader(isfb, first, reader, h.validator)
+		userSentID, request, requestAddons, isfb, err = encoding.DecodeRequestHeaderFromFirst(first, reader, h.validator, fallbackEnabled)
 	}
 
 	if err != nil {
@@ -324,14 +336,18 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 				cs := tlsConn.ConnectionState()
 				name = cs.ServerName
 				alpn = cs.NegotiatedProtocol
-				errors.LogInfo(ctx, "realName = "+name)
-				errors.LogInfo(ctx, "realAlpn = "+alpn)
+				if log.ShouldLog(log.Severity_Info) {
+					errors.LogInfo(ctx, "realName = "+name)
+					errors.LogInfo(ctx, "realAlpn = "+alpn)
+				}
 			} else if realityConn, ok := iConn.(*reality.Conn); ok {
 				cs := realityConn.ConnectionState()
 				name = cs.ServerName
 				alpn = cs.NegotiatedProtocol
-				errors.LogInfo(ctx, "realName = "+name)
-				errors.LogInfo(ctx, "realAlpn = "+alpn)
+				if log.ShouldLog(log.Severity_Info) {
+					errors.LogInfo(ctx, "realName = "+name)
+					errors.LogInfo(ctx, "realAlpn = "+alpn)
+				}
 			}
 			name = strings.ToLower(name)
 			alpn = strings.ToLower(alpn)
@@ -396,7 +412,9 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 								}
 								if k == '?' || k == ' ' {
 									path = string(firstBytes[i:j])
-									errors.LogInfo(ctx, "realPath = "+path)
+									if log.ShouldLog(log.Severity_Info) {
+										errors.LogInfo(ctx, "realPath = "+path)
+									}
 									if pfb[path] == nil {
 										path = ""
 									}
@@ -505,7 +523,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 				return nil
 			}
 
-			if err := task.Run(ctx, task.OnSuccess(postRequest, task.Close(serverWriter)), task.OnSuccess(getResponse, task.Close(writer))); err != nil {
+			if err := task.Run(ctx, task.OnSuccessClose(postRequest, serverWriter), task.OnSuccessClose(getResponse, writer)); err != nil {
 				common.Interrupt(serverReader)
 				common.Interrupt(serverWriter)
 				return errors.New("fallback ends").Base(err).AtInfo()
@@ -524,11 +542,12 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		}
 		return err
 	}
+	defer encoding.ReleaseRequestHeader(request)
 
 	if err := connection.SetReadDeadline(time.Time{}); err != nil {
 		errors.LogWarningInner(ctx, err, "unable to set back read deadline")
 	}
-	errors.LogInfo(ctx, "received request for ", request.Destination())
+	logReceivedRequest(ctx, request)
 
 	inbound := session.InboundFromContext(ctx)
 	if inbound == nil {
@@ -541,11 +560,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	account := request.User.Account.(*vless.MemoryAccount)
 
 	if account.Reverse != nil && request.Command != protocol.RequestCommandRvs {
-		return errors.New("for safety reasons, user " + account.ID.String() + " is not allowed to use forward proxy")
-	}
-
-	responseAddons := &encoding.Addons{
-		// Flow: requestAddons.Flow,
+		return forwardProxyNotAllowedError(account.ID)
 	}
 
 	var input *bytes.Reader
@@ -556,7 +571,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 			inbound.CanSpliceCopy = 2
 			switch request.Command {
 			case protocol.RequestCommandUDP:
-				return errors.New(requestAddons.Flow + " doesn't support UDP").AtWarning()
+				return flowDoesNotSupportUDPError(requestAddons.Flow)
 			case protocol.RequestCommandMux, protocol.RequestCommandRvs:
 				inbound.CanSpliceCopy = 3
 				fallthrough // we will break Mux connections that contain TCP requests
@@ -569,7 +584,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 					visionConnection = commonConn
 				} else if tlsConn, ok := iConn.(*tls.Conn); ok {
 					if tlsConn.ConnectionState().Version != gotls.VersionTLS13 {
-						return errors.New(`failed to use `+requestAddons.Flow+`, found outer tls version `, tlsConn.ConnectionState().Version).AtWarning()
+						return invalidOuterTLSVersionError(requestAddons.Flow, tlsConn.ConnectionState().Version)
 					}
 					visionConnection = tlsConn.Conn
 				} else if realityConn, ok := iConn.(*reality.Conn); ok {
@@ -584,59 +599,79 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 				}
 			}
 		} else {
-			return errors.New("account " + account.ID.String() + " is not able to use the flow " + requestAddons.Flow).AtWarning()
+			return accountFlowMismatchError(account.ID, requestAddons.Flow)
 		}
 	case "":
 		inbound.CanSpliceCopy = 3
 		if account.Flow == vless.XRV && (request.Command == protocol.RequestCommandTCP || isMuxAndNotXUDP(request, first)) {
-			return errors.New("account " + account.ID.String() + " is rejected since the client flow is empty. Note that the pure TLS proxy has certain TLS in TLS characters.").AtWarning()
+			return accountEmptyFlowError(account.ID)
 		}
 	default:
-		return errors.New("unknown request flow " + requestAddons.Flow).AtWarning()
+		return unknownRequestFlowError(requestAddons.Flow)
 	}
 
 	if request.Command != protocol.RequestCommandMux {
-		ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-			From:   connection.RemoteAddr(),
-			To:     request.Destination(),
-			Status: log.AccessAccepted,
-			Reason: "",
-			Email:  request.User.Email,
+		from, to := net.FormatAccessEndpoints(inbound.Source, request.Destination())
+		ctx = session.ContextWithAccessMessage(ctx, &log.AccessMessage{
+			FromString: from,
+			ToString:   to,
+			Status:     log.AccessAccepted,
+			Email:      request.User.Email,
 		})
 	} else if account.Flow == vless.XRV {
 		ctx = session.ContextWithAllowedNetwork(ctx, net.Network_UDP)
 	}
 
-	trafficState := encoding.NewTrafficStateForFlow(userSentID, requestAddons.Flow)
-	clientReader := encoding.DecodeBodyAddons(reader, request, requestAddons)
-	if requestAddons.Flow == vless.XRV {
+	vision := requestAddons.Flow == vless.XRV
+	trafficState := encoding.NewTrafficStateForVision(userSentID[:], vision)
+	clientReader := encoding.DecodeBody(reader, request)
+	if vision {
 		clientReader = proxy.NewVisionReader(clientReader, trafficState, true, ctx, connection, input, rawInput, nil)
 	}
 
-	bufferWriter := buf.NewBufferedWriter(buf.NewWriter(connection))
-	if err := encoding.EncodeResponseHeader(bufferWriter, request, responseAddons); err != nil {
+	bufferWriter, err := buf.NewBufferedWriterWithPrefix(buf.NewWriter(connection), []byte{request.Version, 0})
+	if err != nil {
 		return errors.New("failed to encode response header").Base(err).AtWarning()
 	}
-	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, false, ctx, connection, nil)
-	bufferWriter.SetFlushNext()
+	clientWriter := encoding.EncodeBody(bufferWriter, request, vision, trafficState, false, ctx, connection, nil)
+	link := &transport.Link{Reader: clientReader, Writer: clientWriter}
 
 	if request.Command == protocol.RequestCommandRvs {
 		r, err := h.GetReverse(account)
 		if err != nil {
 			return err
 		}
-		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, &transport.Link{Reader: clientReader, Writer: clientWriter}), h.observer)
+		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, link), h.observer)
 	}
 
-	if err := dispatch.DispatchLink(
-		ctx, request.Destination(), &transport.Link{
-			Reader: clientReader,
-			Writer: clientWriter,
-		},
-	); err != nil {
+	if err := dispatch.DispatchLink(ctx, request.Destination(), link); err != nil {
 		return errors.New("failed to dispatch request").Base(err)
 	}
 	return nil
+}
+
+func accountFlowMismatchError(id *protocol.ID, flow string) *errors.Error {
+	return errors.New("account ", id, " is not able to use the flow ", flow).AtWarning()
+}
+
+func accountEmptyFlowError(id *protocol.ID) *errors.Error {
+	return errors.New("account ", id, " is rejected since the client flow is empty. Note that the pure TLS proxy has certain TLS in TLS characters.").AtWarning()
+}
+
+func unknownRequestFlowError(flow string) *errors.Error {
+	return errors.New("unknown request flow ", flow).AtWarning()
+}
+
+func flowDoesNotSupportUDPError(flow string) *errors.Error {
+	return errors.New(flow, " doesn't support UDP").AtWarning()
+}
+
+func invalidOuterTLSVersionError(flow string, version uint16) *errors.Error {
+	return errors.New(`failed to use `, flow, `, found outer tls version `, version).AtWarning()
+}
+
+func forwardProxyNotAllowedError(id *protocol.ID) *errors.Error {
+	return errors.New("for safety reasons, user ", id.String(), " is not allowed to use forward proxy")
 }
 
 type Reverse struct {

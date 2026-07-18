@@ -33,10 +33,37 @@ type Error struct {
 
 // Error implements error.Error().
 func (err *Error) Error() string {
-	builder := strings.Builder{}
+	partCount := len(err.prefix) + len(err.message)
+	var inline [8]string
+	parts := inline[:0]
+	if partCount > len(inline) {
+		parts = make([]string, 0, partCount)
+	}
+	capacity := 0
 	for _, prefix := range err.prefix {
+		part := serial.ToString(prefix)
+		parts = append(parts, part)
+		capacity += len(part) + len("[] ")
+	}
+	if len(err.caller) > 0 {
+		capacity += len(err.caller) + len(": ")
+	}
+	for _, message := range err.message {
+		part := serial.ToString(message)
+		parts = append(parts, part)
+		capacity += len(part)
+	}
+	inner := ""
+	if err.inner != nil {
+		inner = err.inner.Error()
+		capacity += len(" > ") + len(inner)
+	}
+
+	builder := strings.Builder{}
+	builder.Grow(capacity)
+	for _, prefix := range parts[:len(err.prefix)] {
 		builder.WriteByte('[')
-		builder.WriteString(serial.ToString(prefix))
+		builder.WriteString(prefix)
 		builder.WriteString("] ")
 	}
 
@@ -45,12 +72,13 @@ func (err *Error) Error() string {
 		builder.WriteString(": ")
 	}
 
-	msg := serial.Concat(err.message...)
-	builder.WriteString(msg)
+	for _, message := range parts[len(err.prefix):] {
+		builder.WriteString(message)
+	}
 
 	if err.inner != nil {
 		builder.WriteString(" > ")
-		builder.WriteString(err.inner.Error())
+		builder.WriteString(inner)
 	}
 
 	return builder.String()
@@ -180,6 +208,7 @@ func doLog(ctx context.Context, inner error, severity log.Severity, msg ...inter
 	if !log.ShouldLog(effectiveSeverity) {
 		return
 	}
+	message := append([]interface{}(nil), msg...)
 	pc, _, _, _ := runtime.Caller(2)
 	details := runtime.FuncForPC(pc).Name()
 	if len(details) >= trim {
@@ -190,7 +219,7 @@ func doLog(ctx context.Context, inner error, severity log.Severity, msg ...inter
 		details = details[:i]
 	}
 	err := &Error{
-		message:  msg,
+		message:  message,
 		severity: severity,
 		caller:   details,
 		inner:    inner,

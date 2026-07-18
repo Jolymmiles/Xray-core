@@ -89,7 +89,7 @@ func (h *httpHandler) AuthHTTP(w http.ResponseWriter, r *http.Request) bool {
 			if h.validator != nil {
 				udpSM := &udpSessionManager{
 					conn: h.conn,
-					m:    make(map[uint32]*InterConn),
+					m:    newUDPSessionMap(),
 
 					addConn:        h.addConn,
 					udpIdleTimeout: time.Duration(h.config.UdpIdleTimeout) * time.Second,

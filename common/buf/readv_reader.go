@@ -5,6 +5,7 @@ package buf
 
 import (
 	"io"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -59,6 +60,8 @@ type ReadVReader struct {
 	counter stats.Counter
 }
 
+var readVReaderPool sync.Pool
+
 // NewReadVReader creates a new ReadVReader.
 func NewReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Counter) *ReadVReader {
 	return &ReadVReader{
@@ -70,6 +73,36 @@ func NewReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Cou
 		mr:      newMultiReader(),
 		counter: counter,
 	}
+}
+
+// NewPooledReadVReader creates a recyclable connection-scoped readv reader.
+func NewPooledReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Counter) *ReadVReader {
+	pooled, _ := readVReaderPool.Get().(*ReadVReader)
+	if pooled == nil {
+		pooled = &ReadVReader{mr: newMultiReader()}
+	}
+	pooled.Reader = reader
+	pooled.rawConn = rawConn
+	pooled.alloc.current = 1
+	pooled.counter = counter
+	return pooled
+}
+
+// ReleasePooledReadVReader clears retained connection state before reuse.
+func ReleasePooledReadVReader(reader *ReadVReader) {
+	if reader == nil {
+		return
+	}
+	reader.mr.Clear()
+	reader.Reader = nil
+	reader.rawConn = nil
+	reader.alloc.current = 1
+	reader.counter = nil
+	readVReaderPool.Put(reader)
+}
+
+func (r *ReadVReader) releasePooledReader() {
+	ReleasePooledReadVReader(r)
 }
 
 func (r *ReadVReader) readMulti() (MultiBuffer, error) {
