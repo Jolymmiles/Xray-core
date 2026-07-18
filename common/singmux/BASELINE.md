@@ -191,3 +191,27 @@ limit. The local engine baseline is decisively surpassed; the process-level
 peer ratio remains scheduling-sensitive and this final snapshot is 2.4% above
 the hardened snapshot's 0.982 median. Trojan remains diagnostic because it also
 measures different TLS and Trojan implementations.
+
+## Carrier lifecycle fix (2026-07-19)
+
+A VLESS server stress run exposed a shutdown race: an SMUX session could close
+its `done` channel and return from the synchronous dispatch path while its
+carrier read loop was still blocked. VLESS then released its pooled reader and
+the surviving read loop dereferenced the cleared reader.
+
+The lifecycle contract now has two permanent regression checks:
+
+- generic and pooled buffer readers propagate interruption to their underlying
+  closable connection;
+- `Session.Close` does not return until its read, write, and optional keepalive
+  loops have exited.
+
+The affected unit packages pass normally, with `-race`, and with
+`-d=checkptr=2`. The real-process interoperability matrix passed 40/40 current
+Xray, sing-box, and Mihomo scenarios. The three-cycle stress/reconnect gate
+passed all eight topologies (24/24 cycles) with 128 concurrent full-duplex TCP
+streams per cycle and no panic or stuck shutdown.
+
+The five-run 32 KiB stream round-trip result remained at zero allocations and
+10.058--10.293 us/op. The session-pair lifecycle used 32,131 B/op and 36
+allocations/op; the additional join state is outside the stream data hot path.

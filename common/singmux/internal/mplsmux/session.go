@@ -35,6 +35,7 @@ type Session struct {
 	submitMu   sync.Mutex
 	done       chan struct{}
 	closeOnce  sync.Once
+	loops      sync.WaitGroup
 	errorMu    sync.Mutex
 	lastError  error
 
@@ -77,10 +78,24 @@ func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session,
 	if !session.config.KeepAliveDisabled {
 		session.lastReceive.Store(time.Now().UnixNano())
 	}
-	go session.writeLoop()
-	go session.readLoop()
+	loopCount := 2
 	if !session.config.KeepAliveDisabled {
-		go session.keepaliveLoop()
+		loopCount++
+	}
+	session.loops.Add(loopCount)
+	go func() {
+		defer session.loops.Done()
+		session.writeLoop()
+	}()
+	go func() {
+		defer session.loops.Done()
+		session.readLoop()
+	}()
+	if !session.config.KeepAliveDisabled {
+		go func() {
+			defer session.loops.Done()
+			session.keepaliveLoop()
+		}()
 	}
 	return session, nil
 }
@@ -142,6 +157,7 @@ func (s *Session) Accept() (io.ReadWriteCloser, error) {
 
 func (s *Session) Close() error {
 	s.fail(io.ErrClosedPipe)
+	s.loops.Wait()
 	return nil
 }
 
