@@ -102,17 +102,19 @@ func buildE2EBinaries(t *testing.T, workDir string) e2eBinaries {
 	coresRoot := filepath.Dir(xrayRoot)
 	return e2eBinaries{
 		xray:    buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main"),
-		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box"),
+		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box", "-tags=with_utls"),
 		mihomo:  buildE2EBinary(t, "MIHOMO_E2E_BIN", filepath.Join(workDir, "mihomo"), filepath.Join(coresRoot, "mihomo"), "."),
 	}
 }
 
-func buildE2EBinary(t *testing.T, environment, output, directory, target string) string {
+func buildE2EBinary(t testing.TB, environment, output, directory, target string, buildOptions ...string) string {
 	t.Helper()
 	if existing := os.Getenv(environment); existing != "" {
 		return existing
 	}
-	command := exec.Command("go", "build", "-o", output, target)
+	arguments := append([]string{"build"}, buildOptions...)
+	arguments = append(arguments, "-o", output, target)
+	command := exec.Command("go", arguments...)
 	command.Dir = directory
 	combined, err := command.CombinedOutput()
 	if err != nil {
@@ -349,7 +351,7 @@ func mihomoClientConfig(carrier string, serverPort, socksPort int, padding bool)
 	return []byte(fmt.Sprintf("socks-port: %d\nallow-lan: false\nmode: global\nlog-level: warning\nproxies:\n  - name: e2e-peer\n    type: %s\n    server: 127.0.0.1\n    port: %d\n%s%s    smux:\n      enabled: true\n      protocol: smux\n      max-connections: 1\n      padding: %t\nproxy-groups:\n  - name: GLOBAL\n    type: select\n    proxies:\n      - e2e-peer\n", socksPort, carrier, serverPort, credentials, tls, padding))
 }
 
-func writeConfig(t *testing.T, path string, content []byte) {
+func writeConfig(t testing.TB, path string, content []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
@@ -368,7 +370,7 @@ func copyScenarioFile(t *testing.T, source, destination string) string {
 	return destination
 }
 
-func startE2EProcess(t *testing.T, binary string, arguments ...string) *e2eProcess {
+func startE2EProcess(t testing.TB, binary string, arguments ...string) *e2eProcess {
 	t.Helper()
 	process := &e2eProcess{command: exec.Command(binary, arguments...), done: make(chan error, 1)}
 	process.command.Stdout = &process.logs
@@ -394,7 +396,7 @@ func startE2EProcess(t *testing.T, binary string, arguments ...string) *e2eProce
 	return process
 }
 
-func stopE2EProcess(t *testing.T, process *e2eProcess) {
+func stopE2EProcess(t testing.TB, process *e2eProcess) {
 	t.Helper()
 	if process.stopped.Load() || process.command.ProcessState != nil && process.command.ProcessState.Exited() {
 		process.stopped.Store(true)
@@ -424,7 +426,7 @@ func certificatePin(path string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func waitTCP(t *testing.T, process *e2eProcess, port int) {
+func waitTCP(t testing.TB, process *e2eProcess, port int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	address := fmt.Sprintf("127.0.0.1:%d", port)
@@ -461,7 +463,7 @@ func waitProcessLog(t *testing.T, process *e2eProcess, marker string) {
 	t.Fatalf("process did not log %q\n%s", marker, process.logs.String())
 }
 
-func waitSOCKS(t *testing.T, process *e2eProcess, port int) {
+func waitSOCKS(t testing.TB, process *e2eProcess, port int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	address := fmt.Sprintf("127.0.0.1:%d", port)
@@ -487,7 +489,7 @@ func waitSOCKS(t *testing.T, process *e2eProcess, port int) {
 	t.Fatalf("SOCKS endpoint did not become ready on %s: %v\n%s", address, lastErr, process.logs.String())
 }
 
-func freeTCPPort(t *testing.T) int {
+func freeTCPPort(t testing.TB) int {
 	t.Helper()
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -498,7 +500,7 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
-func startTCPEcho(t *testing.T) net.Addr {
+func startTCPEcho(t testing.TB) net.Addr {
 	t.Helper()
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -542,34 +544,41 @@ func startUDPEcho(t *testing.T) net.Addr {
 
 func testSOCKSTCP(t *testing.T, socksPort int, destination *net.TCPAddr) {
 	t.Helper()
+	if err := runSOCKSTCP(socksPort, destination); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runSOCKSTCP(socksPort int, destination *net.TCPAddr) error {
 	connection, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 5*time.Second)
 	if err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("dial SOCKS: %w", err)
 	}
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := socksGreeting(connection); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("SOCKS greeting: %w", err)
 	}
 	request := append([]byte{5, 1, 0, 1}, destination.IP.To4()...)
 	request = binary.BigEndian.AppendUint16(request, uint16(destination.Port))
 	if _, err := connection.Write(request); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("SOCKS connect request: %w", err)
 	}
 	if err := readSOCKSReply(connection); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("SOCKS connect reply: %w", err)
 	}
 	payload := []byte("xray-smux-process-tcp")
 	if _, err := connection.Write(payload); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("write echo payload: %w", err)
 	}
 	response := make([]byte, len(payload))
 	if _, err := io.ReadFull(connection, response); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("read echo payload: %w", err)
 	}
 	if !bytes.Equal(response, payload) {
-		t.Fatalf("TCP response = %q, want %q", response, payload)
+		return fmt.Errorf("TCP response = %q, want %q", response, payload)
 	}
+	return nil
 }
 
 func testSOCKSUDP(t *testing.T, socksPort int, destination *net.UDPAddr) {
@@ -705,7 +714,7 @@ func socksAddressLength(packet []byte, offset int) (int, error) {
 	return offset, nil
 }
 
-func generateCertificate(t *testing.T, directory string) (string, string) {
+func generateCertificate(t testing.TB, directory string) (string, string) {
 	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

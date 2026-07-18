@@ -28,6 +28,26 @@ UDP, with padding disabled and enabled (32 scenarios).
 go test -tags integration ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
 ```
 
+The separate VLESS TCP server gate keeps SMUX out of the topology and covers
+the complete TLS/REALITY and no-flow/Vision matrix against all three clients
+(12 scenarios). Sing-box is built with uTLS for REALITY. Mihomo readiness is
+confirmed by a full SOCKS-to-echo probe instead of accepting an open local
+SOCKS port as proof that its provider has finished starting.
+
+```sh
+go test -tags integration ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
+```
+
+The matching connection-latency benchmark keeps one Xray client and server
+process alive per mode and opens a new VLESS connection for every operation.
+Use a fixed iteration count on macOS: adaptive multi-second runs can exhaust
+its ephemeral port range before TIME_WAIT entries expire.
+
+```sh
+go test -tags integration ./common/singmux -run '^$' \
+  -bench '^BenchmarkVLESSTCPProcess$' -benchtime=50x -count=5
+```
+
 The stress suite runs eight peer/direction/carrier topologies. Every topology
 runs three cycles with 128 concurrent full-duplex TCP streams carrying 1 MiB in
 each direction and 10,000 UDP datagrams across four destinations. The server is
