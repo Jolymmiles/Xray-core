@@ -21,6 +21,8 @@ import (
 const (
 	remnaNodeMemoryTargetBytes = uint64(5 << 30)
 	remnaNodeProfileBatchSize  = 64
+	// Keep this diagnostic expectation aligned with the production Service cap.
+	remnaNodeSMUXHandlerLimit = 512
 )
 
 func TestRemnaNodeMemoryProfileConfigOnlyAddsMetrics(t *testing.T) {
@@ -185,6 +187,7 @@ func runRemnaNodeServerMemoryProfile(t *testing.T, useSMUX bool) {
 	t.Logf("RemnaNode Xray PID=%d mode=%s baseline rss=%d KiB threads=%d fds=%d", server.command.Process.Pid, mode, baseline.rssKiB, baseline.threads, baseline.fds)
 	previousRSS := baseline.rssKiB
 	heldConnections := make([]net.Conn, 0, remnaNodeProfileBatchSize)
+	stoppedByAdmission := false
 	t.Cleanup(func() {
 		for _, connection := range heldConnections {
 			_ = connection.Close()
@@ -197,8 +200,14 @@ func runRemnaNodeServerMemoryProfile(t *testing.T, useSMUX bool) {
 		snapshot := captureProcessResources(t, server.command.Process.Pid)
 		t.Logf("RemnaNode Xray PID=%d mode=%s connections=%d rss=%d KiB threads=%d fds=%d target=%d bytes", server.command.Process.Pid, mode, len(heldConnections), snapshot.rssKiB, snapshot.threads, snapshot.fds, targetBytes)
 		if batchErr != nil {
-			captureRemnaNodeProfiles(t, metricsPort, profileDir)
-			t.Fatalf("full Xray process load stopped before target: rss=%d KiB streams=%d: %v", snapshot.rssKiB, len(heldConnections), batchErr)
+			if !useSMUX || len(heldConnections) < remnaNodeSMUXHandlerLimit {
+				captureRemnaNodeProfiles(t, metricsPort, profileDir)
+				t.Fatalf("full Xray process load stopped before target: rss=%d KiB streams=%d: %v", snapshot.rssKiB, len(heldConnections), batchErr)
+			}
+			stoppedByAdmission = true
+			t.Logf("SMUX admission cap rejected excess load at %d active streams: %v", len(heldConnections), batchErr)
+			previousRSS = snapshot.rssKiB
+			break
 		}
 		if snapshot.rssKiB <= previousRSS {
 			captureRemnaNodeProfiles(t, metricsPort, profileDir)
@@ -208,10 +217,21 @@ func runRemnaNodeServerMemoryProfile(t *testing.T, useSMUX bool) {
 	}
 
 	captureRemnaNodeProfiles(t, metricsPort, profileDir)
+	if useSMUX && len(heldConnections) >= remnaNodeSMUXHandlerLimit {
+		// Prove that capacity is released and the server accepts new work after
+		// shedding overload. The forwarding helper observes readiness instead of
+		// relying on a scheduler sleep.
+		_ = heldConnections[0].Close()
+		heldConnections = heldConnections[1:]
+	}
 	for index := range probeClients {
 		if response := waitDeploymentHTTPForwarding(t, clients[index], clientPorts[index], httpPort, "www.google.com"); !bytes.Contains([]byte(response), []byte("family=ipv4")) {
 			t.Fatalf("post-pressure deployment request through client %d failed: %q", index, response)
 		}
+	}
+	if stoppedByAdmission {
+		t.Logf("full RemnaNode Xray process remained responsive at the SMUX admission cap: pid=%d rss=%d KiB active-streams=%d profiles=%s", server.command.Process.Pid, previousRSS, len(heldConnections), profileDir)
+		return
 	}
 	t.Logf("full RemnaNode Xray process reached target: pid=%d mode=%s rss=%d KiB connections=%d profiles=%s", server.command.Process.Pid, mode, previousRSS, len(heldConnections), profileDir)
 }

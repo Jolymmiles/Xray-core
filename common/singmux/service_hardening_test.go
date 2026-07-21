@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	X "github.com/xtls/xray-core/common/net"
 	localsmux "github.com/xtls/xray-core/common/singmux/internal/mplsmux"
+	"github.com/xtls/xray-core/transport"
 )
 
 func TestServiceCarrierHandshakeDeadline(t *testing.T) {
@@ -46,16 +49,41 @@ func TestServiceCarrierHandshakeStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
-func TestServiceBoundsPendingStreamHandshakes(t *testing.T) {
-	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
+type blockingServiceDispatcher struct {
+	*echoDispatcher
+	started  chan struct{}
+	finished chan struct{}
+	release  chan struct{}
+}
+
+func (d *blockingServiceDispatcher) DispatchLink(ctx context.Context, _ X.Destination, _ *transport.Link) error {
+	d.started <- struct{}{}
+	defer func() { d.finished <- struct{}{} }()
+	select {
+	case <-d.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestServiceBoundsActiveStreamHandlers(t *testing.T) {
+	dispatcher := &blockingServiceDispatcher{
+		echoDispatcher: &echoDispatcher{target: make(chan X.Destination, 1)},
+		started:        make(chan struct{}, 2),
+		finished:       make(chan struct{}, 2),
+		release:        make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseHandlers := func() { releaseOnce.Do(func() { close(dispatcher.release) }) }
+	defer releaseHandlers()
 	service := NewService(dispatcher)
 	service.maxConcurrentStreams = 2
 	service.streamHandshakeTimeout = time.Second
 	clientConn, serverConn := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	serverResult := make(chan error, 1)
-	go func() { serverResult <- service.NewConnection(ctx, serverConn) }()
+	go func() { _ = service.NewConnection(ctx, serverConn) }()
 	if err := writeCarrierRequest(clientConn, protocolSMUX, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -66,40 +94,141 @@ func TestServiceBoundsPendingStreamHandshakes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	first, err := session.OpenStream()
-	if err != nil {
-		t.Fatal(err)
+	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
+
+	openHandledStream := func() *localsmux.Stream {
+		stream, err := session.OpenStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeStreamRequest(stream, 0, destination); err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err := readStreamResponse(stream); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-dispatcher.started:
+		case <-time.After(time.Second):
+			t.Fatal("stream handler did not enter the dispatcher")
+		}
+		return stream
 	}
-	second, err := session.OpenStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+
+	first := openHandledStream()
+	defer first.Close()
+	second := openHandledStream()
 	defer second.Close()
 	third, err := session.OpenStream()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer third.Close()
-	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
-	if err := writeStreamRequest(third, 0, destination); err != nil {
-		t.Fatal(err)
-	}
 	if err := third.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	if err := readStreamResponse(third); err == nil {
-		t.Fatal("third stream was handled before a handshake slot became available")
+	if _, err := third.Read(make([]byte, 1)); err == nil {
+		t.Fatal("third stream was handled without an available slot")
+	} else {
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			t.Fatalf("third stream waited for a slot instead of failing fast: %v", err)
+		}
 	}
-	if err := third.SetReadDeadline(time.Time{}); err != nil {
+
+	releaseHandlers()
+	for range 2 {
+		select {
+		case <-dispatcher.finished:
+		case <-time.After(time.Second):
+			t.Fatal("stream handler did not release its global slot")
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(service.concurrentStreamSlots()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("completed stream handlers retained their global slots")
+		}
+		runtime.Gosched()
+	}
+	fourth := openHandledStream()
+	defer fourth.Close()
+}
+
+func TestServiceRejectsExcessStreamHandshakeWithoutWaitingForTimeout(t *testing.T) {
+	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
+	service := NewService(dispatcher)
+	service.maxConcurrentStreams = 2
+	service.streamHandshakeTimeout = time.Second
+
+	startCarrier := func() (*localsmux.Session, context.CancelFunc) {
+		clientConn, serverConn := net.Pipe()
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { _ = service.NewConnection(ctx, serverConn) }()
+		if err := writeCarrierRequest(clientConn, protocolSMUX, nil); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		config := localsmux.DefaultConfig()
+		config.KeepAliveDisabled = true
+		session, err := localsmux.Client(clientConn, config)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		return session, cancel
+	}
+
+	firstCarrier, cancelFirst := startCarrier()
+	defer cancelFirst()
+	defer firstCarrier.Close()
+	first, err := firstCarrier.OpenStream()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Close(); err != nil {
+	defer first.Close()
+	second, err := firstCarrier.OpenStream()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := third.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	defer second.Close()
+
+	third, err := firstCarrier.OpenStream()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := readStreamResponse(third); err != nil {
-		t.Fatalf("third stream did not resume after slot release: %v", err)
+	defer third.Close()
+	if err := third.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := third.Read(make([]byte, 1)); err == nil {
+		t.Fatal("first carrier did not consume both global handshake slots")
+	}
+
+	secondCarrier, cancelSecond := startCarrier()
+	defer cancelSecond()
+	defer secondCarrier.Close()
+	crossCarrier, err := secondCarrier.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crossCarrier.Close()
+	if err := crossCarrier.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = crossCarrier.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("second carrier bypassed the service-wide handshake limit")
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatalf("excess handshake waited for its deadline instead of failing fast: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 50*time.Millisecond {
+		t.Fatalf("excess handshake rejection took %s", elapsed)
 	}
 }

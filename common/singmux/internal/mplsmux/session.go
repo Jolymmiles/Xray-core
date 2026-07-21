@@ -247,6 +247,26 @@ func (s *Session) submitResult(command frameCommand, streamID uint32, payload []
 	}, result)
 }
 
+func (s *Session) trySubmitControl(command frameCommand, streamID uint32) bool {
+	encoded := acquireFrameBuffer(frameHeaderSize)
+	encodeFrameHeader((*[frameHeaderSize]byte)(encoded), command, streamID, 0)
+	request := outboundFrame{encoded: encoded, result: make(chan error, 1)}
+
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+	if s.IsClosed() {
+		releaseFrameBuffer(encoded)
+		return false
+	}
+	select {
+	case s.writeQueue <- request:
+		return true
+	default:
+		releaseFrameBuffer(encoded)
+		return false
+	}
+}
+
 func (s *Session) submitWithStateResult(command frameCommand, streamID uint32, payload []byte, state func() (time.Time, <-chan struct{}, error), result chan error) error {
 	// A timed-out or failed submit may return while the writer is still finishing
 	// the queued frame. Give the writer private storage so callers may immediately
@@ -361,10 +381,22 @@ func (s *Session) readLoop() {
 				s.fail(err)
 				return
 			}
-			if stream := s.lookupStream(header.streamID); stream != nil && stream.enqueue(payload) {
-			} else {
+			stream := s.lookupStream(header.streamID)
+			if stream == nil {
 				releaseReceiveBuffer(payload)
 				s.releaseReceive(length)
+				continue
+			}
+			enqueueResult := stream.enqueueWithTimeout(payload, s.config.StreamStallTimeout)
+			if enqueueResult == streamEnqueueQueued {
+				continue
+			}
+			releaseReceiveBuffer(payload)
+			s.releaseReceive(length)
+			if enqueueResult == streamEnqueueStalled {
+				if err := stream.Abort(); err != nil {
+					return
+				}
 			}
 		case frameKeepalive:
 		}

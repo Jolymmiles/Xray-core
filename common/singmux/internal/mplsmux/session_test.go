@@ -473,6 +473,7 @@ func TestConfigValidationAndTimeoutError(t *testing.T) {
 		"receive below frame":  func(config *Config) { config.MaxReceiveBuffer = config.MaxFrameSize - 1 },
 		"stream below frame":   func(config *Config) { config.MaxStreamBuffer = config.MaxFrameSize - 1 },
 		"stream above receive": func(config *Config) { config.MaxStreamBuffer = config.MaxReceiveBuffer + 1 },
+		"stream stall timeout": func(config *Config) { config.StreamStallTimeout = 0 },
 		"keepalive interval":   func(config *Config) { config.KeepAliveInterval = 0 },
 		"keepalive timeout":    func(config *Config) { config.KeepAliveTimeout = config.KeepAliveInterval / 2 },
 	}
@@ -609,6 +610,73 @@ func TestPerStreamReceiveLimitAppliesBackpressure(t *testing.T) {
 	}
 	if _, err := io.ReadFull(stream, buffer); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSlowStreamDoesNotBlockCarrierCloseAndOtherStreams(t *testing.T) {
+	client, server := testSessionPair(t, func(config *Config) {
+		config.MaxFrameSize = 1024
+		config.MaxStreamBuffer = 1024
+		config.MaxReceiveBuffer = 4 * 1024
+		config.StreamStallTimeout = 20 * time.Millisecond
+	})
+
+	slowClient, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowServer, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte{0x5a}, 1024)
+	if _, err := slowClient.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := slowClient.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := slowClient.SetWriteDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := slowClient.Close(); err != nil {
+		t.Fatalf("close behind a full stream = %v", err)
+	}
+	server.receiveMu.Lock()
+	receiveUsed := server.receiveUsed
+	server.receiveMu.Unlock()
+	if receiveUsed != 0 {
+		t.Fatalf("receive reservation after stalled-stream abort = %d, want 0", receiveUsed)
+	}
+	if streams := server.NumStreams(); streams != 0 {
+		t.Fatalf("server streams after stalled-stream abort = %d, want 0", streams)
+	}
+
+	healthyClient, err := client.OpenStream()
+	if err != nil {
+		t.Fatalf("open healthy stream after overflow: %v", err)
+	}
+	healthyServer, err := server.AcceptStream()
+	if err != nil {
+		t.Fatalf("accept healthy stream after overflow: %v", err)
+	}
+	defer healthyClient.Close()
+	defer healthyServer.Close()
+
+	if _, err := healthyClient.Write([]byte("healthy")); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]byte, len("healthy"))
+	if _, err := io.ReadFull(healthyServer, received); err != nil {
+		t.Fatal(err)
+	}
+	if string(received) != "healthy" {
+		t.Fatalf("healthy payload = %q, want healthy", received)
+	}
+
+	if _, err := slowServer.Read(make([]byte, 1)); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("overflowed server stream read error = %v, want %v", err, io.ErrClosedPipe)
 	}
 }
 
