@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -107,7 +108,10 @@ func (s *Server) DispatchLink(ctx context.Context, dest net.Destination, link *t
 	}
 	select {
 	case <-ctx.Done():
-	case <-worker.done.Wait():
+		// Ensure Interrupt completes before return so callers (e.g. VLESS)
+		// cannot Release pooled link readers while finish is still running.
+		_ = worker.Close()
+	case <-worker.WaitClosed():
 	}
 	return nil
 }
@@ -128,6 +132,7 @@ type ServerWorker struct {
 	sessionManager *SessionManager
 	done           *done.Instance
 	timer          *time.Ticker
+	finishOnce     sync.Once
 }
 
 func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.Link) (*ServerWorker, error) {
@@ -157,6 +162,21 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 	s.Close(false)
 }
 
+// finish tears down sessions and the carrier link, then signals done.
+//
+// Root cause (#5110 race + pooled VLESS readers): done used to mean "run
+// exited" while monitor still Interrupted the link afterward. Callers waiting
+// on done (DispatchLink) then Release()'d pooled link.Reader under that
+// Interrupt. Contract now: done/WaitClosed ⇒ link is no longer touched.
+func (w *ServerWorker) finish() {
+	w.finishOnce.Do(func() {
+		w.sessionManager.Close()
+		common.Interrupt(w.link.Writer)
+		common.Interrupt(w.link.Reader)
+		common.Must(w.done.Close())
+	})
+}
+
 func (w *ServerWorker) monitor() {
 	defer w.timer.Stop()
 
@@ -165,13 +185,12 @@ func (w *ServerWorker) monitor() {
 		checkCount := w.sessionManager.Count()
 		select {
 		case <-w.done.Wait():
-			w.sessionManager.Close()
-			common.Interrupt(w.link.Writer)
-			common.Interrupt(w.link.Reader)
+			// Cleanup already completed in finish() before done was closed.
 			return
 		case <-w.timer.C:
 			if w.sessionManager.CloseIfNoSessionAndIdle(checkSize, checkCount) {
-				common.Must(w.done.Close())
+				// Unblock run (if still reading) and close only after Interrupt.
+				w.finish()
 			}
 		}
 	}
@@ -190,7 +209,8 @@ func (w *ServerWorker) WaitClosed() <-chan struct{} {
 }
 
 func (w *ServerWorker) Close() error {
-	return w.done.Close()
+	w.finish()
+	return nil
 }
 
 func (w *ServerWorker) handleStatusKeepAlive(meta *FrameMetadata, reader *buf.BufferedReader) error {
@@ -399,9 +419,7 @@ func (w *ServerWorker) handleFrame(ctx context.Context, reader *buf.BufferedRead
 }
 
 func (w *ServerWorker) run(ctx context.Context) {
-	defer func() {
-		common.Must(w.done.Close())
-	}()
+	defer w.finish()
 
 	reader := &buf.BufferedReader{Reader: w.link.Reader}
 

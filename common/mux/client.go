@@ -179,6 +179,7 @@ type ClientWorker struct {
 	done           *done.Instance
 	timer          *time.Ticker
 	strategy       ClientStrategy
+	finishOnce     sync.Once
 }
 
 var (
@@ -219,8 +220,21 @@ func (m *ClientWorker) WaitClosed() <-chan struct{} {
 	return m.done.Wait()
 }
 
+// finish tears down sessions and the carrier link, then signals done.
+// Same contract as ServerWorker: done/WaitClosed mean the link is no longer used,
+// so callers (e.g. VLESS reverse NewMux → defer pooled Release) cannot race monitor.
+func (m *ClientWorker) finish() {
+	m.finishOnce.Do(func() {
+		m.sessionManager.Close()
+		common.Interrupt(m.link.Writer)
+		common.Interrupt(m.link.Reader)
+		common.Must(m.done.Close())
+	})
+}
+
 func (m *ClientWorker) Close() error {
-	return m.done.Close()
+	m.finish()
+	return nil
 }
 
 func (m *ClientWorker) monitor() {
@@ -231,13 +245,11 @@ func (m *ClientWorker) monitor() {
 		checkCount := m.sessionManager.Count()
 		select {
 		case <-m.done.Wait():
-			m.sessionManager.Close()
-			common.Interrupt(m.link.Writer)
-			common.Interrupt(m.link.Reader)
+			// Cleanup already completed in finish() before done was closed.
 			return
 		case <-m.timer.C:
 			if m.sessionManager.CloseIfNoSessionAndIdle(checkSize, checkCount) {
-				common.Must(m.done.Close())
+				m.finish()
 			}
 		}
 	}
@@ -380,9 +392,7 @@ func (m *ClientWorker) handleStatusEnd(meta *FrameMetadata, reader *buf.Buffered
 }
 
 func (m *ClientWorker) fetchOutput() {
-	defer func() {
-		common.Must(m.done.Close())
-	}()
+	defer m.finish()
 
 	reader := &buf.BufferedReader{Reader: m.link.Reader}
 
