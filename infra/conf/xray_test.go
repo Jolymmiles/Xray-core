@@ -267,6 +267,85 @@ func TestMuxConfig_Build(t *testing.T) {
 	}
 }
 
+func TestSMuxConfigBuild(t *testing.T) {
+	tests := []struct {
+		name    string
+		fields  string
+		want    *proxyman.SmuxConfig
+		wantErr bool
+	}{
+		{
+			name:   "defaults to smux",
+			fields: `{}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+			},
+		},
+		{
+			name: "all options",
+			fields: `{
+				"enabled": true,
+				"protocol": "smux",
+				"maxConnections": 4,
+				"minStreams": 8,
+				"padding": true,
+				"onlyTcp": true
+			}`,
+			want: &proxyman.SmuxConfig{
+				Enabled:        true,
+				Protocol:       "smux",
+				MaxConnections: 4,
+				MinStreams:     8,
+				Padding:        true,
+				OnlyTcp:        true,
+			},
+		},
+		{
+			name:    "unknown protocol",
+			fields:  `{"enabled":true,"protocol":"xray"}`,
+			wantErr: true,
+		},
+		{
+			name:    "yamux belongs to a later stage",
+			fields:  `{"enabled":true,"protocol":"yamux"}`,
+			wantErr: true,
+		},
+		{
+			name:    "h2mux belongs to a later stage",
+			fields:  `{"enabled":true,"protocol":"h2mux"}`,
+			wantErr: true,
+		},
+		{
+			name:    "negative pool limit",
+			fields:  `{"enabled":true,"maxConnections":-1}`,
+			wantErr: true,
+		},
+		{
+			name:    "conflicting pool modes",
+			fields:  `{"enabled":true,"maxConnections":2,"maxStreams":8}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &SMuxConfig{}
+			common.Must(json.Unmarshal([]byte(tt.fields), config))
+			got, err := config.Build()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			common.Must(err)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("SMuxConfig.Build() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfig_Override(t *testing.T) {
 	tests := []struct {
 		name string

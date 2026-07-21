@@ -106,6 +106,41 @@ type MuxConfig struct {
 	XudpProxyUDP443 string `json:"xudpProxyUDP443"`
 }
 
+type SMuxConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Protocol       string `json:"protocol"`
+	MaxConnections int32  `json:"maxConnections"`
+	MinStreams     int32  `json:"minStreams"`
+	MaxStreams     int32  `json:"maxStreams"`
+	Padding        bool   `json:"padding"`
+	OnlyTCP        bool   `json:"onlyTcp"`
+}
+
+func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
+	protocol := strings.ToLower(m.Protocol)
+	if protocol == "" {
+		protocol = "smux"
+	}
+	if protocol != "smux" {
+		return nil, errors.New("unsupported SMUX protocol ", m.Protocol)
+	}
+	if m.MaxConnections < 0 || m.MinStreams < 0 || m.MaxStreams < 0 {
+		return nil, errors.New("SMUX pool limits must not be negative")
+	}
+	if m.MaxStreams > 0 && (m.MaxConnections > 0 || m.MinStreams > 0) {
+		return nil, errors.New("SMUX maxStreams conflicts with maxConnections and minStreams")
+	}
+	return &proxyman.SmuxConfig{
+		Enabled:        m.Enabled,
+		Protocol:       protocol,
+		MaxConnections: m.MaxConnections,
+		MinStreams:     m.MinStreams,
+		MaxStreams:     m.MaxStreams,
+		Padding:        m.Padding,
+		OnlyTcp:        m.OnlyTCP,
+	}, nil
+}
+
 // Build creates MultiplexingConfig, Concurrency < 0 completely disables mux.
 func (m *MuxConfig) Build() (*proxyman.MultiplexingConfig, error) {
 	switch m.XudpProxyUDP443 {
@@ -218,6 +253,7 @@ type OutboundDetourConfig struct {
 	StreamSetting  *StreamConfig    `json:"streamSettings"`
 	ProxySettings  *ProxyConfig     `json:"proxySettings"`
 	MuxSettings    *MuxConfig       `json:"mux"`
+	SMuxSettings   *SMuxConfig      `json:"smux"`
 	TargetStrategy string           `json:"targetStrategy"`
 }
 
@@ -348,6 +384,16 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 			return nil, errors.New("failed to build Mux config").Base(err)
 		}
 		senderSettings.MultiplexSettings = ms
+	}
+	if c.SMuxSettings != nil {
+		if c.MuxSettings != nil && c.MuxSettings.Enabled && c.SMuxSettings.Enabled {
+			return nil, errors.New("mux and smux cannot be enabled on the same outbound")
+		}
+		ms, err := c.SMuxSettings.Build()
+		if err != nil {
+			return nil, errors.New("failed to build SMUX config").Base(err)
+		}
+		senderSettings.SmuxSettings = ms
 	}
 
 	settings := []byte("{}")

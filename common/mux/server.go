@@ -10,9 +10,11 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal/done"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
@@ -21,13 +23,21 @@ import (
 
 type Server struct {
 	dispatcher routing.Dispatcher
+	smux       *singmux.Service
+}
+
+func newServer(dispatcher routing.Dispatcher) *Server {
+	return &Server{
+		dispatcher: dispatcher,
+		smux:       singmux.NewService(dispatcher),
+	}
 }
 
 // NewServer creates a new mux.Server.
 func NewServer(ctx context.Context) *Server {
 	s := &Server{}
 	core.RequireFeatures(ctx, func(d routing.Dispatcher) {
-		s.dispatcher = d
+		*s = *newServer(d)
 	})
 	return s
 }
@@ -39,6 +49,9 @@ func (s *Server) Type() interface{} {
 
 // Dispatch implements routing.Dispatcher
 func (s *Server) Dispatch(ctx context.Context, dest net.Destination) (*transport.Link, error) {
+	if singmux.IsDestination(dest) {
+		return s.dispatchSMUX(ctx), nil
+	}
 	if dest.Address != muxCoolAddress {
 		return s.dispatcher.Dispatch(ctx, dest)
 	}
@@ -58,8 +71,33 @@ func (s *Server) Dispatch(ctx context.Context, dest net.Destination) (*transport
 	return &transport.Link{Reader: downlinkReader, Writer: uplinkWriter}, nil
 }
 
+func (s *Server) dispatchSMUX(ctx context.Context) *transport.Link {
+	opts := pipe.OptionsFromContext(ctx)
+	uplinkReader, uplinkWriter := pipe.New(opts...)
+	downlinkReader, downlinkWriter := pipe.New(opts...)
+	conn := cnc.NewConnection(
+		cnc.ConnectionInputMulti(downlinkWriter),
+		cnc.ConnectionOutputMulti(uplinkReader),
+	)
+	go func() {
+		defer conn.Close()
+		if err := s.smux.NewConnection(ctx, conn); err != nil && errors.Cause(err) != io.EOF {
+			errors.LogInfoInner(ctx, err, "failed to handle SMUX connection")
+		}
+	}()
+	return &transport.Link{Reader: downlinkReader, Writer: uplinkWriter}
+}
+
 // DispatchLink implements routing.Dispatcher
 func (s *Server) DispatchLink(ctx context.Context, dest net.Destination, link *transport.Link) error {
+	if singmux.IsDestination(dest) {
+		conn := cnc.NewConnection(
+			cnc.ConnectionInputMulti(link.Writer),
+			cnc.ConnectionOutputMulti(link.Reader),
+		)
+		defer conn.Close()
+		return s.smux.NewConnection(ctx, conn)
+	}
 	if dest.Address != muxCoolAddress {
 		return s.dispatcher.DispatchLink(ctx, dest, link)
 	}

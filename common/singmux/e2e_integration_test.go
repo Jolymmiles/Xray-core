@@ -1,0 +1,691 @@
+//go:build integration
+
+package singmux_test
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"math/big"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+const (
+	testUUID     = "b831381d-6324-4d53-ad4f-8cda48b30811"
+	testPassword = "xray-smux-e2e-password"
+)
+
+type e2eBinaries struct {
+	xray    string
+	singBox string
+	mihomo  string
+}
+
+type e2eProcess struct {
+	command *exec.Cmd
+	done    chan error
+	logs    synchronizedBuffer
+	stopped atomic.Bool
+}
+
+type synchronizedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(payload []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(payload)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func TestSMUXProcessInteropMatrix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level SMUX interoperability matrix")
+	}
+	workDir := t.TempDir()
+	binaries := buildE2EBinaries(t, workDir)
+	certificate, privateKey := generateCertificate(t, workDir)
+	tcpEcho := startTCPEcho(t)
+	udpEcho := startUDPEcho(t)
+
+	for _, peer := range []string{"sing-box", "mihomo"} {
+		for _, direction := range []string{"xray-client", "xray-server"} {
+			for _, carrier := range []string{"vless", "trojan"} {
+				for _, network := range []string{"tcp", "udp"} {
+					for _, padding := range []bool{false, true} {
+						name := fmt.Sprintf("%s/%s/%s/%s/padding=%t", peer, direction, carrier, network, padding)
+						t.Run(name, func(t *testing.T) {
+							runInteropScenario(t, workDir, binaries, certificate, privateKey, peer, direction, carrier, network, padding, tcpEcho, udpEcho)
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+func buildE2EBinaries(t *testing.T, workDir string) e2eBinaries {
+	t.Helper()
+	xrayRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coresRoot := filepath.Dir(xrayRoot)
+	return e2eBinaries{
+		xray:    buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main"),
+		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box"),
+		mihomo:  buildE2EBinary(t, "MIHOMO_E2E_BIN", filepath.Join(workDir, "mihomo"), filepath.Join(coresRoot, "mihomo"), "."),
+	}
+}
+
+func buildE2EBinary(t *testing.T, environment, output, directory, target string) string {
+	t.Helper()
+	if existing := os.Getenv(environment); existing != "" {
+		return existing
+	}
+	command := exec.Command("go", "build", "-o", output, target)
+	command.Dir = directory
+	combined, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build %s in %s: %v\n%s", target, directory, err, combined)
+	}
+	return output
+}
+
+func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, direction, carrier, network string, padding bool, tcpEcho, udpEcho net.Addr) {
+	t.Helper()
+	serverPort := freeTCPPort(t)
+	socksPort := freeTCPPort(t)
+	scenarioDir := filepath.Join(workDir, strings.NewReplacer("/", "-", "=", "-").Replace(t.Name()))
+	if err := os.MkdirAll(scenarioDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	certificate = copyScenarioFile(t, certificate, filepath.Join(scenarioDir, "server.crt"))
+	privateKey = copyScenarioFile(t, privateKey, filepath.Join(scenarioDir, "server.key"))
+
+	var serverBinary string
+	var serverArgs []string
+	var serverConfig []byte
+	var clientBinary string
+	var clientArgs []string
+	var clientConfig []byte
+	if direction == "xray-client" {
+		serverBinary, serverArgs, serverConfig = peerServerConfig(t, binaries, peer, carrier, serverPort, padding, certificate, privateKey)
+		clientBinary = binaries.xray
+		clientArgs = []string{"run", "-config", filepath.Join(scenarioDir, "client.json")}
+		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, padding, certificate, privateKey)
+	} else {
+		serverBinary = binaries.xray
+		serverArgs = []string{"run", "-config", filepath.Join(scenarioDir, "server.json")}
+		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, padding, certificate, privateKey)
+		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, padding)
+	}
+
+	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
+	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))
+	if direction == "xray-client" {
+		serverArgs = replaceConfigPath(serverArgs, serverPath)
+		clientArgs = replaceConfigPath(clientArgs, clientPath)
+	} else {
+		serverArgs = replaceConfigPath(serverArgs, serverPath)
+		clientArgs = replaceConfigPath(clientArgs, clientPath)
+	}
+	writeConfig(t, serverPath, serverConfig)
+	writeConfig(t, clientPath, clientConfig)
+
+	server := startE2EProcess(t, serverBinary, serverArgs...)
+	waitTCP(t, server, serverPort)
+	client := startE2EProcess(t, clientBinary, clientArgs...)
+	waitTCP(t, client, socksPort)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server logs:\n%s", server.logs.String())
+			t.Logf("client logs:\n%s", client.logs.String())
+		}
+	})
+	if network == "tcp" {
+		testSOCKSTCP(t, socksPort, tcpEcho.(*net.TCPAddr))
+	} else {
+		testSOCKSUDP(t, socksPort, udpEcho.(*net.UDPAddr))
+	}
+}
+
+func configExtension(peer string, xray bool) string {
+	if xray || peer == "sing-box" {
+		return ".json"
+	}
+	return ".yaml"
+}
+
+func replaceConfigPath(arguments []string, path string) []string {
+	result := append([]string(nil), arguments...)
+	if len(result) == 0 {
+		return result
+	}
+	result[len(result)-1] = path
+	if len(result) >= 2 && result[0] == "-d" {
+		result[1] = filepath.Dir(path)
+	}
+	return result
+}
+
+func peerServerConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, port int, padding bool, certificate, privateKey string) (string, []string, []byte) {
+	t.Helper()
+	if peer == "sing-box" {
+		return binaries.singBox, []string{"run", "-c", "server.json"}, singBoxConfig(t, true, carrier, port, 0, padding, certificate, privateKey)
+	}
+	return binaries.mihomo, []string{"-d", ".", "-f", "server.yaml"}, mihomoServerConfig(carrier, port, padding, certificate, privateKey)
+}
+
+func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, padding bool) (string, []string, []byte) {
+	t.Helper()
+	if peer == "sing-box" {
+		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, padding, "", "")
+	}
+	return binaries.mihomo, []string{"-d", ".", "-f", "client.yaml"}, mihomoClientConfig(carrier, serverPort, socksPort, padding)
+}
+
+func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, padding bool, certificate, privateKey string) []byte {
+	t.Helper()
+	config := map[string]any{"log": map[string]any{"loglevel": "debug"}}
+	if server {
+		inboundSettings := map[string]any{}
+		if carrier == "vless" {
+			inboundSettings = map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": testUUID}}}
+		} else {
+			inboundSettings = map[string]any{"clients": []any{map[string]any{"password": testPassword}}}
+		}
+		inbound := map[string]any{"listen": "127.0.0.1", "port": serverPort, "protocol": carrier, "settings": inboundSettings}
+		if carrier == "trojan" {
+			inbound["streamSettings"] = xrayTLSSettings(true, certificate, privateKey)
+		}
+		config["inbounds"] = []any{inbound}
+		config["outbounds"] = []any{map[string]any{
+			"protocol": "freedom",
+			"settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow"}}},
+		}}
+	} else {
+		config["inbounds"] = []any{map[string]any{
+			"listen": "127.0.0.1", "port": socksPort, "protocol": "socks",
+			"settings": map[string]any{"auth": "noauth", "udp": true, "ip": "127.0.0.1"},
+		}}
+		var settings map[string]any
+		if carrier == "vless" {
+			settings = map[string]any{"vnext": []any{map[string]any{
+				"address": "127.0.0.1", "port": serverPort,
+				"users": []any{map[string]any{"id": testUUID, "encryption": "none"}},
+			}}}
+		} else {
+			settings = map[string]any{"servers": []any{map[string]any{
+				"address": "127.0.0.1", "port": serverPort, "password": testPassword,
+			}}}
+		}
+		outbound := map[string]any{
+			"protocol": carrier,
+			"settings": settings,
+			"smux":     map[string]any{"enabled": true, "protocol": "smux", "maxConnections": 1, "padding": padding},
+		}
+		if carrier == "trojan" {
+			outbound["streamSettings"] = xrayTLSSettings(false, certificate, "")
+		}
+		config["outbounds"] = []any{outbound}
+	}
+	encoded, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func xrayTLSSettings(server bool, certificate, privateKey string) map[string]any {
+	settings := map[string]any{"security": "tls"}
+	if server {
+		settings["tlsSettings"] = map[string]any{"certificates": []any{map[string]any{
+			"certificateFile": certificate, "keyFile": privateKey,
+		}}}
+	} else {
+		settings["tlsSettings"] = map[string]any{
+			"pinnedPeerCertSha256": certificatePin(certificate),
+			"serverName":           "localhost",
+		}
+	}
+	return settings
+}
+
+func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, padding bool, certificate, privateKey string) []byte {
+	t.Helper()
+	config := map[string]any{"log": map[string]any{"level": "debug", "timestamp": true}}
+	if server {
+		inbound := map[string]any{
+			"type": carrier, "listen": "127.0.0.1", "listen_port": serverPort,
+			"multiplex": map[string]any{"enabled": true, "padding": padding},
+		}
+		if carrier == "vless" {
+			inbound["users"] = []any{map[string]any{"uuid": testUUID}}
+		} else {
+			inbound["users"] = []any{map[string]any{"password": testPassword}}
+			inbound["tls"] = map[string]any{"enabled": true, "certificate_path": certificate, "key_path": privateKey}
+		}
+		config["inbounds"] = []any{inbound}
+		config["outbounds"] = []any{map[string]any{"type": "direct"}}
+	} else {
+		config["inbounds"] = []any{map[string]any{"type": "socks", "listen": "127.0.0.1", "listen_port": socksPort}}
+		outbound := map[string]any{
+			"type": carrier, "server": "127.0.0.1", "server_port": serverPort,
+			"multiplex": map[string]any{"enabled": true, "protocol": "smux", "max_connections": 1, "padding": padding},
+		}
+		if carrier == "vless" {
+			outbound["uuid"] = testUUID
+			packetEncoding := "packetaddr"
+			outbound["packet_encoding"] = packetEncoding
+		} else {
+			outbound["password"] = testPassword
+			outbound["tls"] = map[string]any{"enabled": true, "server_name": "localhost", "insecure": true}
+		}
+		config["outbounds"] = []any{outbound}
+	}
+	encoded, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func mihomoServerConfig(carrier string, port int, padding bool, certificate, privateKey string) []byte {
+	credentials := fmt.Sprintf("    users:\n      - username: e2e\n        uuid: %s\n", testUUID)
+	tls := "    allow-insecure: true\n"
+	if carrier == "trojan" {
+		credentials = fmt.Sprintf("    users:\n      - username: e2e\n        password: %s\n", testPassword)
+		tls = fmt.Sprintf("    certificate: %s\n    private-key: %s\n", certificate, privateKey)
+	}
+	return []byte(fmt.Sprintf("mode: direct\nlog-level: warning\nlisteners:\n  - name: e2e-in\n    type: %s\n    listen: 127.0.0.1\n    port: %d\n%s%s    mux-option:\n      padding: %t\n", carrier, port, credentials, tls, padding))
+}
+
+func mihomoClientConfig(carrier string, serverPort, socksPort int, padding bool) []byte {
+	credentials := fmt.Sprintf("    uuid: %s\n    udp: true\n", testUUID)
+	tls := "    tls: false\n"
+	if carrier == "trojan" {
+		credentials = fmt.Sprintf("    password: %s\n    udp: true\n", testPassword)
+		tls = "    tls: true\n    servername: localhost\n    skip-cert-verify: true\n"
+	}
+	return []byte(fmt.Sprintf("socks-port: %d\nallow-lan: false\nmode: global\nlog-level: warning\nproxies:\n  - name: e2e-peer\n    type: %s\n    server: 127.0.0.1\n    port: %d\n%s%s    smux:\n      enabled: true\n      protocol: smux\n      max-connections: 1\n      padding: %t\nproxy-groups:\n  - name: GLOBAL\n    type: select\n    proxies:\n      - e2e-peer\n", socksPort, carrier, serverPort, credentials, tls, padding))
+}
+
+func writeConfig(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyScenarioFile(t *testing.T, source, destination string) string {
+	t.Helper()
+	content, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return destination
+}
+
+func startE2EProcess(t *testing.T, binary string, arguments ...string) *e2eProcess {
+	t.Helper()
+	process := &e2eProcess{command: exec.Command(binary, arguments...), done: make(chan error, 1)}
+	process.command.Stdout = &process.logs
+	process.command.Stderr = &process.logs
+	if err := process.command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { process.done <- process.command.Wait() }()
+	t.Cleanup(func() {
+		if process.stopped.Load() || process.command.ProcessState != nil && process.command.ProcessState.Exited() {
+			return
+		}
+		if process.command.Process != nil {
+			_ = process.command.Process.Kill()
+		}
+		select {
+		case <-process.done:
+			process.stopped.Store(true)
+		case <-time.After(3 * time.Second):
+			t.Errorf("process %s did not exit", binary)
+		}
+	})
+	return process
+}
+
+func stopE2EProcess(t *testing.T, process *e2eProcess) {
+	t.Helper()
+	if process.stopped.Load() || process.command.ProcessState != nil && process.command.ProcessState.Exited() {
+		process.stopped.Store(true)
+		return
+	}
+	if process.command.Process != nil {
+		_ = process.command.Process.Kill()
+	}
+	select {
+	case <-process.done:
+		process.stopped.Store(true)
+	case <-time.After(3 * time.Second):
+		t.Fatalf("process %s did not stop", process.command.Path)
+	}
+}
+
+func certificatePin(path string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	block, _ := pem.Decode(content)
+	if block == nil {
+		panic("invalid PEM certificate")
+	}
+	digest := sha256.Sum256(block.Bytes)
+	return hex.EncodeToString(digest[:])
+}
+
+func waitTCP(t *testing.T, process *e2eProcess, port int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	address := fmt.Sprintf("127.0.0.1:%d", port)
+	for time.Now().Before(deadline) {
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return
+		}
+		select {
+		case processErr := <-process.done:
+			t.Fatalf("process exited before listening on %s: %v\n%s", address, processErr, process.logs.String())
+		default:
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("process did not listen on %s\n%s", address, process.logs.String())
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	return port
+}
+
+func startTCPEcho(t *testing.T) net.Addr {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			connection, err := listener.AcceptTCP()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				_, _ = io.Copy(connection, connection)
+			}()
+		}
+	}()
+	return listener.Addr()
+}
+
+func startUDPEcho(t *testing.T) net.Addr {
+	t.Helper()
+	connection, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	go func() {
+		payload := make([]byte, 65535)
+		for {
+			n, address, err := connection.ReadFromUDP(payload)
+			if err != nil {
+				return
+			}
+			_, _ = connection.WriteToUDP(payload[:n], address)
+		}
+	}()
+	return connection.LocalAddr()
+}
+
+func testSOCKSTCP(t *testing.T, socksPort int, destination *net.TCPAddr) {
+	t.Helper()
+	connection, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := socksGreeting(connection); err != nil {
+		t.Fatal(err)
+	}
+	request := append([]byte{5, 1, 0, 1}, destination.IP.To4()...)
+	request = binary.BigEndian.AppendUint16(request, uint16(destination.Port))
+	if _, err := connection.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := readSOCKSReply(connection); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("xray-smux-process-tcp")
+	if _, err := connection.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(connection, response); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response, payload) {
+		t.Fatalf("TCP response = %q, want %q", response, payload)
+	}
+}
+
+func testSOCKSUDP(t *testing.T, socksPort int, destination *net.UDPAddr) {
+	t.Helper()
+	control, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	_ = control.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := socksGreeting(control); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	relay, err := readSOCKSReplyAddress(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay.IP.IsUnspecified() {
+		relay.IP = net.IPv4(127, 0, 0, 1)
+	}
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	_ = udp.SetDeadline(time.Now().Add(5 * time.Second))
+	payload := []byte("xray-smux-process-udp")
+	packet := append([]byte{0, 0, 0, 1}, destination.IP.To4()...)
+	packet = binary.BigEndian.AppendUint16(packet, uint16(destination.Port))
+	packet = append(packet, payload...)
+	if _, err := udp.WriteToUDP(packet, relay); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 65535)
+	n, _, err := udp.ReadFromUDP(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset, err := socksAddressLength(response[:n], 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response[offset:n], payload) {
+		t.Fatalf("UDP response = %q, want %q", response[offset:n], payload)
+	}
+}
+
+func socksGreeting(connection net.Conn) error {
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		return err
+	}
+	response := make([]byte, 2)
+	if _, err := io.ReadFull(connection, response); err != nil {
+		return err
+	}
+	if response[0] != 5 || response[1] != 0 {
+		return fmt.Errorf("SOCKS greeting response: %x", response)
+	}
+	return nil
+}
+
+func readSOCKSReply(connection net.Conn) error {
+	_, err := readSOCKSReplyAddress(connection)
+	return err
+}
+
+func readSOCKSReplyAddress(connection net.Conn) (*net.UDPAddr, error) {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(connection, header); err != nil {
+		return nil, err
+	}
+	if header[0] != 5 || header[1] != 0 {
+		return nil, fmt.Errorf("SOCKS reply: %x", header)
+	}
+	var ip net.IP
+	switch header[3] {
+	case 1:
+		ip = make([]byte, 4)
+	case 4:
+		ip = make([]byte, 16)
+	case 3:
+		var length [1]byte
+		if _, err := io.ReadFull(connection, length[:]); err != nil {
+			return nil, err
+		}
+		domain := make([]byte, int(length[0]))
+		if _, err := io.ReadFull(connection, domain); err != nil {
+			return nil, err
+		}
+		resolved, err := net.ResolveIPAddr("ip", string(domain))
+		if err != nil {
+			return nil, err
+		}
+		ip = resolved.IP
+	default:
+		return nil, fmt.Errorf("SOCKS address family: %d", header[3])
+	}
+	if header[3] != 3 {
+		if _, err := io.ReadFull(connection, ip); err != nil {
+			return nil, err
+		}
+	}
+	var encodedPort [2]byte
+	if _, err := io.ReadFull(connection, encodedPort[:]); err != nil {
+		return nil, err
+	}
+	return &net.UDPAddr{IP: ip, Port: int(binary.BigEndian.Uint16(encodedPort[:]))}, nil
+}
+
+func socksAddressLength(packet []byte, offset int) (int, error) {
+	if len(packet) <= offset {
+		return 0, io.ErrUnexpectedEOF
+	}
+	switch packet[offset] {
+	case 1:
+		offset += 1 + 4 + 2
+	case 4:
+		offset += 1 + 16 + 2
+	case 3:
+		if len(packet) <= offset+1 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		offset += 1 + 1 + int(packet[offset+1]) + 2
+	default:
+		return 0, fmt.Errorf("SOCKS datagram address family: %d", packet[offset])
+	}
+	if len(packet) < offset {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return offset, nil
+}
+
+func generateCertificate(t *testing.T, directory string) (string, string) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "localhost"},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificatePath := filepath.Join(directory, "server.crt")
+	privateKeyPath := filepath.Join(directory, "server.key")
+	if err := os.WriteFile(certificatePath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(privateKeyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certificatePath, privateKeyPath
+}
+
+func TestIntegrationPlatform(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Log("Linux is the release-gate platform; interface counter checks run in the stress suite")
+	}
+}

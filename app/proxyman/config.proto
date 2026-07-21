@@ -61,6 +61,7 @@ message SenderConfig {
   MultiplexingConfig multiplex_settings = 4;
   string via_cidr = 5;
   xray.transport.internet.DomainStrategy target_strategy = 6;
+  SmuxConfig smux_settings = 7;
 }
 
 message MultiplexingConfig {
@@ -72,4 +73,14 @@ message MultiplexingConfig {
   int32 xudpConcurrency = 3;
   // "reject" (default), "allow" or "skip".
   string xudpProxyUDP443 = 4;
+}
+
+message SmuxConfig {
+  bool enabled = 1;
+  string protocol = 2;
+  int32 max_connections = 3;
+  int32 min_streams = 4;
+  int32 max_streams = 5;
+  bool padding = 6;
+  bool only_tcp = 7;
 }
