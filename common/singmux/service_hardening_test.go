@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -67,18 +66,18 @@ func (d *blockingServiceDispatcher) DispatchLink(ctx context.Context, _ X.Destin
 	}
 }
 
-func TestServiceBoundsActiveStreamHandlers(t *testing.T) {
+func TestServiceReleasesAdmissionSlotAfterHandshake(t *testing.T) {
 	dispatcher := &blockingServiceDispatcher{
 		echoDispatcher: &echoDispatcher{target: make(chan X.Destination, 1)},
-		started:        make(chan struct{}, 2),
-		finished:       make(chan struct{}, 2),
+		started:        make(chan struct{}, 3),
+		finished:       make(chan struct{}, 3),
 		release:        make(chan struct{}),
 	}
 	var releaseOnce sync.Once
 	releaseHandlers := func() { releaseOnce.Do(func() { close(dispatcher.release) }) }
 	defer releaseHandlers()
 	service := NewService(dispatcher)
-	service.maxConcurrentStreams = 2
+	service.maxPendingHandshakes = 2
 	service.streamHandshakeTimeout = time.Second
 	clientConn, serverConn := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,46 +121,23 @@ func TestServiceBoundsActiveStreamHandlers(t *testing.T) {
 	defer first.Close()
 	second := openHandledStream()
 	defer second.Close()
-	third, err := session.OpenStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	third := openHandledStream()
 	defer third.Close()
-	if err := third.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := third.Read(make([]byte, 1)); err == nil {
-		t.Fatal("third stream was handled without an available slot")
-	} else {
-		var timeout net.Error
-		if errors.As(err, &timeout) && timeout.Timeout() {
-			t.Fatalf("third stream waited for a slot instead of failing fast: %v", err)
-		}
-	}
 
 	releaseHandlers()
-	for range 2 {
+	for range 3 {
 		select {
 		case <-dispatcher.finished:
 		case <-time.After(time.Second):
-			t.Fatal("stream handler did not release its global slot")
+			t.Fatal("stream handler did not finish after dispatcher release")
 		}
 	}
-	deadline := time.Now().Add(time.Second)
-	for len(service.concurrentStreamSlots()) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("completed stream handlers retained their global slots")
-		}
-		runtime.Gosched()
-	}
-	fourth := openHandledStream()
-	defer fourth.Close()
 }
 
-func TestServiceRejectsExcessStreamHandshakeWithoutWaitingForTimeout(t *testing.T) {
+func TestServiceRejectsExcessPendingHandshakeWithoutWaitingForTimeout(t *testing.T) {
 	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
 	service := NewService(dispatcher)
-	service.maxConcurrentStreams = 2
+	service.maxPendingHandshakes = 2
 	service.streamHandshakeTimeout = time.Second
 
 	startCarrier := func() (*localsmux.Session, context.CancelFunc) {
@@ -205,7 +181,7 @@ func TestServiceRejectsExcessStreamHandshakeWithoutWaitingForTimeout(t *testing.
 		t.Fatal(err)
 	}
 	if _, err := third.Read(make([]byte, 1)); err == nil {
-		t.Fatal("first carrier did not consume both global handshake slots")
+		t.Fatal("first carrier did not consume both pending-handshake slots")
 	}
 
 	secondCarrier, cancelSecond := startCarrier()
@@ -222,7 +198,7 @@ func TestServiceRejectsExcessStreamHandshakeWithoutWaitingForTimeout(t *testing.
 	started := time.Now()
 	_, err = crossCarrier.Read(make([]byte, 1))
 	if err == nil {
-		t.Fatal("second carrier bypassed the service-wide handshake limit")
+		t.Fatal("second carrier bypassed the service-wide pending-handshake limit")
 	}
 	var timeout net.Error
 	if errors.As(err, &timeout) && timeout.Timeout() {
