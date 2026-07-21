@@ -16,23 +16,25 @@ const (
 )
 
 type Config struct {
-	Version           int
-	KeepAliveDisabled bool
-	KeepAliveInterval time.Duration
-	KeepAliveTimeout  time.Duration
-	MaxFrameSize      int
-	MaxReceiveBuffer  int
-	MaxStreamBuffer   int
+	Version            int
+	KeepAliveDisabled  bool
+	KeepAliveInterval  time.Duration
+	KeepAliveTimeout   time.Duration
+	MaxFrameSize       int
+	MaxReceiveBuffer   int
+	MaxStreamBuffer    int
+	StreamStallTimeout time.Duration
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		Version:           protocolVersion,
-		KeepAliveInterval: 10 * time.Second,
-		KeepAliveTimeout:  30 * time.Second,
-		MaxFrameSize:      32 * 1024,
-		MaxReceiveBuffer:  4 * 1024 * 1024,
-		MaxStreamBuffer:   64 * 1024,
+		Version:            protocolVersion,
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		MaxFrameSize:       32 * 1024,
+		MaxReceiveBuffer:   4 * 1024 * 1024,
+		MaxStreamBuffer:    64 * 1024,
+		StreamStallTimeout: 30 * time.Second,
 	}
 }
 
@@ -48,6 +50,9 @@ func validateConfig(config *Config) error {
 	}
 	if config.MaxStreamBuffer < config.MaxFrameSize || config.MaxStreamBuffer > config.MaxReceiveBuffer {
 		return errors.New("SMUX stream buffer must hold at least one maximum-size frame and not exceed the receive buffer")
+	}
+	if config.StreamStallTimeout <= 0 {
+		return errors.New("SMUX stream stall timeout must be positive")
 	}
 	if !config.KeepAliveDisabled && (config.KeepAliveInterval <= 0 || config.KeepAliveTimeout < config.KeepAliveInterval) {
 		return errors.New("SMUX keepalive timeout must be at least its interval")
@@ -70,6 +75,7 @@ func (*timeoutError) Timeout() bool   { return true }
 func (*timeoutError) Temporary() bool { return true }
 
 var (
-	ErrTimeout         net.Error = &timeoutError{}
-	ErrInvalidProtocol           = errors.New("invalid SMUX protocol frame")
+	ErrTimeout          net.Error = &timeoutError{}
+	ErrInvalidProtocol            = errors.New("invalid SMUX protocol frame")
+	ErrControlQueueFull           = errors.New("SMUX control frame queue is full")
 )

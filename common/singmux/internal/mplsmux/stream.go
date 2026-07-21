@@ -18,6 +18,14 @@ type receiveChunk struct {
 	offset int
 }
 
+type streamEnqueueResult uint8
+
+const (
+	streamEnqueueStopped streamEnqueueResult = iota
+	streamEnqueueQueued
+	streamEnqueueStalled
+)
+
 // Stream is one full-duplex logical connection carried by a Session.
 type Stream struct {
 	session *Session
@@ -282,29 +290,81 @@ func (s *Stream) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (s *Stream) enqueue(buffer receiveBuffer) bool {
+	return s.enqueueWithTimeout(buffer, 0) == streamEnqueueQueued
+}
+
+func (s *Stream) enqueueWithTimeout(buffer receiveBuffer, timeout time.Duration) streamEnqueueResult {
 	bufferSize := buffer.Len()
+	var timeoutChannel <-chan time.Time
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		s.stateMu.Lock()
 		if s.localClosed || s.remoteClosed || s.sessionClosed {
 			s.stateMu.Unlock()
-			return false
+			return streamEnqueueStopped
 		}
 		if s.buffered+bufferSize <= s.session.config.MaxStreamBuffer {
 			s.chunks = append(s.chunks, receiveChunk{buffer: buffer})
 			s.buffered += bufferSize
 			notify(s.readChanged)
 			s.stateMu.Unlock()
-			return true
+			return streamEnqueueQueued
 		}
 		s.bufferWaiting = true
 		changed := s.bufferChanged
 		s.stateMu.Unlock()
+		if timer == nil && timeout > 0 {
+			timer = time.NewTimer(timeout)
+			timeoutChannel = timer.C
+		}
 		select {
 		case <-changed:
 		case <-s.session.done:
-			return false
+			return streamEnqueueStopped
+		case <-timeoutChannel:
+			return streamEnqueueStalled
 		}
 	}
+}
+
+func (s *Stream) closeOnReceiveOverflow() ([]receiveChunk, int, bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.localClosed {
+		return nil, 0, false
+	}
+	s.localClosed = true
+	queued, queuedBytes := s.drainLocked()
+	s.notifyAllLocked()
+	return queued, queuedBytes, true
+}
+
+// Abort discards unread data and schedules a close frame without waiting for
+// the carrier writer. It is used by bounded server admission and receive-stall
+// cleanup paths where blocking the carrier would retain unrelated streams.
+func (s *Stream) Abort() error {
+	queued, queuedBytes, closed := s.closeOnReceiveOverflow()
+	for _, chunk := range queued {
+		releaseReceiveBuffer(chunk.buffer)
+	}
+	s.session.releaseReceive(queuedBytes)
+	if !closed {
+		return nil
+	}
+	s.session.removeStream(s.id)
+	if s.session.IsClosed() {
+		return nil
+	}
+	if s.session.trySubmitControl(frameClose, s.id) {
+		return nil
+	}
+	s.session.fail(ErrControlQueueFull)
+	return ErrControlQueueFull
 }
 
 func (s *Stream) remoteStopped() {

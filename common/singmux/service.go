@@ -22,6 +22,19 @@ type Service struct {
 	carrierHandshakeTimeout time.Duration
 	streamHandshakeTimeout  time.Duration
 	maxConcurrentStreams    int
+	streamSlotsOnce         sync.Once
+	streamSlots             chan struct{}
+}
+
+func (s *Service) concurrentStreamSlots() chan struct{} {
+	s.streamSlotsOnce.Do(func() {
+		limit := s.maxConcurrentStreams
+		if limit <= 0 {
+			limit = defaultMaxConcurrentStreams
+		}
+		s.streamSlots = make(chan struct{}, limit)
+	})
+	return s.streamSlots
 }
 
 func NewService(dispatcher routing.Dispatcher) *Service {
@@ -74,11 +87,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		return err
 	}
 
-	limit := s.maxConcurrentStreams
-	if limit <= 0 {
-		limit = defaultMaxConcurrentStreams
-	}
-	slots := make(chan struct{}, limit)
+	slots := s.concurrentStreamSlots()
 	var handlers sync.WaitGroup
 	defer func() {
 		_ = session.Close()
@@ -106,6 +115,8 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		case <-session.CloseChan():
 			_ = stream.Close()
 			return net.ErrClosed
+		default:
+			_ = stream.Abort()
 		}
 	}
 }
