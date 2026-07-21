@@ -10,31 +10,32 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
+	X "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/singmux/internal/mplsmux"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
 )
 
-const defaultMaxConcurrentStreams = 512
+const defaultMaxPendingHandshakes = 512
 
 type Service struct {
 	dispatcher              routing.Dispatcher
 	carrierHandshakeTimeout time.Duration
 	streamHandshakeTimeout  time.Duration
-	maxConcurrentStreams    int
-	streamSlotsOnce         sync.Once
-	streamSlots             chan struct{}
+	maxPendingHandshakes    int
+	handshakeSlotsOnce      sync.Once
+	handshakeSlots          chan struct{}
 }
 
-func (s *Service) concurrentStreamSlots() chan struct{} {
-	s.streamSlotsOnce.Do(func() {
-		limit := s.maxConcurrentStreams
+func (s *Service) pendingHandshakeSlots() chan struct{} {
+	s.handshakeSlotsOnce.Do(func() {
+		limit := s.maxPendingHandshakes
 		if limit <= 0 {
-			limit = defaultMaxConcurrentStreams
+			limit = defaultMaxPendingHandshakes
 		}
-		s.streamSlots = make(chan struct{}, limit)
+		s.handshakeSlots = make(chan struct{}, limit)
 	})
-	return s.streamSlots
+	return s.handshakeSlots
 }
 
 func NewService(dispatcher routing.Dispatcher) *Service {
@@ -42,7 +43,7 @@ func NewService(dispatcher routing.Dispatcher) *Service {
 		dispatcher:              dispatcher,
 		carrierHandshakeTimeout: handshakeTimeout,
 		streamHandshakeTimeout:  handshakeTimeout,
-		maxConcurrentStreams:    defaultMaxConcurrentStreams,
+		maxPendingHandshakes:    defaultMaxPendingHandshakes,
 	}
 }
 
@@ -87,7 +88,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		return err
 	}
 
-	slots := s.concurrentStreamSlots()
+	handshakeSlots := s.pendingHandshakeSlots()
 	var handlers sync.WaitGroup
 	defer func() {
 		_ = session.Close()
@@ -102,12 +103,11 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 			return acceptErr
 		}
 		select {
-		case slots <- struct{}{}:
+		case handshakeSlots <- struct{}{}:
 			handlers.Add(1)
 			go func() {
 				defer handlers.Done()
-				defer func() { <-slots }()
-				s.handleStream(ctx, stream)
+				s.handleStream(ctx, stream, handshakeSlots)
 			}()
 		case <-ctx.Done():
 			_ = stream.Close()
@@ -121,19 +121,11 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	}
 }
 
-func (s *Service) handleStream(ctx context.Context, stream net.Conn) {
+func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSlots chan struct{}) {
 	defer stream.Close()
-	deadline := time.Now().Add(s.streamHandshakeTimeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
-	_ = stream.SetReadDeadline(deadline)
-	flags, destination, err := readStreamRequest(stream)
+	flags, destination, err := s.handshakeStream(ctx, stream)
+	<-handshakeSlots
 	if err != nil {
-		return
-	}
-	_ = stream.SetReadDeadline(time.Time{})
-	if err := writeStreamResponse(stream, nil); err != nil {
 		return
 	}
 
@@ -144,4 +136,21 @@ func (s *Service) handleStream(ctx context.Context, stream net.Conn) {
 		writer = &packetWriter{stream: stream, destination: destination}
 	}
 	_ = s.dispatcher.DispatchLink(ctx, destination, &transport.Link{Reader: reader, Writer: writer})
+}
+
+func (s *Service) handshakeStream(ctx context.Context, stream net.Conn) (uint16, X.Destination, error) {
+	deadline := time.Now().Add(s.streamHandshakeTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = stream.SetReadDeadline(deadline)
+	flags, destination, err := readStreamRequest(stream)
+	if err != nil {
+		return 0, X.Destination{}, err
+	}
+	_ = stream.SetReadDeadline(time.Time{})
+	if err := writeStreamResponse(stream, nil); err != nil {
+		return 0, X.Destination{}, err
+	}
+	return flags, destination, nil
 }
