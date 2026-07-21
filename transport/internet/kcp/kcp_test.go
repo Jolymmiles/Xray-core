@@ -69,11 +69,17 @@ func TestDialAndListen(t *testing.T) {
 			defer clientConn.Close()
 
 			clientSend := make([]byte, 1024*1024)
-			rand.Read(clientSend)
-			go clientConn.Write(clientSend)
+			if _, err := rand.Read(clientSend); err != nil {
+				return err
+			}
+			if _, err := clientConn.Write(clientSend); err != nil {
+				return err
+			}
 
 			clientReceived := make([]byte, 1024*1024)
-			common.Must2(io.ReadFull(clientConn, clientReceived))
+			if _, err := io.ReadFull(clientConn, clientReceived); err != nil {
+				return err
+			}
 
 			clientExpected := make([]byte, 1024*1024)
 			for idx, b := range clientSend {
