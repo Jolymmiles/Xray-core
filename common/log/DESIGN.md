@@ -238,6 +238,9 @@ The lifecycle states are `new`, `running`, `draining`, and `closed`.
 
 ## Configuration
 
+For deployable JSON examples, migration guidance, field reference, rotation,
+and operational troubleshooting, see [`CONFIGURATION.md`](CONFIGURATION.md).
+
 The protobuf retains fields 1 through 7 unchanged. A repeated explicit output
 list is added with new field numbers. An output selects event types, severity,
 destination, encoder, color mode, batching, and backpressure.
