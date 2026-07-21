@@ -30,13 +30,20 @@ func (w *BufferToBytesWriter) WriteMultiBuffer(mb MultiBuffer) error {
 func (w *BufferToBytesWriter) WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error {
 	defer prefix.Release()
 	defer ReleaseMulti(mb)
+	return w.writeMultiBuffer(prefix.Bytes(), mb)
+}
+
+// WriteMultiBufferWithPrefixBytes writes a borrowed prefix and takes ownership
+// of the payload buffers. The prefix is used only for the duration of the call.
+func (w *BufferToBytesWriter) WriteMultiBufferWithPrefixBytes(prefix []byte, mb MultiBuffer) error {
+	defer ReleaseMulti(mb)
 	return w.writeMultiBuffer(prefix, mb)
 }
 
-func (w *BufferToBytesWriter) writeMultiBuffer(prefix *Buffer, mb MultiBuffer) error {
+func (w *BufferToBytesWriter) writeMultiBuffer(prefix []byte, mb MultiBuffer) error {
 	size := mb.Len()
-	if prefix != nil {
-		size += prefix.Len()
+	if len(prefix) != 0 {
+		size += int32(len(prefix))
 	}
 	if size == 0 {
 		return nil
@@ -45,12 +52,12 @@ func (w *BufferToBytesWriter) writeMultiBuffer(prefix *Buffer, mb MultiBuffer) e
 	if prefix == nil && len(mb) == 1 {
 		return WriteAllBytes(w.Writer, mb[0].Bytes(), w.counter)
 	}
-	if prefix != nil && len(mb) == 0 {
-		return WriteAllBytes(w.Writer, prefix.Bytes(), w.counter)
+	if len(prefix) != 0 && len(mb) == 0 {
+		return WriteAllBytes(w.Writer, prefix, w.counter)
 	}
 
 	bufferCount := len(mb)
-	if prefix != nil {
+	if len(prefix) != 0 {
 		bufferCount++
 	}
 	var bs [][]byte
@@ -62,8 +69,8 @@ func (w *BufferToBytesWriter) writeMultiBuffer(prefix *Buffer, mb MultiBuffer) e
 		}
 		bs = w.cache
 	}
-	if prefix != nil {
-		bs = append(bs, prefix.Bytes())
+	if len(prefix) != 0 {
+		bs = append(bs, prefix)
 	}
 	for _, b := range mb {
 		bs = append(bs, b.Bytes())
@@ -116,6 +123,60 @@ var bufferedWriterPool sync.Pool
 type prefixMultiBufferWriter interface {
 	WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error
 }
+
+type prefixBytesMultiBufferWriter interface {
+	WriteMultiBufferWithPrefixBytes(prefix []byte, mb MultiBuffer) error
+}
+
+// PrefixWriter keeps a short prefix inline until the first payload arrives,
+// then enters synchronized pass-through mode.
+type PrefixWriter struct {
+	sync.Mutex
+	writer    Writer
+	prefix    [8]byte
+	prefixLen uint8
+}
+
+// NewPrefixWriter creates a writer for protocol prefixes that do not need a
+// full payload buffer while the connection is idle.
+func NewPrefixWriter(writer Writer, prefix []byte) (*PrefixWriter, error) {
+	if len(prefix) > len(PrefixWriter{}.prefix) {
+		return nil, ErrBufferFull
+	}
+	prefixWriter := &PrefixWriter{writer: writer, prefixLen: uint8(len(prefix))}
+	copy(prefixWriter.prefix[:], prefix)
+	return prefixWriter, nil
+}
+
+// WriteMultiBuffer flushes the inline prefix with the first non-empty payload
+// and takes ownership of every supplied buffer.
+func (w *PrefixWriter) WriteMultiBuffer(multiBuffer MultiBuffer) error {
+	if multiBuffer.IsEmpty() {
+		return nil
+	}
+	w.Lock()
+	defer w.Unlock()
+	if w.prefixLen == 0 {
+		return w.writer.WriteMultiBuffer(multiBuffer)
+	}
+	prefix := w.prefix[:w.prefixLen]
+	w.prefixLen = 0
+	defer clear(w.prefix[:])
+	if writer, ok := w.writer.(prefixBytesMultiBufferWriter); ok {
+		return writer.WriteMultiBufferWithPrefixBytes(prefix, multiBuffer)
+	}
+	prefixBuffer := New()
+	_, _ = prefixBuffer.Write(prefix)
+	if writer, ok := w.writer.(prefixMultiBufferWriter); ok {
+		return writer.WriteMultiBufferWithPrefix(prefixBuffer, multiBuffer)
+	}
+	combined := make(MultiBuffer, len(multiBuffer)+1)
+	combined[0] = prefixBuffer
+	copy(combined[1:], multiBuffer)
+	return w.writer.WriteMultiBuffer(combined)
+}
+
+var _ Writer = (*PrefixWriter)(nil)
 
 // NewBufferedWriter creates a new BufferedWriter.
 func NewBufferedWriter(writer Writer) *BufferedWriter {
@@ -356,6 +417,16 @@ func (w *SequentialWriter) WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBu
 		return err
 	}
 	prefix.Release()
+	return w.WriteMultiBuffer(mb)
+}
+
+// WriteMultiBufferWithPrefixBytes writes a borrowed prefix before taking
+// ownership of the payload buffers.
+func (w *SequentialWriter) WriteMultiBufferWithPrefixBytes(prefix []byte, mb MultiBuffer) error {
+	if err := WriteAllBytes(w.Writer, prefix, nil); err != nil {
+		ReleaseMulti(mb)
+		return err
+	}
 	return w.WriteMultiBuffer(mb)
 }
 

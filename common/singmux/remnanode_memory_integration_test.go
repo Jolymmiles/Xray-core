@@ -51,10 +51,43 @@ func TestRemnaNodeMemoryProfileConfigOnlyAddsMetrics(t *testing.T) {
 	}
 }
 
+func TestRemnaNodeDirectMemoryClientDisablesMultiplexing(t *testing.T) {
+	base := remnaNodeXrayClientConfig(t, 1443, 1080, deploymentRouteUUID, true)
+	direct := remnaNodeDirectMemoryClientConfig(t, base)
+
+	var config map[string]any
+	if err := json.Unmarshal(direct, &config); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := config["outbounds"].([]any)
+	outbound := outbounds[0].(map[string]any)
+	for _, field := range []string{"smux", "mux"} {
+		if _, exists := outbound[field]; exists {
+			t.Fatalf("direct memory client retained %q: %#v", field, outbound[field])
+		}
+	}
+	logConfig := config["log"].(map[string]any)
+	if logConfig["access"] != "none" {
+		t.Fatalf("direct generator access log = %#v, want none", logConfig["access"])
+	}
+}
+
 func TestRemnaNodeServerMemoryProfile(t *testing.T) {
 	if os.Getenv("XRAY_REMNANODE_MEMORY_PROFILE") != "1" {
 		t.Skip("set XRAY_REMNANODE_MEMORY_PROFILE=1 to run the destructive five-GiB process profile")
 	}
+	runRemnaNodeServerMemoryProfile(t, true)
+}
+
+func TestRemnaNodeDirectServerMemoryProfile(t *testing.T) {
+	if os.Getenv("XRAY_REMNANODE_DIRECT_MEMORY_PROFILE") != "1" {
+		t.Skip("set XRAY_REMNANODE_DIRECT_MEMORY_PROFILE=1 to run the destructive direct-connection five-GiB process profile")
+	}
+	runRemnaNodeServerMemoryProfile(t, false)
+}
+
+func runRemnaNodeServerMemoryProfile(t *testing.T, useSMUX bool) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("RemnaNode process memory profile")
 	}
@@ -102,8 +135,18 @@ func TestRemnaNodeServerMemoryProfile(t *testing.T) {
 	for index := range clientPorts {
 		clientPorts[index] = freeTCPPort(t)
 		clientPath := filepath.Join(workDir, fmt.Sprintf("client-%d.json", index))
-		clientConfig := remnaNodeXrayClientConfig(t, muxPort, clientPorts[index], deploymentRouteUUID, true)
-		writeConfig(t, clientPath, remnaNodeMemoryClientConfig(t, clientConfig))
+		serverPort := muxPort
+		clientConfig := remnaNodeXrayClientConfig(t, serverPort, clientPorts[index], deploymentRouteUUID, useSMUX)
+		if useSMUX {
+			clientConfig = remnaNodeMemoryClientConfig(t, clientConfig)
+		} else {
+			if index%2 == 1 {
+				serverPort = directPort
+				clientConfig = remnaNodeXrayClientConfig(t, serverPort, clientPorts[index], deploymentRouteUUID, false)
+			}
+			clientConfig = remnaNodeDirectMemoryClientConfig(t, clientConfig)
+		}
+		writeConfig(t, clientPath, clientConfig)
 		client := startE2EProcess(t, binaries.xray, "run", "-config", clientPath)
 		waitSOCKS(t, client, clientPorts[index])
 		clients = append(clients, client)
@@ -124,12 +167,22 @@ func TestRemnaNodeServerMemoryProfile(t *testing.T) {
 		}
 	})
 
-	if response := waitDeploymentHTTPForwarding(t, clients[0], clientPorts[0], httpPort, "www.google.com"); !bytes.Contains([]byte(response), []byte("family=ipv4")) {
-		t.Fatalf("pre-pressure deployment request failed: %q", response)
+	probeClients := 1
+	if !useSMUX {
+		probeClients = 2
+	}
+	for index := range probeClients {
+		if response := waitDeploymentHTTPForwarding(t, clients[index], clientPorts[index], httpPort, "www.google.com"); !bytes.Contains([]byte(response), []byte("family=ipv4")) {
+			t.Fatalf("pre-pressure deployment request through client %d failed: %q", index, response)
+		}
 	}
 
 	baseline := captureProcessResources(t, server.command.Process.Pid)
-	t.Logf("RemnaNode Xray PID=%d baseline rss=%d KiB threads=%d fds=%d", server.command.Process.Pid, baseline.rssKiB, baseline.threads, baseline.fds)
+	mode := "SMUX streams"
+	if !useSMUX {
+		mode = "direct connections"
+	}
+	t.Logf("RemnaNode Xray PID=%d mode=%s baseline rss=%d KiB threads=%d fds=%d", server.command.Process.Pid, mode, baseline.rssKiB, baseline.threads, baseline.fds)
 	previousRSS := baseline.rssKiB
 	heldConnections := make([]net.Conn, 0, remnaNodeProfileBatchSize)
 	t.Cleanup(func() {
@@ -142,7 +195,7 @@ func TestRemnaNodeServerMemoryProfile(t *testing.T) {
 		batch, batchErr := openRemnaNodeProfileBatch(clientPorts, sinks.ports, remnaNodeProfileBatchSize)
 		heldConnections = append(heldConnections, batch...)
 		snapshot := captureProcessResources(t, server.command.Process.Pid)
-		t.Logf("RemnaNode Xray PID=%d streams=%d rss=%d KiB threads=%d fds=%d target=%d bytes", server.command.Process.Pid, len(heldConnections), snapshot.rssKiB, snapshot.threads, snapshot.fds, targetBytes)
+		t.Logf("RemnaNode Xray PID=%d mode=%s connections=%d rss=%d KiB threads=%d fds=%d target=%d bytes", server.command.Process.Pid, mode, len(heldConnections), snapshot.rssKiB, snapshot.threads, snapshot.fds, targetBytes)
 		if batchErr != nil {
 			captureRemnaNodeProfiles(t, metricsPort, profileDir)
 			t.Fatalf("full Xray process load stopped before target: rss=%d KiB streams=%d: %v", snapshot.rssKiB, len(heldConnections), batchErr)
@@ -155,10 +208,12 @@ func TestRemnaNodeServerMemoryProfile(t *testing.T) {
 	}
 
 	captureRemnaNodeProfiles(t, metricsPort, profileDir)
-	if response := waitDeploymentHTTPForwarding(t, clients[0], clientPorts[0], httpPort, "www.google.com"); !bytes.Contains([]byte(response), []byte("family=ipv4")) {
-		t.Fatalf("post-pressure deployment request failed: %q", response)
+	for index := range probeClients {
+		if response := waitDeploymentHTTPForwarding(t, clients[index], clientPorts[index], httpPort, "www.google.com"); !bytes.Contains([]byte(response), []byte("family=ipv4")) {
+			t.Fatalf("post-pressure deployment request through client %d failed: %q", index, response)
+		}
 	}
-	t.Logf("full RemnaNode Xray process reached target: pid=%d rss=%d KiB streams=%d profiles=%s", server.command.Process.Pid, previousRSS, len(heldConnections), profileDir)
+	t.Logf("full RemnaNode Xray process reached target: pid=%d mode=%s rss=%d KiB connections=%d profiles=%s", server.command.Process.Pid, mode, previousRSS, len(heldConnections), profileDir)
 }
 
 func remnaNodeMemoryProfileConfig(t *testing.T, base []byte, metricsPort int) []byte {
@@ -186,6 +241,24 @@ func remnaNodeMemoryClientConfig(t *testing.T, base []byte) []byte {
 	outbound["smux"] = map[string]any{
 		"enabled": true, "protocol": "smux", "maxStreams": 8, "padding": true,
 	}
+	config["log"] = map[string]any{"loglevel": "warning", "access": "none"}
+	encoded, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func remnaNodeDirectMemoryClientConfig(t *testing.T, base []byte) []byte {
+	t.Helper()
+	var config map[string]any
+	if err := json.Unmarshal(base, &config); err != nil {
+		t.Fatal(err)
+	}
+	outbounds := config["outbounds"].([]any)
+	outbound := outbounds[0].(map[string]any)
+	delete(outbound, "smux")
+	delete(outbound, "mux")
 	config["log"] = map[string]any{"loglevel": "warning", "access": "none"}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {

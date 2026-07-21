@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"io"
 	"net"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,6 +242,126 @@ func TestBufferedWriterWithPrefixPreservesFirstPayloadBuffers(t *testing.T) {
 	ReleaseMulti(underlying.calls[0])
 }
 
+func TestBufferedWriterWithPrefixPreservesByteWritesAndFlush(t *testing.T) {
+	var output bytes.Buffer
+	writer, err := NewBufferedWriterWithPrefix(&SequentialWriter{Writer: &output}, []byte("header"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "headerpayload" {
+		t.Fatalf("flushed bytes = %q, want headerpayload", got)
+	}
+}
+
+func TestBufferedWriterWithPrefixRejectsOversizedPrefix(t *testing.T) {
+	if _, err := NewBufferedWriterWithPrefix(releasingMultiBufferWriter{}, make([]byte, Size+1)); err == nil {
+		t.Fatal("oversized prefix was accepted")
+	}
+}
+
+func TestPrefixWriterPreservesFirstPayloadAndPassesThrough(t *testing.T) {
+	underlying := new(recordingMultiBufferWriter)
+	writer, err := NewPrefixWriter(underlying, []byte{0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := FromBytes([]byte("first"))
+	if err := writer.WriteMultiBuffer(MultiBuffer{first}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 1 || underlying.calls[0].String() != "\x00\x00first" {
+		t.Fatalf("first write = %q, want prefixed payload", underlying.calls[0].String())
+	}
+	if len(underlying.calls[0]) != 2 || underlying.calls[0][1] != first {
+		t.Fatal("first payload buffer was copied")
+	}
+	ReleaseMulti(underlying.calls[0])
+
+	second := FromBytes([]byte("second"))
+	if err := writer.WriteMultiBuffer(MultiBuffer{second}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 2 || len(underlying.calls[1]) != 1 || underlying.calls[1][0] != second {
+		t.Fatal("writer did not enter pass-through mode")
+	}
+	ReleaseMulti(underlying.calls[1])
+}
+
+func TestPrefixWriterRejectsOversizedPrefix(t *testing.T) {
+	if _, err := NewPrefixWriter(releasingMultiBufferWriter{}, make([]byte, 9)); err == nil {
+		t.Fatal("oversized inline prefix was accepted")
+	}
+}
+
+func TestPrefixWriterConcurrentWritesEmitPrefixOnce(t *testing.T) {
+	var output bytes.Buffer
+	writer, err := NewPrefixWriter(&BufferToBytesWriter{Writer: &output}, []byte{0xaa, 0xbb})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 64
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(writers)
+	for value := range byte(writers) {
+		go func() {
+			defer waitGroup.Done()
+			if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes([]byte{value})}); err != nil {
+				t.Errorf("write %d: %v", value, err)
+			}
+		}()
+	}
+	waitGroup.Wait()
+
+	written := output.Bytes()
+	if len(written) != writers+2 {
+		t.Fatalf("written length = %d, want %d", len(written), writers+2)
+	}
+	if !bytes.Equal(written[:2], []byte{0xaa, 0xbb}) {
+		t.Fatalf("written prefix = %x, want aabb", written[:2])
+	}
+	slices.Sort(written[2:])
+	for value := range byte(writers) {
+		if written[int(value)+2] != value {
+			t.Fatalf("sorted payload byte %d = %d", value, written[int(value)+2])
+		}
+	}
+}
+
+var idlePrefixWriterSink *PrefixWriter
+
+func TestIdlePrefixWriterAllocationBudget(t *testing.T) {
+	underlying := releasingMultiBufferWriter{}
+	allocations := testing.AllocsPerRun(100, func() {
+		writer, err := NewPrefixWriter(underlying, []byte{0, 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idlePrefixWriterSink = writer
+	})
+	if allocations > 1 {
+		t.Fatalf("idle prefixed writer allocations = %.1f, budget is 1", allocations)
+	}
+}
+
+func BenchmarkIdlePrefixWriter(b *testing.B) {
+	underlying := releasingMultiBufferWriter{}
+	b.ReportAllocs()
+	for b.Loop() {
+		writer, err := NewPrefixWriter(underlying, []byte{0, 0})
+		if err != nil {
+			b.Fatal(err)
+		}
+		idlePrefixWriterSink = writer
+	}
+}
+
 func TestSequentialWriterConsumesPrefixAndPayload(t *testing.T) {
 	var output bytes.Buffer
 	writer, err := NewBufferedWriterWithPrefix(&SequentialWriter{Writer: &output}, []byte("header"))
@@ -307,6 +429,37 @@ func BenchmarkPrefixedBufferedTCPWriterHeaderAndFirstPayload(b *testing.B) {
 		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkVLESSResponsePrefixWriter(b *testing.B) {
+	prefix := []byte{0, 0}
+	payload := make([]byte, 1400)
+	for _, inline := range []bool{false, true} {
+		name := "buffered"
+		if inline {
+			name = "inline"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.SetBytes(int64(len(prefix) + len(payload)))
+			b.ReportAllocs()
+			for b.Loop() {
+				underlying := &BufferToBytesWriter{Writer: io.Discard}
+				var writer Writer
+				var err error
+				if inline {
+					writer, err = NewPrefixWriter(underlying, prefix)
+				} else {
+					writer, err = NewBufferedWriterWithPrefix(underlying, prefix)
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
