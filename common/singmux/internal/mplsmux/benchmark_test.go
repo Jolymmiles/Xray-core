@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"testing"
+
+	"github.com/xtls/xray-core/common/buf"
 )
 
 func BenchmarkStreamRoundTrip32KiB(b *testing.B) {
@@ -116,6 +118,77 @@ func BenchmarkConcurrentStreamsRoundTrip32KiB(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkStreamReadMultiBuffer8KiB(b *testing.B) {
+	for _, direct := range []bool{false, true} {
+		name := "adapter-copy"
+		if direct {
+			name = "owned-transfer"
+		}
+		b.Run(name, func(b *testing.B) {
+			client, server := benchmarkSessionPair(b)
+			clientStream, err := client.OpenStream()
+			if err != nil {
+				b.Fatal(err)
+			}
+			serverStream, err := server.AcceptStream()
+			if err != nil {
+				b.Fatal(err)
+			}
+			var reader buf.Reader = &buf.SingleReader{Reader: serverStream}
+			if direct {
+				reader = serverStream
+			}
+			payload := bytes.Repeat([]byte{0x5a}, 8*1024)
+			writeRequests := make(chan struct{})
+			writeResults := make(chan error)
+			go func() {
+				for range writeRequests {
+					_, writeErr := clientStream.Write(payload)
+					writeResults <- writeErr
+				}
+			}()
+			b.Cleanup(func() { close(writeRequests) })
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			b.ResetTimer()
+			for range b.N {
+				writeRequests <- struct{}{}
+				multiBuffer, readErr := reader.ReadMultiBuffer()
+				writeErr := <-writeResults
+				if readErr != nil {
+					b.Fatal(readErr)
+				}
+				if writeErr != nil {
+					b.Fatal(writeErr)
+				}
+				buf.ReleaseMulti(multiBuffer)
+			}
+		})
+	}
+}
+
+func benchmarkSessionPair(b *testing.B) (*Session, *Session) {
+	b.Helper()
+	clientConn, serverConn := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	config.MaxFrameSize = 8 * 1024
+	client, err := Client(clientConn, config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	server, err := Server(serverConn, config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	return client, server
 }
 
 func BenchmarkSessionPair(b *testing.B) {

@@ -215,3 +215,90 @@ streams per cycle and no panic or stuck shutdown.
 The five-run 32 KiB stream round-trip result remained at zero allocations and
 10.058--10.293 us/op. The session-pair lifecycle used 32,131 B/op and 36
 allocations/op; the additional join state is outside the stream data hot path.
+
+## Streaming padding reader (2026-07-21)
+
+This pass targets the padded carrier receive path on the Xray server. The old
+reader allocated and filled the complete payload of each of the first 16
+padding frames before returning any bytes. That both delayed fragmented input
+and duplicated the SMUX receive buffer. The optimized reader keeps only the
+four-byte frame header and the remaining payload/padding counters; it streams
+payload directly into the caller's buffer and discards padding before exposing
+the raw tail. The wire format and the 16-frame transition are unchanged.
+
+The source point is commit `1c2f152b9cba6d6de3215da1a3358b230dd37090`
+with a dirty SMUX optimization tree. Measurements used Go 1.26.5 on
+darwin/arm64, Apple M3 Max, Darwin 25.5.0. Five samples were collected with:
+
+```sh
+go test ./common/singmux -run '^$' \
+  -bench '^BenchmarkPaddingRead16Frames$' -benchmem -count=5
+```
+
+The benchmark reads sixteen 8 KiB payload frames with 32 bytes of padding per
+frame and then the first raw byte. The exact pre-change samples were
+18.121--20.999 us/op, with an 18.617 us median, 132,140 B/op, and 50
+allocations/op. Two post-change five-sample snapshots were 2.733--3.794 us/op;
+the later snapshot median was 2.916 us/op, with 128 B/op and 2 allocations/op.
+This is an 84.3% median latency reduction, 99.9% fewer allocated bytes, and
+96% fewer allocations in the isolated primitive. A permanent allocation gate
+holds the same 16-frame read to at most two allocations.
+
+The complete deterministic RemnaNode server configuration also passed a
+Darwin process smoke at a 96 MiB target: the Xray server grew from 39,280 KiB
+RSS to 99,008 KiB with 704 held VLESS/REALITY SMUX streams and served the
+post-pressure control request. Its profiles are not a Linux capacity result.
+The authoritative 5 GiB run, interface/TCP counters, and runtime comparison
+remain pending on Linux/amd64. The current Linux/amd64 integration/stress test
+binary cross-build proves portability only.
+
+## Owned SMUX receive buffers (2026-07-21)
+
+The next profile-driven pass removes the second 8 KiB payload buffer from the
+Xray server's normal SMUX-to-dispatcher path. Receive frames up to Xray's
+standard buffer size are now read directly into an owned `buf.Buffer`, and
+`Stream.ReadMultiBuffer` transfers that ownership to the existing pipeline.
+The regular `net.Conn.Read` API, partially consumed frames, large frames, per-
+stream backpressure, and the wire format retain their previous behavior.
+Frames larger than 8 KiB keep the zero-allocation engine pool and use the
+copying adapter only when a `MultiBuffer` consumer requests them.
+
+The permanent 8 KiB comparison runs the same engine and payload through the
+old adapter-copy shape and the owned-transfer path:
+
+```sh
+go test ./common/singmux/internal/mplsmux -run '^$' \
+  -bench '^BenchmarkStreamReadMultiBuffer8KiB$' -benchmem -count=5
+```
+
+The adapter-copy median is 3.360 us/op, 8 B/op, and 1 allocation/op. The
+owned-transfer median is 2.901 us/op, 0 B/op, and 0 allocations/op: 13.7%
+lower latency with the payload copy and measured allocation removed. The
+existing 32 KiB generic stream round-trip gate remains at zero allocations;
+its five-sample median is 10.544 us/op, 5.2% above the documented 10.025 us
+snapshot. That generic `io.Reader` cost is recorded as a tradeoff rather than
+hidden; the production server-owned path improves by 13.7%, and the Linux
+process gate remains authoritative.
+
+At the same 704-stream RemnaNode Darwin smoke point, sampled live heap fell
+from 28,839.30 KiB to 18,052.94 KiB (37.4%). The previous separate SMUX
+receive-buffer attribution disappeared; `common/buf.New` became the largest
+remaining owned-buffer site. RSS changed from 99,008 KiB to 100,656 KiB, a
+1.7% increase that is consistent with allocator/GC residency noise and is not
+claimed as a resident-memory improvement. Linux 5 GiB RSS, GC, throughput,
+latency, and network-counter evidence is still required before release.
+
+The post-change Xray-server compatibility matrix passed 24/24 cells: Xray,
+sing-box, and Mihomo clients; VLESS and Trojan; TCP and UDP; padding disabled
+and enabled. The first run exposed a deterministic Mihomo readiness defect in
+the harness: its SOCKS listener and `Initial configuration complete` message
+preceded a usable `GLOBAL` provider. The gate now proves a complete
+SOCKS-to-Xray-to-echo path before the single-shot scenario assertion. The
+previously failing cell passed in isolation, followed by the complete 24/24
+server matrix.
+
+The server-only reconnect/stress gate then passed 12/12 cycles in 70.90 s:
+sing-box and Mihomo clients, VLESS and Trojan, three Xray-server restarts per
+topology. Each cycle retained the standard 128 concurrent full-duplex TCP
+streams and 10,000 UDP datagrams. Darwin supplied functional evidence only;
+Linux interface counters remain a release gate.

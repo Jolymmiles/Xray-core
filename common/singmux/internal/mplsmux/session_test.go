@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/xtls/xray-core/common/buf"
 )
 
 func testSessionPair(t *testing.T, configure func(*Config)) (*Session, *Session) {
@@ -162,6 +164,84 @@ func TestSessionRoundTripAndStreamIDs(t *testing.T) {
 	}
 	if serverOpened.ID() != 2 || clientAccepted.ID() != 2 {
 		t.Fatalf("server/client stream IDs = %d/%d, want 2/2", serverOpened.ID(), clientAccepted.ID())
+	}
+}
+
+func TestStreamReadMultiBufferTransfersCompleteFrame(t *testing.T) {
+	for _, payloadSize := range []int{8 * 1024, 32 * 1024} {
+		t.Run(fmt.Sprintf("%d", payloadSize), func(t *testing.T) {
+			client, server := testSessionPair(t, func(config *Config) {
+				config.MaxFrameSize = payloadSize
+			})
+			clientStream, err := client.OpenStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverStream, err := server.AcceptStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			payload := bytes.Repeat([]byte{0x5a}, payloadSize)
+			writeResult := make(chan error, 1)
+			go func() {
+				_, writeErr := clientStream.Write(payload)
+				writeResult <- writeErr
+			}()
+
+			multiBuffer, err := serverStream.ReadMultiBuffer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer buf.ReleaseMulti(multiBuffer)
+			if multiBuffer.Len() != int32(len(payload)) {
+				t.Fatalf("received %d bytes, want %d", multiBuffer.Len(), len(payload))
+			}
+			received := make([]byte, len(payload))
+			if copied := multiBuffer.Copy(received); copied != len(received) {
+				t.Fatalf("copied %d bytes, want %d", copied, len(received))
+			}
+			if !bytes.Equal(received, payload) {
+				t.Fatal("multi-buffer payload mismatch")
+			}
+			if err := <-writeResult; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestStreamReadMultiBufferPreservesPartiallyReadFrame(t *testing.T) {
+	client, server := testSessionPair(t, nil)
+	clientStream, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStream, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte{0x5a}, 8*1024)
+	writeResult := make(chan error, 1)
+	go func() {
+		_, writeErr := clientStream.Write(payload)
+		writeResult <- writeErr
+	}()
+
+	prefix := make([]byte, 127)
+	if _, err := io.ReadFull(serverStream, prefix); err != nil {
+		t.Fatal(err)
+	}
+	multiBuffer, err := serverStream.ReadMultiBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buf.ReleaseMulti(multiBuffer)
+	if multiBuffer.Len() != int32(len(payload)-len(prefix)) {
+		t.Fatalf("remaining bytes = %d, want %d", multiBuffer.Len(), len(payload)-len(prefix))
+	}
+	if err := <-writeResult; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -500,10 +580,12 @@ func TestPerStreamReceiveLimitAppliesBackpressure(t *testing.T) {
 	stream := newStream(server, 3)
 	first := acquireReceiveBuffer(1024)
 	second := acquireReceiveBuffer(1024)
-	if !server.reserveReceive(len(first)) || !stream.enqueue(first) {
+	first.xray.Extend(1024)
+	second.xray.Extend(1024)
+	if !server.reserveReceive(first.Len()) || !stream.enqueue(first) {
 		t.Fatal("first frame was not queued")
 	}
-	if !server.reserveReceive(len(second)) {
+	if !server.reserveReceive(second.Len()) {
 		t.Fatal("second frame did not reserve session capacity")
 	}
 	queued := make(chan bool, 1)

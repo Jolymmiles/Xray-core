@@ -80,5 +80,10 @@ func captureProcessResources(t *testing.T, pid int) processResourceSnapshot {
 			snapshot.threads, _ = strconv.ParseUint(fields[1], 10, 64)
 		}
 	}
+	fileDescriptors, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+	if err != nil {
+		t.Fatalf("read file descriptors for %d: %v", pid, err)
+	}
+	snapshot.fds = uint64(len(fileDescriptors))
 	return snapshot
 }

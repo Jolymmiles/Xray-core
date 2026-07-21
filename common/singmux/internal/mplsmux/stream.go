@@ -7,12 +7,14 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/xtls/xray-core/common/buf"
 )
 
 const closeTimeout = 30 * time.Second
 
 type receiveChunk struct {
-	buffer []byte
+	buffer receiveBuffer
 	offset int
 }
 
@@ -66,11 +68,11 @@ func (s *Stream) Read(destination []byte) (int, error) {
 		s.stateMu.Lock()
 		if len(s.chunks) > 0 {
 			chunk := &s.chunks[0]
-			count := copy(destination, chunk.buffer[chunk.offset:])
+			count := copy(destination, chunk.buffer.data(chunk.offset))
 			chunk.offset += count
 			s.buffered -= count
-			var released []byte
-			if chunk.offset == len(chunk.buffer) {
+			var released receiveBuffer
+			if chunk.offset == chunk.buffer.Len() {
 				released = chunk.buffer
 				s.chunks[0] = receiveChunk{}
 				if len(s.chunks) == 1 {
@@ -85,7 +87,7 @@ func (s *Stream) Read(destination []byte) (int, error) {
 			}
 			s.stateMu.Unlock()
 			s.session.releaseReceive(count)
-			if released != nil {
+			if !released.IsEmpty() {
 				releaseReceiveBuffer(released)
 			}
 			return count, nil
@@ -113,6 +115,62 @@ func (s *Stream) Read(destination []byte) (int, error) {
 		case <-deadlineChannel:
 			stopTimer()
 			return 0, ErrTimeout
+		case <-s.session.done:
+			stopTimer()
+		}
+	}
+}
+
+// ReadMultiBuffer transfers the next complete receive frame to Xray's buffer
+// pipeline. Unlike an io.Reader adapter, it does not allocate a second payload
+// buffer before an idle stream becomes readable.
+func (s *Stream) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+
+	for {
+		s.stateMu.Lock()
+		if len(s.chunks) > 0 {
+			chunk := s.chunks[0]
+			count := chunk.buffer.Len() - chunk.offset
+			s.chunks[0] = receiveChunk{}
+			if len(s.chunks) == 1 {
+				s.chunks = s.chunks[:0]
+			} else {
+				s.chunks = s.chunks[1:]
+			}
+			s.buffered -= count
+			if s.bufferWaiting {
+				s.bufferWaiting = false
+				notify(s.bufferChanged)
+			}
+			s.stateMu.Unlock()
+			s.session.releaseReceive(count)
+			return chunk.buffer.multiBuffer(chunk.offset), nil
+		}
+		if s.localClosed {
+			s.stateMu.Unlock()
+			return nil, io.ErrClosedPipe
+		}
+		if s.remoteClosed {
+			s.stateMu.Unlock()
+			return nil, io.EOF
+		}
+		if s.sessionClosed {
+			s.stateMu.Unlock()
+			return nil, s.session.terminalError()
+		}
+		changed := s.readChanged
+		deadline := s.readDeadline
+		s.stateMu.Unlock()
+
+		deadlineChannel, stopTimer := deadlineSignal(deadline)
+		select {
+		case <-changed:
+			stopTimer()
+		case <-deadlineChannel:
+			stopTimer()
+			return nil, ErrTimeout
 		case <-s.session.done:
 			stopTimer()
 		}
@@ -223,16 +281,17 @@ func (s *Stream) SetWriteDeadline(deadline time.Time) error {
 	return nil
 }
 
-func (s *Stream) enqueue(buffer []byte) bool {
+func (s *Stream) enqueue(buffer receiveBuffer) bool {
+	bufferSize := buffer.Len()
 	for {
 		s.stateMu.Lock()
 		if s.localClosed || s.remoteClosed || s.sessionClosed {
 			s.stateMu.Unlock()
 			return false
 		}
-		if s.buffered+len(buffer) <= s.session.config.MaxStreamBuffer {
+		if s.buffered+bufferSize <= s.session.config.MaxStreamBuffer {
 			s.chunks = append(s.chunks, receiveChunk{buffer: buffer})
-			s.buffered += len(buffer)
+			s.buffered += bufferSize
 			notify(s.readChanged)
 			s.stateMu.Unlock()
 			return true

@@ -3,8 +3,11 @@
 package mplsmux
 
 import (
+	"io"
 	"math/bits"
 	"sync"
+
+	"github.com/xtls/xray-core/common/buf"
 )
 
 const (
@@ -14,19 +17,75 @@ const (
 
 var bufferPools [poolClasses + 1]sync.Pool
 
-func acquireReceiveBuffer(size int) []byte {
-	class := receivePoolClass(size)
-	if class < 0 {
-		return make([]byte, size)
-	}
-	if pooled := bufferPools[class].Get(); pooled != nil {
-		return pooledBytes(pooled, class, size)
-	}
-	return make([]byte, size, 1<<(poolMinShift+class))
+type receiveBuffer struct {
+	xray  *buf.Buffer
+	bytes []byte
 }
 
-func releaseReceiveBuffer(buffer []byte) {
-	capacity := cap(buffer)
+func acquireReceiveBuffer(size int) receiveBuffer {
+	if size <= buf.Size {
+		return receiveBuffer{xray: buf.New()}
+	}
+	class := receivePoolClass(size)
+	if class < 0 {
+		return receiveBuffer{bytes: make([]byte, size)}
+	}
+	if pooled := bufferPools[class].Get(); pooled != nil {
+		return receiveBuffer{bytes: pooledBytes(pooled, class, size)}
+	}
+	return receiveBuffer{bytes: make([]byte, size, 1<<(poolMinShift+class))}
+}
+
+func (buffer receiveBuffer) Len() int {
+	if buffer.xray != nil {
+		return int(buffer.xray.Len())
+	}
+	return len(buffer.bytes)
+}
+
+func (buffer receiveBuffer) Cap() int {
+	if buffer.xray != nil {
+		return int(buffer.xray.Cap())
+	}
+	return cap(buffer.bytes)
+}
+
+func (buffer receiveBuffer) IsEmpty() bool {
+	return buffer.Len() == 0
+}
+
+func (buffer *receiveBuffer) readFullFrom(reader io.Reader, size int) error {
+	if buffer.xray != nil {
+		_, err := buffer.xray.ReadFullFrom(reader, int32(size))
+		return err
+	}
+	_, err := io.ReadFull(reader, buffer.bytes)
+	return err
+}
+
+func (buffer receiveBuffer) data(offset int) []byte {
+	if buffer.xray != nil {
+		return buffer.xray.BytesFrom(int32(offset))
+	}
+	return buffer.bytes[offset:]
+}
+
+func (buffer receiveBuffer) multiBuffer(offset int) buf.MultiBuffer {
+	if buffer.xray != nil {
+		buffer.xray.Advance(int32(offset))
+		return buffer.xray.SingleMultiBuffer()
+	}
+	multiBuffer := buf.MergeBytes(nil, buffer.bytes[offset:])
+	releaseReceiveBuffer(buffer)
+	return multiBuffer
+}
+
+func releaseReceiveBuffer(buffer receiveBuffer) {
+	if buffer.xray != nil {
+		buffer.xray.Release()
+		return
+	}
+	capacity := cap(buffer.bytes)
 	if capacity < 1<<poolMinShift || capacity&(capacity-1) != 0 {
 		return
 	}
@@ -34,7 +93,7 @@ func releaseReceiveBuffer(buffer []byte) {
 	if class < 0 || class >= poolClasses {
 		return
 	}
-	putPooledBytes(buffer, class)
+	putPooledBytes(buffer.bytes, class)
 }
 
 func receivePoolClass(size int) int {

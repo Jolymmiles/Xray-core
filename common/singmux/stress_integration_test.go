@@ -61,7 +61,7 @@ func assertNoLinearResourceGrowth(t *testing.T, samples []processResourceSnapsho
 		t.Fatalf("resource samples = %d, want %d", len(samples), cycles)
 	}
 	for index, sample := range samples {
-		t.Logf("client resources after cycle %d: rss=%d KiB threads=%d", index+1, sample.rssKiB, sample.threads)
+		t.Logf("client resources after cycle %d: rss=%d KiB threads=%d fds=%d", index+1, sample.rssKiB, sample.threads, sample.fds)
 	}
 	if len(samples) < 3 {
 		return
