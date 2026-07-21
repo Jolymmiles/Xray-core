@@ -635,14 +635,13 @@ func BenchmarkSnifferCachedSingleBuffer(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
-		reader := acquireCachedReader(&singleBufferTimeoutReader{payload: payload})
+		reader := newCachedReader(&singleBufferTimeoutReader{payload: payload})
 		result, err := sniff(ctx, reader, false, net.Network_TCP, dispatcher.connectionSniffer(ctx))
 		if err != nil {
 			b.Fatal(err)
 		}
 		sniffResultBenchmarkSink = result
 		buf.ReleaseMulti(reader.readInternal())
-		releaseCachedReader(reader)
 	}
 }
 
@@ -657,14 +656,13 @@ func BenchmarkSnifferCachedSingleBufferAttributes(b *testing.B) {
 	b.SetBytes(int64(len(payload)))
 	for b.Loop() {
 		content.Attributes = nil
-		reader := acquireCachedReader(&singleBufferTimeoutReader{payload: payload})
+		reader := newCachedReader(&singleBufferTimeoutReader{payload: payload})
 		result, err := sniff(ctx, reader, false, net.Network_TCP, dispatcher.connectionSniffer(ctx))
 		if err != nil {
 			b.Fatal(err)
 		}
 		sniffResultBenchmarkSink = result
 		buf.ReleaseMulti(reader.readInternal())
-		releaseCachedReader(reader)
 	}
 }
 
@@ -672,38 +670,41 @@ func TestSnifferCachedSingleBufferAllocationBudget(t *testing.T) {
 	ctx := context.WithValue(context.Background(), core.XrayKey(1), &core.Instance{})
 	payload := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	allocations := testing.AllocsPerRun(1000, func() {
-		reader := acquireCachedReader(&singleBufferTimeoutReader{payload: payload})
-		result, err := sniffer(ctx, reader, false, net.Network_TCP)
+		reader := cachedReader{reader: &singleBufferTimeoutReader{payload: payload}}
+		result, err := sniffer(ctx, &reader, false, net.Network_TCP)
 		if err != nil || result == nil {
 			t.Fatalf("sniffer result = %v, error = %v", result, err)
 		}
 		buf.ReleaseMulti(reader.readInternal())
-		releaseCachedReader(reader)
 	})
-	if allocations > 5 {
-		t.Fatalf("single-buffer sniff allocations = %.0f, want at most 5", allocations)
+	// The cached reader owns a connection-specific lifetime and must not be
+	// recycled while an outbound I/O goroutine can still reference it.
+	if allocations > 6 {
+		t.Fatalf("single-buffer sniff allocations = %.0f, want at most 6", allocations)
 	}
 }
 
-func TestCachedReaderPoolClearsRetainedState(t *testing.T) {
-	first := acquireCachedReader(&singleBufferTimeoutReader{payload: []byte("first")})
+func TestCachedReadersDoNotShareState(t *testing.T) {
+	first := newCachedReader(&singleBufferTimeoutReader{payload: []byte("first")})
 	if _, err := first.Cache(time.Second); err != nil {
 		t.Fatal(err)
 	}
-	first.scratch = buf.New()
-	releaseCachedReader(first)
+	t.Cleanup(func() { buf.ReleaseMulti(first.readInternal()) })
 
-	second := acquireCachedReader(&singleBufferTimeoutReader{payload: []byte("second")})
-	defer releaseCachedReader(second)
+	second := newCachedReader(&singleBufferTimeoutReader{payload: []byte("second")})
+	t.Cleanup(func() { buf.ReleaseMulti(second.readInternal()) })
+	if first == second {
+		t.Fatal("cached readers unexpectedly share an instance")
+	}
 	if second.cache != nil || second.scratch != nil {
-		t.Fatalf("pooled reader retained cache=%v scratch=%v", second.cache, second.scratch)
+		t.Fatalf("new reader retained cache=%v scratch=%v", second.cache, second.scratch)
 	}
 	payload, err := second.Cache(time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(payload) != "second" {
-		t.Fatalf("pooled payload = %q, want second", payload)
+		t.Fatalf("new reader payload = %q, want second", payload)
 	}
 }
 

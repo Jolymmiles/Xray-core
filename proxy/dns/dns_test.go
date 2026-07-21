@@ -2,6 +2,7 @@ package dns_test
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,6 +122,9 @@ func TestUDPDNSTunnel(t *testing.T) {
 				ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
 					PortList: &net.PortList{Range: []*net.PortRange{net.SinglePortRange(serverPort)}},
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
+					SniffingSettings: &proxyman.SniffingConfig{
+						Enabled: true,
+					},
 				}),
 			},
 		},
@@ -191,6 +195,41 @@ func TestUDPDNSTunnel(t *testing.T) {
 		if in.Rcode != dns.RcodeNameError {
 			t.Error("expected NameError, but got ", in.Rcode)
 		}
+	}
+
+	const concurrentQueries = 32
+	var requests sync.WaitGroup
+	failures := make(chan string, concurrentQueries)
+	for range concurrentQueries {
+		requests.Add(1)
+		go func() {
+			defer requests.Done()
+
+			query := new(dns.Msg)
+			query.Id = dns.Id()
+			query.RecursionDesired = true
+			query.Question = []dns.Question{{Name: "google.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}}
+
+			client := &dns.Client{Timeout: 5 * time.Second}
+			response, _, err := client.Exchange(query, "127.0.0.1:"+strconv.Itoa(int(serverPort)))
+			if err != nil {
+				failures <- err.Error()
+				return
+			}
+			if len(response.Answer) != 1 {
+				failures <- "unexpected concurrent DNS answer count"
+				return
+			}
+			answer, ok := response.Answer[0].(*dns.A)
+			if !ok || cmp.Diff(answer.A[:], net.IP{8, 8, 8, 8}) != "" {
+				failures <- "unexpected concurrent DNS answer"
+			}
+		}()
+	}
+	requests.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
 	}
 }
 

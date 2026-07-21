@@ -34,33 +34,8 @@ type cachedReader struct {
 	scratch *buf.Buffer
 }
 
-var cachedReaderPool sync.Pool
-
-func acquireCachedReader(reader buf.TimeoutReader) *cachedReader {
-	cached, _ := cachedReaderPool.Get().(*cachedReader)
-	if cached == nil {
-		cached = new(cachedReader)
-	}
-	cached.reader = reader
-	return cached
-}
-
-func releaseCachedReader(cached *cachedReader) {
-	if cached == nil {
-		return
-	}
-	cached.Lock()
-	if cached.cache != nil {
-		buf.ReleaseMulti(cached.cache)
-		cached.cache = nil
-	}
-	if cached.scratch != nil {
-		cached.scratch.Release()
-		cached.scratch = nil
-	}
-	cached.reader = nil
-	cached.Unlock()
-	cachedReaderPool.Put(cached)
+func newCachedReader(reader buf.TimeoutReader) *cachedReader {
+	return &cachedReader{reader: reader}
 }
 
 func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
@@ -525,8 +500,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 		go d.routedDispatch(ctx, outbound, destination, ob, content, routingLink)
 	} else {
 		go func() {
-			cReader := acquireCachedReader(outbound.Reader.(*pipe.Reader))
-			defer releaseCachedReader(cReader)
+			cReader := newCachedReader(outbound.Reader.(*pipe.Reader))
 			outbound.Reader = cReader
 			result, err := sniff(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network, d.connectionSniffer(ctx))
 			if err == nil {
@@ -581,8 +555,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	if !sniffingRequest.Enabled {
 		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink)
 	} else {
-		cReader := acquireCachedReader(outbound.Reader.(buf.TimeoutReader))
-		defer releaseCachedReader(cReader)
+		cReader := newCachedReader(outbound.Reader.(buf.TimeoutReader))
 		outbound.Reader = cReader
 		result, err := sniff(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network, d.connectionSniffer(ctx))
 		if err == nil {
