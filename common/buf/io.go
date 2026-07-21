@@ -62,11 +62,8 @@ func (r *TimeoutWrapperReader) ReadMultiBufferTimeout(duration time.Duration) (M
 			close(r.done)
 		}()
 	}
-	timeout := make(chan struct{})
-	go func() {
-		time.Sleep(duration)
-		close(timeout)
-	}()
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 	select {
 	case <-r.done:
 		r.done = nil
@@ -74,7 +71,7 @@ func (r *TimeoutWrapperReader) ReadMultiBufferTimeout(duration time.Duration) (M
 			r.Counter.Add(int64(r.mb.Len()))
 		}
 		return r.mb, r.err
-	case <-timeout:
+	case <-timer.C:
 		return nil, nil
 	}
 }
