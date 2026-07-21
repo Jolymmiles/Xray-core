@@ -4,26 +4,11 @@ package mplsmux
 
 import "testing"
 
-func TestReceivePoolClasses(t *testing.T) {
-	tests := []struct {
-		size  int
-		class int
-		cap   int
-	}{
-		{size: 0, class: 0, cap: 1024},
-		{size: 1024, class: 0, cap: 1024},
-		{size: 1025, class: 1, cap: 2048},
-		{size: 32768, class: 5, cap: 32768},
-		{size: 65536, class: 6, cap: 65536},
-		{size: 65537, class: -1, cap: 65537},
-	}
-	for _, test := range tests {
-		if class := receivePoolClass(test.size); class != test.class {
-			t.Fatalf("receivePoolClass(%d) = %d, want %d", test.size, class, test.class)
-		}
-		buffer := acquireReceiveBuffer(test.size)
-		if len(buffer) != test.size || cap(buffer) != test.cap {
-			t.Fatalf("buffer(%d) has len/cap %d/%d, want %d/%d", test.size, len(buffer), cap(buffer), test.size, test.cap)
+func TestReceiveBuffersUseOwnedXrayBuffers(t *testing.T) {
+	for _, size := range []int{1024, 8 * 1024, 32 * 1024, 65535} {
+		buffer := acquireReceiveBuffer(size)
+		if buffer.Cap() < size {
+			t.Fatalf("buffer(%d) has capacity %d", size, buffer.Cap())
 		}
 		releaseReceiveBuffer(buffer)
 	}
@@ -38,7 +23,6 @@ func TestFramePoolIncludesMaximumWireFrame(t *testing.T) {
 }
 
 func TestPoolsIgnoreUnpooledSizes(t *testing.T) {
-	releaseReceiveBuffer(make([]byte, 17))
 	releaseFrameBuffer(make([]byte, 17))
 	buffer := acquireFrameBuffer(256*1024 + 1)
 	if len(buffer) != 256*1024+1 || cap(buffer) != 256*1024+1 {

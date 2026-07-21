@@ -355,7 +355,7 @@ func (s *Session) readLoop() {
 				return
 			}
 			payload := acquireReceiveBuffer(length)
-			if _, err := io.ReadFull(s.conn, payload); err != nil {
+			if err := payload.readFullFrom(s.conn, length); err != nil {
 				releaseReceiveBuffer(payload)
 				s.releaseReceive(length)
 				s.fail(err)

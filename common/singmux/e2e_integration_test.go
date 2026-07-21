@@ -238,6 +238,10 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 	waitSOCKS(t, client, socksPort)
 	if peer == "mihomo" && direction == "xray-server" {
 		waitProcessLog(t, client, "Initial configuration complete")
+		// Mihomo opens the SOCKS listener before the GLOBAL provider can carry
+		// traffic. Prove the complete forwarding path before the scenario's
+		// single-shot protocol assertion.
+		waitSOCKSTCPForwarding(t, client, socksPort, tcpEcho.(*net.TCPAddr))
 	}
 	t.Cleanup(func() {
 		if t.Failed() {

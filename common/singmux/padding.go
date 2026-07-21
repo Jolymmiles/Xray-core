@@ -20,8 +20,9 @@ type paddingConn struct {
 
 	readMu        sync.Mutex
 	readFrames    int
-	readPayload   []byte
-	readOffset    int
+	readHeader    [4]byte
+	readPayload   int
+	readPadding   int64
 	writeMu       sync.Mutex
 	writtenFrames int
 }
@@ -84,33 +85,38 @@ func (c *paddingConn) Read(destination []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 	for {
-		if c.readOffset < len(c.readPayload) {
-			n := copy(destination, c.readPayload[c.readOffset:])
-			c.readOffset += n
-			if c.readOffset == len(c.readPayload) {
-				c.readPayload = nil
-				c.readOffset = 0
+		if c.readPayload > 0 {
+			readSize := len(destination)
+			if readSize > c.readPayload {
+				readSize = c.readPayload
 			}
-			return n, nil
+			n, err := c.Conn.Read(destination[:readSize])
+			c.readPayload -= n
+			return n, err
+		}
+		if c.readPadding > 0 {
+			discardSize := len(destination)
+			if int64(discardSize) > c.readPadding {
+				discardSize = int(c.readPadding)
+			}
+			discarded, err := c.Conn.Read(destination[:discardSize])
+			c.readPadding -= int64(discarded)
+			if err != nil {
+				return 0, err
+			}
+			if discarded == 0 {
+				return 0, nil
+			}
+			continue
 		}
 		if c.readFrames >= paddingFrameCount {
 			return c.Conn.Read(destination)
 		}
-		var header [4]byte
-		if _, err := io.ReadFull(c.Conn, header[:]); err != nil {
+		if _, err := io.ReadFull(c.Conn, c.readHeader[:]); err != nil {
 			return 0, err
 		}
-		payloadSize := int(binary.BigEndian.Uint16(header[0:2]))
-		paddingSize := int64(binary.BigEndian.Uint16(header[2:4]))
-		c.readPayload = make([]byte, payloadSize)
-		if _, err := io.ReadFull(c.Conn, c.readPayload); err != nil {
-			c.readPayload = nil
-			return 0, err
-		}
-		if _, err := io.CopyN(io.Discard, c.Conn, paddingSize); err != nil {
-			c.readPayload = nil
-			return 0, err
-		}
+		c.readPayload = int(binary.BigEndian.Uint16(c.readHeader[0:2]))
+		c.readPadding = int64(binary.BigEndian.Uint16(c.readHeader[2:4]))
 		c.readFrames++
 	}
 }
