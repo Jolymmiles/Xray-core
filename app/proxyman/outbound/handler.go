@@ -18,6 +18,7 @@ import (
 	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/policy"
@@ -66,6 +67,7 @@ type Handler struct {
 	outboundManager outbound.Manager
 	mux             *mux.ClientManager
 	xudp            *mux.ClientManager
+	smux            *singmux.Client
 	udp443          string
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
@@ -118,6 +120,27 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 	proxyHandler, ok := rawProxyHandler.(proxy.Outbound)
 	if !ok {
 		return nil, errors.New("not an outbound handler")
+	}
+
+	if h.senderSettings != nil && h.senderSettings.SmuxSettings != nil {
+		config := h.senderSettings.SmuxSettings
+		if config.Enabled {
+			if h.senderSettings.MultiplexSettings != nil && h.senderSettings.MultiplexSettings.Enabled {
+				return nil, errors.New("mux and smux cannot be enabled on the same outbound")
+			}
+			h.smux, err = singmux.NewClient(singmux.Options{
+				Dialer:         newSMUXOutboundDialer(proxyHandler, h),
+				Protocol:       config.Protocol,
+				MaxConnections: int(config.MaxConnections),
+				MinStreams:     int(config.MinStreams),
+				MaxStreams:     int(config.MaxStreams),
+				Padding:        config.Padding,
+				OnlyTCP:        config.OnlyTcp,
+			})
+			if err != nil {
+				return nil, errors.New("failed to create SMUX client").Base(err)
+			}
+		}
 	}
 
 	if h.senderSettings != nil && h.senderSettings.MultiplexSettings != nil {
@@ -207,6 +230,20 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 	if ob.Target.Network == net.Network_UDP && ob.OriginalTarget.Address != nil && ob.OriginalTarget.Address != ob.Target.Address {
 		link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
+	}
+	if h.smux != nil && h.smux.ShouldHandle(ob.Target.Network) {
+		err := h.smux.Dispatch(ctx, link, ob.Target)
+		if err != nil {
+			errC := errors.Cause(err)
+			if !(goerrors.Is(errC, io.EOF) || goerrors.Is(errC, io.ErrClosedPipe) || goerrors.Is(errC, context.Canceled)) {
+				err = errors.New("failed to process SMUX outbound traffic").Base(err)
+				session.SubmitOutboundErrorToOriginator(ctx, err)
+				errors.LogInfo(ctx, err.Error())
+			}
+		}
+		common.Interrupt(link.Reader)
+		common.Close(link.Writer)
+		return
 	}
 	if h.mux != nil {
 		test := func(err error) {
@@ -377,6 +414,9 @@ func (h *Handler) Start() error {
 // Close implements common.Closable.
 func (h *Handler) Close() error {
 	common.Close(h.mux)
+	if h.smux != nil {
+		common.Close(h.smux)
+	}
 	common.Close(h.proxy)
 	return nil
 }
