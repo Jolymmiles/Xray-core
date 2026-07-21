@@ -635,7 +635,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		clientReader = proxy.NewVisionReader(clientReader, trafficState, true, ctx, connection, input, rawInput, nil)
 	}
 
-	bufferWriter, err := buf.NewBufferedWriterWithPrefix(buf.NewWriter(connection), []byte{request.Version, 0})
+	bufferWriter, err := buf.NewPrefixWriter(buf.NewWriter(connection), []byte{request.Version, 0})
 	if err != nil {
 		return errors.New("failed to encode response header").Base(err).AtWarning()
 	}

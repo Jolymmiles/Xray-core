@@ -153,6 +153,10 @@ func (r *BufferedReader) ReadMultiBuffer() (MultiBuffer, error) {
 		r.Buffer = nil
 		return mb, nil
 	}
+	if len(r.Buffer) != 0 {
+		ReleaseMulti(r.Buffer)
+		r.Buffer = nil
+	}
 
 	return r.Reader.ReadMultiBuffer()
 }

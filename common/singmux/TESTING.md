@@ -117,14 +117,17 @@ started with the deterministic RemnaNode configuration above. The only added
 server field is a loopback `metrics.listen` endpoint, and a regression test
 proves that removing this field restores the original process fixture.
 
-The generators open VLESS/REALITY streams through the
-`reality-pro-de-mux` inbound. Every request carries `www.google.com` as its
-VLESS destination, so the existing `vlessRoute: 50` rule selects `DIRECT`
-without a test-only routing rule or outbound. Local sinks deliberately stop
-reading. This applies backpressure while connections remain live. The loop
-samples RSS from the Xray server PID after every 64-stream wave and stops only
-when it reaches the requested target, the process or a connection fails, or a
-wave produces no measurable RSS growth. It does not retry failed streams.
+The SMUX profile opens VLESS/REALITY streams through the
+`reality-pro-de-mux` inbound. The direct profile removes both `smux` and `mux`
+from every generator and alternates physical VLESS/REALITY connections between
+the `reality-pro-de-mux` and `reality-pro-de` inbounds. Every request carries
+`www.google.com` as its VLESS destination, so the existing `vlessRoute: 50`
+rule selects `DIRECT` without a test-only routing rule or outbound. Local sinks
+deliberately stop reading. This applies backpressure while connections remain
+live. The loop samples RSS from the Xray server PID after every 64-connection
+wave and stops only when it reaches the requested target, the process or a
+connection fails, or a wave produces no measurable RSS growth. It does not
+retry failed connections.
 
 The default target is 5 GiB. Run it only on a disposable Linux/amd64 host with
 enough memory, file descriptors, and disk space for the server, generators,
@@ -137,6 +140,15 @@ XRAY_REMNANODE_MEMORY_PROFILE=1 \
 XRAY_REMNANODE_PROFILE_DIR=/tmp/xray-remnanode-profiles \
 go test -tags 'integration stress' ./common/singmux \
   -run '^TestRemnaNodeServerMemoryProfile$' -count=1 -v
+```
+
+Use the direct mode when profiling the ordinary non-multiplexed server path:
+
+```sh
+XRAY_REMNANODE_DIRECT_MEMORY_PROFILE=1 \
+XRAY_REMNANODE_PROFILE_DIR=/tmp/xray-remnanode-direct-profiles \
+go test -tags 'integration stress' ./common/singmux \
+  -run '^TestRemnaNodeDirectServerMemoryProfile$' -count=1 -v
 ```
 
 `XRAY_REMNANODE_MEMORY_TARGET_BYTES` changes the target for a diagnostic run.

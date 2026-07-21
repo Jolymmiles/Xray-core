@@ -302,3 +302,61 @@ sing-box and Mihomo clients, VLESS and Trojan, three Xray-server restarts per
 topology. Each cycle retained the standard 128 concurrent full-duplex TCP
 streams and 10,000 UDP datagrams. Darwin supplied functional evidence only;
 Linux interface counters remain a release gate.
+
+## Direct VLESS response and consumed-buffer retention (2026-07-21)
+
+This pass moves the process-profile priority from SMUX to ordinary physical
+VLESS TCP connections. The unchanged deterministic RemnaNode server fixture
+was exercised through both REALITY inbounds with four Xray clients that had
+both `smux` and `mux` removed. The initial source point was commit `4199e955`
+with an unrelated dirty documentation tree. Measurements used Go 1.26.5 on
+darwin/arm64, Apple M3 Max. Darwin is functional and comparative evidence only;
+Linux/amd64 remains the release-performance target.
+
+The first retained object was the 8 KiB `BufferedWriter` buffer used only to
+hold the two-byte VLESS response header until the target returned its first
+payload. A dedicated inline `PrefixWriter` now retains those two bytes without
+a payload buffer and emits them exactly once with the first response write.
+The second retained object was the already-consumed first VLESS request buffer.
+`BufferedReader.ReadMultiBuffer` now releases an empty buffered input before it
+blocks on the underlying connection. Both ownership changes have focused
+regression tests, including concurrent response writes and the consumed-input
+transition.
+
+The process comparison used the same 96 MiB diagnostic target for every run:
+
+```sh
+XRAY_REMNANODE_DIRECT_MEMORY_PROFILE=1 \
+XRAY_REMNANODE_MEMORY_TARGET_BYTES=100663296 \
+XRAY_REMNANODE_PROFILE_DIR=/tmp/xray-remnanode-direct \
+go test -tags 'integration stress' ./common/singmux \
+  -run '^TestRemnaNodeDirectServerMemoryProfile$' -count=1 -v -timeout=10m
+```
+
+| Snapshot | Connections at target | Linear RSS slope |
+| --- | ---: | ---: |
+| Before | 512 at 102,800 KiB | 122.233 KiB/connection |
+| Inline response prefix | 576 at 100,992 KiB | 106.171 KiB/connection |
+| Inline prefix + consumed-input release | 640 at 100,576 KiB | 98.918 KiB/connection |
+
+The final measured slope is 19.1% lower. The fixed-threshold connection count
+is 25% higher, but that figure also includes process-baseline RSS variation and
+must not be treated as a Linux capacity claim. The pre-change sampled heap
+attributed 2,066.56 KiB to `NewBufferedWriterWithPrefix`; that retained site is
+absent after the change. Every run completed post-pressure HTTP forwarding
+through both server inbounds.
+
+The isolated two-byte VLESS response benchmark used five two-second samples.
+The existing buffered variant had a 147.1 ns/op median; the inline variant had
+a 137.9 ns/op median, 6.3% lower, with both at 240 B/op and five allocations
+for the full benchmark operation. Constructing an idle inline prefix writer
+had an 18.52 ns/op median, 48 B/op, and one allocation, compared with the
+pre-change buffered construction's approximately 894.1 ns/op, 9,527 B/op, and
+two allocations.
+
+The final process interoperability gate passed 36/36 executions: Xray,
+sing-box, and Mihomo clients across TLS/no-flow, TLS/Vision,
+REALITY/no-flow, and REALITY/Vision, repeated three times. Unit, race,
+checkptr, and vet gates passed. A static stripped Linux/amd64 `GOAMD64=v1`
+cross-build passed; Linux runtime, 5 GiB pressure, and network-counter evidence
+remain mandatory before a release capacity claim.

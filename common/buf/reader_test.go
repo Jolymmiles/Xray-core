@@ -56,6 +56,21 @@ func TestBytesReaderMultiBuffer(t *testing.T) {
 	}
 }
 
+func TestBufferedReaderReleasesConsumedBufferBeforeBlockingRead(t *testing.T) {
+	consumed := New()
+	reader := &BufferedReader{
+		Reader: NewReader(strings.NewReader("")),
+		Buffer: MultiBuffer{consumed},
+	}
+
+	if _, err := reader.ReadMultiBuffer(); err != io.EOF {
+		t.Fatalf("read error = %v, want EOF", err)
+	}
+	if reader.Buffer != nil {
+		t.Fatal("consumed buffer remains retained after the reader moved to the underlying connection")
+	}
+}
+
 func TestReadByte(t *testing.T) {
 	sr := strings.NewReader("abcd")
 	reader := &BufferedReader{
