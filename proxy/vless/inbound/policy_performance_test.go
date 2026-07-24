@@ -10,9 +10,11 @@ import (
 	featurepolicy "github.com/xtls/xray-core/features/policy"
 )
 
-var sessionPolicySink featurepolicy.Session
-var accessDestinationSink net.Destination
-var accessDestinationStringSink string
+var (
+	sessionPolicySink           featurepolicy.Session
+	accessDestinationSink       net.Destination
+	accessDestinationStringSink string
+)
 
 func BenchmarkVLESSSessionPolicyLookup(b *testing.B) {
 	manager, err := policyapp.New(context.Background(), &policyapp.Config{})

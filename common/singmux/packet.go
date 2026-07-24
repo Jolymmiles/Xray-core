@@ -47,5 +47,7 @@ func (w *packetWriter) WriteMultiBuffer(buffers buf.MultiBuffer) error {
 	return nil
 }
 
-var _ buf.Reader = (*packetReader)(nil)
-var _ buf.Writer = (*packetWriter)(nil)
+var (
+	_ buf.Reader = (*packetReader)(nil)
+	_ buf.Writer = (*packetWriter)(nil)
+)

@@ -82,18 +82,17 @@ func (r *BufferedReader) BufferedBytes() int32 {
 // ReadByte implements io.ByteReader.
 func (r *BufferedReader) ReadByte() (byte, error) {
 	if r.Splitter == nil {
-		fetched := false
 		for {
 			if len(r.Buffer) == 0 {
-				if fetched {
-					return 0, nil
-				}
 				mb, err := r.Reader.ReadMultiBuffer()
-				if len(mb) == 0 {
+				if mb.IsEmpty() {
+					ReleaseMulti(mb)
+					if err == nil {
+						return 0, io.ErrNoProgress
+					}
 					return 0, err
 				}
 				r.Buffer = mb
-				fetched = true
 			}
 			buffer := r.Buffer[0]
 			if buffer.IsEmpty() {

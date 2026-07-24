@@ -10,10 +10,12 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 )
 
-var validatorUserSink *protocol.MemoryUser
-var validatorCountSink int64
-var validatorBoolSink bool
-var validatorUsersSink []*protocol.MemoryUser
+var (
+	validatorUserSink  *protocol.MemoryUser
+	validatorCountSink int64
+	validatorBoolSink  bool
+	validatorUsersSink []*protocol.MemoryUser
+)
 
 func TestParseAuthUUIDPreservesAcceptedFormats(t *testing.T) {
 	canonical := "00112233-4455-6677-8899-aabbccddeeff"

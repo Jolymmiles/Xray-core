@@ -18,6 +18,7 @@ type benchDispatcher struct{}
 func (benchDispatcher) Dispatch(context.Context, net.Destination) (*transport.Link, error) {
 	return nil, nil
 }
+
 func (benchDispatcher) DispatchLink(context.Context, net.Destination, *transport.Link) error {
 	return nil
 }

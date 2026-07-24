@@ -95,5 +95,35 @@ jobs:
           path: resources
           key: xray-geodat-
           enableCrossOsArchive: true
+      - name: Download Geodat if Cache Is Unavailable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p resources
+          hash_file() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            else
+              shasum -a 256 "$1" | awk '{print $1}'
+            fi
+          }
+          for ASSET in geoip geosite; do
+            DESTINATION="resources/${ASSET}.dat"
+            if [ -s "${DESTINATION}" ]; then
+              continue
+            fi
+            BASE_URL="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/${ASSET}.dat"
+            curl --fail --show-error --silent --location --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" "${BASE_URL}" -o "${DESTINATION}.tmp"
+            EXPECTED_HASH="$(curl --fail --show-error --silent --location --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" "${BASE_URL}.sha256sum" | awk '{print $1}')"
+            ACTUAL_HASH="$(hash_file "${DESTINATION}.tmp")"
+            if [ -z "${EXPECTED_HASH}" ] || [ "${ACTUAL_HASH}" != "${EXPECTED_HASH}" ]; then
+              echo "SHA-256 mismatch for ${ASSET}.dat" >&2
+              exit 1
+            fi
+            mv "${DESTINATION}.tmp" "${DESTINATION}"
+          done
       - name: Test
         run: go test -timeout 1h -v ./...

@@ -6,8 +6,10 @@ import (
 	"testing"
 )
 
-var sniffTLSBenchmarkSink *SniffHeader
-var sniffTLSDomainBenchmarkSink string
+var (
+	sniffTLSBenchmarkSink       *SniffHeader
+	sniffTLSDomainBenchmarkSink string
+)
 
 func invalidClientHelloRecord() []byte {
 	record := make([]byte, 47)

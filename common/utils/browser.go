@@ -118,7 +118,7 @@ func getGreasedChOrder(brandLength int, seed int) []int {
 	default:
 		return clientHintShuffle4[seed%len(clientHintShuffle4)][:]
 	}
-	//return []int{}
+	// return []int{}
 }
 
 func getUngreasedChUa(majorVersion int, forkName string) []string {
