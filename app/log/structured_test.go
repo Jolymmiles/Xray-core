@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -213,7 +214,11 @@ func TestStructuredFileLoggerMasksTypedAccessAddresses(t *testing.T) {
 }
 
 func TestStructuredUnixLoggerWritesJSONToRealCollector(t *testing.T) {
-	directory, err := os.MkdirTemp("/tmp", "xray-app-log-")
+	temporaryRoot := "/tmp"
+	if runtime.GOOS == "windows" {
+		temporaryRoot = os.TempDir()
+	}
+	directory, err := os.MkdirTemp(temporaryRoot, "xray-app-log-")
 	if err != nil {
 		t.Fatal(err)
 	}

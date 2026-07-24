@@ -9,8 +9,10 @@ import (
 	"github.com/xtls/xray-core/common"
 )
 
-var bufferedReaderBenchmarkSink *BufferedReader
-var readerBenchmarkSink Reader
+var (
+	bufferedReaderBenchmarkSink *BufferedReader
+	readerBenchmarkSink         Reader
+)
 
 type benchmarkRawConn struct{}
 

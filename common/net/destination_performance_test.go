@@ -6,10 +6,12 @@ import (
 	"testing"
 )
 
-var destinationStringBenchmarkSink string
-var destinationPairBenchmarkSink [2]string
-var destinationBenchmarkSink Destination
-var destinationBytesBenchmarkSink []byte
+var (
+	destinationStringBenchmarkSink string
+	destinationPairBenchmarkSink   [2]string
+	destinationBenchmarkSink       Destination
+	destinationBytesBenchmarkSink  []byte
+)
 
 func TestDestinationFromAddrPreservesBuiltinAddresses(t *testing.T) {
 	tests := []struct {

@@ -16,9 +16,11 @@ import (
 	routing_session "github.com/xtls/xray-core/features/routing/session"
 )
 
-var routeBenchmarkSink routing.Route
-var routeTagBenchmarkSink string
-var ipMatcherBenchmarkSink bool
+var (
+	routeBenchmarkSink     routing.Route
+	routeTagBenchmarkSink  string
+	ipMatcherBenchmarkSink bool
+)
 
 type countingSkipDNSContext struct {
 	routing.Context
@@ -59,7 +61,8 @@ func benchmarkStaticRouter(tb testing.TB) (*Router, routing.Context) {
 			TargetTag: &RoutingRule_Tag{Tag: "DIRECT"},
 			Networks:  []net.Network{net.Network_TCP},
 			RuleTag:   "tcp-direct",
-		}}}, nil, nil, nil)
+		}},
+	}, nil, nil, nil)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -592,7 +595,8 @@ func TestBenchmarkStaticRouterMatches(t *testing.T) {
 		Rule: []*RoutingRule{{
 			TargetTag: &RoutingRule_Tag{Tag: "DIRECT"},
 			Networks:  []net.Network{net.Network_TCP},
-		}}}, nil, nil, nil))
+		}},
+	}, nil, nil, nil))
 	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
 		Target: net.TCPDestination(net.DomainAddress("example.com"), 443),
 	}})

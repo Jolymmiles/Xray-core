@@ -25,10 +25,12 @@ const (
 
 var plainV0ResponseHeader = [2]byte{Version, 0}
 
-var requestHeaderPool sync.Pool
-var domainRequestPool sync.Pool
-var ipv4RequestPool sync.Pool
-var ipv6RequestPool sync.Pool
+var (
+	requestHeaderPool sync.Pool
+	domainRequestPool sync.Pool
+	ipv4RequestPool   sync.Pool
+	ipv6RequestPool   sync.Pool
+)
 
 const pooledDomainCapacity = 63
 

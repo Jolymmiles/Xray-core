@@ -10,8 +10,10 @@ import (
 	"github.com/xtls/xray-core/common/uuid"
 )
 
-var vlessAccountErrorSink error
-var vlessAccountErrorStringSink string
+var (
+	vlessAccountErrorSink       error
+	vlessAccountErrorStringSink string
+)
 
 type warningPerformanceLogHandler struct{}
 

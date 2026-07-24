@@ -77,19 +77,23 @@ func (r *singleBufferTimeoutReader) ReadMultiBufferTimeout(time.Duration) (buf.M
 	return r.ReadMultiBuffer()
 }
 
-var sniffResultBenchmarkSink SniffResult
-var snifferBenchmarkSink *Sniffer
-var snifferValueBenchmarkSink Sniffer
-var shouldOverrideBenchmarkSink bool
-var shouldOverrideDomainBenchmarkSink string
+var (
+	sniffResultBenchmarkSink          SniffResult
+	snifferBenchmarkSink              *Sniffer
+	snifferValueBenchmarkSink         Sniffer
+	shouldOverrideBenchmarkSink       bool
+	shouldOverrideDomainBenchmarkSink string
+)
 
 type neverDomainMatcher struct{}
 
 func (neverDomainMatcher) Match(string) []uint32 { return nil }
 func (neverDomainMatcher) MatchAny(string) bool  { return false }
 
-var detourBenchmarkSink string
-var cachedReaderByteSink byte
+var (
+	detourBenchmarkSink  string
+	cachedReaderByteSink byte
+)
 
 type countingSniffResult struct {
 	protocol    string

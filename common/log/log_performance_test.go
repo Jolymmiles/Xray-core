@@ -16,9 +16,11 @@ func (*performanceLogWriter) Write(string) error     { return nil }
 func (*performanceLogWriter) Close() error           { return nil }
 func (*performanceLogWriter) WriteLine(string) error { return nil }
 
-var performanceLogMessage = &GeneralMessage{Severity: Severity_Info, Content: "benchmark"}
-var accessMessageStringSink string
-var generalMessageStringSink string
+var (
+	performanceLogMessage    = &GeneralMessage{Severity: Severity_Info, Content: "benchmark"}
+	accessMessageStringSink  string
+	generalMessageStringSink string
+)
 
 func BenchmarkRecord(b *testing.B) {
 	RegisterHandler(new(performanceLogHandler))
