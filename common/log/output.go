@@ -12,6 +12,8 @@ import (
 
 const defaultFileBufferSize = 64 * 1024
 
+type unixDialer func(string, string, time.Duration) (net.Conn, error)
+
 // Output writes already encoded records. A logging worker owns an Output and
 // calls its methods serially.
 type Output interface {
@@ -111,13 +113,18 @@ type UnixOutput struct {
 	path       string
 	connection net.Conn
 	timeout    time.Duration
+	dial       unixDialer
 	closed     bool
 	reconnects atomic.Uint64
 }
 
 // NewUnixOutput connects to an existing Unix stream listener.
 func NewUnixOutput(path string, timeout time.Duration) (*UnixOutput, error) {
-	output := &UnixOutput{path: path, timeout: timeout}
+	return newUnixOutput(path, timeout, net.DialTimeout)
+}
+
+func newUnixOutput(path string, timeout time.Duration, dial unixDialer) (*UnixOutput, error) {
+	output := &UnixOutput{path: path, timeout: timeout, dial: dial}
 	if err := output.connect(false); err != nil {
 		return nil, err
 	}
@@ -172,7 +179,7 @@ func (o *UnixOutput) Close() error {
 func (o *UnixOutput) Reconnects() uint64 { return o.reconnects.Load() }
 
 func (o *UnixOutput) connect(reconnect bool) error {
-	connection, err := net.DialTimeout("unix", o.path, o.timeout)
+	connection, err := o.dial("unix", o.path, o.timeout)
 	if err != nil {
 		return err
 	}

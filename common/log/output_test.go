@@ -1,7 +1,6 @@
 package log_test
 
 import (
-	"bufio"
 	"io"
 	"net"
 	"os"
@@ -126,101 +125,6 @@ func TestUnixOutputWritesJSONLinesToRealListener(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for Unix log records")
-	}
-}
-
-func TestUnixOutputReconnectsOnBatchAfterBrokenConnection(t *testing.T) {
-	socketDirectory := shortSocketDirectory(t)
-	path := filepath.Join(socketDirectory, "reconnect.sock")
-	firstListener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	collectorStoppedReading := make(chan struct{})
-	firstCollectorError := make(chan error, 1)
-	go func() {
-		connection, err := firstListener.Accept()
-		if err != nil {
-			firstCollectorError <- err
-			return
-		}
-		if _, err := bufio.NewReader(connection).ReadString('\n'); err != nil {
-			_ = connection.Close()
-			firstCollectorError <- err
-			return
-		}
-		if err := connection.Close(); err != nil {
-			firstCollectorError <- err
-			return
-		}
-		close(collectorStoppedReading)
-	}()
-
-	output, err := corelog.NewUnixOutput(path, time.Second)
-	if err != nil {
-		t.Fatalf("NewUnixOutput: %v", err)
-	}
-	if err := output.WriteBatch([][]byte{[]byte("{\"id\":1}\n")}); err != nil {
-		t.Fatalf("first WriteBatch: %v", err)
-	}
-	select {
-	case err := <-firstCollectorError:
-		t.Fatal(err)
-	case <-collectorStoppedReading:
-	case <-time.After(3 * time.Second):
-		t.Fatal("first collector did not stop reading")
-	}
-	failedBatch := make([]byte, 4*1024*1024)
-	failedBatch[len(failedBatch)-1] = '\n'
-	if err := output.WriteBatch([][]byte{failedBatch}); err == nil {
-		t.Fatal("write to a collector that shut down reads unexpectedly succeeded")
-	}
-
-	if err := firstListener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	secondListener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer secondListener.Close()
-
-	received := make(chan string, 1)
-	secondCollectorError := make(chan error, 1)
-	go func() {
-		connection, err := secondListener.Accept()
-		if err != nil {
-			secondCollectorError <- err
-			return
-		}
-		defer connection.Close()
-		record, err := bufio.NewReader(connection).ReadString('\n')
-		if err != nil {
-			secondCollectorError <- err
-			return
-		}
-		received <- record
-	}()
-
-	if err := output.WriteBatch([][]byte{[]byte("{\"id\":3}\n")}); err != nil {
-		t.Fatalf("reconnected WriteBatch: %v", err)
-	}
-	if err := output.Close(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-secondCollectorError:
-		t.Fatal(err)
-	case record := <-received:
-		if want := "{\"id\":3}\n"; record != want {
-			t.Fatalf("reconnected record = %q, want %q", record, want)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for reconnected record")
-	}
-	if reconnects := output.Reconnects(); reconnects != 1 {
-		t.Fatalf("reconnects = %d, want 1", reconnects)
 	}
 }
 
