@@ -20,6 +20,16 @@
 *.swp
 *.swo
 
+# Local AI/agent state
+/.agents/
+/.claude/
+/.codex/
+/.factory/
+/.serena/
+
+# Generated codebase analysis output
+**/graphify-out/
+
 # Archives and compressed files
 *.zip
 *.tar.gz
@@ -39,6 +49,12 @@ errorgen
 
 # Build assets
 /build_assets/
+/build/
+/dist/
+/out/
+
+# Downloaded runtime assets
+/resources/
 
 # Output from dlv test
 **/debug.*
@@ -50,11 +66,28 @@ errorgen
 # Dependency directories (uncomment if needed)
 # vendor/
 
+# Local Go workspace files
+/go.work
+/go.work.sum
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
 # Logs
 *.log
 
 # Coverage reports
 coverage.*
+*.coverprofile
+
+# Profiles, traces, and runtime state
+*.prof
+*.pprof
+*.trace
+*.pid
+*.pid.lock
+*.sock
 
 # Node modules (in case of frontend assets)
 node_modules/
@@ -66,3 +99,13 @@ ehthumbs.db
 # Other common ignores
 *.bak
 *.tmp
+*.orig
+*.rej
+*~
+/.cache/
+/tmp/
+
+# Local environment files
+.env
+.env.*
+!.env.example
