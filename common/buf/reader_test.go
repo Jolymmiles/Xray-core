@@ -11,6 +11,12 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
+type emptyMultiBufferReader struct{}
+
+func (emptyMultiBufferReader) ReadMultiBuffer() (MultiBuffer, error) {
+	return nil, nil
+}
+
 func TestBytesReaderWriteTo(t *testing.T) {
 	pReader, pWriter := pipe.New(pipe.WithSizeLimit(1024))
 	reader := &BufferedReader{Reader: pReader}
@@ -89,6 +95,30 @@ func TestReadByte(t *testing.T) {
 	common.Must(err)
 	if nBytes != 3 {
 		t.Error("unexpect bytes written: ", nBytes)
+	}
+}
+
+func TestReadByteReturnsEOFAfterLastByte(t *testing.T) {
+	reader := &BufferedReader{Reader: NewReader(strings.NewReader("a"))}
+
+	value, err := reader.ReadByte()
+	if err != nil {
+		t.Fatalf("first ReadByte: %v", err)
+	}
+	if value != 'a' {
+		t.Fatalf("first ReadByte = %q, want %q", value, 'a')
+	}
+
+	if value, err = reader.ReadByte(); err != io.EOF {
+		t.Fatalf("ReadByte after content = (%q, %v), want (0, EOF)", value, err)
+	}
+}
+
+func TestReadByteRejectsEmptyReadWithoutError(t *testing.T) {
+	reader := &BufferedReader{Reader: emptyMultiBufferReader{}}
+
+	if value, err := reader.ReadByte(); value != 0 || err != io.ErrNoProgress {
+		t.Fatalf("ReadByte on empty read = (%q, %v), want (0, %v)", value, err, io.ErrNoProgress)
 	}
 }
 

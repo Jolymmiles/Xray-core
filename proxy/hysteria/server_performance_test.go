@@ -13,9 +13,11 @@ import (
 	"github.com/xtls/xray-core/transport"
 )
 
-var hysteriaServerLinkSink *transport.Link
-var hysteriaPolicySink featurepolicy.Session
-var hysteriaUserSink *protocol.MemoryUser
+var (
+	hysteriaServerLinkSink *transport.Link
+	hysteriaPolicySink     featurepolicy.Session
+	hysteriaUserSink       *protocol.MemoryUser
+)
 
 func TestPooledServerUDPStateCleared(t *testing.T) {
 	reader := newPooledUDPReader(bytes.NewReader(nil))

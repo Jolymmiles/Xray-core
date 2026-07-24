@@ -10,9 +10,11 @@ import (
 	"github.com/xtls/xray-core/common/uuid"
 )
 
-var validatorUserSink *protocol.MemoryUser
-var validatorUsersSink []*protocol.MemoryUser
-var validatorCountSink int64
+var (
+	validatorUserSink  *protocol.MemoryUser
+	validatorUsersSink []*protocol.MemoryUser
+	validatorCountSink int64
+)
 
 func benchmarkValidator(b *testing.B, users int) (*MemoryValidator, uuid.UUID) {
 	b.Helper()

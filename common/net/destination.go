@@ -28,6 +28,7 @@ func (a *connectionIPAddress) String() string {
 	}
 	return ip.String()
 }
+
 func (a *connectionIPAddress) NetIPAddr() netip.Addr {
 	if a.family.IsIPv4() {
 		return netip.AddrFrom4([4]byte(a.bytes[:4]))

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -65,12 +66,14 @@ func TestFileOutputFlushesAcceptedBatchOnClose(t *testing.T) {
 	if want := "{\"id\":1}\n{\"id\":2}\n"; string(contents) != want {
 		t.Fatalf("file bytes = %q, want %q", contents, want)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if permissions := info.Mode().Perm(); permissions != 0o600 {
-		t.Fatalf("new log permissions = %04o, want 0600", permissions)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if permissions := info.Mode().Perm(); permissions != 0o600 {
+			t.Fatalf("new log permissions = %04o, want 0600", permissions)
+		}
 	}
 }
 
@@ -223,7 +226,11 @@ func TestUnixOutputReconnectsOnBatchAfterBrokenConnection(t *testing.T) {
 
 func shortSocketDirectory(t *testing.T) string {
 	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "xray-log-")
+	temporaryRoot := "/tmp"
+	if runtime.GOOS == "windows" {
+		temporaryRoot = os.TempDir()
+	}
+	directory, err := os.MkdirTemp(temporaryRoot, "xray-log-")
 	if err != nil {
 		t.Fatal(err)
 	}

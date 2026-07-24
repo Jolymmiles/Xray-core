@@ -7,12 +7,14 @@ import (
 	"time"
 )
 
-var interConnTimeBenchmarkSink time.Time
-var udpSessionMapBenchmarkSink map[uint32]*InterConn
-var interConnBenchmarkSink *InterConn
-var legacyCloseBenchmarkSink func()
-var legacyWriteBenchmarkSink func([]byte) error
-var managerClosedBenchmarkSink bool
+var (
+	interConnTimeBenchmarkSink time.Time
+	udpSessionMapBenchmarkSink map[uint32]*InterConn
+	interConnBenchmarkSink     *InterConn
+	legacyCloseBenchmarkSink   func()
+	legacyWriteBenchmarkSink   func([]byte) error
+	managerClosedBenchmarkSink bool
+)
 
 func activeSessionManager(count int) *udpSessionManager {
 	manager := &udpSessionManager{m: make(map[uint32]*InterConn, count), udpIdleTimeout: time.Minute}

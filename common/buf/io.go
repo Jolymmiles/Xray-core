@@ -82,11 +82,15 @@ type Writer interface {
 	WriteMultiBuffer(MultiBuffer) error
 }
 
-type pooledSingleReader struct{ SingleReader }
-type pooledPacketReader struct{ PacketReader }
+type (
+	pooledSingleReader struct{ SingleReader }
+	pooledPacketReader struct{ PacketReader }
+)
 
-var pooledSingleReaders sync.Pool
-var pooledPacketReaders sync.Pool
+var (
+	pooledSingleReaders sync.Pool
+	pooledPacketReaders sync.Pool
+)
 
 func newPooledSingleReader(reader io.Reader) Reader {
 	pooled, _ := pooledSingleReaders.Get().(*pooledSingleReader)
@@ -256,11 +260,15 @@ func isPacketWriter(writer io.Writer) bool {
 	return false
 }
 
-type pooledSequentialWriter struct{ SequentialWriter }
-type pooledBufferToBytesWriter struct{ BufferToBytesWriter }
+type (
+	pooledSequentialWriter    struct{ SequentialWriter }
+	pooledBufferToBytesWriter struct{ BufferToBytesWriter }
+)
 
-var pooledSequentialWriters sync.Pool
-var pooledBufferToBytesWriters sync.Pool
+var (
+	pooledSequentialWriters    sync.Pool
+	pooledBufferToBytesWriters sync.Pool
+)
 
 // NewPooledWriter is an opt-in variant of NewWriter for connection-scoped
 // users that call ReleasePooledWriter after the writer is no longer reachable.
