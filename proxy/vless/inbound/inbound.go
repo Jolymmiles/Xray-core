@@ -305,8 +305,13 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	}
 	logFirstBufferLength(ctx, firstLen)
 
-	reader := buf.NewPooledBufferedReader(buf.NewPooledReader(connection), buf.MultiBuffer{first})
-	defer reader.Release()
+	reader := &buf.BufferedReader{
+		Reader: buf.NewReader(connection),
+		Buffer: buf.MultiBuffer{first},
+	}
+	defer func() {
+		reader.Buffer = buf.ReleaseMulti(reader.Buffer)
+	}()
 
 	var userSentID [16]byte // not MemoryAccount.ID
 	var request *protocol.RequestHeader

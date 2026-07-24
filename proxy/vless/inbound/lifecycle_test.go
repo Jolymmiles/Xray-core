@@ -43,7 +43,7 @@ type noReadDeadlineConnection struct {
 
 func (*noReadDeadlineConnection) SetReadDeadline(time.Time) error { return nil }
 
-func TestVLESSMuxResponseWriterRemainsUsableAfterProcessReturns(t *testing.T) {
+func TestVLESSMuxLinkRemainsUsableAfterProcessReturns(t *testing.T) {
 	const userID = "00112233-4455-6677-8899-aabbccddeeff"
 	account, err := (&vless.Account{Id: userID}).AsAccount()
 	if err != nil {
@@ -151,5 +151,19 @@ func TestVLESSMuxResponseWriterRemainsUsableAfterProcessReturns(t *testing.T) {
 		case <-deadline:
 			t.Fatal("retained VLESS response writer did not complete")
 		}
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("late VLESS request read panicked after Process returned: %v", recovered)
+		}
+	}()
+	mb, err := retained.Reader.ReadMultiBuffer()
+	buf.ReleaseMulti(mb)
+	if err == nil {
+		t.Fatal("late VLESS request read unexpectedly succeeded after client close")
 	}
 }
