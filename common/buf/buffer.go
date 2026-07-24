@@ -19,8 +19,10 @@ const (
 
 var ErrBufferFull = errors.New("buffer is full")
 
-var fixedBufferPool sync.Pool
-var managedBufferPool sync.Pool
+var (
+	fixedBufferPool   sync.Pool
+	managedBufferPool sync.Pool
+)
 
 type managedBuffer struct {
 	buffer    Buffer

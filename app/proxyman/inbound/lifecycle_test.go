@@ -62,6 +62,7 @@ func (*lifecycleConnection) Close() error                      { return nil }
 func (*lifecycleConnection) LocalAddr() stdnet.Addr {
 	return &stdnet.TCPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: 1}
 }
+
 func (*lifecycleConnection) RemoteAddr() stdnet.Addr {
 	return &stdnet.TCPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: 2}
 }

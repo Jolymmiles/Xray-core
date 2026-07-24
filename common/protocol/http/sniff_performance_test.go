@@ -9,8 +9,10 @@ import (
 
 var sniffHTTPBenchmarkSink *SniffHeader
 
-var sniffHTTPBenchmarkPayload = []byte("GET /index HTTP/1.1\r\nHost: example.com\r\nUser-Agent: benchmark\r\nAccept: */*\r\n\r\n")
-var sniffHTTPUppercaseHostPayload = []byte("GET /index HTTP/1.1\r\nHost: EXAMPLE.COM\r\nUser-Agent: benchmark\r\nAccept: */*\r\n\r\n")
+var (
+	sniffHTTPBenchmarkPayload     = []byte("GET /index HTTP/1.1\r\nHost: example.com\r\nUser-Agent: benchmark\r\nAccept: */*\r\n\r\n")
+	sniffHTTPUppercaseHostPayload = []byte("GET /index HTTP/1.1\r\nHost: EXAMPLE.COM\r\nUser-Agent: benchmark\r\nAccept: */*\r\n\r\n")
+)
 
 type countingValueContext struct {
 	context.Context

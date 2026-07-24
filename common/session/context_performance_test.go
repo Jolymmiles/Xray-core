@@ -9,11 +9,13 @@ import (
 	"github.com/xtls/xray-core/common/net"
 )
 
-var connectionContextSink context.Context
-var accessContextSink context.Context
-var accessMessageSink *log.AccessMessage
-var forcedOutboundTagSink string
-var sessionIDSink c.ID
+var (
+	connectionContextSink context.Context
+	accessContextSink     context.Context
+	accessMessageSink     *log.AccessMessage
+	forcedOutboundTagSink string
+	sessionIDSink         c.ID
+)
 
 func BenchmarkNewSessionID(b *testing.B) {
 	b.ReportAllocs()

@@ -17,11 +17,13 @@ import (
 	. "github.com/xtls/xray-core/proxy/vless/encoding"
 )
 
-var trafficStateBenchmarkSink *proxy.TrafficState
-var behaviorStringSink string
-var behaviorReaderSink buf.Reader
-var behaviorWriterSink buf.Writer
-var behaviorFlow string
+var (
+	trafficStateBenchmarkSink *proxy.TrafficState
+	behaviorStringSink        string
+	behaviorReaderSink        buf.Reader
+	behaviorWriterSink        buf.Writer
+	behaviorFlow              string
+)
 
 const (
 	behaviorUserID       = "00112233-4455-6677-8899-aabbccddeeff"
