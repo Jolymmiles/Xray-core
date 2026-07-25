@@ -1,11 +1,15 @@
 package tls
 
 import (
+	"container/list"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"io"
 	"math/big"
+	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -32,6 +36,7 @@ type Conn struct {
 }
 
 const tlsCloseTimeout = 250 * time.Millisecond
+const tlsRecordSize = 16 * 1024
 
 func (c *Conn) Close() error {
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
@@ -42,10 +47,49 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	mb = buf.Compact(mb)
-	mb, err := buf.WriteMultiBuffer(c, mb)
-	buf.ReleaseMulti(mb)
-	return err
+	defer buf.ReleaseMulti(mb)
+
+	for len(mb) > 0 {
+		if len(mb) == 1 {
+			return writeAll(c, mb[0].Bytes())
+		}
+
+		record := buf.NewWithSize(tlsRecordSize)
+		for len(mb) > 0 && record.Len() < tlsRecordSize {
+			buffer := mb[0]
+			copied, _ := record.Write(buffer.Bytes())
+			buffer.Advance(int32(copied))
+			if !buffer.IsEmpty() {
+				break
+			}
+			buffer.Release()
+			mb[0] = nil
+			mb = mb[1:]
+		}
+
+		err := writeAll(c, record.Bytes())
+		record.Release()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if written > 0 {
+			payload = payload[written:]
+		}
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }
 
 func (c *Conn) HandshakeContextServerName(ctx context.Context) string {
@@ -77,6 +121,109 @@ type UConn struct {
 }
 
 var _ Interface = (*UConn)(nil)
+
+const uTLSSessionCacheScopeCapacity = 256
+
+type uTLSSessionCacheScope struct {
+	source      uintptr
+	fingerprint string
+}
+
+type uTLSSessionCacheEntry struct {
+	scope uTLSSessionCacheScope
+	cache utls.ClientSessionCache
+}
+
+var uTLSSessionCaches = struct {
+	sync.Mutex
+	entries map[uTLSSessionCacheScope]*list.Element
+	lru     list.List
+}{
+	entries: make(map[uTLSSessionCacheScope]*list.Element),
+}
+
+type serializingUTLSSessionCache struct {
+	sync.Mutex
+	cache utls.ClientSessionCache
+}
+
+func newSerializingUTLSSessionCache() utls.ClientSessionCache {
+	return &serializingUTLSSessionCache{
+		cache: utls.NewLRUClientSessionCache(sessionCacheCapacity),
+	}
+}
+
+func (c *serializingUTLSSessionCache) Get(sessionKey string) (*utls.ClientSessionState, bool) {
+	c.Lock()
+	defer c.Unlock()
+
+	session, ok := c.cache.Get(sessionKey)
+	if !ok {
+		return nil, false
+	}
+	c.cache.Put(sessionKey, nil)
+	cloned := cloneUTLSSession(session)
+	return cloned, cloned != nil
+}
+
+func (c *serializingUTLSSessionCache) Put(sessionKey string, session *utls.ClientSessionState) {
+	c.Lock()
+	defer c.Unlock()
+
+	if session == nil {
+		c.cache.Put(sessionKey, nil)
+		return
+	}
+	if cloned := cloneUTLSSession(session); cloned != nil {
+		c.cache.Put(sessionKey, cloned)
+	}
+}
+
+func cloneUTLSSession(session *utls.ClientSessionState) *utls.ClientSessionState {
+	ticket, state, err := session.ResumptionState()
+	if err != nil || state == nil {
+		return nil
+	}
+	serialized, err := state.Bytes()
+	if err != nil {
+		return nil
+	}
+	clonedState, err := utls.ParseSessionState(serialized)
+	if err != nil {
+		return nil
+	}
+	cloned, err := utls.NewResumptionState(slices.Clone(ticket), clonedState)
+	if err != nil {
+		return nil
+	}
+	return cloned
+}
+
+func uTLSSessionCache(source uintptr, fingerprint utls.ClientHelloID) utls.ClientSessionCache {
+	scope := uTLSSessionCacheScope{
+		source:      source,
+		fingerprint: fingerprint.Str(),
+	}
+	uTLSSessionCaches.Lock()
+	defer uTLSSessionCaches.Unlock()
+
+	if element := uTLSSessionCaches.entries[scope]; element != nil {
+		uTLSSessionCaches.lru.MoveToFront(element)
+		return element.Value.(*uTLSSessionCacheEntry).cache
+	}
+	entry := &uTLSSessionCacheEntry{
+		scope: scope,
+		cache: newSerializingUTLSSessionCache(),
+	}
+	element := uTLSSessionCaches.lru.PushFront(entry)
+	uTLSSessionCaches.entries[scope] = element
+	if uTLSSessionCaches.lru.Len() > uTLSSessionCacheScopeCapacity {
+		oldest := uTLSSessionCaches.lru.Back()
+		uTLSSessionCaches.lru.Remove(oldest)
+		delete(uTLSSessionCaches.entries, oldest.Value.(*uTLSSessionCacheEntry).scope)
+	}
+	return entry.cache
+}
 
 func (c *UConn) Close() error {
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
@@ -138,15 +285,77 @@ func (c *UConn) NegotiatedProtocol() string {
 }
 
 func UClient(c net.Conn, config *tls.Config, fingerprint *utls.ClientHelloID) net.Conn {
-	utlsConn := utls.UClient(c, copyConfig(config), *fingerprint)
+	uTLSConfig, sessionCacheSource := copyConfig(config)
+	utlsConn := newUClient(c, uTLSConfig, *fingerprint, sessionCacheSource)
 	return &UConn{UConn: utlsConn}
 }
 
 func GeneraticUClient(c net.Conn, config *tls.Config) *utls.UConn {
-	return utls.UClient(c, copyConfig(config), utls.HelloChrome_Auto)
+	uTLSConfig, sessionCacheSource := copyConfig(config)
+	return newUClient(c, uTLSConfig, utls.HelloChrome_Auto, sessionCacheSource)
 }
 
-func copyConfig(c *tls.Config) *utls.Config {
+func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID, sessionCacheSource uintptr) *utls.UConn {
+	if sessionCacheSource != 0 {
+		config.ClientSessionCache = uTLSSessionCache(sessionCacheSource, fingerprint)
+		if spec, ok := clientHelloSpecForResumption(fingerprint); ok {
+			conn := utls.UClient(c, config, utls.HelloCustom)
+			if err := conn.ApplyPreset(spec); err == nil {
+				return conn
+			}
+		}
+	}
+	return utls.UClient(c, config, fingerprint)
+}
+
+func clientHelloSpecForResumption(fingerprint utls.ClientHelloID) (*utls.ClientHelloSpec, bool) {
+	spec, err := utls.UTLSIdToSpec(fingerprint)
+	if err != nil {
+		return nil, false
+	}
+
+	// Some browser presets describe only a full handshake and omit the
+	// extensions needed to obtain and later present a resumable session.
+	// Keep PSK last as required by TLS 1.3; OmitEmptyPsk hides it until cached.
+	hasPSKExchangeModes := false
+	hasSessionTicket := false
+	var pskExtension utls.PreSharedKeyExtension
+	extensions := make([]utls.TLSExtension, 0, len(spec.Extensions)+3)
+	for _, extension := range spec.Extensions {
+		switch typedExtension := extension.(type) {
+		case utls.PreSharedKeyExtension:
+			pskExtension = typedExtension
+		case *utls.PSKKeyExchangeModesExtension:
+			hasPSKExchangeModes = true
+			extensions = append(extensions, extension)
+		case utls.ISessionTicketExtension:
+			hasSessionTicket = true
+			extensions = append(extensions, extension)
+		default:
+			extensions = append(extensions, extension)
+		}
+	}
+	changed := false
+	if !hasSessionTicket {
+		extensions = append(extensions, &utls.SessionTicketExtension{})
+		changed = true
+	}
+	if !hasPSKExchangeModes {
+		extensions = append(extensions, &utls.PSKKeyExchangeModesExtension{
+			Modes: []uint8{utls.PskModeDHE},
+		})
+		changed = true
+	}
+	if pskExtension == nil {
+		pskExtension = &utls.UtlsPreSharedKeyExtension{}
+		changed = true
+	}
+	extensions = append(extensions, pskExtension)
+	spec.Extensions = extensions
+	return &spec, changed
+}
+
+func copyConfig(c *tls.Config) (*utls.Config, uintptr) {
 	config := &utls.Config{
 		Rand:                           c.Rand,
 		RootCAs:                        c.RootCAs,
@@ -156,8 +365,17 @@ func copyConfig(c *tls.Config) *utls.Config {
 		KeyLogWriter:                   c.KeyLogWriter,
 		EncryptedClientHelloConfigList: c.EncryptedClientHelloConfigList,
 		NextProtos:                     c.NextProtos,
+		SessionTicketsDisabled:         c.SessionTicketsDisabled,
 	}
-	return config
+	var sessionCacheSource uintptr
+	if c.ClientSessionCache != nil && !c.SessionTicketsDisabled {
+		config.OmitEmptyPsk = true
+		cacheValue := reflect.ValueOf(c.ClientSessionCache)
+		if cacheValue.Kind() == reflect.Pointer {
+			sessionCacheSource = cacheValue.Pointer()
+		}
+	}
+	return config, sessionCacheSource
 }
 
 func init() {
