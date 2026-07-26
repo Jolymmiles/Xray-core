@@ -6,17 +6,17 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 )
 
-func TestPooledRequestHeaderClearsProtocolState(t *testing.T) {
-	request := newPooledDomainRequest([]byte("example.com"))
+func TestDecodedRequestHeaderCarriesNoPriorProtocolState(t *testing.T) {
+	request := newDomainRequest([]byte("example.com"))
 	request.Option = 0xff
 	request.Security = protocol.SecurityType_AES128_GCM
 	request.User = new(protocol.MemoryUser)
 	ReleaseRequestHeader(request)
 
-	request = newPooledDomainRequest([]byte("example.org"))
+	request = newDomainRequest([]byte("example.org"))
 	defer ReleaseRequestHeader(request)
 	if request.Option != 0 || request.Security != 0 || request.User != nil {
-		t.Fatalf("pooled request retained protocol state: %+v", request)
+		t.Fatalf("decoded request retained protocol state: %+v", request)
 	}
 }
 
