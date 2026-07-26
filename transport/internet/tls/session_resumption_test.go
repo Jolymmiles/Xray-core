@@ -17,10 +17,14 @@ import (
 
 var sessionResumptionTestID atomic.Uint64
 
+// TestUClientSessionResumptionEnabled covers fingerprints whose stock
+// ClientHello already advertises session_ticket and psk_key_exchange_modes.
+// Only those may offer a resumption PSK, because only for those does adding it
+// leave the impersonated client's fingerprint intact.
 func TestUClientSessionResumptionEnabled(t *testing.T) {
 	fingerprints := map[string]*utls.ClientHelloID{
-		"chrome":  &utls.HelloChrome_Auto,
-		"firefox": &utls.HelloFirefox_Auto,
+		"chrome": &utls.HelloChrome_Auto,
+		"edge":   &utls.HelloEdge_Auto,
 	}
 	versions := map[string]uint16{
 		"TLS12": gotls.VersionTLS12,
@@ -31,6 +35,11 @@ func TestUClientSessionResumptionEnabled(t *testing.T) {
 		for fingerprintName, fingerprint := range fingerprints {
 			t.Run(versionName+"/"+fingerprintName, func(t *testing.T) {
 				t.Parallel()
+
+				if !xraytls.SupportsSessionResumption(*fingerprint) {
+					t.Fatalf("%s no longer qualifies for session resumption; "+
+						"update this test together with the eligibility rule", fingerprintName)
+				}
 
 				states := runUClientHandshakes(
 					t,
@@ -48,6 +57,29 @@ func TestUClientSessionResumptionEnabled(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// TestUClientSessionResumptionSkippedForIneligibleFingerprint pins the safe
+// outcome for a preset that cannot resume without being rewritten: the
+// connection still works, it simply performs a full handshake every time
+// instead of shipping a forged ClientHello.
+func TestUClientSessionResumptionSkippedForIneligibleFingerprint(t *testing.T) {
+	if xraytls.SupportsSessionResumption(utls.HelloFirefox_148) {
+		t.Skip("Firefox 148 now advertises the prerequisite extensions upstream")
+	}
+
+	states := runUClientHandshakes(
+		t,
+		[]*utls.ClientHelloID{&utls.HelloFirefox_148, &utls.HelloFirefox_148, &utls.HelloFirefox_148},
+		gotls.VersionTLS13,
+		false,
+	)
+
+	for i, state := range states {
+		if state.DidResume {
+			t.Fatalf("TLS connection %d resumed under a fingerprint that cannot carry a PSK", i+1)
 		}
 	}
 }
@@ -76,23 +108,26 @@ func TestUClientSessionResumptionDisabled(t *testing.T) {
 	}
 }
 
+// TestUClientSessionResumptionIsolatedByFingerprint proves a ticket learned
+// under one fingerprint is never offered under another, even for the same SNI.
+// Sharing one would be behavior no single browser process produces.
 func TestUClientSessionResumptionIsolatedByFingerprint(t *testing.T) {
 	states := runUClientHandshakes(
 		t,
 		[]*utls.ClientHelloID{
 			&utls.HelloChrome_Auto,
-			&utls.HelloFirefox_Auto,
-			&utls.HelloFirefox_Auto,
+			&utls.HelloEdge_Auto,
+			&utls.HelloEdge_Auto,
 		},
 		gotls.VersionTLS13,
 		false,
 	)
 
 	if states[1].DidResume {
-		t.Fatal("Firefox resumed a Chrome-fingerprint TLS session")
+		t.Fatal("Edge resumed a Chrome-fingerprint TLS session")
 	}
 	if !states[2].DidResume {
-		t.Fatal("Firefox did not resume its own TLS session")
+		t.Fatal("Edge did not resume its own TLS session")
 	}
 }
 
