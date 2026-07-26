@@ -336,3 +336,26 @@ func TestSniffFakeQUICPacketWithTooShortData(t *testing.T) {
 		t.Error("failed")
 	}
 }
+
+// A Retry packet is definitively not a client Initial: it has no Length field
+// and cannot be coalesced, so no further packet can follow it in the datagram.
+// The sniffer must reject it outright. ErrNoClue or ErrProtoNeedMoreData would
+// keep the QUIC sniffer queued for a retry that can never succeed.
+func TestSniffQUICRetryPacket(t *testing.T) {
+	tests := []struct{ name, hexData string }{
+		{"v1, RFC 9001 Appendix A.4", "ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba"},
+		{"v2, RFC 9369 Appendix A.4", "cf6b3343cf0008f067a5502a4262b5746f6b656ec8646ce8bfe33952d955543665dcc7b6"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pkt, err := hex.DecodeString(tt.hexData)
+			common.Must(err)
+			if _, err = quic.SniffQUIC(pkt); err == nil {
+				t.Fatal("SniffQUIC() accepted a Retry packet")
+			}
+			if errors.Is(err, common.ErrNoClue) || errors.Is(err, protocol.ErrProtoNeedMoreData) {
+				t.Errorf("SniffQUIC() error = %v, want a definitive rejection", err)
+			}
+		})
+	}
+}

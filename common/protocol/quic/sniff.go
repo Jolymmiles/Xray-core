@@ -84,7 +84,7 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		// defaulting, so a new version can't silently inherit another
 		// version's salt.
 		var salt []byte
-		initialPacketType := byte(0)
+		initialPacketType, retryPacketType := byte(0), byte(3)
 		hpLabel, keyLabel, ivLabel := "quic hp", "quic key", "quic iv"
 		switch versionNumber {
 		case versionDraft29:
@@ -92,13 +92,21 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		case version1:
 			salt = quicSaltV1
 		case version2:
-			salt, initialPacketType = quicSaltV2, 1
+			salt, initialPacketType, retryPacketType = quicSaltV2, 1, 0
 			hpLabel, keyLabel, ivLabel = "quicv2 hp", "quicv2 key", "quicv2 iv"
 		default:
 			return nil, errNotQuic
 		}
 
 		packetType := (typeByte & 0x30) >> 4
+		if packetType == retryPacketType {
+			// A Retry packet carries no Length field and cannot be followed by
+			// another packet in the same datagram, see
+			// https://www.rfc-editor.org/rfc/rfc9000.html#section-12.2-6.
+			// Everything after the connection IDs is a Retry Token, so the
+			// generic skip path below would read a length out of token bytes.
+			return nil, errNotQuicInitial
+		}
 		isQuicInitial := packetType == initialPacketType
 
 		var destConnID []byte
