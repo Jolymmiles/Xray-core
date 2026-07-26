@@ -15,7 +15,6 @@ import (
 
 type allocStrategy struct {
 	current uint32
-	vector  [8]*Buffer
 }
 
 func (s *allocStrategy) Current() uint32 {
@@ -38,34 +37,15 @@ func (s *allocStrategy) Adjust(n uint32) {
 	}
 }
 
+// ponytail: the returned slice is handed to the consumer along with the
+// buffers, so it must be freshly allocated. Reusing storage owned by the reader
+// lets the consumer's ReleaseMulti/MergeMulti write into it (see 9f132ce3).
 func (s *allocStrategy) Alloc() []*Buffer {
-	bs := s.vector[:s.current]
-	for _, buffer := range bs {
-		if buffer != nil {
-			return s.allocFresh()
-		}
-	}
-	for i := range bs {
-		bs[i] = New()
-	}
-	return bs
-}
-
-func (s *allocStrategy) allocFresh() []*Buffer {
 	bs := make([]*Buffer, s.current)
 	for i := range bs {
 		bs[i] = New()
 	}
 	return bs
-}
-
-func (s *allocStrategy) hasOutstandingVector() bool {
-	for _, buffer := range s.vector {
-		if buffer != nil {
-			return true
-		}
-	}
-	return false
 }
 
 type multiReader interface {
@@ -121,9 +101,6 @@ func ReleasePooledReadVReader(reader *ReadVReader) {
 	reader.rawConn = nil
 	reader.alloc.current = 1
 	reader.counter = nil
-	if reader.alloc.hasOutstandingVector() {
-		return
-	}
 	readVReaderPool.Put(reader)
 }
 
