@@ -14,6 +14,7 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/utils"
 )
@@ -297,62 +298,92 @@ func GeneraticUClient(c net.Conn, config *tls.Config) *utls.UConn {
 
 func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID, sessionCacheSource uintptr) *utls.UConn {
 	if sessionCacheSource != 0 {
-		config.ClientSessionCache = uTLSSessionCache(sessionCacheSource, fingerprint)
-		if spec, ok := clientHelloSpecForResumption(fingerprint); ok {
+		if spec, eligible := clientHelloSpecForResumption(fingerprint); eligible {
+			config.ClientSessionCache = uTLSSessionCache(sessionCacheSource, fingerprint)
 			conn := utls.UClient(c, config, utls.HelloCustom)
 			if err := conn.ApplyPreset(spec); err == nil {
 				return conn
 			}
+			config.ClientSessionCache = nil
 		}
+		// Falling back keeps the stock ClientHello. Forcing resumption here
+		// would mean adding extensions the impersonated client does not send.
+		config.OmitEmptyPsk = false
+		reportUnresumableFingerprint(fingerprint)
 	}
 	return utls.UClient(c, config, fingerprint)
 }
 
+var reportedUnresumableFingerprints sync.Map
+
+// reportUnresumableFingerprint logs the intentional fallback once per
+// fingerprint, so an operator who enabled session resumption can tell that it
+// is inactive without a per-connection log flood.
+func reportUnresumableFingerprint(fingerprint utls.ClientHelloID) {
+	name := fingerprint.Str()
+	if _, reported := reportedUnresumableFingerprints.LoadOrStore(name, struct{}{}); reported {
+		return
+	}
+	errors.LogInfo(context.Background(), "TLS session resumption is unavailable for fingerprint ", name,
+		": its ClientHello does not advertise session_ticket and psk_key_exchange_modes, ",
+		"and adding them would not match the impersonated client")
+}
+
+// SupportsSessionResumption reports whether a resumption PSK can be offered
+// under the given fingerprint without altering its ClientHello.
+func SupportsSessionResumption(fingerprint utls.ClientHelloID) bool {
+	_, eligible := clientHelloSpecForResumption(fingerprint)
+	return eligible
+}
+
+// clientHelloSpecForResumption returns a ClientHello template able to carry a
+// resumption PSK, or (nil, false) when the preset must keep its stock shape.
+//
+// A preset qualifies only when it already advertises session_ticket and
+// psk_key_exchange_modes. Those are what the impersonated client really sends;
+// synthesising them produces a ClientHello that matches no real browser and
+// defeats the point of uTLS. Qualifying presets get a pre_shared_key appended
+// last, as RFC 8446 section 4.2.11 requires, and OmitEmptyPsk keeps it off the
+// wire until a ticket has been cached — which is the observed behavior of a
+// real Chrome on its first versus subsequent connection.
+//
+// See SESSION_RESUMPTION_REVIEW.md section 4.
 func clientHelloSpecForResumption(fingerprint utls.ClientHelloID) (*utls.ClientHelloSpec, bool) {
 	spec, err := utls.UTLSIdToSpec(fingerprint)
 	if err != nil {
 		return nil, false
 	}
+	return resumptionSpec(spec)
+}
 
-	// Some browser presets describe only a full handshake and omit the
-	// extensions needed to obtain and later present a resumable session.
-	// Keep PSK last as required by TLS 1.3; OmitEmptyPsk hides it until cached.
+// resumptionSpec applies the eligibility rule to an already-resolved template.
+// Randomized presets produce a different template on every UTLSIdToSpec call,
+// so taking the spec as input is what lets a caller — and the fidelity tests —
+// reason about one concrete ClientHello rather than a fresh sample.
+func resumptionSpec(spec utls.ClientHelloSpec) (*utls.ClientHelloSpec, bool) {
 	hasPSKExchangeModes := false
 	hasSessionTicket := false
-	var pskExtension utls.PreSharedKeyExtension
-	extensions := make([]utls.TLSExtension, 0, len(spec.Extensions)+3)
 	for _, extension := range spec.Extensions {
-		switch typedExtension := extension.(type) {
+		switch extension.(type) {
 		case utls.PreSharedKeyExtension:
-			pskExtension = typedExtension
+			// The preset drives PSK itself; uTLS handles it natively.
+			return nil, false
 		case *utls.PSKKeyExchangeModesExtension:
 			hasPSKExchangeModes = true
-			extensions = append(extensions, extension)
 		case utls.ISessionTicketExtension:
 			hasSessionTicket = true
-			extensions = append(extensions, extension)
-		default:
-			extensions = append(extensions, extension)
 		}
 	}
-	changed := false
-	if !hasSessionTicket {
-		extensions = append(extensions, &utls.SessionTicketExtension{})
-		changed = true
+	if !hasSessionTicket || !hasPSKExchangeModes {
+		return nil, false
 	}
-	if !hasPSKExchangeModes {
-		extensions = append(extensions, &utls.PSKKeyExchangeModesExtension{
-			Modes: []uint8{utls.PskModeDHE},
-		})
-		changed = true
-	}
-	if pskExtension == nil {
-		pskExtension = &utls.UtlsPreSharedKeyExtension{}
-		changed = true
-	}
-	extensions = append(extensions, pskExtension)
-	spec.Extensions = extensions
-	return &spec, changed
+
+	// Copy rather than append in place: UTLSIdToSpec may hand back a slice
+	// sharing storage with the package-level template.
+	extensions := make([]utls.TLSExtension, len(spec.Extensions), len(spec.Extensions)+1)
+	copy(extensions, spec.Extensions)
+	spec.Extensions = append(extensions, &utls.UtlsPreSharedKeyExtension{})
+	return &spec, true
 }
 
 func copyConfig(c *tls.Config) (*utls.Config, uintptr) {
