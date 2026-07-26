@@ -20,6 +20,12 @@ is `payload_length(2) padding_length(2) payload padding`. Payloads larger than
 The writer emits canonical frames; the reader accepts valid non-canonical frame
 sizes subject to the same 65535-byte limits.
 
+The padding bytes themselves carry no meaning and the reader discards
+`padding_length` of them whatever they contain. The writer fills them from
+`crypto/rand`: the header already announces the length, so a constant filler
+would contribute a recognisable pattern rather than hide one. A peer that emits
+constant padding stays interoperable.
+
 ## Stream request and response
 
 A new SMUX stream starts with `flags(2) destination`.
