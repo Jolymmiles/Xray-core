@@ -20,15 +20,24 @@ func (*memoryConn) SetDeadline(time.Time) error      { return nil }
 func (*memoryConn) SetReadDeadline(time.Time) error  { return nil }
 func (*memoryConn) SetWriteDeadline(time.Time) error { return nil }
 
+// TestPaddingFrameGolden pins the wire framing from SPEC.md:
+// payload_length(2) padding_length(2) payload padding. The padding bytes
+// themselves are deliberately unspecified — the peer skips padding_length
+// bytes whatever they contain — so only their count is asserted here.
+// TestPaddingContentIsNotConstant covers what goes into them.
 func TestPaddingFrameGolden(t *testing.T) {
 	underlying := &memoryConn{}
 	conn := newPaddingConnWithGenerator(underlying, func() int { return 3 })
 	if _, err := conn.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
-	want := []byte{0, 3, 0, 3, 'a', 'b', 'c', 0, 0, 0}
-	if !bytes.Equal(underlying.Bytes(), want) {
-		t.Fatalf("padding frame = %x, want %x", underlying.Bytes(), want)
+	frame := underlying.Bytes()
+	wantHeader := []byte{0, 3, 0, 3, 'a', 'b', 'c'}
+	if !bytes.Equal(frame[:len(wantHeader)], wantHeader) {
+		t.Fatalf("padding frame header = %x, want %x", frame[:len(wantHeader)], wantHeader)
+	}
+	if got := len(frame) - len(wantHeader); got != 3 {
+		t.Fatalf("padding frame carries %d padding bytes, want 3", got)
 	}
 }
 

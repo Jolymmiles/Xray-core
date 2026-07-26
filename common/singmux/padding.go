@@ -35,11 +35,12 @@ func newPaddingConnWithGenerator(connection net.Conn, generator func() int) *pad
 	return &paddingConn{Conn: connection, paddingLength: generator}
 }
 
+// crypto/rand.Read cannot fail on Go 1.24 and later: a broken system source
+// panics rather than returning an error, so neither padding length nor padding
+// content has a degraded fallback to pick.
 func randomPaddingLength() int {
 	var value [1]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return 0
-	}
+	rand.Read(value[:])
 	return int(value[0])
 }
 
@@ -68,6 +69,9 @@ func (c *paddingConn) Write(payload []byte) (int, error) {
 		binary.BigEndian.PutUint16(frame[0:2], uint16(partSize))
 		binary.BigEndian.PutUint16(frame[2:4], uint16(paddingSize))
 		copy(frame[4:], payload[:partSize])
+		// The header already announces the padding length, so constant filler
+		// would add a recognisable pattern instead of hiding one.
+		rand.Read(frame[4+partSize:])
 		if err := writeFull(c.Conn, frame); err != nil {
 			return written, err
 		}
