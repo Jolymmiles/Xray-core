@@ -25,135 +25,118 @@ const (
 
 var plainV0ResponseHeader = [2]byte{Version, 0}
 
-var (
-	requestHeaderPool sync.Pool
-	domainRequestPool sync.Pool
-	ipv4RequestPool   sync.Pool
-	ipv6RequestPool   sync.Pool
-)
+var requestHeaderPool sync.Pool
 
-const pooledDomainCapacity = 63
+const inlineDomainCapacity = 63
 
-type pooledDomainRequest struct {
-	header  protocol.RequestHeader
-	address pooledDomainAddress
+// embeddedRequestAddress marks a net.Address whose storage lives inside the
+// request that owns it. A decoded destination escapes into session.Outbound,
+// routing rules and the asynchronous access log, so such a request is owned by
+// the garbage collector and must never be recycled: reuse would let a later
+// connection rewrite the destination an earlier one still reports.
+type embeddedRequestAddress interface {
+	embeddedInRequest()
 }
 
-type pooledDomainAddress struct {
-	owner  *pooledDomainRequest
+type inlineDomainRequest struct {
+	header  protocol.RequestHeader
+	address inlineDomainAddress
+}
+
+type inlineDomainAddress struct {
 	length byte
-	bytes  [pooledDomainCapacity]byte
+	bytes  [inlineDomainCapacity]byte
 	long   string
 }
 
-type pooledIPv4Request struct {
+type inlineIPv4Request struct {
 	header  protocol.RequestHeader
-	address pooledIPv4Address
+	address inlineIPv4Address
 }
 
-type pooledIPv4Address struct {
-	owner *pooledIPv4Request
+type inlineIPv4Address struct {
 	bytes [4]byte
 }
 
-type pooledIPv6Request struct {
+type inlineIPv6Request struct {
 	header  protocol.RequestHeader
-	address pooledIPv6Address
+	address inlineIPv6Address
 }
 
-type pooledIPv6Address struct {
-	owner *pooledIPv6Request
+type inlineIPv6Address struct {
 	bytes [16]byte
 }
 
-func (a *pooledIPv4Address) IP() stdnet.IP {
+func (a *inlineIPv4Address) IP() stdnet.IP {
 	return a.bytes[:]
 }
 
-func (*pooledIPv4Address) Domain() string {
+func (*inlineIPv4Address) Domain() string {
 	panic("Calling Domain() on an IPv4Address.")
 }
 
-func (*pooledIPv4Address) Family() net.AddressFamily {
+func (*inlineIPv4Address) Family() net.AddressFamily {
 	return net.AddressFamilyIPv4
 }
 
-func (a *pooledIPv4Address) String() string {
+func (a *inlineIPv4Address) String() string {
 	return stdnet.IP(a.bytes[:]).String()
 }
 
-func (a *pooledIPv4Address) NetIPAddr() netip.Addr {
+func (a *inlineIPv4Address) NetIPAddr() netip.Addr {
 	return netip.AddrFrom4(a.bytes)
 }
 
-func (a *pooledIPv4Address) releaseRequest() {
-	request := a.owner
-	request.header = protocol.RequestHeader{}
-	ipv4RequestPool.Put(request)
-}
+func (*inlineIPv4Address) embeddedInRequest() {}
 
-func (a *pooledIPv6Address) IP() stdnet.IP {
+func (a *inlineIPv6Address) IP() stdnet.IP {
 	return a.bytes[:]
 }
 
-func (*pooledIPv6Address) Domain() string {
+func (*inlineIPv6Address) Domain() string {
 	panic("Calling Domain() on an IPv6Address.")
 }
 
-func (*pooledIPv6Address) Family() net.AddressFamily {
+func (*inlineIPv6Address) Family() net.AddressFamily {
 	return net.AddressFamilyIPv6
 }
 
-func (a *pooledIPv6Address) String() string {
+func (a *inlineIPv6Address) String() string {
 	return "[" + stdnet.IP(a.bytes[:]).String() + "]"
 }
 
-func (a *pooledIPv6Address) NetIPAddr() netip.Addr {
+func (a *inlineIPv6Address) NetIPAddr() netip.Addr {
 	return netip.AddrFrom16(a.bytes)
 }
 
-func (a *pooledIPv6Address) releaseRequest() {
-	request := a.owner
-	request.header = protocol.RequestHeader{}
-	ipv6RequestPool.Put(request)
-}
+func (*inlineIPv6Address) embeddedInRequest() {}
 
-func (*pooledDomainAddress) IP() stdnet.IP {
+func (*inlineDomainAddress) IP() stdnet.IP {
 	panic("Calling IP() on a DomainAddress.")
 }
 
-func (a *pooledDomainAddress) Domain() string {
+func (a *inlineDomainAddress) Domain() string {
 	if a.long != "" {
 		return a.long
 	}
 	return unsafe.String(&a.bytes[0], a.length)
 }
 
-func (*pooledDomainAddress) Family() net.AddressFamily {
+func (*inlineDomainAddress) Family() net.AddressFamily {
 	return net.AddressFamilyDomain
 }
 
-func (a *pooledDomainAddress) String() string {
+func (a *inlineDomainAddress) String() string {
 	if a.long != "" {
 		return a.long
 	}
 	return unsafe.String(&a.bytes[0], a.length)
 }
 
-func (a *pooledDomainAddress) releaseRequest() {
-	request := a.owner
-	a.length = 0
-	a.long = ""
-	request.header = protocol.RequestHeader{}
-	domainRequestPool.Put(request)
-}
+func (*inlineDomainAddress) embeddedInRequest() {}
 
-func newPooledDomainRequest(domain []byte) *protocol.RequestHeader {
-	request, _ := domainRequestPool.Get().(*pooledDomainRequest)
-	if request == nil {
-		request = new(pooledDomainRequest)
-		request.address.owner = request
-	}
+func newDomainRequest(domain []byte) *protocol.RequestHeader {
+	request := new(inlineDomainRequest)
 	address := &request.address
 	if len(domain) <= len(address.bytes) {
 		address.length = byte(copy(address.bytes[:], domain))
@@ -166,23 +149,15 @@ func newPooledDomainRequest(domain []byte) *protocol.RequestHeader {
 	return &request.header
 }
 
-func newPooledIPv4Request(ip []byte) *protocol.RequestHeader {
-	request, _ := ipv4RequestPool.Get().(*pooledIPv4Request)
-	if request == nil {
-		request = new(pooledIPv4Request)
-		request.address.owner = request
-	}
+func newIPv4Request(ip []byte) *protocol.RequestHeader {
+	request := new(inlineIPv4Request)
 	copy(request.address.bytes[:], ip)
 	request.header.Address = &request.address
 	return &request.header
 }
 
-func newPooledIPv6Request(ip []byte) *protocol.RequestHeader {
-	request, _ := ipv6RequestPool.Get().(*pooledIPv6Request)
-	if request == nil {
-		request = new(pooledIPv6Request)
-		request.address.owner = request
-	}
+func newIPv6Request(ip []byte) *protocol.RequestHeader {
+	request := new(inlineIPv6Request)
 	copy(request.address.bytes[:], ip)
 	request.header.Address = &request.address
 	return &request.header
@@ -197,13 +172,13 @@ func newRequestHeader() *protocol.RequestHeader {
 }
 
 // ReleaseRequestHeader clears authentication and destination references before
-// returning a connection-scoped decoded request for reuse.
+// returning a connection-scoped decoded request for reuse. Requests carrying an
+// embeddedRequestAddress are left to the garbage collector.
 func ReleaseRequestHeader(request *protocol.RequestHeader) {
 	if request == nil {
 		return
 	}
-	if address, ok := request.Address.(interface{ releaseRequest() }); ok {
-		address.releaseRequest()
+	if _, embedded := request.Address.(embeddedRequestAddress); embedded {
 		return
 	}
 	*request = protocol.RequestHeader{}
@@ -434,7 +409,7 @@ func decodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validat
 			request = newRequestHeader()
 			request.Address = net.DomainAddress("v1.rvs.cool")
 		case protocol.RequestCommandTCP, protocol.RequestCommandUDP:
-			request = readPooledRequestAddress(buffer, reader)
+			request = readInlineRequestAddress(buffer, reader)
 		}
 		if request == nil {
 			buffer.Release()
@@ -508,13 +483,13 @@ func decodePlainRequestHeaderFromFirst(first *buf.Buffer, validator vless.Valida
 			if len(data) < headerLength {
 				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			request = newPooledIPv4Request(data[22:headerLength])
+			request = newIPv4Request(data[22:headerLength])
 		case protocol.AddressTypeIPv6:
 			headerLength = 38
 			if len(data) < headerLength {
 				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			request = newPooledIPv6Request(data[22:headerLength])
+			request = newIPv6Request(data[22:headerLength])
 		case protocol.AddressTypeDomain:
 			if len(data) < 23 {
 				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
@@ -537,7 +512,7 @@ func decodePlainRequestHeaderFromFirst(first *buf.Buffer, validator vless.Valida
 			if !isPlainDomain(domain) {
 				return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 			}
-			request = newPooledDomainRequest(domainBytes)
+			request = newDomainRequest(domainBytes)
 		default:
 			return [16]byte{}, nil, HeaderAddons{}, false, nil, false
 		}
@@ -553,7 +528,7 @@ func decodePlainRequestHeaderFromFirst(first *buf.Buffer, validator vless.Valida
 	return id, request, HeaderAddons{}, false, nil, true
 }
 
-func readPooledRequestAddress(buffer *buf.Buffer, reader io.Reader) *protocol.RequestHeader {
+func readInlineRequestAddress(buffer *buf.Buffer, reader io.Reader) *protocol.RequestHeader {
 	buffer.Clear()
 	if _, err := buffer.ReadFullFrom(reader, 3); err != nil {
 		return nil
@@ -563,25 +538,15 @@ func readPooledRequestAddress(buffer *buf.Buffer, reader io.Reader) *protocol.Re
 	var request *protocol.RequestHeader
 	switch protocol.AddressType(data[2]) {
 	case protocol.AddressTypeIPv4:
-		pooled, _ := ipv4RequestPool.Get().(*pooledIPv4Request)
-		if pooled == nil {
-			pooled = new(pooledIPv4Request)
-			pooled.address.owner = pooled
-		}
+		pooled := new(inlineIPv4Request)
 		if _, err := io.ReadFull(reader, pooled.address.bytes[:]); err != nil {
-			pooled.address.releaseRequest()
 			return nil
 		}
 		pooled.header.Address = &pooled.address
 		request = &pooled.header
 	case protocol.AddressTypeIPv6:
-		pooled, _ := ipv6RequestPool.Get().(*pooledIPv6Request)
-		if pooled == nil {
-			pooled = new(pooledIPv6Request)
-			pooled.address.owner = pooled
-		}
+		pooled := new(inlineIPv6Request)
 		if _, err := io.ReadFull(reader, pooled.address.bytes[:]); err != nil {
-			pooled.address.releaseRequest()
 			return nil
 		}
 		pooled.header.Address = &pooled.address
@@ -605,17 +570,12 @@ func readPooledRequestAddress(buffer *buf.Buffer, reader io.Reader) *protocol.Re
 		if domainLength == 0 {
 			return nil
 		}
-		var pooledDomain *pooledDomainRequest
+		var inlineDomain *inlineDomainRequest
 		var domainBytes []byte
-		if int(domainLength) <= pooledDomainCapacity {
-			pooledDomain, _ = domainRequestPool.Get().(*pooledDomainRequest)
-			if pooledDomain == nil {
-				pooledDomain = new(pooledDomainRequest)
-				pooledDomain.address.owner = pooledDomain
-			}
-			domainBytes = pooledDomain.address.bytes[:domainLength]
+		if int(domainLength) <= inlineDomainCapacity {
+			inlineDomain = new(inlineDomainRequest)
+			domainBytes = inlineDomain.address.bytes[:domainLength]
 			if _, err := io.ReadFull(reader, domainBytes); err != nil {
-				pooledDomain.address.releaseRequest()
 				return nil
 			}
 		} else {
@@ -634,30 +594,24 @@ func readPooledRequestAddress(buffer *buf.Buffer, reader io.Reader) *protocol.Re
 				ip = ip.Unmap()
 				if ip.Is4() {
 					value := ip.As4()
-					request = newPooledIPv4Request(value[:])
+					request = newIPv4Request(value[:])
 				} else {
 					value := ip.As16()
-					request = newPooledIPv6Request(value[:])
-				}
-				if pooledDomain != nil {
-					pooledDomain.address.releaseRequest()
+					request = newIPv6Request(value[:])
 				}
 				break
 			}
 		}
 		if !isPlainDomain(domain) {
-			if pooledDomain != nil {
-				pooledDomain.address.releaseRequest()
-			}
 			return nil
 		}
-		if pooledDomain != nil {
-			pooledDomain.address.length = domainLength
-			pooledDomain.address.long = ""
-			pooledDomain.header.Address = &pooledDomain.address
-			request = &pooledDomain.header
+		if inlineDomain != nil {
+			inlineDomain.address.length = domainLength
+			inlineDomain.address.long = ""
+			inlineDomain.header.Address = &inlineDomain.address
+			request = &inlineDomain.header
 		} else {
-			request = newPooledDomainRequest(domainBytes)
+			request = newDomainRequest(domainBytes)
 		}
 	default:
 		return nil
