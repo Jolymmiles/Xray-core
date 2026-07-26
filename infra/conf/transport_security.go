@@ -24,6 +24,27 @@ type LimitFallback struct {
 	BurstBytesPerSec uint64
 }
 
+// parseClientVer decodes a dotted REALITY client version bound such as
+// "26.3.27" into its three wire bytes. An empty value returns a nil bound,
+// which leaves the corresponding REALITY check disabled.
+func parseClientVer(value, field string) ([]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parsed := make([]byte, 3)
+	for i, s := range strings.Split(value, ".") {
+		if i == 3 {
+			return nil, errors.New(`invalid "`, field, `": `, value)
+		}
+		u, err := strconv.ParseUint(s, 10, 8)
+		if err != nil {
+			return nil, errors.New(`"`, field, `[`, i, `]" should be less than 256`)
+		}
+		parsed[i] = byte(u)
+	}
+	return parsed, nil
+}
+
 type REALITYConfig struct {
 	MasterKeyLog string          `json:"masterKeyLog"`
 	Show         bool            `json:"show"`
@@ -99,6 +120,14 @@ func (c *REALITYConfig) Build() (proto.Message, error) {
 		}
 		if config.PrivateKey, err = base64.RawURLEncoding.DecodeString(c.PrivateKey); err != nil || len(config.PrivateKey) != 32 {
 			return nil, errors.New(`invalid "privateKey": `, c.PrivateKey)
+		}
+		// Both bounds stay nil when unset: this fork ships no built-in
+		// client-version gate, the operator opts in explicitly.
+		if config.MinClientVer, err = parseClientVer(c.MinClientVer, "minClientVer"); err != nil {
+			return nil, err
+		}
+		if config.MaxClientVer, err = parseClientVer(c.MaxClientVer, "maxClientVer"); err != nil {
+			return nil, err
 		}
 		if len(c.ShortIds) == 0 {
 			return nil, errors.New(`empty "shortIds"`)
