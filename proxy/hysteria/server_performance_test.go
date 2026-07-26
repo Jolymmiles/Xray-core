@@ -74,14 +74,15 @@ func BenchmarkServerUDPIOSetup(b *testing.B) {
 			}
 		}
 	})
-	b.Run("separate-link-pool", func(b *testing.B) {
+	b.Run("separate-link", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			reader := newPooledUDPReader(source)
 			writer := newPooledUDPWriter(io.Discard, "example.com:443")
-			link := transport.NewPooledLink(reader, writer)
-			hysteriaServerLinkSink = link
-			transport.ReleasePooledLink(link)
+			// transport.Link is allocated per connection rather than pooled: it
+			// escapes into the outbound handler for the connection's lifetime,
+			// so recycling it cannot be shown safe.
+			hysteriaServerLinkSink = &transport.Link{Reader: reader, Writer: writer}
 			releasePooledUDPWriter(writer)
 			releasePooledUDPReader(reader)
 		}
