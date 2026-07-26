@@ -80,10 +80,6 @@ func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) 
 			if precheckedHTTPError == nil && precheckedHTTPResult != nil {
 				return precheckedHTTPResult, nil
 			}
-			if precheckedHTTPError == protocol.ErrProtoNeedMoreData {
-				s.sniffer = s.fastHTTPSniffers()
-				return nil, precheckedHTTPError
-			}
 		} else {
 			for _, si := range s.sniffer {
 				if !si.fastHTTP || si.metadataSniffer || si.network != network {
@@ -93,10 +89,6 @@ func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) 
 				httpPrechecked = true
 				if precheckedHTTPError == nil && precheckedHTTPResult != nil {
 					return precheckedHTTPResult, nil
-				}
-				if precheckedHTTPError == protocol.ErrProtoNeedMoreData {
-					s.sniffer = []protocolSnifferWithMetadata{si}
-					return nil, precheckedHTTPError
 				}
 				break
 			}
@@ -130,15 +122,6 @@ func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) 
 	}
 
 	return nil, errUnknownContent
-}
-
-func (s *Sniffer) fastHTTPSniffers() []protocolSnifferWithMetadata {
-	for index := range s.sniffer {
-		if s.sniffer[index].fastHTTP && !s.sniffer[index].metadataSniffer && s.sniffer[index].network == net.Network_TCP {
-			return s.sniffer[index : index+1]
-		}
-	}
-	return nil
 }
 
 func (s *Sniffer) SniffMetadata(c context.Context) (SniffResult, error) {
