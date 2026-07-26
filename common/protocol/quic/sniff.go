@@ -31,12 +31,14 @@ func (s SniffHeader) Domain() string {
 const (
 	versionDraft29 uint32 = 0xff00001d
 	version1       uint32 = 0x1
+	version2       uint32 = 0x6b3343cf
 )
 
 var (
-	quicSaltOld  = []byte{0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61, 0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99}
-	quicSalt     = []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a}
-	initialSuite = &CipherSuiteTLS13{
+	quicSaltDraft29 = []byte{0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61, 0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99}
+	quicSaltV1      = []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a}
+	quicSaltV2      = []byte{0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9}
+	initialSuite    = &CipherSuiteTLS13{
 		ID:     tls.TLS_AES_128_GCM_SHA256,
 		KeyLen: 16,
 		AEAD:   AEADAESGCMTLS13,
@@ -77,14 +79,27 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		}
 
 		versionNumber := binary.BigEndian.Uint32(vb)
-		if versionNumber != 0 && typeByte&0x40 == 0 {
-			return nil, errNotQuic
-		} else if versionNumber != versionDraft29 && versionNumber != version1 {
+		// QUIC v2 renumbers the long header packet types and the HKDF labels
+		// (RFC 9369 section 3.2, 3.3.1). Assign salt in every case rather than
+		// defaulting, so a new version can't silently inherit another
+		// version's salt.
+		var salt []byte
+		initialPacketType := byte(0)
+		hpLabel, keyLabel, ivLabel := "quic hp", "quic key", "quic iv"
+		switch versionNumber {
+		case versionDraft29:
+			salt = quicSaltDraft29
+		case version1:
+			salt = quicSaltV1
+		case version2:
+			salt, initialPacketType = quicSaltV2, 1
+			hpLabel, keyLabel, ivLabel = "quicv2 hp", "quicv2 key", "quicv2 iv"
+		default:
 			return nil, errNotQuic
 		}
 
 		packetType := (typeByte & 0x30) >> 4
-		isQuicInitial := packetType == 0x0
+		isQuicInitial := packetType == initialPacketType
 
 		var destConnID []byte
 		if l, err := buffer.ReadByte(); err != nil {
@@ -130,15 +145,9 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 			continue
 		}
 
-		var salt []byte
-		if versionNumber == version1 {
-			salt = quicSalt
-		} else {
-			salt = quicSaltOld
-		}
 		initialSecret := hkdf.Extract(crypto.SHA256.New, destConnID, salt)
 		secret := hkdfExpandLabel(crypto.SHA256, initialSecret, []byte{}, "client in", crypto.SHA256.Size())
-		hpKey := hkdfExpandLabel(initialSuite.Hash, secret, []byte{}, "quic hp", initialSuite.KeyLen)
+		hpKey := hkdfExpandLabel(initialSuite.Hash, secret, []byte{}, hpLabel, initialSuite.KeyLen)
 		block, err := aes.NewCipher(hpKey)
 		if err != nil {
 			return nil, err
@@ -155,8 +164,8 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 			b[hdrLen+i] ^= mask[i+1]
 		}
 
-		key := hkdfExpandLabel(crypto.SHA256, secret, []byte{}, "quic key", 16)
-		iv := hkdfExpandLabel(crypto.SHA256, secret, []byte{}, "quic iv", 12)
+		key := hkdfExpandLabel(crypto.SHA256, secret, []byte{}, keyLabel, 16)
+		iv := hkdfExpandLabel(crypto.SHA256, secret, []byte{}, ivLabel, 12)
 		cipher := AEADAESGCMTLS13(key, iv)
 
 		nonce := cache.Extend(int32(cipher.NonceSize()))
