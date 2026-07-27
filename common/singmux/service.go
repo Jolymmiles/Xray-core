@@ -5,12 +5,14 @@ package singmux
 import (
 	"context"
 	"errors"
+	"maps"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 	X "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/singmux/internal/mplsmux"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
@@ -135,7 +137,29 @@ func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSl
 		reader = &packetReader{stream: stream}
 		writer = &packetWriter{stream: stream, destination: destination}
 	}
-	_ = s.dispatcher.DispatchLink(ctx, destination, &transport.Link{Reader: reader, Writer: writer})
+	_ = s.dispatcher.DispatchLink(streamContext(ctx), destination, &transport.Link{Reader: reader, Writer: writer})
+}
+
+// streamContext gives one carrier stream its own Outbound and Content.
+//
+// The carrier context is shared by every stream of the session, and the
+// dispatcher, router and outbound handlers all write through those pointers
+// (Outbound.Target, Content.SkipSniffingAttributes, ...). Dispatching every
+// stream on the carrier context makes those writes alias, which races reads in
+// the router matchers and the dialer, and can panic once a matcher observes an
+// IP target replaced by a domain between the family check and the read.
+//
+// Equivalent to session.SubContextFromMuxInbound, except that helper panics on
+// a carrier that already holds attributes. That is reachable here: an HTTP
+// inbound sets sniffed attributes before dispatching to a client-supplied
+// destination, which may be the SMUX one. Clone them per stream instead.
+func streamContext(parent context.Context) context.Context {
+	content := session.Content{}
+	if carrier := session.ContentFromContext(parent); carrier != nil {
+		content = *carrier
+		content.Attributes = maps.Clone(carrier.Attributes)
+	}
+	return session.ContextWithContent(session.ContextWithOutbounds(parent, []*session.Outbound{{}}), &content)
 }
 
 func (s *Service) handshakeStream(ctx context.Context, stream net.Conn) (uint16, X.Destination, error) {
