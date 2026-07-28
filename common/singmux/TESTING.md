@@ -14,6 +14,7 @@ go test -race ./common/singmux/... ./common/mux
 go test -cover ./common/singmux/internal/mplsmux
 go test ./common/singmux/... -count=50
 go test ./common/singmux/internal/mplsmux -run '^$' -bench '^BenchmarkStreamRoundTrip32KiB$' -benchmem -count=5
+go test ./common/singmux -run '^$' -bench '^BenchmarkServiceStreamHandshake$' -benchtime=78000x -benchmem -count=5
 ```
 
 The 32 KiB hot-path allocation gate is zero allocations per round trip and is
@@ -129,9 +130,11 @@ wave and stops only when it reaches the requested target, the process or a
 connection fails, or a wave produces no measurable RSS growth. It does not
 retry failed connections.
 
-The default target is 5 GiB. Run it only on a disposable Linux/amd64 host with
-enough memory, file descriptors, and disk space for the server, generators,
-test process, and profiles:
+The server limits only incomplete SMUX handshakes; an established stream
+releases its admission slot and remains active. Therefore both SMUX and direct
+modes can reach the configured memory target. The default target is 5 GiB. Run
+it only on a disposable Linux/amd64 host with enough memory, file descriptors,
+and disk space for the server, generators, test process, and profiles:
 
 ```sh
 mkdir -p /tmp/xray-remnanode-profiles
@@ -186,6 +189,19 @@ because it also compares the two projects' TLS and Trojan implementations.
 
 ```sh
 go test -tags 'integration stress performance' ./common/singmux -run '^TestSMUXServerPerformanceAgainstSingMux$' -count=3 -v
+```
+
+The service-handshake benchmark exercises a real in-process carrier and the
+complete open/request/response/close lifecycle. A fixed 78,000-iteration run
+distinguishes cumulative session/stream-ID degradation from concurrent resource
+exhaustion. Capture profiles without changing the handshake timeout:
+
+```sh
+go test ./common/singmux -run '^$' \
+  -bench '^BenchmarkServiceStreamHandshake$' -benchtime=78000x -benchmem \
+  -cpuprofile /tmp/smux-handshake-cpu.pb.gz \
+  -blockprofile /tmp/smux-handshake-block.pb.gz \
+  -mutexprofile /tmp/smux-handshake-mutex.pb.gz
 ```
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing

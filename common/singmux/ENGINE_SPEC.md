@@ -30,13 +30,22 @@ session. Carrier failure wakes all pending stream and accept operations.
 Writes enter a bounded FIFO carrier queue as complete wire frames. This gives
 each submitted frame an explicit lifetime and prevents caller-buffer reuse from
 racing an asynchronous carrier write. Receive memory is bounded at both session
-and stream level; pressure stops carrier reads until the application consumes
-data. Size-class pools cover the standard frame sizes without retaining
-arbitrarily large allocations.
+and stream level. Ordinary pressure backpressures the carrier until the
+application consumes data. If one stream remains unable to accept a complete
+frame for 30 seconds, the engine aborts only that stream, releases its unread
+buffers and session receive reservation, and resumes the carrier read loop. The
+close notification uses the existing bounded writer queue and never adds a
+goroutine; failure to enqueue it fails the carrier closed. Size-class pools
+cover the standard frame sizes without retaining arbitrarily large allocations.
 
-The Xray server bounds active SMUX stream handlers at 512. Carrier and stream
-handshakes each have a 10-second deadline, and context cancellation closes a
-blocked carrier immediately.
+The Xray server bounds incomplete SMUX stream handshakes at 512 across the
+complete `Service`, not separately per carrier. The slot is released as soon as
+the request is validated and the response is written; established streams do
+not retain it and are not subject to a hard connection-count cap. Admission is
+nonblocking: a handshake above the global pending limit is closed immediately
+instead of occupying another goroutine until the 10-second deadline. Carrier
+and admitted stream handshakes retain their 10-second deadlines, and context
+cancellation closes a blocked carrier immediately.
 
 Keepalive is configurable and disabled by the Xray SMUX integration. When
 enabled, each side sends a stream-zero keepalive at the configured interval and

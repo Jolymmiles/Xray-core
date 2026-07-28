@@ -360,3 +360,60 @@ REALITY/no-flow, and REALITY/Vision, repeated three times. Unit, race,
 checkptr, and vet gates passed. A static stripped Linux/amd64 `GOAMD64=v1`
 cross-build passed; Linux runtime, 5 GiB pressure, and network-counter evidence
 remain mandatory before a release capacity claim.
+
+## Stalled-stream cleanup and 78k handshake scalability (2026-07-21)
+
+Two focused RED tests reproduced the server failure modes. With a one-frame
+stream buffer, a second DATA frame blocked the single carrier read loop, so the
+FIN behind it and every unrelated stream remained unread. Separately, the
+512-handler semaphore was constructed inside `Service.NewConnection`, allowing
+every new carrier to create another 512 blocked handlers. A second carrier
+therefore bypassed a saturated first carrier, and overload waited for the full
+stream-handshake deadline. The pressure fixture configures only eight streams
+per carrier, so 78,000 held streams imply roughly 9,750 carrier sessions before
+accounting for retries; this is a scheduler, goroutine, socket, and GC explosion
+rather than evidence of a stream-ID limit.
+
+The receive path now preserves normal backpressure but gives a continuously
+full stream 30 seconds to make progress. Only after that interval does it abort
+the stalled stream, release all unread receive ownership, enqueue a bounded
+close notification, and continue the same carrier read loop. The timer is
+created only after actual saturation. An initial immediate-abort prototype was
+rejected because the race-enabled 1 MiB stale-carrier regression test showed
+that a healthy transient burst can briefly fill the 64 KiB stream buffer.
+
+Server admission now uses one nonblocking 512-slot pending-handshake semaphore
+per `Service`. A slot covers only request parsing and response writing; it is
+released before dispatch, so established streams are not count-capped. The
+513th simultaneous incomplete handshake is closed immediately on any carrier
+instead of waiting for the 10-second deadline. A RED regression test with a
+two-slot limit proved that the previous active-lifetime ownership rejected a
+third fully handshaken stream; the corrected implementation keeps all three
+active. The held-stream SMUX profile therefore remains a real 5 GiB pressure
+test rather than stopping at 512 connections.
+
+The complete service handshake was then run 78,000 times on one carrier to
+isolate cumulative stream-ID/map behavior from concurrency. Five final
+post-correction samples were 30.454--50.761 us/op, with a 35.446 us median,
+about 3,444 B/op, and 56 allocations/op; every sample completed without a
+late-run timeout or 78k failure. The wide Darwin scheduler spread makes this a
+diagnostic rather than a latency improvement claim. CPU, block, and mutex
+profiles from an
+additional fixed run reported 112.17 ms total mutex delay across all 78,000
+operations, mostly in runtime scheduler/GC unlock paths rather than one engine
+lock. Blocking was dominated by ordered `net.Pipe`/channel synchronization.
+On this Darwin/arm64 host that evidence rules out a cumulative engine-lock
+failure; it does not replace Linux scheduler, RSS, socket, and interface
+measurements under concurrent process load.
+
+The existing 32 KiB engine hot path remained at zero allocations. Its current
+five-run median was 11.014 us/op versus 11.004 us/op from an isolated clean
+worktree at the pre-change commit (+0.09%, measurement noise). Focused race
+tests passed 20 times, the full process interoperability matrix passed 40/40
+cells, and the reconnect/stress matrix passed 24/24 cycles. Linux runtime and
+interface-health evidence remain required before a production capacity claim.
+The final static stripped Linux/amd64 `GOAMD64=v1` cross-build has SHA-256
+`7ab630e3129cfb3b23c5e3f0ab63f103e9e6010aca8d094ab9365db46e4dedf4` and
+completed an amd64 Debian 12 container startup smoke under emulation. That
+proves executable portability only; emulation is not Linux/amd64 performance
+or network-health evidence.
