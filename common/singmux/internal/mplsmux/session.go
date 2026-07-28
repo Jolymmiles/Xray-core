@@ -302,6 +302,15 @@ func (s *Session) submitWithStateResult(command frameCommand, streamID uint32, p
 		case <-changed:
 			s.submitMu.Unlock()
 			stopTimer()
+		case <-s.done:
+			// Without this case the send is the only live one for a caller that
+			// passes neither a deadline nor a change channel (submitResult, and
+			// OpenStream's zero deadline). A full writeQueue would then park
+			// here holding submitMu until the process exits (D8).
+			s.submitMu.Unlock()
+			stopTimer()
+			releaseFrameBuffer(encoded)
+			return s.terminalError()
 		}
 	}
 
@@ -484,11 +493,24 @@ func (s *Session) fail(err error) {
 		err = io.ErrClosedPipe
 	}
 	s.closeOnce.Do(func() {
-		s.submitMu.Lock()
 		s.errorMu.Lock()
 		s.lastError = err
 		s.errorMu.Unlock()
+		// Close done BEFORE taking submitMu. A submitter parked on a full
+		// writeQueue holds submitMu and only a closed done can wake it, so
+		// acquiring the lock first deadlocks the session permanently (D8):
+		// done would never close, the carrier would never be closed, neither
+		// loop would exit, and Close would park on loops.Wait forever.
+		// lastError is published first so anyone woken by done reports the real
+		// cause rather than the generic terminal error.
 		close(s.done)
+		// Barrier, not a critical section: once every in-flight submitter has
+		// left submitWithStateResult, no further frame can reach writeQueue,
+		// because later submitters observe the closed done under submitMu and
+		// bail. That is the invariant that lets failQueuedWrites drain the
+		// queue exactly once below, and it must be established before the
+		// carrier is closed.
+		s.submitMu.Lock()
 		s.submitMu.Unlock()
 		_ = s.conn.Close()
 		s.receiveMu.Lock()
@@ -501,6 +523,15 @@ func (s *Session) fail(err error) {
 		s.streamsMu.Lock()
 		for _, stream := range s.streams {
 			stream.sessionStopped()
+			// sessionStopped only flags the stream; whatever it already queued
+			// still holds pooled buffers and a slice of the session-wide
+			// reservation, and nothing will drain it now that the session is
+			// gone. Streams parked in accepts are covered too: acceptRemoteStream
+			// registers them here before handing them over.
+			// D7/M3: releaseQueued nils chunks under stateMu, so this stays
+			// exactly-once against a concurrent Stream.Close. Lock order
+			// streamsMu > stateMu > receiveMu holds, so it is safe in place.
+			stream.releaseQueued()
 		}
 		s.streamsMu.Unlock()
 	})
