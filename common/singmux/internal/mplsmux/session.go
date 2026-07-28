@@ -416,14 +416,30 @@ func (s *Session) readLoop() {
 				continue
 			}
 			length := int(header.length)
-			if !s.reserveReceive(length) {
+			// Reject oversized frames before touching the carrier body. The size
+			// gate also lives in reserveReceive; checking here keeps a hostile
+			// length from forcing a MaxReceiveBuffer-sized allocation first.
+			if length > s.config.MaxReceiveBuffer {
+				s.fail(ErrInvalidProtocol)
 				return
 			}
+			// Read the bounded payload before waiting on session-wide receive
+			// budget. After the DATA header is consumed the next carrier bytes
+			// are this frame's body: if we parked on accounting first, a peer
+			// FIN would be invisible (nothing is reading) and the session would
+			// hold loops, streams and up to MaxReceiveBuffer forever. One frame
+			// may briefly sit outside the accounting while reserveReceive waits;
+			// that overshoot is bounded by MaxFrameSize (<= MaxReceiveBuffer).
 			payload := acquireReceiveBuffer(length)
 			if err := payload.readFullFrom(s.carrierReader(), length); err != nil {
 				releaseReceiveBuffer(payload)
-				s.releaseReceive(length)
 				s.fail(err)
+				return
+			}
+			if !s.reserveReceive(length) {
+				// s.done closed while waiting for budget; payload never entered
+				// session accounting so only the buffer itself is reclaimed.
+				releaseReceiveBuffer(payload)
 				return
 			}
 			stream := s.lookupStream(header.streamID)
@@ -627,13 +643,10 @@ func (s *Session) removeStream(streamID uint32) {
 // reserveReceive claims session-wide receive budget, waiting for another stream
 // to free some if the session is at its limit.
 //
-// This wait cannot be watched the way the stream enqueue is: readLoop reaches it
-// between a frame header and that frame's payload, so the next bytes on the
-// carrier are payload and a read-ahead would consume them into the header
-// pushback and desync the connection. A carrier that dies here therefore still
-// goes unnoticed -- and unlike the stall this wait has no timeout, so it wedges
-// until something frees budget. Closing it means reading the payload before
-// reserving for it, which changes when a receive buffer is acquired.
+// Callers that have already consumed a DATA header must read that frame's
+// payload before entering this wait (see readLoop). Parking here with the body
+// still on the wire leaves the session blind to peer FIN: only a read observes
+// carrier death, and unlike the stream-stall path this wait has no timeout.
 func (s *Session) reserveReceive(size int) bool {
 	if size > s.config.MaxReceiveBuffer {
 		s.fail(ErrInvalidProtocol)
