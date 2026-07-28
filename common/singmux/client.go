@@ -24,6 +24,10 @@ const (
 	magicPort         X.Port = 444
 	defaultMinStreams        = 8
 	handshakeTimeout         = 10 * time.Second
+	// idleSweepInterval matches the carrier monitor in common/mux: a carrier is
+	// only retired once it has stayed idle across a full interval, so a pool
+	// serving steady traffic keeps reusing warm carriers.
+	idleSweepInterval = 16 * time.Second
 )
 
 type Dialer interface {
@@ -40,16 +44,29 @@ type Options struct {
 	OnlyTCP        bool
 }
 
+// pooledSession is one carrier plus the bookkeeping the idle sweeper needs to
+// tell a carrier that went quiet from one that is still serving traffic.
+type pooledSession struct {
+	session *mplsmux.Session
+	opened  uint64 // streams handed out over this carrier's lifetime
+	swept   uint64 // opened as observed by the previous sweep
+	idle    bool   // carried nothing during the previous sweep interval
+}
+
 type Client struct {
 	dialer         Dialer
 	maxConnections int
 	streamLimit    int
 	padding        bool
 	onlyTCP        bool
+	sweepInterval  time.Duration
 
 	mu       sync.Mutex
-	sessions []*mplsmux.Session
+	sessions []*pooledSession
 	closed   bool
+	// sweeper stops the idle sweeper goroutine. It is nil while no carrier is
+	// pooled, so an idle client holds no goroutine at all.
+	sweeper chan struct{}
 }
 
 func NewClient(options Options) (*Client, error) {
@@ -81,6 +98,7 @@ func NewClient(options Options) (*Client, error) {
 		streamLimit:    limit,
 		padding:        options.Padding,
 		onlyTCP:        options.OnlyTCP,
+		sweepInterval:  idleSweepInterval,
 	}, nil
 }
 
@@ -104,13 +122,102 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
+	if c.sweeper != nil {
+		close(c.sweeper)
+		c.sweeper = nil
+	}
 	sessions := c.sessions
 	c.sessions = nil
 	c.mu.Unlock()
-	for _, session := range sessions {
-		_ = session.Close()
+	for _, pooled := range sessions {
+		_ = pooled.session.Close()
 	}
 	return nil
+}
+
+// retainLocked rebuilds the pool from the entries the caller kept and clears
+// the vacated tail, so dropped carriers are not pinned by the backing array.
+func (c *Client) retainLocked(kept []*pooledSession) {
+	for index := len(kept); index < len(c.sessions); index++ {
+		c.sessions[index] = nil
+	}
+	c.sessions = kept
+}
+
+// startSweeperLocked launches the idle sweeper on demand. Starting it with the
+// first carrier keeps a client that never dials free of goroutines.
+func (c *Client) startSweeperLocked() {
+	if c.sweeper != nil {
+		return
+	}
+	interval := c.sweepInterval
+	if interval <= 0 {
+		// A Client built without NewClient still has to reap its carriers.
+		interval = idleSweepInterval
+	}
+	sweeper := make(chan struct{})
+	c.sweeper = sweeper
+	go c.sweepLoop(sweeper, interval)
+}
+
+func (c *Client) sweepLoop(sweeper chan struct{}, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			expired, drained := c.sweepIdle(sweeper)
+			for _, session := range expired {
+				_ = session.Close()
+			}
+			if drained {
+				return
+			}
+		case <-sweeper:
+			return
+		}
+	}
+}
+
+// sweepIdle retires carriers that served no stream across a full sweep
+// interval, returning them for the caller to close outside the lock. A carrier
+// must look idle on two consecutive sweeps before it is retired, mirroring the
+// two-tick check in common/mux, so a carrier that is about to serve a request
+// is never torn down. The sweep after the last stream closes only records the
+// baseline, so a carrier is retired about three intervals after it goes quiet;
+// that lag is deliberate, not an off-by-one. It reports whether the pool
+// drained, which retires the sweeper itself.
+func (c *Client) sweepIdle(sweeper chan struct{}) ([]*mplsmux.Session, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var expired []*mplsmux.Session
+	kept := c.sessions[:0]
+	for _, pooled := range c.sessions {
+		if pooled.session.IsClosed() {
+			continue
+		}
+		// A carrier counts as idle only when it holds no stream now and handed
+		// out none since the previous sweep; a stream opened and closed inside
+		// one interval must not read as idle.
+		idle := pooled.session.NumStreams() == 0 && pooled.opened == pooled.swept
+		if idle && pooled.idle {
+			expired = append(expired, pooled.session)
+			continue
+		}
+		pooled.idle = idle
+		pooled.swept = pooled.opened
+		kept = append(kept, pooled)
+	}
+	c.retainLocked(kept)
+
+	if len(c.sessions) == 0 && c.sweeper == sweeper {
+		// Nothing left to watch: retire rather than tick for the lifetime of
+		// the client. The next carrier starts a fresh sweeper.
+		c.sweeper = nil
+		return expired, true
+	}
+	return expired, false
 }
 
 func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
@@ -121,44 +228,48 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 			return nil, net.ErrClosed
 		}
 		alive := c.sessions[:0]
-		for _, session := range c.sessions {
-			if !session.IsClosed() {
-				alive = append(alive, session)
+		for _, pooled := range c.sessions {
+			if !pooled.session.IsClosed() {
+				alive = append(alive, pooled)
 			}
 		}
-		c.sessions = alive
+		c.retainLocked(alive)
 
-		var selected *mplsmux.Session
+		var selected *pooledSession
 		leastStreams := int(^uint(0) >> 1)
-		for _, session := range c.sessions {
-			if count := session.NumStreams(); count < leastStreams {
-				selected = session
+		for _, pooled := range c.sessions {
+			if count := pooled.session.NumStreams(); count < leastStreams {
+				selected = pooled
 				leastStreams = count
 			}
 		}
 		canCreate := c.maxConnections == 0 || len(c.sessions) < c.maxConnections
 		if selected == nil || leastStreams >= c.streamLimit && canCreate {
-			var err error
-			selected, err = c.createSession(ctx)
+			session, err := c.createSession(ctx)
 			if err != nil {
 				c.mu.Unlock()
 				return nil, err
 			}
+			selected = &pooledSession{session: session}
 			c.sessions = append(c.sessions, selected)
+			c.startSweeperLocked()
 		}
-		stream, err := selected.OpenStream()
+		stream, err := selected.session.OpenStream()
 		if err == nil {
+			// Record the handout so a carrier that served this interval is not
+			// mistaken for an idle one by the next sweep.
+			selected.opened++
 			c.mu.Unlock()
 			return stream, nil
 		}
-		for index, session := range c.sessions {
-			if session == selected {
-				c.sessions = append(c.sessions[:index], c.sessions[index+1:]...)
+		for index, pooled := range c.sessions {
+			if pooled == selected {
+				c.retainLocked(append(c.sessions[:index], c.sessions[index+1:]...))
 				break
 			}
 		}
 		c.mu.Unlock()
-		_ = selected.Close()
+		_ = selected.session.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
