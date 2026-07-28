@@ -16,6 +16,30 @@ const (
 	writeBacklog  = 256
 )
 
+// carrierWatchDelay is how long a stream may hold readLoop before readLoop hands
+// the carrier to a watcher. readLoop is the session's only reader, so while it
+// waits for stream buffer space nobody can observe a peer FIN: what ends the
+// wait early is a closed s.done, and what closes s.done on carrier death is
+// readLoop itself. Until the wait expires -- StreamStallTimeout, 30s by default,
+// per stalled frame -- the session, both loops, the carrier conn and every
+// queued buffer stay pinned.
+//
+// The delay keeps the healthy path free: a stream that frees space promptly
+// never costs a watcher goroutine.
+//
+// A var rather than a const so a test can disable the watcher by configuration
+// and measure the wait it removes, instead of neutering production code to do it.
+// Nothing writes it in production. A test that does must restore it, and that is
+// only safe while no test in this package calls t.Parallel() -- check that before
+// adding one, or the control subtest starts racing whatever runs alongside it.
+var carrierWatchDelay = 200 * time.Millisecond
+
+// carrierWatch is one outstanding read-ahead of the next frame header.
+type carrierWatch struct {
+	read int
+	err  error
+}
+
 type outboundFrame struct {
 	encoded []byte
 	result  chan error
@@ -48,7 +72,12 @@ type Session struct {
 	acceptChanged  chan struct{}
 
 	lastReceive atomic.Int64
-	readHeader  [frameHeaderSize]byte
+	// readHeader, readHeaderLen and watch belong to readLoop alone. It is the
+	// session's only carrier reader; a watcher borrows that role for one read at
+	// a time and readLoop joins it before touching the carrier again.
+	readHeader    [frameHeaderSize]byte
+	readHeaderLen int
+	watch         chan carrierWatch
 }
 
 func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session, error) {
@@ -355,8 +384,12 @@ func (s *Session) failQueuedWrites(err error) {
 }
 
 func (s *Session) readLoop() {
+	// A watch borrows the carrier; readLoop must not hand the session back to
+	// Close while a goroutine still holds it. Every exit path here has already
+	// failed the session, which closes the carrier, so this join cannot hang.
+	defer s.joinCarrierWatch()
 	for {
-		if _, err := io.ReadFull(s.conn, s.readHeader[:]); err != nil {
+		if err := s.readFrameHeader(); err != nil {
 			s.fail(err)
 			return
 		}
@@ -396,7 +429,7 @@ func (s *Session) readLoop() {
 				s.releaseReceive(length)
 				continue
 			}
-			enqueueResult := stream.enqueueWithTimeout(payload, s.config.StreamStallTimeout)
+			enqueueResult := s.enqueueWatchingCarrier(stream, payload)
 			if enqueueResult == streamEnqueueQueued {
 				continue
 			}
@@ -410,6 +443,93 @@ func (s *Session) readLoop() {
 		case frameKeepalive:
 		}
 	}
+}
+
+// readFrameHeader fills readHeader, resuming from whatever a carrier watcher
+// already collected.
+func (s *Session) readFrameHeader() error {
+	if result, joined := s.joinCarrierWatch(); joined && result.err != nil {
+		return result.err
+	}
+	if s.readHeaderLen < len(s.readHeader) {
+		read, err := io.ReadFull(s.conn, s.readHeader[s.readHeaderLen:])
+		s.readHeaderLen += read
+		if err != nil {
+			return err
+		}
+	}
+	s.readHeaderLen = 0
+	return nil
+}
+
+// startCarrierWatch moves readLoop's next header read onto its own goroutine, so
+// that a carrier dying while readLoop waits for buffer space is still noticed.
+// Only a read can observe a peer FIN, and a blocking read is the only form of it
+// that works everywhere: every server-side carrier arrives as a *cnc.Connection,
+// whose SetReadDeadline is a no-op that returns nil, so a deadline-bounded probe
+// would silently become an unbounded read and wedge readLoop for good.
+//
+// At most one watch is outstanding: readLoop starts one here and joins it in
+// readFrameHeader before touching the carrier again, so the two never read
+// concurrently and readHeader has a single writer at a time.
+//
+// ponytail: the read-ahead ceiling is one header. That is enough to detect
+// death, and reading further ahead means buffering without bound in front of a
+// consumer that is by definition not consuming -- the leak this change avoids.
+func (s *Session) startCarrierWatch() {
+	if s.watch != nil || s.readHeaderLen == len(s.readHeader) {
+		return
+	}
+	watch := make(chan carrierWatch, 1)
+	target := s.readHeader[s.readHeaderLen:]
+	s.watch = watch
+	go func() {
+		read, err := s.conn.Read(target)
+		if err != nil {
+			// Publish the death before handing back the result: whoever readLoop
+			// is waiting for is waiting on s.done, not on this channel.
+			s.fail(err)
+		}
+		watch <- carrierWatch{read: read, err: err}
+	}()
+}
+
+// joinCarrierWatch collects an outstanding read-ahead. It blocks for exactly as
+// long as the read it stands in for would have, and every path that ends a
+// session closes the carrier, so the watch always completes.
+func (s *Session) joinCarrierWatch() (carrierWatch, bool) {
+	if s.watch == nil {
+		return carrierWatch{}, false
+	}
+	result := <-s.watch
+	s.watch = nil
+	s.readHeaderLen += result.read
+	return result, true
+}
+
+// enqueueWatchingCarrier hands payload to stream without going blind to the
+// carrier. enqueueWithTimeout on its own parks readLoop for up to
+// StreamStallTimeout, and a peer that dies inside that wait cannot be noticed by
+// anyone else: the wait ends early only on a closed s.done, and only readLoop
+// closes s.done on carrier death.
+func (s *Session) enqueueWatchingCarrier(stream *Stream, payload receiveBuffer) streamEnqueueResult {
+	remaining := s.config.StreamStallTimeout
+	unwatched := remaining
+	if unwatched > carrierWatchDelay || unwatched <= 0 {
+		// A zero timeout means "wait forever" to enqueueWithTimeout, so it must
+		// never be passed on. validateConfig rejects a non-positive stall timeout
+		// today; this keeps that from becoming load-bearing.
+		unwatched = carrierWatchDelay
+	}
+	result := stream.enqueueWithTimeout(payload, unwatched)
+	if result != streamEnqueueStalled || remaining <= unwatched {
+		return result
+	}
+	// Still full after carrierWatchDelay: this is a real stall, and readLoop is
+	// about to wait out the rest of the stall budget for it. That is worth one
+	// goroutine -- and only genuine stalls ever pay for it.
+	s.startCarrierWatch()
+	return stream.enqueueWithTimeout(payload, remaining-unwatched)
 }
 
 func (s *Session) acceptRemoteStream(streamID uint32) {
@@ -453,6 +573,16 @@ func (s *Session) removeStream(streamID uint32) {
 	s.streamsMu.Unlock()
 }
 
+// reserveReceive claims session-wide receive budget, waiting for another stream
+// to free some if the session is at its limit.
+//
+// This wait cannot be watched the way the stream enqueue is: readLoop reaches it
+// between a frame header and that frame's payload, so the next bytes on the
+// carrier are payload and a read-ahead would consume them into the header
+// pushback and desync the connection. A carrier that dies here therefore still
+// goes unnoticed -- and unlike the stall this wait has no timeout, so it wedges
+// until something frees budget. Closing it means reading the payload before
+// reserving for it, which changes when a receive buffer is acquired.
 func (s *Session) reserveReceive(size int) bool {
 	if size > s.config.MaxReceiveBuffer {
 		s.fail(ErrInvalidProtocol)
