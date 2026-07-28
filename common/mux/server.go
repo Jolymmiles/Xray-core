@@ -17,6 +17,7 @@ import (
 	"github.com/xtls/xray-core/common/signal/done"
 	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/pipe"
@@ -37,8 +38,14 @@ func newServer(dispatcher routing.Dispatcher) *Server {
 // NewServer creates a new mux.Server.
 func NewServer(ctx context.Context) *Server {
 	s := &Server{}
-	core.RequireFeatures(ctx, func(d routing.Dispatcher) {
+	// The policy manager is an essential feature, so it is always registered and
+	// this callback always fires. SMUX needs it to keep its carrier idle timeout
+	// above the operator's connIdle, which is settable without a clamp; the
+	// resolution happens here because reaching core from common/singmux would
+	// risk an import cycle.
+	core.RequireFeatures(ctx, func(d routing.Dispatcher, p policy.Manager) {
 		*s = *newServer(d)
+		s.smux.SetPolicy(p)
 	})
 	return s
 }
