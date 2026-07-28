@@ -20,13 +20,58 @@ import (
 
 const defaultMaxPendingHandshakes = 512
 
+// A carrier that produces no bytes at all is unreachable. SMUX wire keepalive is
+// disabled in both directions for interop with sing-box and mihomo peers, so
+// nothing else reaps a client that vanishes without a FIN: the session read loop
+// parks in io.ReadFull forever, pinning the connection, its loop goroutines and
+// every buffered chunk. The default sits far above Xray's 300s connIdle policy,
+// so any stream still alive on this carrier has seen traffic much more recently.
+const defaultCarrierIdleTimeout = 10 * time.Minute
+
+// A dispatcher that ignores both its cancelled context and its failed stream is
+// misbehaving. Bound the teardown wait rather than pin the carrier forever.
+const defaultHandlerDrainTimeout = 30 * time.Second
+
+// Queued-but-unaccepted streams are collected with a deadline in the future, so
+// that each already-queued stream wins its select immediately and only the final
+// empty wait is bounded.
+const acceptDrainTimeout = 10 * time.Millisecond
+
+// Upper bound on that drain. A peer that keeps opening streams while the carrier
+// is being torn down must not be able to hold the drain loop open and postpone
+// the close indefinitely. Matches the session accept backlog.
+const maxAcceptDrain = 512
+
 type Service struct {
 	dispatcher              routing.Dispatcher
 	carrierHandshakeTimeout time.Duration
 	streamHandshakeTimeout  time.Duration
+	carrierIdleTimeout      time.Duration
+	handlerDrainTimeout     time.Duration
 	maxPendingHandshakes    int
 	handshakeSlotsOnce      sync.Once
 	handshakeSlots          chan struct{}
+}
+
+// idleConn fails reads on a carrier that has gone completely silent. Reads are
+// issued only by the single session read loop, so the refresh bookkeeping needs
+// no lock.
+type idleConn struct {
+	net.Conn
+	timeout     time.Duration
+	lastRefresh time.Time
+}
+
+func (c *idleConn) Read(payload []byte) (int, error) {
+	// Refresh lazily: a deadline syscall on every frame would land in the carrier
+	// hot path and buy nothing, since the timeout is minutes wide.
+	if now := time.Now(); now.Sub(c.lastRefresh) >= c.timeout/4 {
+		if err := c.Conn.SetReadDeadline(now.Add(c.timeout)); err != nil {
+			return 0, err
+		}
+		c.lastRefresh = now
+	}
+	return c.Conn.Read(payload)
 }
 
 func (s *Service) pendingHandshakeSlots() chan struct{} {
@@ -45,7 +90,44 @@ func NewService(dispatcher routing.Dispatcher) *Service {
 		dispatcher:              dispatcher,
 		carrierHandshakeTimeout: handshakeTimeout,
 		streamHandshakeTimeout:  handshakeTimeout,
+		carrierIdleTimeout:      defaultCarrierIdleTimeout,
+		handlerDrainTimeout:     defaultHandlerDrainTimeout,
 		maxPendingHandshakes:    defaultMaxPendingHandshakes,
+	}
+}
+
+// drainAcceptBacklog closes streams the peer opened but the accept loop never
+// handed to a handler. It must run before the session is closed: AcceptStream on
+// a closed session reports the terminal error and drops any queued stream
+// without closing it, leaking that stream's receive buffers.
+func (s *Service) drainAcceptBacklog(session *mplsmux.Session) {
+	if session.IsClosed() {
+		return
+	}
+	_ = session.SetDeadline(time.Now().Add(acceptDrainTimeout))
+	for range maxAcceptDrain {
+		stream, err := session.AcceptStream()
+		if err != nil {
+			return
+		}
+		_ = stream.Close()
+	}
+}
+
+// waitBounded waits for the handler group, but not forever. If the bound
+// expires, one waiter goroutine is left behind instead of the carrier
+// connection, its accept goroutine and every remaining handler.
+func waitBounded(handlers *sync.WaitGroup, timeout time.Duration) {
+	finished := make(chan struct{})
+	go func() {
+		handlers.Wait()
+		close(finished)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-finished:
+	case <-timer.C:
 	}
 }
 
@@ -58,14 +140,22 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	}
 	rawConnection := connection
 	watchDone := make(chan struct{})
+	watcherDone := make(chan struct{})
 	go func() {
+		defer close(watcherDone)
 		select {
 		case <-ctx.Done():
 			_ = rawConnection.Close()
 		case <-watchDone:
 		}
 	}()
-	defer close(watchDone)
+	// Join the watcher instead of only signalling it. An unsynchronised watcher
+	// can still close the carrier after NewConnection has returned, which races
+	// the caller's own close of that connection.
+	defer func() {
+		close(watchDone)
+		<-watcherDone
+	}()
 
 	deadline := time.Now().Add(s.carrierHandshakeTimeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
@@ -83,6 +173,9 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	if request.Version == carrierVersionPadded {
 		connection = newPaddingConn(connection)
 	}
+	if s.carrierIdleTimeout > 0 {
+		connection = &idleConn{Conn: connection, timeout: s.carrierIdleTimeout}
+	}
 	config := mplsmux.DefaultConfig()
 	config.KeepAliveDisabled = true
 	session, err := mplsmux.Server(connection, config)
@@ -90,11 +183,23 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		return err
 	}
 
+	// Stream handlers must be stoppable independently of the carrier context:
+	// the carrier can die while the parent context stays live, and NewConnection
+	// waits for its handlers before returning.
+	handlerCtx, cancelHandlers := context.WithCancel(ctx)
 	handshakeSlots := s.pendingHandshakeSlots()
 	var handlers sync.WaitGroup
 	defer func() {
+		// Cancel first, so a dispatcher that only observes its context unblocks;
+		// close second, so a dispatcher that only notices stream I/O sees its
+		// reads and writes fail. Both must precede Wait, which in turn keeps the
+		// caller from closing the carrier out from under a live handler.
+		cancelHandlers()
+		// Collect queued-but-unhandled streams while the session can still hand
+		// them over, then fail the session, then wait.
+		s.drainAcceptBacklog(session)
 		_ = session.Close()
-		handlers.Wait()
+		waitBounded(&handlers, s.handlerDrainTimeout)
 	}()
 	for {
 		stream, acceptErr := session.AcceptStream()
@@ -109,7 +214,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 			handlers.Add(1)
 			go func() {
 				defer handlers.Done()
-				s.handleStream(ctx, stream, handshakeSlots)
+				s.handleStream(handlerCtx, stream, handshakeSlots)
 			}()
 		case <-ctx.Done():
 			_ = stream.Close()
@@ -118,7 +223,12 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 			_ = stream.Close()
 			return net.ErrClosed
 		default:
-			_ = stream.Abort()
+			// Abort fails the whole session when the control queue is full, so the
+			// error must not be swallowed: report it instead of spinning on an
+			// AcceptStream that is about to fail anyway.
+			if err := stream.Abort(); err != nil {
+				return err
+			}
 		}
 	}
 }
