@@ -82,6 +82,12 @@ func (s *Stream) Read(destination []byte) (int, error) {
 			var released receiveBuffer
 			if chunk.offset == chunk.buffer.Len() {
 				released = chunk.buffer
+				// Retention hygiene, not double-release protection (D9): the
+				// reslice below already excludes this slot from anything
+				// drainLocked can return. Without the zeroing the backing array
+				// keeps pointing at a buffer that is about to go back to the
+				// pool -- indefinitely on the [1:] path, until the next append
+				// on the [:0] path.
 				s.chunks[0] = receiveChunk{}
 				if len(s.chunks) == 1 {
 					s.chunks = s.chunks[:0]
@@ -141,6 +147,11 @@ func (s *Stream) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		if len(s.chunks) > 0 {
 			chunk := s.chunks[0]
 			count := chunk.buffer.Len() - chunk.offset
+			// Retention hygiene, not double-release protection (D9): ownership
+			// passes to the returned MultiBuffer, and the reslice below already
+			// excludes this slot from anything drainLocked can return. The
+			// zeroing stops the backing array from pinning a buffer the caller
+			// now owns.
 			s.chunks[0] = receiveChunk{}
 			if len(s.chunks) == 1 {
 				s.chunks = s.chunks[:0]
@@ -365,6 +376,36 @@ func (s *Stream) Abort() error {
 	}
 	s.session.fail(ErrControlQueueFull)
 	return ErrControlQueueFull
+}
+
+// releaseQueued hands back everything still queued on this stream: the pooled
+// receive buffers and the session-wide reservation they hold.
+//
+// Session teardown needs this. Marking a stream closed leaves its queue intact,
+// and nothing else will ever drain it once the owner is gone -- the buffers are
+// pooled so GC still reclaims them, but the reservation is never decremented,
+// and a saturated MaxReceiveBuffer blocks every later reserve on that session.
+//
+// D7/M3: drainLocked nils s.chunks under stateMu, so ownership transfers here
+// exactly once and repeat calls are no-ops. Releasing happens outside stateMu --
+// releaseReceive takes receiveMu, and the lock order is stateMu > receiveMu.
+func (s *Stream) releaseQueued() {
+	s.stateMu.Lock()
+	queued, queuedBytes := s.drainLocked()
+	// Freeing the queue can admit a sender parked in enqueueWithTimeout, exactly
+	// as Read does. Teardown callers have usually notified already via
+	// sessionStopped, but doing it here too means releaseQueued carries no
+	// ordering precondition for its callers.
+	if s.bufferWaiting {
+		s.bufferWaiting = false
+		notify(s.bufferChanged)
+	}
+	s.stateMu.Unlock()
+
+	for _, chunk := range queued {
+		releaseReceiveBuffer(chunk.buffer)
+	}
+	s.session.releaseReceive(queuedBytes)
 }
 
 func (s *Stream) remoteStopped() {
