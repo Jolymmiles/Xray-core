@@ -72,12 +72,15 @@ type Session struct {
 	acceptChanged  chan struct{}
 
 	lastReceive atomic.Int64
-	// readHeader, readHeaderLen and watch belong to readLoop alone. It is the
-	// session's only carrier reader; a watcher borrows that role for one read at
-	// a time and readLoop joins it before touching the carrier again.
-	readHeader    [frameHeaderSize]byte
-	readHeaderLen int
-	watch         chan carrierWatch
+	// readHeader, readHeaderLen, watch and watchPushback belong to readLoop
+	// alone. A watcher borrows the carrier for at most one header (plus a
+	// single death-probe byte) and readLoop joins it before touching the
+	// carrier again, so readHeader has a single writer at a time.
+	readHeader       [frameHeaderSize]byte
+	readHeaderLen    int
+	watch            chan carrierWatch
+	watchPushback    byte
+	watchPushbackSet bool
 }
 
 func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session, error) {
@@ -417,7 +420,7 @@ func (s *Session) readLoop() {
 				return
 			}
 			payload := acquireReceiveBuffer(length)
-			if err := payload.readFullFrom(s.conn, length); err != nil {
+			if err := payload.readFullFrom(s.carrierReader(), length); err != nil {
 				releaseReceiveBuffer(payload)
 				s.releaseReceive(length)
 				s.fail(err)
@@ -452,7 +455,7 @@ func (s *Session) readFrameHeader() error {
 		return result.err
 	}
 	if s.readHeaderLen < len(s.readHeader) {
-		read, err := io.ReadFull(s.conn, s.readHeader[s.readHeaderLen:])
+		read, err := io.ReadFull(s.carrierReader(), s.readHeader[s.readHeaderLen:])
 		s.readHeaderLen += read
 		if err != nil {
 			return err
@@ -460,6 +463,32 @@ func (s *Session) readFrameHeader() error {
 	}
 	s.readHeaderLen = 0
 	return nil
+}
+
+// carrierReader returns an io.Reader over the session carrier that replays at
+// most one byte the watcher may have read past a completed header while probing
+// for peer death. Only readLoop (after joining the watch) may use it.
+func (s *Session) carrierReader() io.Reader {
+	return (*sessionCarrierReader)(s)
+}
+
+type sessionCarrierReader Session
+
+func (r *sessionCarrierReader) Read(p []byte) (int, error) {
+	s := (*Session)(r)
+	if s.watchPushbackSet {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		p[0] = s.watchPushback
+		s.watchPushbackSet = false
+		if len(p) == 1 {
+			return 1, nil
+		}
+		n, err := s.conn.Read(p[1:])
+		return n + 1, err
+	}
+	return s.conn.Read(p)
 }
 
 // startCarrierWatch moves readLoop's next header read onto its own goroutine, so
@@ -473,9 +502,12 @@ func (s *Session) readFrameHeader() error {
 // readFrameHeader before touching the carrier again, so the two never read
 // concurrently and readHeader has a single writer at a time.
 //
-// ponytail: the read-ahead ceiling is one header. That is enough to detect
-// death, and reading further ahead means buffering without bound in front of a
-// consumer that is by definition not consuming -- the leak this change avoids.
+// The watch fills at most one frame header (via ReadFull, so a short Read with
+// err=nil cannot retire it) and then probes one more byte: a successful
+// full-header Read used to exit the watch before a following FIN was visible,
+// leaving readLoop parked for the rest of StreamStallTimeout. Any probe byte
+// is stashed in watchPushback for readLoop; reading further would unbound the
+// buffer in front of a consumer that is by definition not consuming.
 func (s *Session) startCarrierWatch() {
 	if s.watch != nil || s.readHeaderLen == len(s.readHeader) {
 		return
@@ -484,13 +516,32 @@ func (s *Session) startCarrierWatch() {
 	target := s.readHeader[s.readHeaderLen:]
 	s.watch = watch
 	go func() {
-		read, err := s.conn.Read(target)
+		// ReadFull keeps reading across short successes until the header is
+		// complete or the carrier dies. A single Read of 1 byte with err=nil
+		// used to publish and exit, hiding the FIN that followed.
+		read, err := io.ReadFull(s.conn, target)
 		if err != nil {
 			// Publish the death before handing back the result: whoever readLoop
 			// is waiting for is waiting on s.done, not on this channel.
 			s.fail(err)
+			watch <- carrierWatch{read: read, err: err}
+			return
 		}
-		watch <- carrierWatch{read: read, err: err}
+		// Header complete with err=nil. Peer may FIN immediately after; one
+		// more Read either observes death or yields the first byte past this
+		// header (payload or next frame), which must not be discarded.
+		var probe [1]byte
+		n, err := s.conn.Read(probe[:])
+		if err != nil {
+			s.fail(err)
+			watch <- carrierWatch{read: read, err: err}
+			return
+		}
+		if n > 0 {
+			s.watchPushback = probe[0]
+			s.watchPushbackSet = true
+		}
+		watch <- carrierWatch{read: read, err: nil}
 	}()
 }
 
