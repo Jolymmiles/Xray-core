@@ -383,8 +383,9 @@ func TestServiceDerivesCarrierIdleTimeoutFromPolicy(t *testing.T) {
 	})
 }
 
-// The derivation reads the level of the carrier's own inbound user, because
-// every stream the carrier multiplexes belongs to that user.
+// The derivation is route-independent: it takes 2× max ConnectionIdle across
+// every discoverable policy level, so an outbound userLevel higher than the
+// carrier's inbound user cannot undercut the idle watchdog.
 func TestServiceDerivesCarrierIdleTimeoutForInboundUserLevel(t *testing.T) {
 	service := NewService(&detachedDispatcher{started: make(chan struct{}, 1)})
 	service.SetPolicy(&levelPolicyManager{})
@@ -392,12 +393,14 @@ func TestServiceDerivesCarrierIdleTimeoutForInboundUserLevel(t *testing.T) {
 	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{
 		User: &protocol.MemoryUser{Level: 7},
 	})
+	// levelPolicyManager: level 7 = 1h, every other level = 1s → max is 1h.
 	if got := service.carrierIdleTimeoutFor(ctx); got != 2*time.Hour {
 		t.Fatalf("carrierIdleTimeoutFor at level 7 = %v, want %v", got, 2*time.Hour)
 	}
-	// Anonymous inbounds fall back to level 0.
-	if got := service.carrierIdleTimeoutFor(context.Background()); got != defaultCarrierIdleTimeout {
-		t.Fatalf("carrierIdleTimeoutFor without a user = %v, want %v", got, defaultCarrierIdleTimeout)
+	// Anonymous inbound still sees the max across levels (outbound Freedom may
+	// still arm level 7), not level-0 alone.
+	if got := service.carrierIdleTimeoutFor(context.Background()); got != 2*time.Hour {
+		t.Fatalf("carrierIdleTimeoutFor without a user = %v, want %v (2× max policy connIdle)", got, 2*time.Hour)
 	}
 }
 

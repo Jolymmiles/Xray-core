@@ -40,8 +40,9 @@ const defaultMaxPendingHandshakes = 512
 // under which policy always fires first. connIdle is operator-settable with no
 // clamp (infra/conf/policy.go), so no constant can establish that on its own:
 // this value is only the floor, and carrierIdleTimeoutFor derives the rest from
-// the policy that applies to the carrier's own inbound user — see the residual
-// documented there, which containment does not cover.
+// the maximum ConnectionIdle across every policy level the manager can report
+// (route-independent: outbound proxies such as Freedom resolve connIdle from
+// their own userLevel, not the carrier's inbound user).
 //
 // Containment is a constraint to PRESERVE, and nothing in the compiler enforces
 // it. Two rules follow, and breaking either silently voids the argument above
@@ -55,6 +56,15 @@ const defaultMaxPendingHandshakes = 512
 //     clock not fed by actual bytes breaks containment even while it looks
 //     like a stricter check.
 const defaultCarrierIdleTimeout = 10 * time.Minute
+
+// policyLevelProbeLimit is how far carrierIdleTimeoutFor walks ForLevel when
+// the manager does not implement maxConnectionIdleSource. Production
+// app/policy.Instance exposes MaxConnectionIdle and never hits this path; the
+// probe keeps the reaper alive for DefaultManager and other ForLevel-only
+// fakes. A level past this window that is not the carrier's inbound user falls
+// through to SessionDefault on ForLevel, so it cannot raise the bound further
+// than the default already considered.
+const policyLevelProbeLimit = 256
 
 // The handshake watchdog is a backstop for carriers that ignore
 // SetReadDeadline, not the primary bound. A carrier that does honour deadlines
@@ -93,74 +103,74 @@ func (s *Service) SetPolicy(manager policy.Manager) {
 	s.policyManager = manager
 }
 
+// maxConnectionIdleSource is an optional policy.Manager extension that reports
+// the largest ConnectionIdle across every configured user level. Production
+// app/policy.Instance implements it; without it maxPolicyConnectionIdle falls
+// back to probing ForLevel so the idle reaper still raises with policy rather
+// than freezing at the configured floor alone.
+type maxConnectionIdleSource interface {
+	MaxConnectionIdle() time.Duration
+}
+
 // carrierIdleTimeoutFor returns the idle timeout for one carrier, deriving it
 // from policy instead of trusting a constant to stay above an operator-settable
 // connIdle.
 //
-// The level is the carrier's own inbound user's, on ownership grounds only:
-// every stream the carrier multiplexes belongs to that user. It is NOT the
-// level that arms the timer which ends those streams — see below — so read the
-// doubling as headroom over the one level knowable here, not as a margin over
-// the policy that actually governs a stream.
+// The bound is route-independent: it uses 2 × max ConnectionIdle across every
+// policy level the manager can report, not the carrier's inbound user alone.
+// That is required because the timer that ends a dispatched stream is resolved
+// by the outbound proxy routing selects, and that level is independent of the
+// inbound user:
 //
-// The level is available: the inbound handler populates session.Inbound.User
-// during its own handshake, before it dispatches — proxy/vless/inbound:568 sets
-// it and dispatches at :658, proxy/vmess/inbound:274 likewise. Anonymous
-// inbounds leave it nil and fall back to level 0. Without that ordering the
-// derivation would silently degrade to level 0 and enforce nothing while every
-// test still passed.
+//	proxy/freedom/freedom.go:227         ForLevel(h.config.UserLevel)  — outbound JSON userLevel
+//	proxy/vless/outbound/outbound.go:297 ForLevel(request.User.Level)  — remote server's user
+//	proxy/vmess/inbound/inbound.go:276   ForLevel(request.User.Level)  — inbound user
+//
+// Example that inbound-only derivation got wrong:
+//
+//	inbound users at level 0, connIdle 300s
+//	outbound freedom with userLevel 7, policy.levels.7.connIdle 3600s
+//	⇒ carrier must be >= 2×3600s so a quiet live stream is not reaped early
+//
+// Preferred source is maxConnectionIdleSource (app/policy.Instance). Managers
+// that only implement ForLevel are probed over [0, policyLevelProbeLimit) plus
+// the inbound user level from ctx (anonymous inbounds contribute level 0).
 //
 // A non-positive carrierIdleTimeout means the watchdog is switched off, and
 // stays off: derivation raises the timeout, it never enables one.
-//
-// # What this does NOT enforce
-//
-// The connIdle that ends a dispatched stream is resolved by the outbound proxy
-// routing selects for that stream, and which level that proxy uses varies by
-// proxy type — this is not one call site to go fix:
-//
-//	proxy/freedom/freedom.go:227         ForLevel(h.config.UserLevel)  — the outbound handler's own JSON
-//	                                     (infra/conf/freedom.go:23 → :159); freedom reads
-//	                                     InboundFromContext at :263 and :441, never for the level
-//	proxy/vless/outbound/outbound.go:297 ForLevel(request.User.Level)  — the remote server's user
-//	proxy/vmess/inbound/inbound.go:276   ForLevel(request.User.Level)  — the inbound user
-//
-// The inbound user's level and the outbound handler's level are independent
-// knobs. Routing picks the outbound per stream per destination, so no single
-// governing level exists at carrier setup and none of this is derivable here.
-// The reap is unsafe if and only if
-//
-//	connIdle(outboundLevel) > max(defaultCarrierIdleTimeout, 2 × connIdle(inboundUserLevel))
-//
-// one-directional, because derivation only ever raises the carrier window.
-// Stock configuration is safe with headroom: 300s inbound gives a 600s carrier
-// against a 300s outbound. Breaking it takes a deliberately asymmetric config,
-// and this one is reachable —
-//
-//	inbound users at level 0, connIdle 300s ⇒ carrier max(600s, 2×300s) = 600s
-//	outbound freedom with userLevel 7, policy.levels.7.connIdle 3600 ⇒ stream timer 3600s
-//	⇒ the carrier is reaped at 600s against a 3600s intent
-//
-// An operator can check that inequality against their own config; "not fully
-// enforced" is not something they could act on, which is why it is written as
-// one.
-//
-// Containment (see defaultCarrierIdleTimeout) does not rescue this case and
-// must not be read as if it did: containment holds the carrier window against
-// the stream's *governing* connIdle, and it is exactly that precondition which
-// the inequality above breaks.
 func (s *Service) carrierIdleTimeoutFor(ctx context.Context) time.Duration {
 	if s.carrierIdleTimeout <= 0 || s.policyManager == nil {
 		return s.carrierIdleTimeout
 	}
-	level := uint32(0)
-	if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.User != nil {
-		level = inbound.User.Level
-	}
-	if derived := 2 * s.policyManager.ForLevel(level).Timeouts.ConnectionIdle; derived > s.carrierIdleTimeout {
+	if derived := 2 * s.maxPolicyConnectionIdle(ctx); derived > s.carrierIdleTimeout {
 		return derived
 	}
 	return s.carrierIdleTimeout
+}
+
+// maxPolicyConnectionIdle returns the largest ConnectionIdle any discoverable
+// policy level arms. The carrier window is doubled from this value so no
+// outbound-selected level can undercut the idle watchdog.
+func (s *Service) maxPolicyConnectionIdle(ctx context.Context) time.Duration {
+	if source, ok := s.policyManager.(maxConnectionIdleSource); ok {
+		return source.MaxConnectionIdle()
+	}
+	var maxIdle time.Duration
+	consider := func(level uint32) {
+		if idle := s.policyManager.ForLevel(level).Timeouts.ConnectionIdle; idle > maxIdle {
+			maxIdle = idle
+		}
+	}
+	// Fallback for ForLevel-only managers: keep the reaper policy-aware.
+	for level := uint32(0); level < policyLevelProbeLimit; level++ {
+		consider(level)
+	}
+	if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.User != nil {
+		consider(inbound.User.Level)
+	} else {
+		consider(0)
+	}
+	return maxIdle
 }
 
 // idleConn records carrier activity for the idle watchdog in NewConnection.

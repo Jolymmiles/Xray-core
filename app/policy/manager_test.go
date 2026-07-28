@@ -43,3 +43,40 @@ func TestPolicy(t *testing.T) {
 		}
 	}
 }
+
+// MaxConnectionIdle must surface the highest configured connIdle so route-
+// independent consumers (SMUX carrier idle) can bound against Freedom's
+// userLevel without knowing the outbound in advance.
+func TestMaxConnectionIdle(t *testing.T) {
+	manager, err := New(context.Background(), &Config{
+		Level: map[uint32]*Policy{
+			0: {
+				Timeout: &Policy_Timeout{
+					ConnectionIdle: &Second{Value: 300},
+				},
+			},
+			7: {
+				Timeout: &Policy_Timeout{
+					ConnectionIdle: &Second{Value: 3600},
+				},
+			},
+		},
+	})
+	common.Must(err)
+
+	if got := manager.MaxConnectionIdle(); got != 3600*time.Second {
+		t.Fatalf("MaxConnectionIdle = %v, want 3600s", got)
+	}
+}
+
+// With no explicit levels the max is SessionDefault, matching ForLevel on any
+// unconfigured index.
+func TestMaxConnectionIdleDefaultOnly(t *testing.T) {
+	manager, err := New(context.Background(), &Config{})
+	common.Must(err)
+
+	want := policy.SessionDefault().Timeouts.ConnectionIdle
+	if got := manager.MaxConnectionIdle(); got != want {
+		t.Fatalf("MaxConnectionIdle with empty config = %v, want %v", got, want)
+	}
+}

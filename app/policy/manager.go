@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/features/policy"
@@ -41,6 +42,26 @@ func (m *Instance) ForLevel(level uint32) policy.Session {
 		return p.ToCorePolicy()
 	}
 	return policy.SessionDefault()
+}
+
+// MaxConnectionIdle returns the largest ConnectionIdle among SessionDefault and
+// every explicitly configured user level. Levels absent from the map fall
+// through to SessionDefault on ForLevel, so they cannot exceed this value.
+//
+// Callers that need a route-independent upper bound (for example SMUX carrier
+// idle reaping, where Freedom may arm connIdle from its own userLevel) should
+// use this instead of ForLevel on the inbound user alone.
+func (m *Instance) MaxConnectionIdle() time.Duration {
+	maxIdle := policy.SessionDefault().Timeouts.ConnectionIdle
+	for _, p := range m.levels {
+		if p == nil {
+			continue
+		}
+		if idle := p.ToCorePolicy().Timeouts.ConnectionIdle; idle > maxIdle {
+			maxIdle = idle
+		}
+	}
+	return maxIdle
 }
 
 // ForSystem implements policy.Manager.
