@@ -158,8 +158,10 @@ func (c *REALITYConfig) Build() (proto.Message, error) {
 		}
 
 		for _, sn := range config.ServerNames {
-			if strings.Contains(sn, "apple") || strings.Contains(sn, "icloud") {
-				errors.LogWarning(context.Background(), `REALITY: Choosing apple, icloud, etc. as the target may get your IP blocked by the GFW`)
+			sn = strings.ToLower(sn)
+			if strings.HasSuffix(sn, ".ru") || strings.HasSuffix(sn, ".ir") || strings.HasSuffix(sn, ".cn") ||
+				strings.Contains(sn, "apple") || strings.Contains(sn, "icloud") || strings.Contains(sn, "microsoft") {
+				errors.LogWarning(context.Background(), `REALITY: Choosing "`, sn, `" as the target will increase the likelihood of your server's IP being blocked by the GFW`)
 			}
 		}
 
