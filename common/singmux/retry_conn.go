@@ -11,15 +11,22 @@ import (
 	"time"
 )
 
-const maxReplayBytes = 2 * 1024 * 1024
+const (
+	maxReplayBytes = 2 * 1024 * 1024
+	// defaultReplayTimeout bounds a single replay onto a replacement stream.
+	// Generous enough not to abort a slow but healthy carrier, finite so a
+	// stalled one cannot pin writeMu for the session's lifetime.
+	defaultReplayTimeout = 30 * time.Second
+)
 
 type streamResponseError struct{ message string }
 
 func (e *streamResponseError) Error() string { return e.message }
 
 type retryConn struct {
-	ctx    context.Context
-	opener func(context.Context) (net.Conn, error)
+	ctx           context.Context
+	opener        func(context.Context) (net.Conn, error)
+	replayTimeout time.Duration
 
 	readMu   sync.Mutex
 	writeMu  sync.Mutex
@@ -27,6 +34,12 @@ type retryConn struct {
 	conn     net.Conn
 	replay   []byte
 	replaced chan struct{}
+	// closeSignal releases a reader parked for a replacement. c.replaced alone
+	// is not enough: it is only signalled by a successful replaceLocked, so a
+	// reader waiting behind a writer that never retries has no other wakeup
+	// than context cancellation, which a long-lived inbound context never
+	// delivers. Closed exactly once, guarded by the c.closed early return.
+	closeSignal chan struct{}
 
 	confirmed     bool
 	replayAllowed bool
@@ -35,7 +48,34 @@ type retryConn struct {
 }
 
 func newRetryConn(ctx context.Context, initial net.Conn, opener func(context.Context) (net.Conn, error)) *retryConn {
-	return &retryConn{ctx: ctx, opener: opener, conn: initial, replayAllowed: true, replaced: make(chan struct{}, 1)}
+	return &retryConn{
+		ctx:           ctx,
+		opener:        opener,
+		replayTimeout: defaultReplayTimeout,
+		conn:          initial,
+		replayAllowed: true,
+		replaced:      make(chan struct{}, 1),
+		closeSignal:   make(chan struct{}),
+	}
+}
+
+// replayTo re-sends the buffered payload on a replacement stream under a
+// bounded deadline.
+//
+// Without one this write is unbounded while holding writeMu, and Close cannot
+// rescue it: mplsmux.Stream.Close takes the same stream writeMu that
+// Stream.Write holds for its whole duration (stream.go:192, stream.go:232), so
+// it serializes behind the stalled replay instead of interrupting it. A stalled
+// carrier would then pin this connection and up to maxReplayBytes of replay
+// until the session died.
+func (c *retryConn) replayTo(connection net.Conn, replay []byte) error {
+	if len(replay) == 0 {
+		return nil
+	}
+	_ = connection.SetWriteDeadline(time.Now().Add(c.replayTimeout))
+	err := writeFull(connection, replay)
+	_ = connection.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (c *retryConn) current() (net.Conn, error) {
@@ -125,7 +165,7 @@ func (c *retryConn) Write(payload []byte) (int, error) {
 		if retryErr != nil {
 			return total, writeErr
 		}
-		if replayErr := writeFull(replacement, replay); replayErr != nil {
+		if replayErr := c.replayTo(replacement, replay); replayErr != nil {
 			_ = replacement.Close()
 			return total, replayErr
 		}
@@ -180,7 +220,7 @@ func (c *retryConn) awaitResponse(connection net.Conn) error {
 			}
 			connection = replacement
 			go func() {
-				if replayErr := writeFull(replacement, replay); replayErr != nil {
+				if replayErr := c.replayTo(replacement, replay); replayErr != nil {
 					_ = replacement.Close()
 				}
 				c.writeMu.Unlock()
@@ -192,6 +232,8 @@ func (c *retryConn) awaitResponse(connection net.Conn) error {
 				if currentErr != nil || connection == nil {
 					return err
 				}
+			case <-c.closeSignal:
+				return err
 			case <-c.ctx.Done():
 				return c.ctx.Err()
 			}
@@ -219,6 +261,7 @@ func (c *retryConn) Close() error {
 	connection := c.conn
 	c.conn = nil
 	c.replay = nil
+	close(c.closeSignal)
 	c.stateMu.Unlock()
 	if connection != nil {
 		return connection.Close()
