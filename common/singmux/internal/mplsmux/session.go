@@ -40,6 +40,14 @@ type carrierWatch struct {
 	err  error
 }
 
+type receiveReserveResult uint8
+
+const (
+	receiveReserveClaimed receiveReserveResult = iota
+	receiveReserveStopped
+	receiveReserveStalled
+)
+
 type outboundFrame struct {
 	encoded []byte
 	result  chan error
@@ -72,15 +80,12 @@ type Session struct {
 	acceptChanged  chan struct{}
 
 	lastReceive atomic.Int64
-	// readHeader, readHeaderLen, watch and watchPushback belong to readLoop
-	// alone. A watcher borrows the carrier for at most one header (plus a
-	// single death-probe byte) and readLoop joins it before touching the
-	// carrier again, so readHeader has a single writer at a time.
-	readHeader       [frameHeaderSize]byte
-	readHeaderLen    int
-	watch            chan carrierWatch
-	watchPushback    byte
-	watchPushbackSet bool
+	// readHeader, readHeaderLen and watch belong to readLoop alone. A watcher
+	// borrows the carrier for at most one complete header and readLoop joins
+	// it before touching the carrier again, so readHeader has a single writer.
+	readHeader    [frameHeaderSize]byte
+	readHeaderLen int
+	watch         chan carrierWatch
 }
 
 func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session, error) {
@@ -431,15 +436,28 @@ func (s *Session) readLoop() {
 			// may briefly sit outside the accounting while reserveReceive waits;
 			// that overshoot is bounded by MaxFrameSize (<= MaxReceiveBuffer).
 			payload := acquireReceiveBuffer(length)
-			if err := payload.readFullFrom(s.carrierReader(), length); err != nil {
+			if err := payload.readFullFrom(s.conn, length); err != nil {
 				releaseReceiveBuffer(payload)
 				s.fail(err)
 				return
 			}
-			if !s.reserveReceive(length) {
-				// s.done closed while waiting for budget; payload never entered
-				// session accounting so only the buffer itself is reclaimed.
+			reserveResult := s.reserveReceiveWithTimeout(length, s.config.StreamStallTimeout, s.startCarrierWatch)
+			if reserveResult != receiveReserveClaimed {
+				// The payload never entered session accounting, so only its
+				// buffer is reclaimed here.
 				releaseReceiveBuffer(payload)
+				if reserveResult == receiveReserveStalled {
+					// Global receive pressure must be bounded just like a full
+					// per-stream queue. Abort the stream whose new frame could
+					// not be admitted; Abort also releases anything it already
+					// held, which may unblock unrelated streams.
+					if stream := s.lookupStream(header.streamID); stream != nil {
+						if err := stream.Abort(); err != nil {
+							return
+						}
+					}
+					continue
+				}
 				return
 			}
 			stream := s.lookupStream(header.streamID)
@@ -471,7 +489,7 @@ func (s *Session) readFrameHeader() error {
 		return result.err
 	}
 	if s.readHeaderLen < len(s.readHeader) {
-		read, err := io.ReadFull(s.carrierReader(), s.readHeader[s.readHeaderLen:])
+		read, err := io.ReadFull(s.conn, s.readHeader[s.readHeaderLen:])
 		s.readHeaderLen += read
 		if err != nil {
 			return err
@@ -479,32 +497,6 @@ func (s *Session) readFrameHeader() error {
 	}
 	s.readHeaderLen = 0
 	return nil
-}
-
-// carrierReader returns an io.Reader over the session carrier that replays at
-// most one byte the watcher may have read past a completed header while probing
-// for peer death. Only readLoop (after joining the watch) may use it.
-func (s *Session) carrierReader() io.Reader {
-	return (*sessionCarrierReader)(s)
-}
-
-type sessionCarrierReader Session
-
-func (r *sessionCarrierReader) Read(p []byte) (int, error) {
-	s := (*Session)(r)
-	if s.watchPushbackSet {
-		if len(p) == 0 {
-			return 0, nil
-		}
-		p[0] = s.watchPushback
-		s.watchPushbackSet = false
-		if len(p) == 1 {
-			return 1, nil
-		}
-		n, err := s.conn.Read(p[1:])
-		return n + 1, err
-	}
-	return s.conn.Read(p)
 }
 
 // startCarrierWatch moves readLoop's next header read onto its own goroutine, so
@@ -518,12 +510,12 @@ func (r *sessionCarrierReader) Read(p []byte) (int, error) {
 // readFrameHeader before touching the carrier again, so the two never read
 // concurrently and readHeader has a single writer at a time.
 //
-// The watch fills at most one frame header (via ReadFull, so a short Read with
-// err=nil cannot retire it) and then probes one more byte: a successful
-// full-header Read used to exit the watch before a following FIN was visible,
-// leaving readLoop parked for the rest of StreamStallTimeout. Any probe byte
-// is stashed in watchPushback for readLoop; reading further would unbound the
-// buffer in front of a consumer that is by definition not consuming.
+// The watch fills exactly one frame header via ReadFull, so a short Read with
+// err=nil cannot retire it. It deliberately stops at the frame boundary: no
+// finite number of probe bytes can guarantee observing a later FIN, while
+// waiting for one more byte delays an already-complete zero-payload control
+// frame indefinitely on a live, silent carrier. If FIN follows a complete
+// header, the existing StreamStallTimeout bounds how long delivery can hide it.
 func (s *Session) startCarrierWatch() {
 	if s.watch != nil || s.readHeaderLen == len(s.readHeader) {
 		return
@@ -532,9 +524,6 @@ func (s *Session) startCarrierWatch() {
 	target := s.readHeader[s.readHeaderLen:]
 	s.watch = watch
 	go func() {
-		// ReadFull keeps reading across short successes until the header is
-		// complete or the carrier dies. A single Read of 1 byte with err=nil
-		// used to publish and exit, hiding the FIN that followed.
 		read, err := io.ReadFull(s.conn, target)
 		if err != nil {
 			// Publish the death before handing back the result: whoever readLoop
@@ -542,20 +531,6 @@ func (s *Session) startCarrierWatch() {
 			s.fail(err)
 			watch <- carrierWatch{read: read, err: err}
 			return
-		}
-		// Header complete with err=nil. Peer may FIN immediately after; one
-		// more Read either observes death or yields the first byte past this
-		// header (payload or next frame), which must not be discarded.
-		var probe [1]byte
-		n, err := s.conn.Read(probe[:])
-		if err != nil {
-			s.fail(err)
-			watch <- carrierWatch{read: read, err: err}
-			return
-		}
-		if n > 0 {
-			s.watchPushback = probe[0]
-			s.watchPushbackSet = true
 		}
 		watch <- carrierWatch{read: read, err: nil}
 	}()
@@ -640,31 +615,56 @@ func (s *Session) removeStream(streamID uint32) {
 	s.streamsMu.Unlock()
 }
 
-// reserveReceive claims session-wide receive budget, waiting for another stream
-// to free some if the session is at its limit.
+// reserveReceive claims session-wide receive budget, waiting without a timeout.
+// Direct stream tests use this helper; readLoop uses reserveReceiveWithTimeout
+// so a saturated session cannot retain a carrier forever.
+func (s *Session) reserveReceive(size int) bool {
+	return s.reserveReceiveWithTimeout(size, 0, nil) == receiveReserveClaimed
+}
+
+// reserveReceiveWithTimeout claims session-wide receive budget and bounds the
+// wait. onWait is called once, after the first failed capacity check, so readLoop
+// can keep observing carrier death without adding a watcher to the healthy path.
 //
 // Callers that have already consumed a DATA header must read that frame's
 // payload before entering this wait (see readLoop). Parking here with the body
-// still on the wire leaves the session blind to peer FIN: only a read observes
-// carrier death, and unlike the stream-stall path this wait has no timeout.
-func (s *Session) reserveReceive(size int) bool {
+// still on the wire leaves the session blind to peer FIN; after the body is
+// complete, the watcher may safely read ahead from the next frame boundary.
+func (s *Session) reserveReceiveWithTimeout(size int, timeout time.Duration, onWait func()) receiveReserveResult {
 	if size > s.config.MaxReceiveBuffer {
 		s.fail(ErrInvalidProtocol)
-		return false
+		return receiveReserveStopped
 	}
+	var timer *time.Timer
+	var timeoutChannel <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		s.receiveMu.Lock()
 		if s.receiveUsed+size <= s.config.MaxReceiveBuffer {
 			s.receiveUsed += size
 			s.receiveMu.Unlock()
-			return true
+			return receiveReserveClaimed
 		}
 		changed := s.receiveChanged
 		s.receiveMu.Unlock()
+		if onWait != nil {
+			onWait()
+			onWait = nil
+		}
+		if timer == nil && timeout > 0 {
+			timer = time.NewTimer(timeout)
+			timeoutChannel = timer.C
+		}
 		select {
 		case <-changed:
 		case <-s.done:
-			return false
+			return receiveReserveStopped
+		case <-timeoutChannel:
+			return receiveReserveStalled
 		}
 	}
 }

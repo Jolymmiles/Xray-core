@@ -29,9 +29,10 @@ var errSniffingTimeout = errors.New("timeout on sniffing")
 
 type cachedReader struct {
 	sync.Mutex
-	reader  buf.TimeoutReader // *pipe.Reader or *buf.TimeoutWrapperReader
-	cache   buf.MultiBuffer
-	scratch *buf.Buffer
+	reader   buf.TimeoutReader // *pipe.Reader or *buf.TimeoutWrapperReader
+	cache    buf.MultiBuffer
+	scratch  *buf.Buffer
+	snapshot []byte
 }
 
 func newCachedReader(reader buf.TimeoutReader) *cachedReader {
@@ -52,7 +53,8 @@ func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
 		}
 	}
 	if len(r.cache) == 1 && r.cache[0] != nil {
-		payload := r.cache[0].Bytes()
+		r.snapshot = append(r.snapshot[:0], r.cache[0].Bytes()...)
+		payload := r.snapshot
 		r.Unlock()
 		return payload, nil
 	}
@@ -63,8 +65,13 @@ func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
 	rawBytes := r.scratch.Extend(min(r.cache.Len(), r.scratch.Cap()))
 	n := r.cache.Copy(rawBytes)
 	r.scratch.Resize(0, int32(n))
+	// Cache returns a snapshot rather than a view into cache or scratch.
+	// Interrupt may release either pooled buffer as soon as this lock drops,
+	// while the sniffer is still reading the returned bytes.
+	r.snapshot = append(r.snapshot[:0], r.scratch.Bytes()...)
+	payload := r.snapshot
 	r.Unlock()
-	return r.scratch.Bytes(), nil
+	return payload, nil
 }
 
 func (r *cachedReader) readInternal() buf.MultiBuffer {

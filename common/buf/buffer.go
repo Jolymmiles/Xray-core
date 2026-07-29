@@ -24,8 +24,15 @@ var (
 	managedBufferPool sync.Pool
 )
 
+// managedBuffer pools the 8K storage together with the inline packet metadata.
+// It deliberately does NOT embed the Buffer header: a header living inside the
+// pooled object is handed back out by the next New(), so a stale holder that
+// releases twice frees a buffer its new owner is still using, and the slab
+// returns to the pool while live. Stale and live holders would be one pointer,
+// which no flag or generation counter inside Release() can tell apart. A header
+// on the heap keeps the identities distinct, so the b.v == nil guard in
+// Release() makes a second release harmless again.
 type managedBuffer struct {
-	buffer    Buffer
 	udp       net.Destination
 	udpIPv4   bufferIPv4Address
 	udpDomain bufferDomainAddress
@@ -69,9 +76,7 @@ func New() *Buffer {
 	if slab == nil {
 		slab = new(managedBuffer)
 	}
-	buffer := &slab.buffer
-	*buffer = Buffer{v: slab.storage[:], slab: true}
-	return buffer
+	return &Buffer{v: slab.storage[:], slab: true}
 }
 
 // NewExisted creates a standard size Buffer with an existed bytearray, managed.
