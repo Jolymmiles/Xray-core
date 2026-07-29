@@ -125,8 +125,14 @@ var _ Interface = (*UConn)(nil)
 
 const uTLSSessionCacheScopeCapacity = 256
 
+// uTLSSessionCacheScope keys a uTLS session cache by the crypto/tls cache it
+// mirrors. The source is held as the interface value, not as its address: a
+// uintptr is not a GC root, so once the owning *Config was evicted from
+// configSessionCaches the cache could be collected and a later allocation
+// could reuse the address, handing one server's tickets to another. Keeping
+// the reference in the key retains it for exactly as long as the entry lives.
 type uTLSSessionCacheScope struct {
-	source      uintptr
+	source      tls.ClientSessionCache
 	fingerprint string
 }
 
@@ -200,7 +206,7 @@ func cloneUTLSSession(session *utls.ClientSessionState) *utls.ClientSessionState
 	return cloned
 }
 
-func uTLSSessionCache(source uintptr, fingerprint utls.ClientHelloID) utls.ClientSessionCache {
+func uTLSSessionCache(source tls.ClientSessionCache, fingerprint utls.ClientHelloID) utls.ClientSessionCache {
 	scope := uTLSSessionCacheScope{
 		source:      source,
 		fingerprint: fingerprint.Str(),
@@ -296,8 +302,8 @@ func GeneraticUClient(c net.Conn, config *tls.Config) *utls.UConn {
 	return newUClient(c, uTLSConfig, utls.HelloChrome_Auto, sessionCacheSource)
 }
 
-func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID, sessionCacheSource uintptr) *utls.UConn {
-	if sessionCacheSource != 0 {
+func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID, sessionCacheSource tls.ClientSessionCache) *utls.UConn {
+	if sessionCacheSource != nil {
 		if spec, eligible := clientHelloSpecForResumption(fingerprint); eligible {
 			config.ClientSessionCache = uTLSSessionCache(sessionCacheSource, fingerprint)
 			conn := utls.UClient(c, config, utls.HelloCustom)
@@ -386,7 +392,7 @@ func resumptionSpec(spec utls.ClientHelloSpec) (*utls.ClientHelloSpec, bool) {
 	return &spec, true
 }
 
-func copyConfig(c *tls.Config) (*utls.Config, uintptr) {
+func copyConfig(c *tls.Config) (*utls.Config, tls.ClientSessionCache) {
 	config := &utls.Config{
 		Rand:                           c.Rand,
 		RootCAs:                        c.RootCAs,
@@ -398,13 +404,12 @@ func copyConfig(c *tls.Config) (*utls.Config, uintptr) {
 		NextProtos:                     c.NextProtos,
 		SessionTicketsDisabled:         c.SessionTicketsDisabled,
 	}
-	var sessionCacheSource uintptr
-	if c.ClientSessionCache != nil && !c.SessionTicketsDisabled {
+	var sessionCacheSource tls.ClientSessionCache
+	if c.ClientSessionCache != nil &&
+		!c.SessionTicketsDisabled &&
+		reflect.TypeOf(c.ClientSessionCache).Comparable() {
 		config.OmitEmptyPsk = true
-		cacheValue := reflect.ValueOf(c.ClientSessionCache)
-		if cacheValue.Kind() == reflect.Pointer {
-			sessionCacheSource = cacheValue.Pointer()
-		}
+		sessionCacheSource = c.ClientSessionCache
 	}
 	return config, sessionCacheSource
 }

@@ -594,15 +594,15 @@ func TestCachedReaderFirstBufferAllocationBudget(t *testing.T) {
 }
 
 func TestCachedReaderCacheOwnership(t *testing.T) {
-	t.Run("single buffer is borrowed", func(t *testing.T) {
+	t.Run("single buffer is snapshotted", func(t *testing.T) {
 		payload := []byte("single")
 		reader := &cachedReader{reader: &singleBufferTimeoutReader{payload: payload}}
 		cached, err := reader.Cache(time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(cached, payload) || &cached[0] != &payload[0] {
-			t.Fatalf("cached payload = %q, want borrowed %q", cached, payload)
+		if !bytes.Equal(cached, payload) || &cached[0] == &payload[0] {
+			t.Fatalf("cached payload = %q, want independent snapshot of %q", cached, payload)
 		}
 		buf.ReleaseMulti(reader.readInternal())
 		if reader.scratch != nil {
@@ -682,9 +682,11 @@ func TestSnifferCachedSingleBufferAllocationBudget(t *testing.T) {
 		buf.ReleaseMulti(reader.readInternal())
 	})
 	// The cached reader owns a connection-specific lifetime and must not be
-	// recycled while an outbound I/O goroutine can still reference it.
-	if allocations > 6 {
-		t.Fatalf("single-buffer sniff allocations = %.0f, want at most 6", allocations)
+	// recycled while an outbound I/O goroutine can still reference it. The
+	// seventh allocation is Cache's stable snapshot: returning the pooled
+	// buffer directly races with Interrupt releasing it.
+	if allocations > 7 {
+		t.Fatalf("single-buffer sniff allocations = %.0f, want at most 7", allocations)
 	}
 }
 

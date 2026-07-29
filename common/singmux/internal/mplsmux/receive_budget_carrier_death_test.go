@@ -41,12 +41,17 @@ func budgetFullConfig() *Config {
 // and peer so the caller can send one more DATA header and kill the carrier.
 func fillReceiveBudget(t *testing.T, wrap func(net.Conn) io.ReadWriteCloser) (*Session, net.Conn) {
 	t.Helper()
+	return fillReceiveBudgetWithConfig(t, budgetFullConfig(), wrap)
+}
+
+func fillReceiveBudgetWithConfig(t *testing.T, config *Config, wrap func(net.Conn) io.ReadWriteCloser) (*Session, net.Conn) {
+	t.Helper()
 	local, peer := net.Pipe()
 	var carrier io.ReadWriteCloser = local
 	if wrap != nil {
 		carrier = wrap(local)
 	}
-	session, err := Server(carrier, budgetFullConfig())
+	session, err := Server(carrier, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +152,100 @@ func TestReadLoopObservesCarrierDeathDuringReceiveBudgetWaitWithoutDeadlineSuppo
 	if used := liveReceiveBytes(session); used != 0 {
 		t.Fatalf("receive budget leaked: %d bytes still reserved after teardown", used)
 	}
+	assertNoGoroutineResidue(t, baseline)
+}
+
+// A complete payload must not move the blind spot behind readFullFrom. Once the
+// first frame has saturated MaxReceiveBuffer, the second frame can still arrive
+// in full before the peer disappears. The carrier FIN then sits immediately
+// after the payload while readLoop waits for accounting space.
+func TestReadLoopObservesCarrierDeathAfterCompletePayloadAtFullReceiveBudget(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	session, peer := fillReceiveBudget(t, func(conn net.Conn) io.ReadWriteCloser {
+		return stubDeadlineCarrier{Conn: conn}
+	})
+
+	// net.Pipe is unbuffered: this returning proves readLoop consumed the whole
+	// second payload and reached the receive-budget wait.
+	writePeerFrame(t, peer, frameData, 1, budgetFrameSize)
+	awaitBudgetWait(t)
+
+	elapsed := awaitCarrierDeath(t, session, peer, budgetDeathBudget)
+	if elapsed > budgetDeathBudget {
+		t.Fatalf("session outlived its carrier after a complete payload at full receive budget: FIN is hidden behind reserveReceive")
+	}
+	closeWithin(t, session, budgetDeathBudget)
+	if used := liveReceiveBytes(session); used != 0 {
+		t.Fatalf("receive budget leaked after complete-payload carrier death: %d bytes", used)
+	}
+	if streams := session.NumStreams(); streams != 0 {
+		t.Fatalf("streams leaked after complete-payload carrier death: %d", streams)
+	}
+	assertNoGoroutineResidue(t, baseline)
+}
+
+// Repeating the complete-payload death path catches lifecycle leaks that a
+// single prompt CloseChan can miss: carrier watchers, read/write loops, stream
+// registrations and receive reservations must all return to baseline.
+func TestCompletePayloadCarrierDeathDoesNotAccumulate(t *testing.T) {
+	const sessions = 16
+	baseline := runtime.NumGoroutine()
+
+	for iteration := range sessions {
+		session, peer := fillReceiveBudget(t, func(conn net.Conn) io.ReadWriteCloser {
+			return stubDeadlineCarrier{Conn: conn}
+		})
+		writePeerFrame(t, peer, frameData, 1, budgetFrameSize)
+		awaitBudgetWait(t)
+
+		elapsed := awaitCarrierDeath(t, session, peer, budgetDeathBudget)
+		if elapsed > budgetDeathBudget {
+			t.Fatalf("iteration %d: session retained after carrier death", iteration)
+		}
+		closeWithin(t, session, budgetDeathBudget)
+		if used := liveReceiveBytes(session); used != 0 {
+			t.Fatalf("iteration %d: receive budget leaked: %d bytes", iteration, used)
+		}
+		if streams := session.NumStreams(); streams != 0 {
+			t.Fatalf("iteration %d: streams leaked: %d", iteration, streams)
+		}
+	}
+
+	assertNoGoroutineResidue(t, baseline)
+}
+
+// A live peer can also saturate MaxReceiveBuffer and then go silent after a
+// complete DATA payload. Carrier watching cannot resolve that state because
+// silence is not failure, so the same configured stall budget must abort the
+// offending stream and reclaim both its queued and unaccounted payloads.
+func TestReceiveBudgetWaitAbortsStreamOnLiveSilentCarrier(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	config := budgetFullConfig()
+	config.StreamStallTimeout = 3 * carrierWatchDelay
+	session, peer := fillReceiveBudgetWithConfig(t, config, func(conn net.Conn) io.ReadWriteCloser {
+		return stubDeadlineCarrier{Conn: conn}
+	})
+	defer func() { _ = peer.Close() }()
+
+	start := time.Now()
+	writePeerFrame(t, peer, frameData, 1, budgetFrameSize)
+	if err := peer.SetReadDeadline(time.Now().Add(carrierDeathBudget)); err != nil {
+		t.Fatal(err)
+	}
+	assertStreamAborted(t, peer, 1)
+	if elapsed := time.Since(start); elapsed > carrierDeathBudget {
+		t.Fatalf("receive-budget stall was not bounded: %v", elapsed)
+	}
+	if session.IsClosed() {
+		t.Fatal("receive-budget stall killed a live session")
+	}
+	if used := liveReceiveBytes(session); used != 0 {
+		t.Fatalf("receive-budget abort left %d bytes reserved", used)
+	}
+	if streams := session.NumStreams(); streams != 0 {
+		t.Fatalf("receive-budget abort left %d streams registered", streams)
+	}
+
+	closeWithin(t, session, budgetDeathBudget)
 	assertNoGoroutineResidue(t, baseline)
 }

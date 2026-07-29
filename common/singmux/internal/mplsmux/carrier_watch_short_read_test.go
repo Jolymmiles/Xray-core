@@ -63,12 +63,17 @@ func TestCarrierWatchSurvivesOneByteThenFIN(t *testing.T) {
 	assertNoGoroutineResidue(t, baseline)
 }
 
-// TestCarrierWatchSurvivesFullHeaderThenFIN is the same defect with a complete
-// next-frame header: a successful full-header Read also used to retire the
-// watch before the FIN arrived.
+// TestCarrierWatchSurvivesFullHeaderThenFIN pins the bounded case after a
+// complete header. The watcher must publish that header immediately so a valid
+// zero-payload frame does not depend on future traffic. If FIN follows it while
+// readLoop is still stalled, StreamStallTimeout is the finite upper bound:
+// there is no carrier operation that can distinguish a silent live peer from a
+// FIN that has not yet been read.
 func TestCarrierWatchSurvivesFullHeaderThenFIN(t *testing.T) {
 	baseline := runtime.NumGoroutine()
-	session, peer := parkReadLoop(t, stallConfig(), 1, func(conn net.Conn) io.ReadWriteCloser {
+	config := stallConfig()
+	config.StreamStallTimeout = 3 * carrierWatchDelay
+	session, peer := parkReadLoop(t, config, 1, func(conn net.Conn) io.ReadWriteCloser {
 		return stubDeadlineCarrier{Conn: conn}
 	})
 	awaitWatchReady(t)
@@ -83,7 +88,7 @@ func TestCarrierWatchSurvivesFullHeaderThenFIN(t *testing.T) {
 	select {
 	case <-session.CloseChan():
 	case <-time.After(carrierDeathBudget):
-		t.Fatalf("session still alive more than %v after full header then FIN: watcher exited on err=nil", carrierDeathBudget)
+		t.Fatalf("session still alive more than %v after full header then FIN: bounded stall did not expose carrier death", carrierDeathBudget)
 	}
 	elapsed := time.Since(start)
 	if elapsed > carrierDeathBudget {
@@ -98,11 +103,11 @@ func TestCarrierWatchSurvivesFullHeaderThenFIN(t *testing.T) {
 	assertNoGoroutineResidue(t, baseline)
 }
 
-// TestCarrierWatchProbeByteReplayedWithoutDesync covers the survive-and-resume
-// path: after ReadFull completes a header with err=nil the watcher probes one
-// more byte. That byte is the first of the next frame and must be replayed via
-// watchPushback when readLoop joins — dropping it silently desyncs the protocol.
-func TestCarrierWatchProbeByteReplayedWithoutDesync(t *testing.T) {
+// TestCarrierWatchProcessesCompleteHeaderWithoutFollowingByte covers the
+// survive-and-resume path for a valid zero-payload control frame. A complete
+// OPEN is ready to process by itself; waiting for a byte from the following
+// frame makes the accepted stream depend on unrelated future traffic.
+func TestCarrierWatchProcessesCompleteHeaderWithoutFollowingByte(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	session, peer := parkReadLoop(t, stallConfig(), 1, func(conn net.Conn) io.ReadWriteCloser {
 		return stubDeadlineCarrier{Conn: conn}
@@ -110,29 +115,15 @@ func TestCarrierWatchProbeByteReplayedWithoutDesync(t *testing.T) {
 	defer func() { _ = peer.Close() }()
 	awaitWatchReady(t)
 
-	// Keepalive completes the watcher's header read with err=nil; the first byte
-	// of the following OPEN is the death-probe success that sets watchPushback.
-	var keepalive [frameHeaderSize]byte
-	encodeFrameHeader(&keepalive, frameKeepalive, 0, 0)
 	const resumeStreamID = uint32(3)
 	var openHeader [frameHeaderSize]byte
 	encodeFrameHeader(&openHeader, frameOpen, resumeStreamID, 0)
-
-	probeWrite := append(append([]byte{}, keepalive[:]...), openHeader[0])
-	if _, err := peer.Write(probeWrite); err != nil {
-		t.Fatalf("peer write of keepalive+probe: %v", err)
+	if _, err := peer.Write(openHeader[:]); err != nil {
+		t.Fatalf("peer write of complete OPEN: %v", err)
 	}
 
-	// Remainder of OPEN blocks on the unbuffered pipe until readLoop resumes
-	// and consumes the pushback via carrierReader.
-	remainderDone := make(chan error, 1)
-	go func() {
-		_, err := peer.Write(openHeader[1:])
-		remainderDone <- err
-	}()
-
 	// Free stream buffer space so the stalled enqueue finishes and readLoop
-	// joins the watch (processing keepalive, then the OPEN starting at the probe).
+	// joins the watch and processes the already-complete OPEN.
 	stalled, err := session.AcceptStream()
 	if err != nil {
 		t.Fatalf("AcceptStream stalled peer stream: %v", err)
@@ -144,19 +135,6 @@ func TestCarrierWatchProbeByteReplayedWithoutDesync(t *testing.T) {
 		t.Fatalf("drain stalled stream: %v", err)
 	}
 
-	select {
-	case err := <-remainderDone:
-		if err != nil {
-			t.Fatalf("peer write of OPEN remainder: %v", err)
-		}
-	case <-time.After(carrierDeathBudget):
-		t.Fatal("OPEN remainder never drained: readLoop did not resume after join")
-	case <-session.CloseChan():
-		t.Fatal("session failed while resuming after probe — protocol desync")
-	}
-
-	// If the probe byte was lost, the OPEN header is misaligned and stream 3
-	// never appears (session fails or hangs on an invalid command).
 	accepted := make(chan *Stream, 1)
 	acceptErr := make(chan error, 1)
 	go func() {
@@ -170,14 +148,14 @@ func TestCarrierWatchProbeByteReplayedWithoutDesync(t *testing.T) {
 	select {
 	case stream := <-accepted:
 		if stream.ID() != resumeStreamID {
-			t.Fatalf("accepted stream id = %d, want %d (probe byte not replayed cleanly)", stream.ID(), resumeStreamID)
+			t.Fatalf("accepted stream id = %d, want %d", stream.ID(), resumeStreamID)
 		}
 	case err := <-acceptErr:
-		t.Fatalf("AcceptStream after probe resume: %v", err)
+		t.Fatalf("AcceptStream after complete watched OPEN: %v", err)
 	case <-time.After(carrierDeathBudget):
-		t.Fatal("stream opened after probe never accepted — pushback dropped or desynced")
+		t.Fatal("complete watched OPEN was not processed without a following byte")
 	case <-session.CloseChan():
-		t.Fatal("session closed after probe resume — protocol desync on pushback replay")
+		t.Fatal("session closed while processing a complete watched OPEN")
 	}
 
 	if session.IsClosed() {
