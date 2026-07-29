@@ -71,8 +71,10 @@ func TestAcquiredReceiveBufferIsAlwaysReleasable(t *testing.T) {
 // is one above the receive path's — bufferPools has poolClasses+1 entries for
 // exactly that reason.
 func TestAcquiredFrameBufferIsAlwaysReleasable(t *testing.T) {
-	sizes := []int{frameHeaderSize, 1024, 1025, 2048, 4096, 8192, 16384, 32768, 65536,
-		frameHeaderSize + maxFramePayload}
+	sizes := []int{
+		frameHeaderSize, 1024, 1025, 2048, 4096, 8192, 16384, 32768, 65536,
+		frameHeaderSize + maxFramePayload,
+	}
 	for _, size := range sizes {
 		buffer := acquireFrameBuffer(size)
 		if len(buffer) != size {
