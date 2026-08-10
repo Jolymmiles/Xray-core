@@ -24,8 +24,9 @@ var (
 	managedBufferPool sync.Pool
 )
 
+// managedBuffer pools storage and packet metadata, but not the Buffer header.
+// Reusing the header lets a stale holder release a new owner's live buffer.
 type managedBuffer struct {
-	buffer    Buffer
 	udp       net.Destination
 	udpIPv4   bufferIPv4Address
 	udpDomain bufferDomainAddress
@@ -69,9 +70,7 @@ func New() *Buffer {
 	if slab == nil {
 		slab = new(managedBuffer)
 	}
-	buffer := &slab.buffer
-	*buffer = Buffer{v: slab.storage[:], slab: true}
-	return buffer
+	return &Buffer{v: slab.storage[:], slab: true}
 }
 
 // NewExisted creates a standard size Buffer with an existed bytearray, managed.
