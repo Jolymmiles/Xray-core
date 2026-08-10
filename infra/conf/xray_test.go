@@ -301,6 +301,155 @@ func TestSMuxConfigBuild(t *testing.T) {
 			},
 		},
 		{
+			name: "brutal options",
+			fields: `{
+				"enabled": true,
+				"brutal-opts": {
+					"enabled": true,
+					"up": "100 Mbps",
+					"down": "100 Mbps"
+				}
+			}`,
+			want: &proxyman.SmuxConfig{
+				Enabled:  true,
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					Enabled: true,
+					UpBps:   12_500_000,
+					DownBps: 12_500_000,
+				},
+			},
+		},
+		{
+			name: "brutal bare Mbps",
+			fields: `{
+				"brutal-opts": {
+					"enabled": true,
+					"up": "100",
+					"down": "100"
+				}
+			}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					Enabled: true,
+					UpBps:   12_500_000,
+					DownBps: 12_500_000,
+				},
+			},
+		},
+		{
+			name:   "brutal prefixes and byte units",
+			fields: `{"brutal-opts":{"up":"1 Kbps","down":"1 TBps"}}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					UpBps:   125,
+					DownBps: 1_000_000_000_000,
+				},
+			},
+		},
+		{
+			name:   "brutal giga prefix",
+			fields: `{"brutal-opts":{"up":"1 Gbps","down":"1 GBps"}}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					UpBps:   125_000_000,
+					DownBps: 1_000_000_000,
+				},
+			},
+		},
+		{
+			name:   "brutal large bit rate",
+			fields: `{"brutal-opts":{"enabled":true,"up":"20000000 Tbps","down":"20000000 Tbps"}}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					Enabled: true,
+					UpBps:   2_500_000_000_000_000_000,
+					DownBps: 2_500_000_000_000_000_000,
+				},
+			},
+		},
+		{
+			name:   "brutal minimum bits and bytes",
+			fields: `{"brutal-opts":{"enabled":true,"up":"525 Kbps","down":"65536 Bps"}}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					Enabled: true,
+					UpBps:   65_625,
+					DownBps: 65_536,
+				},
+			},
+		},
+		{
+			name:   "brutal disabled",
+			fields: `{"brutal-opts":{"enabled":false}}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal:   &proxyman.BrutalConfig{},
+			},
+		},
+		{
+			name:    "brutal decimal rate",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"100.5 Mbps","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal negative rate",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"-1 Mbps","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal rate below minimum",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"1 Mbps","down":"64 KBps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal invalid unit",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"100 MB","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal lowercase prefix",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"100 mbps","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal leading whitespace",
+			fields:  `{"brutal-opts":{"enabled":true,"up":" 100 Mbps","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal trailing whitespace",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"100 Mbps ","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "brutal unicode separator",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"100\u00a0Mbps","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
+			name:   "brutal ASCII tab separator",
+			fields: `{"brutal-opts":{"enabled":true,"up":"100\tMbps","down":"100 Mbps"}}`,
+			want: &proxyman.SmuxConfig{
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					Enabled: true,
+					UpBps:   12_500_000,
+					DownBps: 12_500_000,
+				},
+			},
+		},
+		{
+			name:    "brutal overflow",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"18446744073709551615 Tbps","down":"100 Mbps"}}`,
+			wantErr: true,
+		},
+		{
 			name:    "unknown protocol",
 			fields:  `{"enabled":true,"protocol":"xray"}`,
 			wantErr: true,

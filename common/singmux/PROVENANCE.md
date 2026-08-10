@@ -20,10 +20,11 @@ implementation and its modifications are distributed under the repository's
 MPL-2.0 license.
 
 The outer carrier, padding, stream request, UDP framing, retry, client-pool,
-and server-dispatch layers were independently implemented from the in-tree
-wire specifications, tests, and Xray interfaces. The implementation record and
-input boundary are in [`CLEANROOM.md`](CLEANROOM.md). Process-level tests use
-sing-box and Mihomo only as separately executed interoperability peers.
+Brutal bandwidth exchange, socket-control, and server-dispatch layers were
+independently implemented from the in-tree wire specifications, tests, and
+Xray interfaces. The implementation record and input boundary are in
+[`CLEANROOM.md`](CLEANROOM.md). Process-level tests use sing-box and Mihomo
+only as separately executed interoperability peers.
 
 ## Excluded source
 
