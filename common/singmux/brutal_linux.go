@@ -18,23 +18,17 @@ type brutalSocketOptions struct {
 	CwndGain uint32
 }
 
+//go:linkname brutalSetsockopt syscall.setsockopt
+func brutalSetsockopt(fd int, level int, option int, value unsafe.Pointer, length uintptr) error
+
 var (
 	brutalSetCongestion = syscall.SetsockoptString
 	brutalSetRate       = setBrutalRate
 )
 
 func setBrutalRate(fd int, options brutalSocketOptions) error {
-	_, _, errno := syscall.Syscall6(
-		syscall.SYS_SETSOCKOPT,
-		uintptr(fd),
-		uintptr(syscall.IPPROTO_TCP),
-		uintptr(brutalSocketOption),
-		uintptr(unsafe.Pointer(&options)),
-		unsafe.Sizeof(options),
-		0,
-	)
-	if errno != 0 {
-		return fmt.Errorf("set TCP_BRUTAL_RATE: %w", errno)
+	if err := brutalSetsockopt(fd, syscall.IPPROTO_TCP, brutalSocketOption, unsafe.Pointer(&options), unsafe.Sizeof(options)); err != nil {
+		return fmt.Errorf("set TCP_BRUTAL_RATE: %w", err)
 	}
 	return nil
 }
