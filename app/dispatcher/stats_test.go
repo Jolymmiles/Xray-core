@@ -42,3 +42,34 @@ func TestStatsWriter(t *testing.T) {
 		t.Fatal("unexpected counter value. want 7, but got ", c.Value())
 	}
 }
+
+func TestStatsWriterSurvivesStaleBufferRelease(t *testing.T) {
+	const (
+		iterations  = 64
+		payloadSize = 206
+	)
+
+	var c TestCounter
+	writer := &SizeStatWriter{
+		Counter: &c,
+		Writer:  buf.Discard,
+	}
+	payload := make([]byte, payloadSize)
+
+	for range iterations {
+		stale := buf.New()
+		stale.Release()
+
+		live := buf.New()
+		if _, err := live.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+
+		stale.Release()
+		common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{live}))
+	}
+
+	if want := int64(iterations * payloadSize); c.Value() != want {
+		t.Fatalf("counted %d bytes, want %d", c.Value(), want)
+	}
+}
