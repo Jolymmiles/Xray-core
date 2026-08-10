@@ -29,6 +29,7 @@ func (*deadlineResponseWriter) WriteHeader(int)       {}
 func (*deadlineResponseWriter) Write(payload []byte) (int, error) {
 	return len(payload), nil
 }
+
 func (w *deadlineResponseWriter) FlushError() error {
 	w.mu.Lock()
 	w.flushHadDeadline = !w.writeDeadline.IsZero()
