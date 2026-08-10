@@ -64,6 +64,10 @@ type ConnExpire struct {
 	Expire time.Time
 }
 
+func shouldUseTestpre(brutal bool, testpre uint32, reverse *Reverse) bool {
+	return testpre > 0 && reverse == nil && !brutal
+}
+
 // New creates a new VLess outbound handler.
 func New(ctx context.Context, config *Config) (*Handler, error) {
 	if config.Vnext == nil {
@@ -154,7 +158,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	rec := h.server
 	var conn stat.Connection
 
-	if h.testpre > 0 && h.reverse == nil {
+	if shouldUseTestpre(proxyman.IsSMUXBrutalCarrier(ctx), h.testpre, h.reverse) {
 		h.initpre.Do(func() {
 			h.preConns = make(chan *ConnExpire)
 			for range h.testpre { // TODO: randomize

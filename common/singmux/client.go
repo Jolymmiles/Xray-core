@@ -38,6 +38,7 @@ type Options struct {
 	MaxStreams     int
 	Padding        bool
 	OnlyTCP        bool
+	Brutal         BrutalOptions
 }
 
 type Client struct {
@@ -46,6 +47,7 @@ type Client struct {
 	streamLimit    int
 	padding        bool
 	onlyTCP        bool
+	brutal         BrutalOptions
 
 	mu       sync.Mutex
 	sessions []*mplsmux.Session
@@ -68,6 +70,14 @@ func NewClient(options Options) (*Client, error) {
 	if options.MinStreams > 0 && options.MaxStreams > 0 {
 		return nil, errors.New("minStreams and maxStreams are mutually exclusive")
 	}
+	if options.Brutal.Enabled {
+		if options.Brutal.SendBPS < BrutalMinSpeedBPS {
+			return nil, errors.New("brutal upload speed is below the minimum")
+		}
+		if options.Brutal.ReceiveBPS < BrutalMinSpeedBPS {
+			return nil, errors.New("brutal download speed is below the minimum")
+		}
+	}
 	limit := options.MinStreams
 	if options.MaxStreams > 0 {
 		limit = options.MaxStreams
@@ -81,6 +91,7 @@ func NewClient(options Options) (*Client, error) {
 		streamLimit:    limit,
 		padding:        options.Padding,
 		onlyTCP:        options.OnlyTCP,
+		brutal:         options.Brutal,
 	}, nil
 }
 
@@ -136,7 +147,7 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 				leastStreams = count
 			}
 		}
-		canCreate := c.maxConnections == 0 || len(c.sessions) < c.maxConnections
+		canCreate := !c.brutal.Enabled && (c.maxConnections == 0 || len(c.sessions) < c.maxConnections)
 		if selected == nil || leastStreams >= c.streamLimit && canCreate {
 			var err error
 			selected, err = c.createSession(ctx)
@@ -185,26 +196,24 @@ func (c *Client) createSession(ctx context.Context) (*mplsmux.Session, error) {
 		close(completed)
 		<-watcherDone
 	}
+	defer stopWatcher()
 	deadline := handshakeDeadline(ctx)
 	_ = connection.SetDeadline(deadline)
 	var carrierPadding []byte
 	if c.padding {
 		carrierPadding = make([]byte, 32)
 		if _, err := rand.Read(carrierPadding); err != nil {
-			stopWatcher()
 			_ = connection.Close()
 			return nil, err
 		}
 	}
 	if err := writeCarrierRequest(connection, protocolSMUX, carrierPadding); err != nil {
-		stopWatcher()
 		_ = connection.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, err
 	}
-	stopWatcher()
 	if ctx.Err() != nil {
 		_ = connection.Close()
 		return nil, ctx.Err()
@@ -220,7 +229,47 @@ func (c *Client) createSession(ctx context.Context) (*mplsmux.Session, error) {
 		_ = connection.Close()
 		return nil, err
 	}
+	if c.brutal.Enabled {
+		if err := c.exchangeBrutal(ctx, rawConnection, session); err != nil {
+			_ = session.Close()
+			return nil, fmt.Errorf("brutal exchange: %w", err)
+		}
+	}
 	return session, nil
+}
+
+type brutalConfigurer interface {
+	SetBrutal(sendBPS uint64) error
+}
+
+func (c *Client) exchangeBrutal(ctx context.Context, carrier net.Conn, session *mplsmux.Session) error {
+	configurer, ok := carrier.(brutalConfigurer)
+	if !ok {
+		return fmt.Errorf("SMUX carrier %T cannot configure Brutal", carrier)
+	}
+	stream, err := session.OpenStream()
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	_ = stream.SetDeadline(handshakeDeadline(ctx))
+	destination := X.TCPDestination(X.DomainAddress(brutalExchangeDomain), 0)
+	if err := writeStreamRequest(stream, 0, destination); err != nil {
+		return err
+	}
+	if err := writeBrutalRequest(stream, c.brutal.ReceiveBPS); err != nil {
+		return err
+	}
+	if err := readStreamResponse(stream); err != nil {
+		return err
+	}
+	peerReceiveBPS, err := readBrutalResponse(stream)
+	if err != nil {
+		return err
+	}
+	sendBPS := min(c.brutal.SendBPS, peerReceiveBPS)
+	return configurer.SetBrutal(sendBPS)
 }
 
 func handshakeDeadline(ctx context.Context) time.Time {
