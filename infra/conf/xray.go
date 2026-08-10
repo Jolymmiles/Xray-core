@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/xtls/xray-core/app/dispatcher"
@@ -107,13 +108,98 @@ type MuxConfig struct {
 }
 
 type SMuxConfig struct {
-	Enabled        bool   `json:"enabled"`
-	Protocol       string `json:"protocol"`
-	MaxConnections int32  `json:"maxConnections"`
-	MinStreams     int32  `json:"minStreams"`
-	MaxStreams     int32  `json:"maxStreams"`
-	Padding        bool   `json:"padding"`
-	OnlyTCP        bool   `json:"onlyTcp"`
+	Enabled        bool            `json:"enabled"`
+	Protocol       string          `json:"protocol"`
+	MaxConnections int32           `json:"maxConnections"`
+	MinStreams     int32           `json:"minStreams"`
+	MaxStreams     int32           `json:"maxStreams"`
+	Padding        bool            `json:"padding"`
+	OnlyTCP        bool            `json:"onlyTcp"`
+	BrutalOpts     *SMuxBrutalOpts `json:"brutal-opts"`
+}
+
+type SMuxBrutalOpts struct {
+	Enabled bool   `json:"enabled"`
+	Up      string `json:"up"`
+	Down    string `json:"down"`
+}
+
+const smuxBrutalMinBPS = 65536
+
+func parseSMuxRate(value string) (uint64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	s := strings.TrimSpace(value)
+	if s != value {
+		return 0, errors.New("invalid SMUX Brutal rate: ", value)
+	}
+
+	digits := 0
+	for digits < len(s) && s[digits] >= '0' && s[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return 0, errors.New("invalid SMUX Brutal rate: ", value)
+	}
+	rate, err := strconv.ParseUint(s[:digits], 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid SMUX Brutal rate: ", value)
+	}
+
+	unit := strings.Trim(s[digits:], " \t\n\f\r")
+	multiplier := uint64(1)
+	bits := true
+	if unit == "" {
+		// Mihomo treats a bare integer as megabits per second.
+		multiplier = 1_000_000
+	} else {
+		if len(unit) != 3 && len(unit) != 4 {
+			return 0, errors.New("invalid SMUX Brutal rate: ", value)
+		}
+		if unit[len(unit)-2:] != "ps" {
+			return 0, errors.New("invalid SMUX Brutal rate: ", value)
+		}
+		kind := unit[len(unit)-3]
+		if kind != 'b' && kind != 'B' {
+			return 0, errors.New("invalid SMUX Brutal rate: ", value)
+		}
+		bits = kind == 'b'
+		if len(unit) == 4 {
+			switch unit[0] {
+			case 'K':
+				multiplier = 1_000
+			case 'M':
+				multiplier = 1_000_000
+			case 'G':
+				multiplier = 1_000_000_000
+			case 'T':
+				multiplier = 1_000_000_000_000
+			default:
+				return 0, errors.New("invalid SMUX Brutal rate: ", value)
+			}
+		}
+	}
+
+	if bits {
+		// Divide before multiplying to preserve rates whose byte value fits
+		// uint64 even though their bit value does not.
+		quotient, remainder := rate/8, rate%8
+		max := ^uint64(0)
+		if quotient > max/multiplier {
+			return 0, errors.New("SMUX Brutal rate overflows: ", value)
+		}
+		rate = quotient * multiplier
+		extra := remainder * multiplier / 8
+		if rate > max-extra {
+			return 0, errors.New("SMUX Brutal rate overflows: ", value)
+		}
+		return rate + extra, nil
+	}
+	if rate > ^uint64(0)/multiplier {
+		return 0, errors.New("SMUX Brutal rate overflows: ", value)
+	}
+	return rate * multiplier, nil
 }
 
 func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
@@ -130,6 +216,21 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	if m.MaxStreams > 0 && (m.MaxConnections > 0 || m.MinStreams > 0) {
 		return nil, errors.New("SMUX maxStreams conflicts with maxConnections and minStreams")
 	}
+	var brutal *proxyman.BrutalConfig
+	if m.BrutalOpts != nil {
+		up, err := parseSMuxRate(m.BrutalOpts.Up)
+		if err != nil {
+			return nil, err
+		}
+		down, err := parseSMuxRate(m.BrutalOpts.Down)
+		if err != nil {
+			return nil, err
+		}
+		if m.BrutalOpts.Enabled && (up < smuxBrutalMinBPS || down < smuxBrutalMinBPS) {
+			return nil, errors.New("SMUX Brutal rates must each be at least 65536 bytes per second")
+		}
+		brutal = &proxyman.BrutalConfig{Enabled: m.BrutalOpts.Enabled, UpBps: up, DownBps: down}
+	}
 	return &proxyman.SmuxConfig{
 		Enabled:        m.Enabled,
 		Protocol:       protocol,
@@ -138,6 +239,7 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 		MaxStreams:     m.MaxStreams,
 		Padding:        m.Padding,
 		OnlyTcp:        m.OnlyTCP,
+		Brutal:         brutal,
 	}, nil
 }
 

@@ -83,4 +83,11 @@ message SmuxConfig {
   int32 max_streams = 5;
   bool padding = 6;
   bool only_tcp = 7;
+  BrutalConfig brutal = 8;
+}
+
+message BrutalConfig {
+  bool enabled = 1;
+  uint64 up_bps = 2;
+  uint64 down_bps = 3;
 }
