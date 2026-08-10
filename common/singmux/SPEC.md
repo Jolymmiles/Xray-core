@@ -48,6 +48,26 @@ failed session, opens one replacement stream, and replays those bytes. A
 protocol status error is never retried, and payload beyond the bounded replay
 window disables replay rather than allocating without limit.
 
+## Brutal bandwidth exchange
+
+Brutal is opt-in and does not change carriers whose configuration leaves it
+disabled. An enabled client opens one ordinary TCP stream to the domain
+`_BrutalBwExchange` with port 0 and sends its receive ceiling as one unsigned
+64-bit big-endian integer. It then reads the normal successful stream response
+before consuming the Brutal response body.
+
+The server replies with one boolean byte. A true value is followed by the
+server's unsigned 64-bit big-endian receive ceiling. A false value is followed
+by an unsigned-varint diagnostic length and that many UTF-8 bytes. Diagnostics
+are bounded to 65535 bytes before allocation.
+
+Each endpoint applies the smaller of its configured send ceiling and the
+peer's advertised receive ceiling to the physical TCP carrier. Xray currently
+exposes this setting on outbound SMUX clients only. The Linux carrier must have
+the `brutal` congestion-control module available; negotiation or socket-control
+failure rejects the candidate carrier rather than leaving the two endpoints
+with asymmetric congestion control.
+
 ## UDP packets
 
 This implementation always requests per-packet addressing. A datagram is

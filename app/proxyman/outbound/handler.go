@@ -128,14 +128,23 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 			if h.senderSettings.MultiplexSettings != nil && h.senderSettings.MultiplexSettings.Enabled {
 				return nil, errors.New("mux and smux cannot be enabled on the same outbound")
 			}
+			var brutal singmux.BrutalOptions
+			if config.Brutal != nil {
+				brutal = singmux.BrutalOptions{
+					Enabled:    config.Brutal.Enabled,
+					SendBPS:    config.Brutal.UpBps,
+					ReceiveBPS: config.Brutal.DownBps,
+				}
+			}
 			h.smux, err = singmux.NewClient(singmux.Options{
-				Dialer:         newSMUXOutboundDialer(proxyHandler, h),
+				Dialer:         newSMUXOutboundDialer(proxyHandler, h, brutal.Enabled),
 				Protocol:       config.Protocol,
 				MaxConnections: int(config.MaxConnections),
 				MinStreams:     int(config.MinStreams),
 				MaxStreams:     int(config.MaxStreams),
 				Padding:        config.Padding,
 				OnlyTCP:        config.OnlyTcp,
+				Brutal:         brutal,
 			})
 			if err != nil {
 				return nil, errors.New("failed to create SMUX client").Base(err)
@@ -309,6 +318,10 @@ func (h *Handler) DestIpAddress() net.IP {
 	return internet.DestIpAddress()
 }
 
+func shouldPublishSMUXPhysicalConnection(settings *internet.MemoryStreamConfig, conn stat.Connection, err error) bool {
+	return err == nil && conn != nil && (settings == nil || settings.SocketSettings == nil || settings.SocketSettings.DialerProxy == "")
+}
+
 // Dial implements internet.Dialer.
 func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
 	if h.senderSettings != nil {
@@ -351,6 +364,9 @@ func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connecti
 	}
 
 	conn, err := internet.Dial(ctx, dest, h.streamSettings)
+	if shouldPublishSMUXPhysicalConnection(h.streamSettings, conn, err) {
+		publishSMUXPhysicalConnection(ctx, conn, nil)
+	}
 	conn = h.getStatCouterConnection(conn)
 	outbounds := session.OutboundsFromContext(ctx)
 	if outbounds != nil {

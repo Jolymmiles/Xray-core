@@ -78,6 +78,129 @@ type staleHandshakeDialer struct {
 
 type blockedHandshakeDialer struct{}
 
+type brutalCarrierConn struct {
+	net.Conn
+	applied chan uint64
+	err     error
+}
+
+func (c *brutalCarrierConn) SetBrutal(sendBPS uint64) error {
+	if c.err != nil {
+		return c.err
+	}
+	c.applied <- sendBPS
+	return nil
+}
+
+type brutalTestDialer struct {
+	serverReceiveBPS uint64
+	dials            atomic.Int32
+	clientReceiveBPS chan uint64
+	applied          chan uint64
+	serverError      chan error
+}
+
+type blockedBrutalDialer struct {
+	requestRead chan struct{}
+	clientConn  chan net.Conn
+	release     chan struct{}
+	releaseOnce atomic.Bool
+}
+
+func (d *brutalTestDialer) DialContext(context.Context, X.Destination) (net.Conn, error) {
+	d.dials.Add(1)
+	clientConn, serverConn := net.Pipe()
+	go func() {
+		defer serverConn.Close()
+		if _, err := readCarrierRequest(serverConn); err != nil {
+			d.serverError <- err
+			return
+		}
+		config := localsmux.DefaultConfig()
+		config.KeepAliveDisabled = true
+		session, err := localsmux.Server(serverConn, config)
+		if err != nil {
+			d.serverError <- err
+			return
+		}
+		defer session.Close()
+		stream, err := session.AcceptStream()
+		if err != nil {
+			d.serverError <- err
+			return
+		}
+		flags, destination, err := readStreamRequest(stream)
+		if err != nil {
+			d.serverError <- err
+			return
+		}
+		if flags != 0 || destination.Network != X.Network_TCP || destination.Port != 0 || destination.Address.Domain() != brutalExchangeDomain {
+			d.serverError <- errors.New("unexpected brutal exchange destination")
+			return
+		}
+		receiveBPS, err := readBrutalRequest(stream)
+		if err != nil {
+			d.serverError <- err
+			return
+		}
+		d.clientReceiveBPS <- receiveBPS
+		if err := writeStreamResponse(stream, nil); err != nil {
+			d.serverError <- err
+			return
+		}
+		if err := writeBrutalResponse(stream, d.serverReceiveBPS, true, ""); err != nil {
+			d.serverError <- err
+			return
+		}
+		_ = stream.Close()
+		for {
+			stream, err := session.AcceptStream()
+			if err != nil {
+				return
+			}
+			defer stream.Close()
+		}
+	}()
+	return &brutalCarrierConn{Conn: clientConn, applied: d.applied}, nil
+}
+
+func (d *blockedBrutalDialer) DialContext(context.Context, X.Destination) (net.Conn, error) {
+	clientConn, serverConn := net.Pipe()
+	d.clientConn <- clientConn
+	go func() {
+		defer serverConn.Close()
+		if _, err := readCarrierRequest(serverConn); err != nil {
+			return
+		}
+		config := localsmux.DefaultConfig()
+		config.KeepAliveDisabled = true
+		session, err := localsmux.Server(serverConn, config)
+		if err != nil {
+			return
+		}
+		defer session.Close()
+		stream, err := session.AcceptStream()
+		if err != nil {
+			return
+		}
+		if _, _, err := readStreamRequest(stream); err != nil {
+			return
+		}
+		if _, err := readBrutalRequest(stream); err != nil {
+			return
+		}
+		close(d.requestRead)
+		<-d.release
+	}()
+	return &brutalCarrierConn{Conn: clientConn}, nil
+}
+
+func (d *blockedBrutalDialer) unblock() {
+	if d.releaseOnce.CompareAndSwap(false, true) {
+		close(d.release)
+	}
+}
+
 func (*blockedHandshakeDialer) DialContext(context.Context, X.Destination) (net.Conn, error) {
 	clientConn, serverConn := net.Pipe()
 	go func() {
@@ -362,6 +485,143 @@ func TestNewClientValidatesRequiredDialerAndLimits(t *testing.T) {
 	}
 	if _, err := NewClient(Options{Dialer: &serviceDialer{}, Protocol: "smux", MinStreams: 1, MaxStreams: 2}); err == nil {
 		t.Fatal("minStreams and maxStreams must not be combined")
+	}
+	if _, err := NewClient(Options{
+		Dialer:   &serviceDialer{},
+		Protocol: "smux",
+		Brutal:   BrutalOptions{Enabled: true, SendBPS: BrutalMinSpeedBPS - 1, ReceiveBPS: BrutalMinSpeedBPS},
+	}); err == nil {
+		t.Fatal("brutal upload below the minimum must be rejected")
+	}
+	if _, err := NewClient(Options{
+		Dialer:   &serviceDialer{},
+		Protocol: "smux",
+		Brutal:   BrutalOptions{Enabled: true, SendBPS: BrutalMinSpeedBPS, ReceiveBPS: BrutalMinSpeedBPS - 1},
+	}); err == nil {
+		t.Fatal("brutal download below the minimum must be rejected")
+	}
+}
+
+func TestClientBrutalNegotiatesAndReusesSingleCarrier(t *testing.T) {
+	const (
+		clientSendBPS    = 12_500_000
+		clientReceiveBPS = 25_000_000
+		serverReceiveBPS = 6_250_000
+	)
+	dialer := &brutalTestDialer{
+		serverReceiveBPS: serverReceiveBPS,
+		clientReceiveBPS: make(chan uint64, 1),
+		applied:          make(chan uint64, 1),
+		serverError:      make(chan error, 1),
+	}
+	client, err := NewClient(Options{
+		Dialer:     dialer,
+		Protocol:   "smux",
+		MaxStreams: 1,
+		Brutal: BrutalOptions{
+			Enabled:    true,
+			SendBPS:    clientSendBPS,
+			ReceiveBPS: clientReceiveBPS,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	streams := make([]net.Conn, 0, 3)
+	for range 3 {
+		stream, err := client.openStream(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		streams = append(streams, stream)
+	}
+	for _, stream := range streams {
+		defer stream.Close()
+	}
+
+	if got := dialer.dials.Load(); got != 1 {
+		t.Fatalf("carrier dials = %d, want 1", got)
+	}
+	select {
+	case got := <-dialer.clientReceiveBPS:
+		if got != clientReceiveBPS {
+			t.Fatalf("advertised receive BPS = %d, want %d", got, clientReceiveBPS)
+		}
+	case err := <-dialer.serverError:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("brutal request was not received")
+	}
+	select {
+	case got := <-dialer.applied:
+		if got != serverReceiveBPS {
+			t.Fatalf("applied send BPS = %d, want negotiated %d", got, serverReceiveBPS)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("negotiated brutal rate was not applied")
+	}
+}
+
+func TestClientBrutalCancellationClosesExchange(t *testing.T) {
+	dialer := &blockedBrutalDialer{
+		requestRead: make(chan struct{}),
+		clientConn:  make(chan net.Conn, 1),
+		release:     make(chan struct{}),
+	}
+	client, err := NewClient(Options{
+		Dialer:   dialer,
+		Protocol: "smux",
+		Brutal: BrutalOptions{
+			Enabled:    true,
+			SendBPS:    BrutalMinSpeedBPS,
+			ReceiveBPS: BrutalMinSpeedBPS,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	defer dialer.unblock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		stream, err := client.openStream(ctx)
+		if stream != nil {
+			_ = stream.Close()
+		}
+		result <- err
+	}()
+
+	var carrier net.Conn
+	select {
+	case carrier = <-dialer.clientConn:
+	case <-time.After(time.Second):
+		t.Fatal("brutal carrier was not dialed")
+	}
+	select {
+	case <-dialer.requestRead:
+	case <-time.After(time.Second):
+		t.Fatal("brutal request was not read")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("canceled brutal exchange unexpectedly succeeded")
+		}
+	case <-time.After(250 * time.Millisecond):
+		_ = carrier.Close()
+		dialer.unblock()
+		select {
+		case <-result:
+		case <-time.After(time.Second):
+			t.Fatal("brutal exchange remained blocked after carrier close")
+		}
+		t.Fatal("cancellation did not close brutal exchange")
 	}
 }
 

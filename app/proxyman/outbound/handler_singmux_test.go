@@ -55,3 +55,37 @@ func TestNewHandlerCreatesSingMuxClient(t *testing.T) {
 		t.Fatal("UDP must bypass SMUX when onlyTcp is enabled")
 	}
 }
+
+func TestNewHandlerMapsSingMuxBrutalRates(t *testing.T) {
+	instance, err := core.New(&core.Config{App: []*serial.TypedMessage{
+		serial.ToTypedMessage(&stats.Config{}),
+		serial.ToTypedMessage(&policy.Config{}),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.AddFeature(F.Manager(new(Manager)))
+	ctx := context.WithValue(context.Background(), core.XrayKey(1), instance)
+	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{}})
+
+	_, err = NewHandler(ctx, &core.OutboundHandlerConfig{
+		Tag: "smux-brutal-out",
+		SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{
+			SmuxSettings: &proxyman.SmuxConfig{
+				Enabled:  true,
+				Protocol: "smux",
+				Brutal: &proxyman.BrutalConfig{
+					Enabled: true,
+					UpBps:   65_535,
+					DownBps: 65_536,
+				},
+			},
+		}),
+		ProxySettings: serial.ToTypedMessage(&freedom.Config{
+			FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
+		}),
+	})
+	if err == nil {
+		t.Fatal("invalid Brutal rate reached NewClient without validation")
+	}
+}
