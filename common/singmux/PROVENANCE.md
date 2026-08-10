@@ -19,9 +19,10 @@ The upstream copyright and permission notice is preserved in
 implementation and its modifications are distributed under the repository's
 MPL-2.0 license.
 
-The outer carrier, padding, stream request, UDP framing, retry, client-pool,
-Brutal bandwidth exchange, socket-control, and server-dispatch layers were
-independently implemented from the in-tree wire specifications, tests, and
+The outer carrier, H2MUX adapter, padding, stream request, UDP framing, retry,
+client-pool, Brutal bandwidth exchange, socket-control, and server-dispatch
+layers were independently implemented from the in-tree wire specifications,
+tests, the public HTTP/2 specification and API, black-box process captures, and
 Xray interfaces. The implementation record and input boundary are in
 [`CLEANROOM.md`](CLEANROOM.md). Process-level tests use sing-box and Mihomo
 only as separately executed interoperability peers.
@@ -44,6 +45,8 @@ production dependency.
 ## Release gate
 
 The dependency-ban test recursively rejects direct production imports of
-external mux libraries. Release verification additionally requires unit,
-race, checkptr, process interoperability, and Linux stress tests documented in
-[`TESTING.md`](TESTING.md).
+external mux libraries. The only external production import permitted in this
+package is the repository's existing BSD-licensed `golang.org/x/net/http2`
+module used to implement H2MUX. Release verification additionally requires
+unit, race, checkptr, process interoperability, and Linux stress tests
+documented in [`TESTING.md`](TESTING.md).

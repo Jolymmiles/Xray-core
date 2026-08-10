@@ -460,9 +460,12 @@ func TestSMuxConfigBuild(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "h2mux belongs to a later stage",
-			fields:  `{"enabled":true,"protocol":"h2mux"}`,
-			wantErr: true,
+			name:   "h2mux",
+			fields: `{"enabled":true,"protocol":"h2mux"}`,
+			want: &proxyman.SmuxConfig{
+				Enabled:  true,
+				Protocol: "h2mux",
+			},
 		},
 		{
 			name:    "negative pool limit",

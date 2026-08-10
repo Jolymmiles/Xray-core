@@ -28,7 +28,8 @@ func TestProductionHasNoExternalMuxDependencies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.HasPrefix(importPath, "github.com/xtls/xray-core/") || !strings.Contains(importPath, ".") {
+			if strings.HasPrefix(importPath, "github.com/xtls/xray-core/") ||
+				!strings.Contains(importPath, ".") || importPath == "golang.org/x/net/http2" {
 				continue
 			}
 			t.Errorf("%s imports forbidden external package %q", path, importPath)

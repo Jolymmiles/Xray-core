@@ -43,6 +43,7 @@ type Options struct {
 
 type Client struct {
 	dialer         Dialer
+	protocol       string
 	maxConnections int
 	streamLimit    int
 	padding        bool
@@ -50,15 +51,39 @@ type Client struct {
 	brutal         BrutalOptions
 
 	mu       sync.Mutex
-	sessions []*mplsmux.Session
+	sessions []clientSession
+	retired  []clientSession
+	pending  map[clientSession]int
 	closed   bool
+}
+
+type clientSession interface {
+	OpenStream(context.Context, func()) (net.Conn, error)
+	NumStreams() int
+	IsClosed() bool
+	Close() error
+}
+
+type smuxClientSession struct {
+	*mplsmux.Session
+}
+
+func (s *smuxClientSession) OpenStream(ctx context.Context, accounted func()) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	stream, err := s.Session.OpenStream()
+	if err == nil {
+		accounted()
+	}
+	return stream, err
 }
 
 func NewClient(options Options) (*Client, error) {
 	if options.Dialer == nil {
 		return nil, errors.New("SMUX dialer is required")
 	}
-	if options.Protocol != "smux" {
+	if options.Protocol != "smux" && options.Protocol != "h2mux" {
 		return nil, fmt.Errorf("unsupported mux protocol %q", options.Protocol)
 	}
 	if options.MaxConnections < 0 || options.MinStreams < 0 || options.MaxStreams < 0 {
@@ -87,6 +112,7 @@ func NewClient(options Options) (*Client, error) {
 	}
 	return &Client{
 		dialer:         options.Dialer,
+		protocol:       options.Protocol,
 		maxConnections: options.MaxConnections,
 		streamLimit:    limit,
 		padding:        options.Padding,
@@ -115,8 +141,9 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
-	sessions := c.sessions
+	sessions := append(c.sessions, c.retired...)
 	c.sessions = nil
+	c.retired = nil
 	c.mu.Unlock()
 	for _, session := range sessions {
 		_ = session.Close()
@@ -131,18 +158,39 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 			c.mu.Unlock()
 			return nil, net.ErrClosed
 		}
+		var drained []clientSession
+		retired := c.retired[:0]
+		for _, session := range c.retired {
+			if session.NumStreams()+c.pending[session] == 0 {
+				drained = append(drained, session)
+			} else {
+				retired = append(retired, session)
+			}
+		}
+		c.retired = retired
 		alive := c.sessions[:0]
 		for _, session := range c.sessions {
 			if !session.IsClosed() {
 				alive = append(alive, session)
+			} else if session.NumStreams()+c.pending[session] > 0 {
+				c.retired = append(c.retired, session)
+			} else {
+				drained = append(drained, session)
 			}
 		}
 		c.sessions = alive
+		if len(drained) != 0 {
+			c.mu.Unlock()
+			for _, session := range drained {
+				_ = session.Close()
+			}
+			continue
+		}
 
-		var selected *mplsmux.Session
+		var selected clientSession
 		leastStreams := int(^uint(0) >> 1)
 		for _, session := range c.sessions {
-			if count := session.NumStreams(); count < leastStreams {
+			if count := session.NumStreams() + c.pending[session]; count < leastStreams {
 				selected = session
 				leastStreams = count
 			}
@@ -157,26 +205,64 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 			}
 			c.sessions = append(c.sessions, selected)
 		}
-		stream, err := selected.OpenStream()
+		if c.pending == nil {
+			c.pending = make(map[clientSession]int)
+		}
+		c.pending[selected]++
+		c.mu.Unlock()
+		var accounted sync.Once
+		finishAccounting := func() {
+			c.mu.Lock()
+			if c.pending[selected] <= 1 {
+				delete(c.pending, selected)
+			} else {
+				c.pending[selected]--
+			}
+			c.mu.Unlock()
+		}
+		stream, err := selected.OpenStream(ctx, func() { accounted.Do(finishAccounting) })
+		accounted.Do(finishAccounting)
+		c.mu.Lock()
 		if err == nil {
+			if c.closed {
+				c.mu.Unlock()
+				_ = stream.Close()
+				return nil, net.ErrClosed
+			}
 			c.mu.Unlock()
 			return stream, nil
 		}
+		if ctx.Err() != nil {
+			c.mu.Unlock()
+			return nil, ctx.Err()
+		}
+		removed := false
 		for index, session := range c.sessions {
 			if session == selected {
 				c.sessions = append(c.sessions[:index], c.sessions[index+1:]...)
+				removed = true
 				break
 			}
 		}
+		shouldClose := selected.NumStreams()+c.pending[selected] == 0
+		if shouldClose {
+			for index, session := range c.retired {
+				if session == selected {
+					c.retired = append(c.retired[:index], c.retired[index+1:]...)
+					break
+				}
+			}
+		} else if removed {
+			c.retired = append(c.retired, selected)
+		}
 		c.mu.Unlock()
-		_ = selected.Close()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if shouldClose {
+			_ = selected.Close()
 		}
 	}
 }
 
-func (c *Client) createSession(ctx context.Context) (*mplsmux.Session, error) {
+func (c *Client) createSession(ctx context.Context) (clientSession, error) {
 	connection, err := c.dialer.DialContext(ctx, X.TCPDestination(X.DomainAddress(magicDomain), magicPort))
 	if err != nil {
 		return nil, err
@@ -207,7 +293,11 @@ func (c *Client) createSession(ctx context.Context) (*mplsmux.Session, error) {
 			return nil, err
 		}
 	}
-	if err := writeCarrierRequest(connection, protocolSMUX, carrierPadding); err != nil {
+	protocol := protocolSMUX
+	if c.protocol == "h2mux" {
+		protocol = protocolH2MUX
+	}
+	if err := writeCarrierRequest(connection, protocol, carrierPadding); err != nil {
 		_ = connection.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -222,9 +312,18 @@ func (c *Client) createSession(ctx context.Context) (*mplsmux.Session, error) {
 		connection = newPaddingConn(connection)
 	}
 	_ = connection.SetDeadline(time.Time{})
-	config := mplsmux.DefaultConfig()
-	config.KeepAliveDisabled = true
-	session, err := mplsmux.Client(connection, config)
+	var session clientSession
+	if c.protocol == "h2mux" {
+		session, err = newH2ClientSession(connection)
+	} else {
+		config := mplsmux.DefaultConfig()
+		config.KeepAliveDisabled = true
+		mplSession, sessionErr := mplsmux.Client(connection, config)
+		err = sessionErr
+		if err == nil {
+			session = &smuxClientSession{Session: mplSession}
+		}
+	}
 	if err != nil {
 		_ = connection.Close()
 		return nil, err
@@ -242,12 +341,12 @@ type brutalConfigurer interface {
 	SetBrutal(sendBPS uint64) error
 }
 
-func (c *Client) exchangeBrutal(ctx context.Context, carrier net.Conn, session *mplsmux.Session) error {
+func (c *Client) exchangeBrutal(ctx context.Context, carrier net.Conn, session clientSession) error {
 	configurer, ok := carrier.(brutalConfigurer)
 	if !ok {
 		return fmt.Errorf("SMUX carrier %T cannot configure Brutal", carrier)
 	}
-	stream, err := session.OpenStream()
+	stream, err := session.OpenStream(ctx, func() {})
 	if err != nil {
 		return err
 	}

@@ -207,7 +207,7 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	if protocol == "" {
 		protocol = "smux"
 	}
-	if protocol != "smux" {
+	if protocol != "smux" && protocol != "h2mux" {
 		return nil, errors.New("unsupported SMUX protocol ", m.Protocol)
 	}
 	if m.MaxConnections < 0 || m.MinStreams < 0 || m.MaxStreams < 0 {
