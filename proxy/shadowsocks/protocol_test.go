@@ -61,6 +61,39 @@ func TestUDPEncodingDecoding(t *testing.T) {
 	}
 }
 
+func TestUDPEncodingDecodingFullBufferPayload(t *testing.T) {
+	request := protocol.RequestHeader{
+		Version: Version,
+		Command: protocol.RequestCommandUDP,
+		Address: net.LocalHostIP,
+		Port:    1234,
+		User: &protocol.MemoryUser{
+			Account: toAccount(&Account{
+				Password:   "password",
+				CipherType: CipherType_AES_128_GCM,
+			}),
+		},
+	}
+	payload := make([]byte, buf.Size)
+
+	encoded, err := EncodeUDPPacket(&request, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer encoded.Release()
+
+	validator := new(Validator)
+	validator.Add(request.User)
+	_, decoded, err := DecodeUDPPacket(validator, encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(payload, decoded.Bytes()); diff != "" {
+		t.Fatal("payload mismatch (-want +got):\n", diff)
+	}
+}
+
 func TestUDPDecodingWithPayloadTooShort(t *testing.T) {
 	testAccounts := []protocol.Account{
 		toAccount(&Account{
