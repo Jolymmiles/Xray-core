@@ -36,8 +36,10 @@ type Conn struct {
 	*tls.Conn
 }
 
-const tlsCloseTimeout = 250 * time.Millisecond
-const tlsRecordSize = 16 * 1024
+const (
+	tlsCloseTimeout = 250 * time.Millisecond
+	tlsRecordSize   = 16 * 1024
+)
 
 func (c *Conn) Close() error {
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
