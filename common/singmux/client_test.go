@@ -78,6 +78,63 @@ type staleHandshakeDialer struct {
 
 type blockedHandshakeDialer struct{}
 
+type errorDialer struct{ err error }
+
+func (d *errorDialer) DialContext(context.Context, X.Destination) (net.Conn, error) {
+	return nil, d.err
+}
+
+type failedOpenSession struct {
+	active     int
+	closed     bool
+	openErr    error
+	closeCalls atomic.Int32
+}
+
+func (s *failedOpenSession) OpenStream(context.Context, func()) (net.Conn, error) {
+	return nil, s.openErr
+}
+func (s *failedOpenSession) NumStreams() int { return s.active }
+func (s *failedOpenSession) IsClosed() bool  { return s.closed }
+func (s *failedOpenSession) Close() error {
+	s.closeCalls.Add(1)
+	return nil
+}
+
+type blockingOpenSession struct {
+	started       chan struct{}
+	active        atomic.Int32
+	reflectOnOpen bool
+}
+
+func (s *blockingOpenSession) OpenStream(ctx context.Context, accounted func()) (net.Conn, error) {
+	if s.reflectOnOpen {
+		s.active.Store(1)
+		accounted()
+	}
+	s.started <- struct{}{}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (s *blockingOpenSession) NumStreams() int { return int(s.active.Load()) }
+func (*blockingOpenSession) IsClosed() bool    { return false }
+func (*blockingOpenSession) Close() error      { return nil }
+
+type closingOpenSession struct {
+	started chan struct{}
+	release chan struct{}
+	stream  net.Conn
+}
+
+func (s *closingOpenSession) OpenStream(context.Context, func()) (net.Conn, error) {
+	close(s.started)
+	<-s.release
+	return s.stream, nil
+}
+func (*closingOpenSession) NumStreams() int { return 0 }
+func (*closingOpenSession) IsClosed() bool  { return false }
+func (*closingOpenSession) Close() error    { return nil }
+
 type brutalCarrierConn struct {
 	net.Conn
 	applied chan uint64
@@ -456,10 +513,13 @@ func TestClientOnlyTCPSelection(t *testing.T) {
 	}
 }
 
-func TestNewClientSupportsOnlySMUX(t *testing.T) {
-	for _, protocol := range []string{"yamux", "h2mux", "unknown"} {
+func TestNewClientSupportsH2MUX(t *testing.T) {
+	if _, err := NewClient(Options{Dialer: &serviceDialer{}, Protocol: "h2mux"}); err != nil {
+		t.Fatalf("h2mux must be accepted: %v", err)
+	}
+	for _, protocol := range []string{"yamux", "unknown"} {
 		if _, err := NewClient(Options{Dialer: &serviceDialer{}, Protocol: protocol}); err == nil {
-			t.Fatalf("protocol %q must be rejected in the SMUX-only stage", protocol)
+			t.Fatalf("protocol %q must be rejected", protocol)
 		}
 	}
 }
@@ -686,6 +746,195 @@ func TestClientCloseIsTerminal(t *testing.T) {
 	}
 	if got := dialer.dials.Load(); got != 0 {
 		t.Fatalf("closed client opened %d carriers", got)
+	}
+}
+
+func TestClientCloseRejectsConcurrentOpen(t *testing.T) {
+	stream, peer := net.Pipe()
+	defer peer.Close()
+	session := &closingOpenSession{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		stream:  stream,
+	}
+	client := &Client{
+		streamLimit: defaultMinStreams,
+		sessions:    []clientSession{session},
+	}
+	result := make(chan error, 1)
+	go func() {
+		opened, err := client.openStream(context.Background())
+		if opened != nil {
+			_ = opened.Close()
+		}
+		result <- err
+	}()
+	<-session.started
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(session.release)
+	if err := <-result; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("concurrent open error = %v, want %v", err, net.ErrClosed)
+	}
+}
+
+func TestClientOpenFailureDoesNotCloseSessionWithActiveStreams(t *testing.T) {
+	openErr := errors.New("graceful GOAWAY")
+	replacementErr := errors.New("replacement dial failed")
+	session := &failedOpenSession{active: 1, openErr: openErr}
+	client := &Client{
+		dialer:         &errorDialer{err: replacementErr},
+		protocol:       "smux",
+		maxConnections: 1,
+		streamLimit:    defaultMinStreams,
+		sessions:       []clientSession{session},
+	}
+	if _, err := client.openStream(context.Background()); !errors.Is(err, replacementErr) {
+		t.Fatalf("openStream error = %v, want %v", err, replacementErr)
+	}
+	if got := session.closeCalls.Load(); got != 0 {
+		t.Fatalf("active draining session was closed %d times", got)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.closeCalls.Load(); got != 1 {
+		t.Fatalf("Client.Close closed draining session %d times, want 1", got)
+	}
+}
+
+func TestClientConcurrentOpensAccountForPendingSessions(t *testing.T) {
+	first := &blockingOpenSession{started: make(chan struct{}, 2)}
+	second := &blockingOpenSession{started: make(chan struct{}, 1)}
+	client := &Client{
+		streamLimit: defaultMinStreams,
+		sessions:    []clientSession{first, second},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 2)
+	go func() {
+		_, err := client.openStream(ctx)
+		result <- err
+	}()
+	select {
+	case <-first.started:
+	case <-time.After(time.Second):
+		t.Fatal("first session did not start opening")
+	}
+	go func() {
+		_, err := client.openStream(ctx)
+		result <- err
+	}()
+	select {
+	case <-second.started:
+	case <-first.started:
+		cancel()
+		<-result
+		<-result
+		t.Fatal("concurrent opens oversubscribed the first session")
+	case <-time.After(time.Second):
+		cancel()
+		<-result
+		<-result
+		t.Fatal("second session did not start opening")
+	}
+	cancel()
+	for range 2 {
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("openStream error = %v, want %v", err, context.Canceled)
+		}
+	}
+}
+
+func TestClientAliveFilterRetainsClosedSessionWithActiveStreams(t *testing.T) {
+	replacementErr := errors.New("replacement dial failed")
+	session := &failedOpenSession{active: 1, closed: true}
+	client := &Client{
+		dialer:         &errorDialer{err: replacementErr},
+		protocol:       "smux",
+		maxConnections: 1,
+		streamLimit:    defaultMinStreams,
+		sessions:       []clientSession{session},
+	}
+	if _, err := client.openStream(context.Background()); !errors.Is(err, replacementErr) {
+		t.Fatalf("openStream error = %v, want %v", err, replacementErr)
+	}
+	if len(client.retired) != 1 || client.retired[0] != session {
+		t.Fatalf("retired sessions = %#v, want closed active session", client.retired)
+	}
+	if got := session.closeCalls.Load(); got != 0 {
+		t.Fatalf("closed active session was closed %d times during filtering", got)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.closeCalls.Load(); got != 1 {
+		t.Fatalf("Client.Close closed retired session %d times, want 1", got)
+	}
+}
+
+func TestClientPrunesDrainedRetiredSessions(t *testing.T) {
+	dialErr := errors.New("dial failed")
+	session := &failedOpenSession{}
+	client := &Client{
+		dialer:      &errorDialer{err: dialErr},
+		protocol:    "smux",
+		streamLimit: defaultMinStreams,
+		retired:     []clientSession{session},
+	}
+	if _, err := client.openStream(context.Background()); !errors.Is(err, dialErr) {
+		t.Fatalf("openStream error = %v, want %v", err, dialErr)
+	}
+	if len(client.retired) != 0 {
+		t.Fatalf("retired sessions = %d, want 0", len(client.retired))
+	}
+	if got := session.closeCalls.Load(); got != 1 {
+		t.Fatalf("drained retired session was closed %d times, want 1", got)
+	}
+}
+
+func TestClientPendingLoadStopsDoubleCountingReflectedReservation(t *testing.T) {
+	first := &blockingOpenSession{started: make(chan struct{}, 2), reflectOnOpen: true}
+	second := &blockingOpenSession{started: make(chan struct{}, 1)}
+	second.active.Store(1)
+	client := &Client{
+		streamLimit: defaultMinStreams,
+		sessions:    []clientSession{first, second},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 2)
+	go func() {
+		_, err := client.openStream(ctx)
+		result <- err
+	}()
+	select {
+	case <-first.started:
+	case <-time.After(time.Second):
+		t.Fatal("first session did not start opening")
+	}
+	go func() {
+		_, err := client.openStream(ctx)
+		result <- err
+	}()
+	select {
+	case <-first.started:
+	case <-second.started:
+		cancel()
+		<-result
+		<-result
+		t.Fatal("reflected reservation was counted twice")
+	case <-time.After(time.Second):
+		cancel()
+		<-result
+		<-result
+		t.Fatal("second open did not start")
+	}
+	cancel()
+	for range 2 {
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("openStream error = %v, want %v", err, context.Canceled)
+		}
 	}
 }
 

@@ -10,6 +10,8 @@ func FuzzProtocolDecoders(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{carrierVersionPlain, protocolSMUX})
 	f.Add([]byte{carrierVersionPadded, protocolSMUX, 1, 0, 3, 1, 2, 3})
+	f.Add([]byte{carrierVersionPlain, protocolH2MUX})
+	f.Add([]byte{carrierVersionPadded, protocolH2MUX, 0})
 	f.Add([]byte{0, 0, addressDomain, 3, 'a', '.', 'b', 0, 80})
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = readCarrierRequest(bytes.NewReader(input))

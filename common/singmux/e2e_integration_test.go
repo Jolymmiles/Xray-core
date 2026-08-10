@@ -65,8 +65,16 @@ func (b *synchronizedBuffer) String() string {
 }
 
 func TestSMUXProcessInteropMatrix(t *testing.T) {
+	testMuxProcessInteropMatrix(t, "smux")
+}
+
+func TestH2MUXProcessInteropMatrix(t *testing.T) {
+	testMuxProcessInteropMatrix(t, "h2mux")
+}
+
+func testMuxProcessInteropMatrix(t *testing.T, protocol string) {
 	if testing.Short() {
-		t.Skip("process-level SMUX interoperability matrix")
+		t.Skip("process-level mux interoperability matrix")
 	}
 	workDir := t.TempDir()
 	binaries := buildE2EBinaries(t, workDir)
@@ -85,7 +93,7 @@ func TestSMUXProcessInteropMatrix(t *testing.T) {
 					for _, padding := range []bool{false, true} {
 						name := fmt.Sprintf("%s/%s/%s/%s/padding=%t", peer, direction, carrier, network, padding)
 						t.Run(name, func(t *testing.T) {
-							runInteropScenario(t, workDir, binaries, certificate, privateKey, peer, direction, carrier, network, padding, tcpEcho, udpEcho)
+							runInteropScenario(t, workDir, binaries, certificate, privateKey, peer, direction, carrier, network, protocol, padding, tcpEcho, udpEcho)
 						})
 					}
 				}
@@ -110,7 +118,7 @@ func TestStructuredRejectedAccessProcess(t *testing.T) {
 		t.Run(carrier, func(t *testing.T) {
 			port := freeTCPPort(t)
 			configPath := filepath.Join(workDir, carrier+"-rejected.json")
-			writeConfig(t, configPath, xrayConfig(t, true, carrier, port, 0, false, certificate, privateKey))
+			writeConfig(t, configPath, xrayConfig(t, true, carrier, port, 0, "smux", false, certificate, privateKey))
 			server := startE2EProcess(t, xray, "run", "-config", configPath)
 			waitTCP(t, server, port)
 
@@ -165,6 +173,9 @@ func buildE2EBinaries(t *testing.T, workDir string) e2eBinaries {
 		t.Fatal(err)
 	}
 	coresRoot := filepath.Dir(xrayRoot)
+	if _, err := os.Stat(filepath.Join(coresRoot, "sing-box")); err != nil {
+		coresRoot = filepath.Dir(coresRoot)
+	}
 	return e2eBinaries{
 		xray:    buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main"),
 		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box", "-tags=with_utls,with_quic"),
@@ -188,7 +199,7 @@ func buildE2EBinary(t testing.TB, environment, output, directory, target string,
 	return output
 }
 
-func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, direction, carrier, network string, padding bool, tcpEcho, udpEcho net.Addr) {
+func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, direction, carrier, network, protocol string, padding bool, tcpEcho, udpEcho net.Addr) {
 	t.Helper()
 	serverPort := freeTCPPort(t)
 	socksPort := freeTCPPort(t)
@@ -209,12 +220,12 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 		serverBinary, serverArgs, serverConfig = peerServerConfig(t, binaries, peer, carrier, serverPort, padding, certificate, privateKey)
 		clientBinary = binaries.xray
 		clientArgs = []string{"run", "-config", filepath.Join(scenarioDir, "client.json")}
-		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, padding, certificate, privateKey)
+		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, protocol, padding, certificate, privateKey)
 	} else {
 		serverBinary = binaries.xray
 		serverArgs = []string{"run", "-config", filepath.Join(scenarioDir, "server.json")}
-		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, padding, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, padding, certificate)
+		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, protocol, padding, certificate, privateKey)
+		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, protocol, padding, certificate)
 	}
 
 	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
@@ -281,23 +292,23 @@ func replaceConfigPath(arguments []string, path string) []string {
 func peerServerConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, port int, padding bool, certificate, privateKey string) (string, []string, []byte) {
 	t.Helper()
 	if peer == "sing-box" {
-		return binaries.singBox, []string{"run", "-c", "server.json"}, singBoxConfig(t, true, carrier, port, 0, padding, certificate, privateKey)
+		return binaries.singBox, []string{"run", "-c", "server.json"}, singBoxConfig(t, true, carrier, port, 0, "smux", padding, certificate, privateKey)
 	}
 	return binaries.mihomo, []string{"-d", ".", "-f", "server.yaml"}, mihomoServerConfig(carrier, port, padding, certificate, privateKey)
 }
 
-func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, padding bool, certificate string) (string, []string, []byte) {
+func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate string) (string, []string, []byte) {
 	t.Helper()
 	if peer == "xray" {
-		return binaries.xray, []string{"run", "-config", "client.json"}, xrayConfig(t, false, carrier, serverPort, socksPort, padding, certificate, "")
+		return binaries.xray, []string{"run", "-config", "client.json"}, xrayConfig(t, false, carrier, serverPort, socksPort, protocol, padding, certificate, "")
 	}
 	if peer == "sing-box" {
-		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, padding, "", "")
+		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, protocol, padding, "", "")
 	}
-	return binaries.mihomo, []string{"-d", ".", "-f", "client.yaml"}, mihomoClientConfig(carrier, serverPort, socksPort, padding)
+	return binaries.mihomo, []string{"-d", ".", "-f", "client.yaml"}, mihomoClientConfig(carrier, serverPort, socksPort, protocol, padding)
 }
 
-func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, padding bool, certificate, privateKey string) []byte {
+func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string) []byte {
 	t.Helper()
 	config := map[string]any{"log": map[string]any{"loglevel": "debug"}}
 	if server {
@@ -343,7 +354,7 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 		outbound := map[string]any{
 			"protocol": carrier,
 			"settings": settings,
-			"smux":     map[string]any{"enabled": true, "protocol": "smux", "maxConnections": 1, "padding": padding},
+			"smux":     map[string]any{"enabled": true, "protocol": protocol, "maxConnections": 1, "padding": padding},
 		}
 		if carrier == "trojan" {
 			outbound["streamSettings"] = xrayTLSSettings(false, certificate, "")
@@ -402,7 +413,7 @@ func xrayTLSSettings(server bool, certificate, privateKey string) map[string]any
 	return settings
 }
 
-func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, padding bool, certificate, privateKey string) []byte {
+func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string) []byte {
 	t.Helper()
 	config := map[string]any{"log": map[string]any{"level": "debug", "timestamp": true}}
 	if server {
@@ -422,7 +433,7 @@ func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksP
 		config["inbounds"] = []any{map[string]any{"type": "socks", "listen": "127.0.0.1", "listen_port": socksPort}}
 		outbound := map[string]any{
 			"type": carrier, "server": "127.0.0.1", "server_port": serverPort,
-			"multiplex": map[string]any{"enabled": true, "protocol": "smux", "max_connections": 1, "padding": padding},
+			"multiplex": map[string]any{"enabled": true, "protocol": protocol, "max_connections": 1, "padding": padding},
 		}
 		if carrier == "vless" {
 			outbound["uuid"] = testUUID
@@ -451,14 +462,14 @@ func mihomoServerConfig(carrier string, port int, padding bool, certificate, pri
 	return []byte(fmt.Sprintf("mode: direct\nlog-level: warning\nlisteners:\n  - name: e2e-in\n    type: %s\n    listen: 127.0.0.1\n    port: %d\n%s%s    mux-option:\n      padding: %t\n", carrier, port, credentials, tls, padding))
 }
 
-func mihomoClientConfig(carrier string, serverPort, socksPort int, padding bool) []byte {
+func mihomoClientConfig(carrier string, serverPort, socksPort int, protocol string, padding bool) []byte {
 	credentials := fmt.Sprintf("    uuid: %s\n    udp: true\n", testUUID)
 	tls := "    tls: false\n"
 	if carrier == "trojan" {
 		credentials = fmt.Sprintf("    password: %s\n    udp: true\n", testPassword)
 		tls = "    tls: true\n    servername: localhost\n    skip-cert-verify: true\n"
 	}
-	return []byte(fmt.Sprintf("socks-port: %d\nallow-lan: false\nmode: global\nlog-level: warning\nproxies:\n  - name: e2e-peer\n    type: %s\n    server: 127.0.0.1\n    port: %d\n%s%s    smux:\n      enabled: true\n      protocol: smux\n      max-connections: 1\n      padding: %t\nproxy-groups:\n  - name: GLOBAL\n    type: select\n    proxies:\n      - e2e-peer\n", socksPort, carrier, serverPort, credentials, tls, padding))
+	return []byte(fmt.Sprintf("socks-port: %d\nallow-lan: false\nmode: global\nlog-level: warning\nproxies:\n  - name: e2e-peer\n    type: %s\n    server: 127.0.0.1\n    port: %d\n%s%s    smux:\n      enabled: true\n      protocol: %s\n      max-connections: 1\n      padding: %t\nproxy-groups:\n  - name: GLOBAL\n    type: select\n    proxies:\n      - e2e-peer\n", socksPort, carrier, serverPort, credentials, tls, protocol, padding))
 }
 
 func writeConfig(t testing.TB, path string, content []byte) {

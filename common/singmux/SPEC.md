@@ -1,7 +1,7 @@
-# Xray SMUX wire protocol
+# Xray sing-mux wire protocol
 
-This package implements the sing-mux compatible SMUX wire protocol without a
-runtime dependency on sing-mux or another multiplexing library.
+This package implements the sing-mux compatible SMUX and H2MUX wire protocols
+without a runtime dependency on sing-mux or another multiplexing library.
 
 All multi-byte integers in the outer protocol are unsigned and big endian.
 The embedded SMUX v1 carrier is specified in `ENGINE_SPEC.md`; its integers are
@@ -11,7 +11,8 @@ little endian as required for interoperability.
 
 The carrier is a TCP connection to `sp.mux.sing-box.arpa:444`.
 
-* Version 0: `version(1) protocol(1)`. Protocol 0 is SMUX.
+* Version 0: `version(1) protocol(1)`. Protocol 0 is SMUX and protocol 2 is
+  H2MUX.
 * Version 1: `version(1) protocol(1) padding(1) padding_length(2) padding(N)`.
 
 When padding is enabled, both sides wrap the first 16 writes. Each padded frame
@@ -26,9 +27,16 @@ The padding bytes themselves carry no meaning and the reader discards
 would contribute a recognisable pattern rather than hide one. A peer that emits
 constant padding stays interoperable.
 
+After the carrier request, protocol 0 starts the embedded SMUX v1 engine.
+Protocol 2 starts HTTP/2 prior knowledge directly on the authenticated carrier,
+without TLS, ALPN, or an HTTP/1 upgrade. Every logical H2MUX stream is one HTTP
+CONNECT request to authority `localhost`. HTTP status 200 establishes the byte
+stream; the request and response DATA bodies carry the common stream framing
+below. The client may send the stream request before response headers arrive.
+
 ## Stream request and response
 
-A new SMUX stream starts with `flags(2) destination`.
+A new logical stream starts with `flags(2) destination`.
 
 * Flag bit 0: UDP.
 * Flag bit 1: every UDP datagram carries its own destination.
@@ -63,7 +71,7 @@ are bounded to 65535 bytes before allocation.
 
 Each endpoint applies the smaller of its configured send ceiling and the
 peer's advertised receive ceiling to the physical TCP carrier. Xray currently
-exposes this setting on outbound SMUX clients only. The Linux carrier must have
+exposes this setting on outbound mux clients only. The Linux carrier must have
 the `brutal` congestion-control module available; negotiation or socket-control
 failure rejects the candidate carrier rather than leaving the two endpoints
 with asymmetric congestion control.

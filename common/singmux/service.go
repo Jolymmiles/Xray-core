@@ -80,8 +80,12 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		return err
 	}
 	_ = connection.SetReadDeadline(time.Time{})
-	if request.Version == carrierVersionPadded {
+	// Version 1 option 0 explicitly keeps the carrier raw.
+	if request.Padding != nil {
 		connection = newPaddingConn(connection)
+	}
+	if request.Protocol == protocolH2MUX {
+		return s.serveH2Mux(ctx, connection)
 	}
 	config := mplsmux.DefaultConfig()
 	config.KeepAliveDisabled = true
@@ -140,6 +144,14 @@ func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSl
 	_ = s.dispatcher.DispatchLink(streamContext(ctx), destination, &transport.Link{Reader: reader, Writer: writer})
 }
 
+func (s *Service) streamDeadline(ctx context.Context) time.Time {
+	deadline := time.Now().Add(s.streamHandshakeTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		return contextDeadline
+	}
+	return deadline
+}
+
 // streamContext gives one carrier stream its own Outbound and Content.
 //
 // The carrier context is shared by every stream of the session, and the
@@ -163,16 +175,12 @@ func streamContext(parent context.Context) context.Context {
 }
 
 func (s *Service) handshakeStream(ctx context.Context, stream net.Conn) (uint16, X.Destination, error) {
-	deadline := time.Now().Add(s.streamHandshakeTimeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
-	_ = stream.SetReadDeadline(deadline)
+	_ = stream.SetDeadline(s.streamDeadline(ctx))
+	defer stream.SetDeadline(time.Time{})
 	flags, destination, err := readStreamRequest(stream)
 	if err != nil {
 		return 0, X.Destination{}, err
 	}
-	_ = stream.SetReadDeadline(time.Time{})
 	if err := writeStreamResponse(stream, nil); err != nil {
 		return 0, X.Destination{}, err
 	}

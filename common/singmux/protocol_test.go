@@ -12,17 +12,20 @@ import (
 
 func TestCarrierRequestGolden(t *testing.T) {
 	tests := []struct {
-		name    string
-		padding []byte
-		wantHex string
+		name     string
+		protocol byte
+		padding  []byte
+		wantHex  string
 	}{
-		{name: "plain", wantHex: "0000"},
-		{name: "padded", padding: []byte{0xaa, 0xbb, 0xcc}, wantHex: "0100010003aabbcc"},
+		{name: "smux plain", protocol: protocolSMUX, wantHex: "0000"},
+		{name: "smux padded", protocol: protocolSMUX, padding: []byte{0xaa, 0xbb, 0xcc}, wantHex: "0100010003aabbcc"},
+		{name: "h2mux plain", protocol: protocolH2MUX, wantHex: "0002"},
+		{name: "h2mux padded", protocol: protocolH2MUX, padding: []byte{0xaa, 0xbb, 0xcc}, wantHex: "0102010003aabbcc"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var encoded bytes.Buffer
-			if err := writeCarrierRequest(&encoded, protocolSMUX, test.padding); err != nil {
+			if err := writeCarrierRequest(&encoded, test.protocol, test.padding); err != nil {
 				t.Fatal(err)
 			}
 			if got := hex.EncodeToString(encoded.Bytes()); got != test.wantHex {
@@ -32,7 +35,7 @@ func TestCarrierRequestGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if request.Protocol != protocolSMUX || !bytes.Equal(request.Padding, test.padding) {
+			if request.Protocol != test.protocol || !bytes.Equal(request.Padding, test.padding) {
 				t.Fatalf("decoded request = %#v", request)
 			}
 		})
@@ -40,12 +43,14 @@ func TestCarrierRequestGolden(t *testing.T) {
 }
 
 func TestCarrierVersionOneWithoutPadding(t *testing.T) {
-	request, err := readCarrierRequest(bytes.NewReader([]byte{carrierVersionPadded, protocolSMUX, 0}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Version != carrierVersionPadded || request.Padding != nil {
-		t.Fatalf("request = %#v", request)
+	for _, protocol := range []byte{protocolSMUX, protocolH2MUX} {
+		request, err := readCarrierRequest(bytes.NewReader([]byte{carrierVersionPadded, protocol, 0}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.Version != carrierVersionPadded || request.Protocol != protocol || request.Padding != nil {
+			t.Fatalf("request = %#v", request)
+		}
 	}
 }
 
@@ -181,8 +186,10 @@ func TestProtocolRejectsMalformedInput(t *testing.T) {
 }
 
 func TestProtocolRejectsInvalidOutput(t *testing.T) {
-	if err := writeCarrierRequest(io.Discard, protocolSMUX+1, nil); err == nil {
-		t.Fatal("unsupported carrier protocol must be rejected")
+	for _, protocol := range []byte{1, 3, 255} {
+		if err := writeCarrierRequest(io.Discard, protocol, nil); err == nil {
+			t.Fatalf("carrier protocol %d must be rejected", protocol)
+		}
 	}
 	if err := writeCarrierRequest(io.Discard, protocolSMUX, make([]byte, 65536)); err == nil {
 		t.Fatal("oversized carrier padding must be rejected")

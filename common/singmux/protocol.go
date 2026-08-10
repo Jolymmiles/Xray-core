@@ -15,6 +15,7 @@ const (
 	carrierVersionPlain  byte = 0
 	carrierVersionPadded byte = 1
 	protocolSMUX         byte = 0
+	protocolH2MUX        byte = 2
 
 	streamFlagUDP        uint16 = 1 << 0
 	streamFlagPacketAddr uint16 = 1 << 1
@@ -54,7 +55,7 @@ func writeFull(writer io.Writer, payload []byte) error {
 }
 
 func writeCarrierRequest(writer io.Writer, protocol byte, padding []byte) error {
-	if protocol != protocolSMUX {
+	if protocol != protocolSMUX && protocol != protocolH2MUX {
 		return fmt.Errorf("unsupported mux protocol %d", protocol)
 	}
 	if len(padding) > maxWirePayload {
@@ -80,7 +81,7 @@ func readCarrierRequest(reader io.Reader) (carrierRequest, error) {
 		return carrierRequest{}, err
 	}
 	request := carrierRequest{Version: initial[0], Protocol: initial[1]}
-	if request.Protocol != protocolSMUX {
+	if request.Protocol != protocolSMUX && request.Protocol != protocolH2MUX {
 		return carrierRequest{}, fmt.Errorf("unsupported mux protocol %d", request.Protocol)
 	}
 	switch request.Version {

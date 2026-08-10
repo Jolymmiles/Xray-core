@@ -1,8 +1,7 @@
-# SMUX release gates
+# Sing-mux release gates
 
-The recorded reference point is in [`BASELINE.md`](BASELINE.md). YAMUX and
-H2MUX are outside the scope of these gates; this suite is exclusively for the
-in-tree SMUX v1 stack.
+The recorded reference point is in [`BASELINE.md`](BASELINE.md). These gates
+cover the in-tree SMUX v1 and H2MUX stacks. YAMUX remains outside the scope.
 
 The default suite covers the wire codec, padding, pool behavior, TCP and UDP
 adapters, Xray integration, the MPL SMUX engine, and the recursive external-mux
@@ -20,12 +19,13 @@ The 32 KiB hot-path allocation gate is zero allocations per round trip and is
 compiled only without `-race`, because race instrumentation changes allocation
 behavior. Frame, padding, and outer-protocol decoders also have Go fuzz targets.
 
-The functional process suite builds and starts Xray, sing-box, and Mihomo. It
-runs both Xray client and Xray server directions for VLESS and Trojan, TCP and
-UDP, with padding disabled and enabled (32 scenarios).
+The functional process suites build and start Xray, sing-box, and Mihomo. They
+run both Xray client and Xray server directions for VLESS and Trojan, TCP and
+UDP, with padding disabled and enabled (40 scenarios per mux protocol).
 
 ```sh
 go test -tags integration ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
+go test -tags integration ./common/singmux -run '^TestH2MUXProcessInteropMatrix$' -count=1 -v
 ```
 
 The separate VLESS TCP server gate keeps SMUX out of the topology and covers
