@@ -8,14 +8,17 @@ import (
 
 var firstBufferBenchmarkSink *buf.Buffer
 
+// The Buffer header must have a unique identity so a stale holder cannot
+// release a new owner's live buffer. Storage and packet metadata stay pooled;
+// any allocation above the one header is the regression this budget catches.
 func TestManagedFirstBufferAllocationBudget(t *testing.T) {
 	allocations := testing.AllocsPerRun(1000, func() {
 		first := buf.New()
 		firstBufferBenchmarkSink = first
 		first.Release()
 	})
-	if allocations > 0 {
-		t.Fatalf("managed first-buffer lifecycle allocations = %.0f, want zero", allocations)
+	if allocations > 1 {
+		t.Fatalf("managed first-buffer lifecycle allocations = %.0f, want at most 1 (header only)", allocations)
 	}
 }
 
