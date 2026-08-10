@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	Version = 1
+	Version                    = 1
+	maxUDPPacketOverhead int32 = 32 + 1 + 1 + 255 + 2 + 16 // salt + domain address + port + AEAD tag
 )
 
 var addrParser = protocol.NewAddressParser(
@@ -208,19 +209,24 @@ func EncodeUDPPacket(request *protocol.RequestHeader, payload []byte) (*buf.Buff
 	user := request.User
 	account := user.Account.(*MemoryAccount)
 
-	buffer := buf.New()
+	buffer := buf.NewWithSize(int32(len(payload)) + maxUDPPacketOverhead)
 	ivLen := account.Cipher.IVSize()
 	if ivLen > 0 {
 		common.Must2(buffer.ReadFullFrom(rand.Reader, ivLen))
 	}
 
 	if err := addrParser.WriteAddressPort(buffer, request.Address, request.Port); err != nil {
+		buffer.Release()
 		return nil, errors.New("failed to write address").Base(err)
 	}
 
-	buffer.Write(payload)
+	if _, err := buffer.Write(payload); err != nil {
+		buffer.Release()
+		return nil, errors.New("failed to write UDP payload").Base(err)
+	}
 
 	if err := account.Cipher.EncodePacket(account.Key, buffer); err != nil {
+		buffer.Release()
 		return nil, errors.New("failed to encrypt UDP payload").Base(err)
 	}
 
