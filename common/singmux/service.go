@@ -27,6 +27,7 @@ type Service struct {
 	maxPendingHandshakes    int
 	handshakeSlotsOnce      sync.Once
 	handshakeSlots          chan struct{}
+	setBrutalOptions        func(net.Conn, uint64) error
 }
 
 func (s *Service) pendingHandshakeSlots() chan struct{} {
@@ -46,6 +47,7 @@ func NewService(dispatcher routing.Dispatcher) *Service {
 		carrierHandshakeTimeout: handshakeTimeout,
 		streamHandshakeTimeout:  handshakeTimeout,
 		maxPendingHandshakes:    defaultMaxPendingHandshakes,
+		setBrutalOptions:        SetBrutalOptions,
 	}
 }
 
@@ -84,8 +86,9 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	if request.Padding != nil {
 		connection = newPaddingConn(connection)
 	}
+	brutal := newServerBrutalController(ctx, s.setBrutalOptions)
 	if request.Protocol == protocolH2MUX {
-		return s.serveH2Mux(ctx, connection)
+		return s.serveH2Mux(ctx, connection, brutal)
 	}
 	config := mplsmux.DefaultConfig()
 	config.KeepAliveDisabled = true
@@ -113,7 +116,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 			handlers.Add(1)
 			go func() {
 				defer handlers.Done()
-				s.handleStream(ctx, stream, handshakeSlots)
+				s.handleStream(ctx, stream, handshakeSlots, brutal)
 			}()
 		case <-ctx.Done():
 			_ = stream.Close()
@@ -127,11 +130,22 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	}
 }
 
-func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSlots chan struct{}) {
+func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSlots chan struct{}, brutal *serverBrutalController) {
 	defer stream.Close()
 	flags, destination, err := s.handshakeStream(ctx, stream)
 	<-handshakeSlots
 	if err != nil {
+		return
+	}
+	if isBrutalDestination(destination) {
+		if flags&streamFlagUDP != 0 || destination.Network != X.Network_TCP || destination.Port != 0 {
+			_ = writeBrutalResponse(stream, 0, false, "invalid Brutal control destination")
+			return
+		}
+		closeCarrier, _ := brutal.handle(ctx, stream, s.streamDeadline(ctx))
+		if closeCarrier && brutal.physical != nil {
+			_ = brutal.physical.Close()
+		}
 		return
 	}
 

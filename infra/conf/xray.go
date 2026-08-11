@@ -126,6 +126,24 @@ type SMuxBrutalOpts struct {
 
 const smuxBrutalMinBPS = 65536
 
+func (b *SMuxBrutalOpts) Build() (*proxyman.BrutalConfig, error) {
+	if b == nil {
+		return nil, nil
+	}
+	up, err := parseSMuxRate(b.Up)
+	if err != nil {
+		return nil, err
+	}
+	down, err := parseSMuxRate(b.Down)
+	if err != nil {
+		return nil, err
+	}
+	if b.Enabled && (up < smuxBrutalMinBPS || down < smuxBrutalMinBPS) {
+		return nil, errors.New("SMUX Brutal rates must each be at least 65536 bytes per second")
+	}
+	return &proxyman.BrutalConfig{Enabled: b.Enabled, UpBps: up, DownBps: down}, nil
+}
+
 func parseSMuxRate(value string) (uint64, error) {
 	if value == "" {
 		return 0, nil
@@ -216,20 +234,9 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	if m.MaxStreams > 0 && (m.MaxConnections > 0 || m.MinStreams > 0) {
 		return nil, errors.New("SMUX maxStreams conflicts with maxConnections and minStreams")
 	}
-	var brutal *proxyman.BrutalConfig
-	if m.BrutalOpts != nil {
-		up, err := parseSMuxRate(m.BrutalOpts.Up)
-		if err != nil {
-			return nil, err
-		}
-		down, err := parseSMuxRate(m.BrutalOpts.Down)
-		if err != nil {
-			return nil, err
-		}
-		if m.BrutalOpts.Enabled && (up < smuxBrutalMinBPS || down < smuxBrutalMinBPS) {
-			return nil, errors.New("SMUX Brutal rates must each be at least 65536 bytes per second")
-		}
-		brutal = &proxyman.BrutalConfig{Enabled: m.BrutalOpts.Enabled, UpBps: up, DownBps: down}
+	brutal, err := m.BrutalOpts.Build()
+	if err != nil {
+		return nil, err
 	}
 	return &proxyman.SmuxConfig{
 		Enabled:        m.Enabled,
@@ -241,6 +248,18 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 		OnlyTcp:        m.OnlyTCP,
 		Brutal:         brutal,
 	}, nil
+}
+
+type InboundSMuxConfig struct {
+	BrutalOpts *SMuxBrutalOpts `json:"brutal-opts"`
+}
+
+func (c *InboundSMuxConfig) Build() (*proxyman.SmuxConfig, error) {
+	brutal, err := c.BrutalOpts.Build()
+	if err != nil {
+		return nil, err
+	}
+	return &proxyman.SmuxConfig{Brutal: brutal}, nil
 }
 
 // Build creates MultiplexingConfig, Concurrency < 0 completely disables mux.
@@ -261,13 +280,14 @@ func (m *MuxConfig) Build() (*proxyman.MultiplexingConfig, error) {
 }
 
 type InboundDetourConfig struct {
-	Protocol       string           `json:"protocol"`
-	PortList       *PortList        `json:"port"`
-	ListenOn       *Address         `json:"listen"`
-	Settings       *json.RawMessage `json:"settings"`
-	Tag            string           `json:"tag"`
-	StreamSetting  *StreamConfig    `json:"streamSettings"`
-	SniffingConfig *SniffingConfig  `json:"sniffing"`
+	Protocol       string             `json:"protocol"`
+	PortList       *PortList          `json:"port"`
+	ListenOn       *Address           `json:"listen"`
+	Settings       *json.RawMessage   `json:"settings"`
+	Tag            string             `json:"tag"`
+	StreamSetting  *StreamConfig      `json:"streamSettings"`
+	SniffingConfig *SniffingConfig    `json:"sniffing"`
+	SMuxSettings   *InboundSMuxConfig `json:"smux"`
 }
 
 // Build implements Buildable.
@@ -322,6 +342,13 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 			return nil, errors.New("failed to build sniffing config").Base(err)
 		}
 		receiverSettings.SniffingSettings = s
+	}
+	if c.SMuxSettings != nil {
+		smux, err := c.SMuxSettings.Build()
+		if err != nil {
+			return nil, errors.New("failed to build inbound SMUX config").Base(err)
+		}
+		receiverSettings.SmuxSettings = smux
 	}
 
 	settings := []byte("{}")

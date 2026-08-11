@@ -43,6 +43,7 @@ message ReceiverConfig {
   bool receive_original_destination = 4;
   reserved 5;
   SniffingConfig sniffing_settings = 6;
+  SmuxConfig smux_settings = 7;
 }
 
 message InboundHandlerConfig {

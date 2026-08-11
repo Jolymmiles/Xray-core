@@ -7,10 +7,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
+
+func TestReceiverBrutalOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *proxyman.ReceiverConfig
+		want   singmux.BrutalOptions
+	}{
+		{name: "nil receiver"},
+		{name: "nil smux", config: &proxyman.ReceiverConfig{}},
+		{
+			name: "configured",
+			config: &proxyman.ReceiverConfig{SmuxSettings: &proxyman.SmuxConfig{
+				Brutal: &proxyman.BrutalConfig{Enabled: true, UpBps: 7, DownBps: 9},
+			}},
+			want: singmux.BrutalOptions{Enabled: true, SendBPS: 7, ReceiveBPS: 9},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := receiverBrutalOptions(test.config); got != test.want {
+				t.Fatalf("receiverBrutalOptions() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
 
 type blockingInbound struct {
 	started chan struct{}

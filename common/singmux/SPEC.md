@@ -70,11 +70,27 @@ by an unsigned-varint diagnostic length and that many UTF-8 bytes. Diagnostics
 are bounded to 65535 bytes before allocation.
 
 Each endpoint applies the smaller of its configured send ceiling and the
-peer's advertised receive ceiling to the physical TCP carrier. Xray currently
-exposes this setting on outbound mux clients only. The Linux carrier must have
-the `brutal` congestion-control module available; negotiation or socket-control
-failure rejects the candidate carrier rather than leaving the two endpoints
-with asymmetric congestion control.
+peer's advertised receive ceiling to the physical TCP carrier. Xray exposes
+the client setting on outbound mux clients and the server setting per inbound:
+
+```json
+"smux": {
+  "brutal-opts": {
+    "enabled": true,
+    "up": "1 Gbps",
+    "down": "1 Gbps"
+  }
+}
+```
+
+The server reserves `_BrutalBwExchange:0` before routing, accepts it only as a
+TCP stream, and permits one successful exchange per carrier for both SMUX and
+H2MUX. It applies `min(server up, client down)` and advertises `server down`.
+Disabled, malformed, duplicate, or out-of-range exchanges fail only their
+control stream. If socket control may already have changed the physical TCP
+socket, the server closes the carrier rather than leaving asymmetric
+congestion control. The Linux carrier must have the `brutal`
+congestion-control module available.
 
 ## UDP packets
 
