@@ -8,11 +8,22 @@ adapters, Xray integration, the MPL SMUX engine, and the recursive external-mux
 dependency ban. The engine package is held above 80% statement coverage.
 
 ```sh
-go test ./common/singmux/... ./common/mux ./app/proxyman/outbound ./infra/conf
+go test ./common/singmux/... ./common/mux ./app/proxyman/inbound ./app/proxyman/outbound ./infra/conf
 go test -race ./common/singmux/... ./common/mux
+go test -gcflags=all=-d=checkptr=2 ./common/singmux ./app/proxyman/inbound
 go test -cover ./common/singmux/internal/mplsmux
 go test ./common/singmux/... -count=50
 go test ./common/singmux/internal/mplsmux -run '^$' -bench '^BenchmarkStreamRoundTrip32KiB$' -benchmem -count=5
+```
+
+The focused Brutal server gate covers per-inbound parsing, bounded rate
+selection, disabled and malformed control streams, duplicate negotiation,
+post-socket-control carrier closure, ordinary SMUX continuation, and H2MUX
+carrier-scoped parity:
+
+```sh
+go test ./infra/conf ./app/proxyman/inbound -run 'Test(InboundSMuxConfigBuild|ReceiverBrutalOptions)$' -count=1
+go test ./common/singmux -run '^(TestServerBrutal|TestServiceBrutal|TestServiceH2MuxBrutal)' -count=1
 ```
 
 The 32 KiB hot-path allocation gate is zero allocations per round trip and is
