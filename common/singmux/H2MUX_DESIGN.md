@@ -8,9 +8,10 @@ auto-detects H2MUX carriers on the existing inbound destination
 `smux`. YAMUX remains unsupported.
 
 H2MUX reuses the existing stream request, response, TCP, UDP, packet-address,
-padding, retry, pool, and outbound Brutal exchange code. Xray has no inbound
-SMUX bandwidth configuration, so this change does not add server-side Brutal
-configuration.
+padding, retry, pool, and Brutal exchange code. The per-inbound Brutal server
+controller is created once per carrier and shared by every H2 CONNECT stream,
+so H2MUX has the same single-negotiation and routing-reservation behavior as
+SMUX.
 
 ## Clean-room boundary
 
@@ -39,7 +40,7 @@ flushes response writes, and closes request/response resources on cancellation.
 - Config accepts `smux` and `h2mux`, while blank remains `smux`.
 - Carrier codec accepts only protocol bytes 0 and 2, including v1/no-padding.
 - In-process TCP and UDP round trips pass in both client/server directions.
-- Padding and outbound Brutal use the same shared paths under H2MUX.
+- Padding and client/server Brutal use the same shared paths under H2MUX.
 - Cancellation and carrier teardown leave no blocked stream handlers.
 - Unit, race, dependency-ban, process interoperability, and Linux build gates
   pass. Process peers are started separately; no GPL implementation is linked.

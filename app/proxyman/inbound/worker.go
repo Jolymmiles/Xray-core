@@ -14,6 +14,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal/done"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
@@ -45,6 +46,7 @@ type tcpWorker struct {
 	sniffingRequest session.SniffingRequest
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
+	brutal          singmux.BrutalOptions
 
 	hub internet.Listener
 
@@ -129,6 +131,9 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 	content := session.Content{}
 	content.SniffingRequest = w.sniffingRequest
 	ctx = session.ContextWithConnection(ctx, sid, inbound, outbound, content)
+	if w.brutal.Enabled {
+		ctx = singmux.ContextWithServerBrutalOptions(ctx, w.brutal)
+	}
 
 	if err := w.proxy.Process(ctx, net.Network_TCP, conn, w.dispatcher); err != nil {
 		errors.LogInfoInner(ctx, err, "connection ends")
