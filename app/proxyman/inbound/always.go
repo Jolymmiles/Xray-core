@@ -10,6 +10,7 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/stats"
@@ -17,6 +18,18 @@ import (
 	"github.com/xtls/xray-core/transport/internet"
 	"google.golang.org/protobuf/proto"
 )
+
+func receiverBrutalOptions(config *proxyman.ReceiverConfig) singmux.BrutalOptions {
+	if config == nil || config.SmuxSettings == nil || config.SmuxSettings.Brutal == nil {
+		return singmux.BrutalOptions{}
+	}
+	brutal := config.SmuxSettings.Brutal
+	return singmux.BrutalOptions{
+		Enabled:    brutal.Enabled,
+		SendBPS:    brutal.UpBps,
+		ReceiveBPS: brutal.DownBps,
+	}
+}
 
 func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter) {
 	var uplinkCounter stats.Counter
@@ -142,6 +155,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 						sniffingRequest: sniffingRequest,
 						uplinkCounter:   uplinkCounter,
 						downlinkCounter: downlinkCounter,
+						brutal:          receiverBrutalOptions(receiverConfig),
 						ctx:             ctx,
 					}
 					h.workers = append(h.workers, worker)
