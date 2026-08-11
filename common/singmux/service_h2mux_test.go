@@ -14,6 +14,7 @@ import (
 	"time"
 
 	X "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/session"
 	"golang.org/x/net/http2"
 )
 
@@ -192,7 +193,7 @@ func TestServiceH2MuxBoundsInitialResponseFlush(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	service := NewService(&handshakeBenchmarkDispatcher{echoDispatcher: &echoDispatcher{target: make(chan X.Destination, 1)}})
-	service.handleH2MuxStream(writer, request, server)
+	service.handleH2MuxStream(writer, request, server, newServerBrutalController(request.Context(), service.setBrutalOptions))
 
 	writer.mu.Lock()
 	flushHadDeadline := writer.flushHadDeadline
@@ -206,10 +207,70 @@ func TestServiceH2MuxBoundsInitialResponseFlush(t *testing.T) {
 	}
 }
 
+func TestServiceH2MuxBrutalSharesOneNegotiationPerCarrier(t *testing.T) {
+	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
+	service := NewService(dispatcher)
+	applied := make(chan uint64, 2)
+	service.setBrutalOptions = func(_ net.Conn, rate uint64) error {
+		applied <- rate
+		return nil
+	}
+	client, closeCarrier := startH2MuxServiceWithContext(t, service, []byte{0, 2}, func(serverConnection net.Conn) context.Context {
+		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Conn: serverConnection})
+		return ContextWithServerBrutalOptions(ctx, BrutalOptions{
+			Enabled: true, SendBPS: 70_000_000, ReceiveBPS: 60_000_000,
+		})
+	})
+	defer closeCarrier()
+
+	exchange := func() error {
+		response, bodyWriter := openH2MuxStream(t, client)
+		defer response.Body.Close()
+		defer bodyWriter.Close()
+		if err := writeStreamRequest(bodyWriter, 0, X.TCPDestination(X.DomainAddress(brutalExchangeDomain), 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeBrutalRequest(bodyWriter, 80_000_000); err != nil {
+			t.Fatal(err)
+		}
+		if err := readStreamResponse(response.Body); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readBrutalResponse(response.Body)
+		return err
+	}
+	if err := exchange(); err != nil {
+		t.Fatalf("first exchange failed: %v", err)
+	}
+	if err := exchange(); err == nil {
+		t.Fatal("duplicate exchange succeeded")
+	}
+	if got := <-applied; got != 70_000_000 {
+		t.Fatalf("applied rate = %d, want 70000000", got)
+	}
+	select {
+	case got := <-applied:
+		t.Fatalf("duplicate exchange reapplied rate %d", got)
+	default:
+	}
+	select {
+	case target := <-dispatcher.target:
+		t.Fatalf("H2MUX control stream reached router: %s", target)
+	default:
+	}
+}
+
 func startH2MuxService(t *testing.T, service *Service, carrierHeader []byte) (*http2.ClientConn, func()) {
 	t.Helper()
+	return startH2MuxServiceWithContext(t, service, carrierHeader, func(net.Conn) context.Context {
+		return context.Background()
+	})
+}
+
+func startH2MuxServiceWithContext(t *testing.T, service *Service, carrierHeader []byte, carrierContext func(net.Conn) context.Context) (*http2.ClientConn, func()) {
+	t.Helper()
 	clientConnection, serverConnection := net.Pipe()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(carrierContext(serverConnection))
 	result := make(chan error, 1)
 	go func() { result <- service.NewConnection(ctx, serverConnection) }()
 	if _, err := clientConnection.Write(carrierHeader); err != nil {

@@ -14,12 +14,12 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn) error {
+func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, brutal *serverBrutalController) error {
 	server := &http2.Server{}
 	server.ServeConn(carrier, &http2.ServeConnOpts{
 		Context: ctx,
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			s.handleH2MuxStream(writer, request, carrier)
+			s.handleH2MuxStream(writer, request, carrier, brutal)
 		}),
 	})
 	if err := ctx.Err(); err != nil {
@@ -28,7 +28,7 @@ func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn) error {
 	return net.ErrClosed
 }
 
-func (s *Service) handleH2MuxStream(writer http.ResponseWriter, request *http.Request, carrier net.Conn) {
+func (s *Service) handleH2MuxStream(writer http.ResponseWriter, request *http.Request, carrier net.Conn, brutal *serverBrutalController) {
 	if request.Method != http.MethodConnect {
 		http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
 		return
@@ -61,7 +61,7 @@ func (s *Service) handleH2MuxStream(writer http.ResponseWriter, request *http.Re
 		localAddr:  carrier.LocalAddr(),
 		remoteAddr: carrier.RemoteAddr(),
 	}
-	s.handleStream(request.Context(), stream, handshakeSlots)
+	s.handleStream(request.Context(), stream, handshakeSlots, brutal)
 }
 
 type h2MuxServerStream struct {

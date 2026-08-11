@@ -498,6 +498,78 @@ func TestSMuxConfigBuild(t *testing.T) {
 	}
 }
 
+func TestInboundSMuxConfigBuild(t *testing.T) {
+	tests := []struct {
+		name    string
+		fields  string
+		want    *proxyman.SmuxConfig
+		wantErr bool
+	}{
+		{
+			name:   "disabled default",
+			fields: `{}`,
+			want:   &proxyman.SmuxConfig{},
+		},
+		{
+			name:   "independent limits",
+			fields: `{"brutal-opts":{"enabled":true,"up":"800 Mbps","down":"1 Gbps"}}`,
+			want: &proxyman.SmuxConfig{Brutal: &proxyman.BrutalConfig{
+				Enabled: true,
+				UpBps:   100_000_000,
+				DownBps: 125_000_000,
+			}},
+		},
+		{
+			name:    "below minimum",
+			fields:  `{"brutal-opts":{"enabled":true,"up":"64 KBps","down":"1 Gbps"}}`,
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var config InboundSMuxConfig
+			common.Must(json.Unmarshal([]byte(test.fields), &config))
+			got, err := config.Build()
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			common.Must(err)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("InboundSMuxConfig.Build() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInboundDetourCarriesSMuxBrutalIntoReceiverSettings(t *testing.T) {
+	var config Config
+	common.Must(json.Unmarshal([]byte(`{
+		"inbounds": [{
+			"protocol": "dokodemo-door",
+			"port": 1234,
+			"settings": {"address": "127.0.0.1", "port": 80, "network": "tcp"},
+			"smux": {"brutal-opts": {"enabled": true, "up": "800 Mbps", "down": "1 Gbps"}}
+		}]
+	}`), &config))
+	built, err := config.Build()
+	common.Must(err)
+	message, err := built.Inbound[0].ReceiverSettings.GetInstance()
+	common.Must(err)
+	receiver := message.(*proxyman.ReceiverConfig)
+	want := &proxyman.SmuxConfig{Brutal: &proxyman.BrutalConfig{
+		Enabled: true,
+		UpBps:   100_000_000,
+		DownBps: 125_000_000,
+	}}
+	if !reflect.DeepEqual(receiver.SmuxSettings, want) {
+		t.Fatalf("receiver SMUX settings = %#v, want %#v", receiver.SmuxSettings, want)
+	}
+}
+
 func TestConfig_Override(t *testing.T) {
 	tests := []struct {
 		name string
