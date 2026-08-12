@@ -30,6 +30,21 @@ type physicalPeerSyscallConn struct {
 	syscall.Conn
 }
 
+type closeWriteConn interface {
+	CloseWrite() error
+}
+
+type physicalPeerCloseWriteConn struct {
+	*physicalPeerConn
+	closeWriteConn
+}
+
+type physicalPeerSyscallCloseWriteConn struct {
+	*physicalPeerConn
+	syscall.Conn
+	closeWriteConn
+}
+
 // PhysicalPeer returns the immutable server-observed peer carried separately
 // from a connection's effective RemoteAddr.
 func PhysicalPeer(conn Conn) (Addr, bool) {
@@ -85,8 +100,15 @@ func WithPhysicalPeer(peer Addr, wrapped Conn) Conn {
 
 func withPhysicalPeer(peer Addr, conn Conn) Conn {
 	carrier := &physicalPeerConn{Conn: conn, peer: peer}
-	if syscallConn, ok := conn.(syscall.Conn); ok {
+	syscallConn, hasSyscall := conn.(syscall.Conn)
+	closeWriter, hasCloseWrite := conn.(closeWriteConn)
+	switch {
+	case hasSyscall && hasCloseWrite:
+		return &physicalPeerSyscallCloseWriteConn{physicalPeerConn: carrier, Conn: syscallConn, closeWriteConn: closeWriter}
+	case hasSyscall:
 		return &physicalPeerSyscallConn{physicalPeerConn: carrier, Conn: syscallConn}
+	case hasCloseWrite:
+		return &physicalPeerCloseWriteConn{physicalPeerConn: carrier, closeWriteConn: closeWriter}
 	}
 	return carrier
 }
@@ -94,6 +116,10 @@ func withPhysicalPeer(peer Addr, conn Conn) Conn {
 // UnwrapPhysicalPeer removes only the provenance wrapper.
 func UnwrapPhysicalPeer(conn Conn) Conn {
 	switch conn := conn.(type) {
+	case *physicalPeerSyscallCloseWriteConn:
+		return conn.physicalPeerConn.Conn
+	case *physicalPeerCloseWriteConn:
+		return conn.physicalPeerConn.Conn
 	case *physicalPeerSyscallConn:
 		return conn.physicalPeerConn.Conn
 	case *physicalPeerConn:
