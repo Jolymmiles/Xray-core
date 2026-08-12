@@ -193,7 +193,7 @@ func TestServiceH2MuxBoundsInitialResponseFlush(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	service := NewService(&handshakeBenchmarkDispatcher{echoDispatcher: &echoDispatcher{target: make(chan X.Destination, 1)}})
-	service.handleH2MuxStream(writer, request, server, newServerBrutalController(request.Context(), service.setBrutalOptions))
+	service.handleH2MuxStream(writer, request, server, newServerBrutalController(request.Context(), service.setBrutalOptions), session.PresenceScope{})
 
 	writer.mu.Lock()
 	flushHadDeadline := writer.flushHadDeadline

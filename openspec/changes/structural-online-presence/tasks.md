@@ -14,9 +14,9 @@
 - [x] 2.4 GREEN: deepen the built-in `OnlineMap` with exact tokens and atomic single/batch replacement while leaving the stable interface unchanged; run targeted tests and race/count stress.
 - [x] 2.5 RED: add dispatcher tracker tests for policy sampling, exact-map pinning, no-op degradation, activate/handoff/batch handoff, custom/different-map ordering, and sanitized rate limiting; observe failures.
 - [x] 2.6 GREEN: implement the sole production tracker/provider seam and principal digest framing without changing routing/stats feature interfaces; run dispatcher/stats tests and race.
-- [ ] 2.7 After task 3.10, RED: add direct `Dispatch`/`DispatchLink` tests proving route-time activation, exact cancellation, early route-failure release, half-close behavior, and no acquisition in External/Untracked modes; observe failures.
-- [ ] 2.8 After task 3.10, GREEN: migrate direct ownership and delayed route acceptance to trusted structural leases while preserving traffic wrappers; remove the superseded direct `AddIP`/`RemoveIP` callback path.
-- [ ] 2.9 After tasks 2.7-2.8, run format, targeted vet, checkptr, race `-count=100`, and full tests for `common/session`, `app/stats`, and `app/dispatcher`; fix every new failure before continuing.
+- [x] 2.7 After task 3.10, RED: add direct `Dispatch`/`DispatchLink` tests proving route-time activation, exact cancellation, early route-failure release, half-close behavior, and no acquisition in External/Untracked modes; observe failures.
+- [x] 2.8 After task 3.10, GREEN: migrate direct ownership and delayed route acceptance to trusted structural leases while preserving traffic wrappers; remove the superseded direct `AddIP`/`RemoveIP` callback path.
+- [x] 2.9 After tasks 2.7-2.8, run format, targeted vet, checkptr, race `-count=100`, and full tests for `common/session`, `app/stats`, and `app/dispatcher`; fix every new failure before continuing.
 
 ## 3. Trusted physical peer and authenticated subjects
 
@@ -29,14 +29,14 @@
 - [x] 3.7 RED: add direct UDP, mKCP, and Hysteria tests proving kernel/QUIC packet peers are frozen and virtual/original-destination metadata cannot replace them.
 - [x] 3.8 GREEN: propagate trusted packet peers through UDP workers, mKCP, and Hysteria while making Unix/unknown/synthetic paths explicitly untracked.
 - [ ] 3.9 RED: add authenticated VLESS/Trojan/VMess/inbound-worker tests proving the provider snapshots user plus trusted peer after authentication and before frame source rewriting.
-- [ ] 3.10 GREEN: wire provider snapshots into built-in authenticated inbound owners and expose the optional provider source without changing stable dispatcher interfaces.
+- [x] 3.10 GREEN: wire provider snapshots into built-in authenticated inbound owners and expose the optional provider source without changing stable dispatcher interfaces.
 - [ ] 3.11 Run the full transport/auth package unit, race, checkptr, vet, VLESS/REALITY, spoofed-PROXY/XFF, and process compatibility gates; fix every failure before mux work.
 
 ## 4. SMUX and H2MUX structural stream owners
 
-- [ ] 4.1 RED: add service-level tests for idle carrier zero, one/two stream refs, stream close with live carrier, carrier loss, failed downstream commit, H2 request cancellation, and Brutal/control/keepalive zero.
-- [ ] 4.2 GREEN: pass one immutable carrier scope into the in-tree service and store one External lease beside every accepted data stream's resources; converge terminal paths on one stream close primitive.
-- [ ] 4.3 Prove no in-tree SMUX/H2MUX carrier or control path enters Context ownership and no stream lease waits for carrier cancellation.
+- [x] 4.1 RED: add service-level tests for idle carrier zero, one/two stream refs, stream close with live carrier, carrier loss, failed downstream commit, H2 request cancellation, and Brutal/control/keepalive zero.
+- [x] 4.2 GREEN: pass one immutable carrier scope into the in-tree service and store one External lease beside every accepted data stream's resources; converge terminal paths on one stream close primitive.
+- [x] 4.3 Prove no in-tree SMUX/H2MUX carrier or control path enters Context ownership and no stream lease waits for carrier cancellation.
 - [ ] 4.4 Run SMUX/H2MUX unit/race/coverage, frame/dependency-ban tests, and real Xray/sing-box/Mihomo process interop for VLESS/Trojan, TCP/UDP, both directions, and padding on/off.
 
 ## 5. Transactional legacy Mux sessions

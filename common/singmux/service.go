@@ -22,6 +22,7 @@ const defaultMaxPendingHandshakes = 512
 
 type Service struct {
 	dispatcher              routing.Dispatcher
+	presenceProvider        session.PresenceProvider
 	carrierHandshakeTimeout time.Duration
 	streamHandshakeTimeout  time.Duration
 	maxPendingHandshakes    int
@@ -42,13 +43,17 @@ func (s *Service) pendingHandshakeSlots() chan struct{} {
 }
 
 func NewService(dispatcher routing.Dispatcher) *Service {
-	return &Service{
+	service := &Service{
 		dispatcher:              dispatcher,
 		carrierHandshakeTimeout: handshakeTimeout,
 		streamHandshakeTimeout:  handshakeTimeout,
 		maxPendingHandshakes:    defaultMaxPendingHandshakes,
 		setBrutalOptions:        SetBrutalOptions,
 	}
+	if source, ok := dispatcher.(session.PresenceProviderSource); ok {
+		service.presenceProvider = source.PresenceProvider()
+	}
+	return service
 }
 
 func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error {
@@ -86,9 +91,13 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	if request.Padding != nil {
 		connection = newPaddingConn(connection)
 	}
+	presence := session.PresenceScope{}
+	if s.presenceProvider != nil {
+		presence = s.presenceProvider.SnapshotPresence(ctx)
+	}
 	brutal := newServerBrutalController(ctx, s.setBrutalOptions)
 	if request.Protocol == protocolH2MUX {
-		return s.serveH2Mux(ctx, connection, brutal)
+		return s.serveH2Mux(ctx, connection, brutal, presence)
 	}
 	config := mplsmux.DefaultConfig()
 	config.KeepAliveDisabled = true
@@ -116,7 +125,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 			handlers.Add(1)
 			go func() {
 				defer handlers.Done()
-				s.handleStream(ctx, stream, handshakeSlots, brutal)
+				s.handleStream(ctx, stream, handshakeSlots, brutal, presence)
 			}()
 		case <-ctx.Done():
 			_ = stream.Close()
@@ -130,7 +139,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	}
 }
 
-func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSlots chan struct{}, brutal *serverBrutalController) {
+func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSlots chan struct{}, brutal *serverBrutalController, presence session.PresenceScope) {
 	defer stream.Close()
 	flags, destination, err := s.handshakeStream(ctx, stream)
 	<-handshakeSlots
@@ -155,7 +164,10 @@ func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSl
 		reader = &packetReader{stream: stream}
 		writer = &packetWriter{stream: stream, destination: destination}
 	}
-	_ = s.dispatcher.DispatchLink(streamContext(ctx), destination, &transport.Link{Reader: reader, Writer: writer})
+	lease := presence.Prepare().Activate()
+	defer lease.Close()
+	streamCtx := session.ContextWithPresenceMode(streamContext(ctx), session.PresenceModeExternal)
+	_ = s.dispatcher.DispatchLink(streamCtx, destination, &transport.Link{Reader: reader, Writer: writer})
 }
 
 func (s *Service) streamDeadline(ctx context.Context) time.Time {
