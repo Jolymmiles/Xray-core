@@ -74,12 +74,12 @@
 
 ## 8. WireGuard authenticated endpoint and flow owners
 
-- [ ] 8.1 RED: add bind/device adapter tests proving authenticated public-key peer to server-observed endpoint association after inner data verification, with no inner-IP fallback and no handshake/keepalive activation.
-- [ ] 8.2 GREEN: implement the smallest WireGuard endpoint observation adapter and immutable generation-qualified peer binding without packet/config/public-interface changes.
-- [ ] 8.3 RED: add flow-owner tests for TCP/UDP activation/close, missing endpoint no-op, peer removal, server shutdown, stale binding updates, and concurrent flow admission.
-- [ ] 8.4 GREEN: store one External lease beside each committed gVisor flow and drain all flow owners through peer/server lifecycle.
-- [ ] 8.5 RED: add same/different-IP roaming tests proving authenticated data triggers one batch handoff across the frozen active set and stale close/update cannot mutate replacements.
-- [ ] 8.6 GREEN: implement generation-checked `HandoffAll` rebind and replacement-lease join before publishing the new endpoint binding.
+- [x] 8.1 RED: add bind/device adapter tests proving authenticated public-key peer to server-observed endpoint association after inner data verification, with no inner-IP fallback and no handshake/keepalive activation.
+- [x] 8.2 GREEN: implement the smallest WireGuard endpoint observation adapter and immutable generation-qualified peer binding without packet/config/public-interface changes.
+- [x] 8.3 RED: add flow-owner tests for TCP/UDP activation/close, missing endpoint no-op, peer removal, server shutdown, stale binding updates, and concurrent flow admission.
+- [x] 8.4 GREEN: store one External lease beside each committed gVisor flow and drain all flow owners through peer/server lifecycle.
+- [x] 8.5 RED: add same/different-IP roaming tests proving authenticated data triggers one batch handoff across the frozen active set and stale close/update cannot mutate replacements.
+- [x] 8.6 GREEN: implement generation-checked `HandoffAll` rebind and replacement-lease join before publishing the new endpoint binding.
 - [ ] 8.7 Run WireGuard unit/race/checkptr/vet, `-count=100` roam/shutdown stress, 1,000-handoff soak, standard WireGuard interop, and old/new Xray compatibility.
 
 ## 9. Cross-path integration, observability, and removal audit
