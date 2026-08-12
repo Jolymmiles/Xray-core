@@ -174,7 +174,7 @@ type ClientStrategy struct {
 }
 
 type ClientWorker struct {
-	sessionManager *SessionManager
+	sessionManager *clientSessionManager
 	link           transport.Link
 	done           *done.Instance
 	timer          *time.Ticker
@@ -190,7 +190,7 @@ var (
 // NewClientWorker creates a new mux.Client.
 func NewClientWorker(stream transport.Link, s ClientStrategy) (*ClientWorker, error) {
 	c := &ClientWorker{
-		sessionManager: NewSessionManager(),
+		sessionManager: newClientSessionManager(),
 		link:           stream,
 		done:           done.New(),
 		timer:          time.NewTicker(time.Second * 16),
@@ -204,11 +204,11 @@ func NewClientWorker(stream transport.Link, s ClientStrategy) (*ClientWorker, er
 }
 
 func (m *ClientWorker) TotalConnections() uint32 {
-	return uint32(m.sessionManager.Count())
+	return uint32(m.sessionManager.count())
 }
 
 func (m *ClientWorker) ActiveConnections() uint32 {
-	return uint32(m.sessionManager.Size())
+	return uint32(m.sessionManager.activeCount())
 }
 
 // Closed returns true if this Client is closed.
@@ -225,7 +225,7 @@ func (m *ClientWorker) WaitClosed() <-chan struct{} {
 // so callers (e.g. VLESS reverse NewMux → defer pooled Release) cannot race monitor.
 func (m *ClientWorker) finish() {
 	m.finishOnce.Do(func() {
-		m.sessionManager.Close()
+		m.sessionManager.close()
 		common.Interrupt(m.link.Writer)
 		common.Interrupt(m.link.Reader)
 		common.Must(m.done.Close())
@@ -241,14 +241,14 @@ func (m *ClientWorker) monitor() {
 	defer m.timer.Stop()
 
 	for {
-		checkSize := m.sessionManager.Size()
-		checkCount := m.sessionManager.Count()
+		checkSize := m.sessionManager.admitted()
+		checkCount := m.sessionManager.count()
 		select {
 		case <-m.done.Wait():
 			// Cleanup already completed in finish() before done was closed.
 			return
 		case <-m.timer.C:
-			if m.sessionManager.CloseIfNoSessionAndIdle(checkSize, checkCount) {
+			if m.sessionManager.closeIfIdle(checkSize, checkCount) {
 				m.finish()
 			}
 		}
@@ -300,7 +300,7 @@ func fetchInput(ctx context.Context, s *Session, output buf.Writer) {
 
 func (m *ClientWorker) IsClosing() bool {
 	sm := m.sessionManager
-	if m.strategy.MaxConnection > 0 && sm.Count() >= int(m.strategy.MaxConnection) {
+	if m.strategy.MaxConnection > 0 && sm.count() >= int(m.strategy.MaxConnection) {
 		return true
 	}
 	return false
@@ -314,7 +314,7 @@ func (m *ClientWorker) IsFull() bool {
 	}
 
 	sm := m.sessionManager
-	if m.strategy.MaxConcurrency > 0 && sm.Size() >= int(m.strategy.MaxConcurrency) {
+	if m.strategy.MaxConcurrency > 0 && sm.admitted() >= int(m.strategy.MaxConcurrency) {
 		return true
 	}
 	return false
@@ -326,13 +326,22 @@ func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool 
 	}
 
 	sm := m.sessionManager
-	s := sm.Allocate(&m.strategy)
-	if s == nil {
+	admission := sm.allocate(&m.strategy)
+	if admission == nil {
 		return false
 	}
-	s.input = link.Reader
-	s.output = link.Writer
-	go fetchInput(ctx, s, m.link.Writer)
+	streamCtx, cancel := context.WithCancel(ctx)
+	if !admission.prepare(cancel) || !admission.beginCommit() {
+		cancel()
+		admission.abort()
+		return false
+	}
+	s := &Session{input: link.Reader, output: link.Writer, done: done.New()}
+	if !admission.finishCommit(s, nil) {
+		return false
+	}
+	context.AfterFunc(streamCtx, func() { _ = s.Close(false) })
+	go fetchInput(streamCtx, s, m.link.Writer)
 	if _, ok := link.Reader.(*pipe.Reader); !ok {
 		select {
 		case <-ctx.Done():
@@ -361,7 +370,7 @@ func (m *ClientWorker) handleStatusKeep(meta *FrameMetadata, reader *buf.Buffere
 		return nil
 	}
 
-	s, found := m.sessionManager.Get(meta.SessionID)
+	s, found := m.sessionManager.active(meta.SessionID)
 	if !found {
 		// Notify remote peer to close this session.
 		closingWriter := NewResponseWriter(meta.SessionID, m.link.Writer, protocol.TransferTypeStream)
@@ -382,7 +391,7 @@ func (m *ClientWorker) handleStatusKeep(meta *FrameMetadata, reader *buf.Buffere
 }
 
 func (m *ClientWorker) handleStatusEnd(meta *FrameMetadata, reader *buf.BufferedReader) error {
-	if s, found := m.sessionManager.Get(meta.SessionID); found {
+	if s, found := m.sessionManager.active(meta.SessionID); found {
 		s.Close(false)
 	}
 	if meta.Option.Has(OptionData) {

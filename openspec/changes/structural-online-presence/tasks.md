@@ -41,12 +41,12 @@
 
 ## 5. Transactional legacy Mux sessions
 
-- [ ] 5.1 RED: add client allocator tests for wraparound, occupied-ID skipping, exhaustion, limits, owner-token reuse safety, activation visibility, and shutdown barriers.
-- [ ] 5.2 GREEN: split and implement the private `ClientSessionManager` transaction state machine without changing 16-bit wire IDs.
-- [ ] 5.3 RED: add server registry tests for reserve-before-dispatch, duplicate rejection, late dispatch/activation, stale token cleanup, End/EOF/write/cancel races, reentrant callbacks, and shutdown in every phase.
-- [ ] 5.4 GREEN: implement the token-qualified `ServerSessionRegistry`, two-phase publication, idempotent owner close, and in-flight shutdown barrier.
-- [ ] 5.5 RED: add normal Mux tests proving each committed TCP/packet-UDP session owns one External lease and an idle live carrier owns none.
-- [ ] 5.6 GREEN: migrate normal Mux sessions to the registry/lease bundle and start pumps only after complete publication.
+- [x] 5.1 RED: add client allocator tests for wraparound, occupied-ID skipping, exhaustion, limits, owner-token reuse safety, activation visibility, and shutdown barriers.
+- [x] 5.2 GREEN: split and implement the private `ClientSessionManager` transaction state machine without changing 16-bit wire IDs.
+- [x] 5.3 RED: add server registry tests for reserve-before-dispatch, duplicate rejection, late dispatch/activation, stale token cleanup, End/EOF/write/cancel races, reentrant callbacks, and shutdown in every phase.
+- [x] 5.4 GREEN: implement the token-qualified `ServerSessionRegistry`, two-phase publication, idempotent owner close, and in-flight shutdown barrier.
+- [x] 5.5 RED: add normal Mux tests proving each committed TCP/packet-UDP session owns one External lease and an idle live carrier owns none.
+- [x] 5.6 GREEN: migrate normal Mux sessions to the registry/lease bundle and start pumps only after complete publication.
 - [ ] 5.7 Add one `mux.Runtime` per long-lived owner with worker registration, close admission, transaction barrier, and idempotent full drain; keep XUDP behavior unchanged until its slice.
 - [ ] 5.8 Run frame goldens before/after, normal Mux unit/race/checkptr/vet, `-count=100` lifecycle interleavings, and old/new TCP/packet-UDP version skew.
 
