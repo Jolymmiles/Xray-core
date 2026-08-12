@@ -138,17 +138,23 @@ func (s *Server) Close() error {
 type ServerWorker struct {
 	dispatcher     routing.Dispatcher
 	link           *transport.Link
-	sessionManager *SessionManager
+	sessionManager *serverSessionRegistry
+	presence       session.PresenceScope
 	done           *done.Instance
 	timer          *time.Ticker
 	finishOnce     sync.Once
 }
 
 func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.Link) (*ServerWorker, error) {
+	presence := session.PresenceScope{}
+	if source, ok := d.(session.PresenceProviderSource); ok && source.PresenceProvider() != nil {
+		presence = source.PresenceProvider().SnapshotPresence(ctx)
+	}
 	worker := &ServerWorker{
 		dispatcher:     d,
 		link:           link,
-		sessionManager: NewSessionManager(),
+		sessionManager: newServerSessionRegistry(),
+		presence:       presence,
 		done:           done.New(),
 		timer:          time.NewTicker(60 * time.Second),
 	}
@@ -179,7 +185,7 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 // Interrupt. Contract now: done/WaitClosed ⇒ link is no longer touched.
 func (w *ServerWorker) finish() {
 	w.finishOnce.Do(func() {
-		w.sessionManager.Close()
+		w.sessionManager.close()
 		common.Interrupt(w.link.Writer)
 		common.Interrupt(w.link.Reader)
 		common.Must(w.done.Close())
@@ -190,14 +196,14 @@ func (w *ServerWorker) monitor() {
 	defer w.timer.Stop()
 
 	for {
-		checkSize := w.sessionManager.Size()
-		checkCount := w.sessionManager.Count()
+		checkSize := w.sessionManager.admitted()
+		checkCount := w.sessionManager.count()
 		select {
 		case <-w.done.Wait():
 			// Cleanup already completed in finish() before done was closed.
 			return
 		case <-w.timer.C:
-			if w.sessionManager.CloseIfNoSessionAndIdle(checkSize, checkCount) {
+			if w.sessionManager.closeIfIdle(checkSize, checkCount) {
 				// Unblock run (if still reading) and close only after Interrupt.
 				w.finish()
 			}
@@ -206,7 +212,7 @@ func (w *ServerWorker) monitor() {
 }
 
 func (w *ServerWorker) ActiveConnections() uint32 {
-	return uint32(w.sessionManager.Size())
+	return uint32(w.sessionManager.activeCount())
 }
 
 func (w *ServerWorker) Closed() bool {
@@ -258,6 +264,15 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 			return errors.New("unexpected network ", meta.Target.Network) // it will break the whole Mux connection
 		}
 	}
+	admission := w.sessionManager.reserve(meta.SessionID)
+	if admission == nil {
+		if meta.Option.Has(OptionData) {
+			_ = buf.Copy(NewStreamReader(reader), buf.Discard)
+		}
+		closingWriter := NewResponseWriter(meta.SessionID, w.link.Writer, protocol.TransferTypeStream)
+		_ = closingWriter.Close()
+		return nil
+	}
 
 	if meta.GlobalID != [8]byte{} { // MUST ignore empty Global ID
 		mb, err := NewPacketReader(reader, &meta.Target).ReadMultiBuffer()
@@ -294,7 +309,7 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 			errors.LogInfoInner(ctx, err, "XUDP hit ", meta.GlobalID)
 		}
 		if mb != nil {
-			ctx = session.ContextWithTimeoutOnly(ctx, true)
+			ctx = session.ContextWithTimeoutOnly(session.ContextWithPresenceMode(ctx, session.PresenceModeUntracked), true)
 			// Actually, it won't return an error in Xray-core's implementations.
 			link, err := w.dispatcher.Dispatch(ctx, meta.Target)
 			if err != nil {
@@ -314,22 +329,31 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 		x.Mux = &Session{
 			input:        x.Mux.input,
 			output:       x.Mux.output,
-			parent:       w.sessionManager,
 			ID:           meta.SessionID,
 			transferType: protocol.TransferTypePacket,
 			XUDP:         x,
 		}
 		x.Status = Active
-		if !w.sessionManager.Add(x.Mux) {
-			x.Mux.Close(false)
+		if !admission.beginCommit() || !admission.finishCommit(x.Mux, nil) {
+			admission.abort()
 			return errors.New("failed to add new session")
 		}
 		go handle(ctx, x.Mux, w.link.Writer)
 		return nil
 	}
 
-	link, err := w.dispatcher.Dispatch(ctx, meta.Target)
+	streamCtx, cancel := context.WithCancel(session.ContextWithPresenceMode(ctx, session.PresenceModeExternal))
+	if !admission.prepare(cancel) {
+		cancel()
+		admission.abort()
+		return errors.New("failed to prepare new session")
+	}
+	presence := w.presence.Prepare()
+	link, err := w.dispatcher.Dispatch(streamCtx, meta.Target)
 	if err != nil {
+		cancel()
+		presence.Abort()
+		admission.abort()
 		if meta.Option.Has(OptionData) {
 			buf.Copy(NewStreamReader(reader), buf.Discard)
 		}
@@ -338,17 +362,23 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 	s := &Session{
 		input:        link.Reader,
 		output:       link.Writer,
-		parent:       w.sessionManager,
 		ID:           meta.SessionID,
 		transferType: protocol.TransferTypeStream,
 	}
 	if meta.Target.Network == net.Network_UDP {
 		s.transferType = protocol.TransferTypePacket
 	}
-	if !w.sessionManager.Add(s) {
-		s.Close(false)
+	if !admission.beginCommit() {
+		presence.Abort()
+		admission.abort()
+		closeRejectedSession(s, nil)
+		return errors.New("failed to begin new session")
+	}
+	lease := presence.Activate()
+	if !admission.finishCommit(s, lease) {
 		return errors.New("failed to add new session")
 	}
+	context.AfterFunc(streamCtx, func() { _ = s.Close(false) })
 	go handle(ctx, s, w.link.Writer)
 	if !meta.Option.Has(OptionData) {
 		return nil
@@ -369,7 +399,7 @@ func (w *ServerWorker) handleStatusKeep(meta *FrameMetadata, reader *buf.Buffere
 		return nil
 	}
 
-	s, found := w.sessionManager.Get(meta.SessionID)
+	s, found := w.sessionManager.active(meta.SessionID)
 	if !found {
 		// Notify remote peer to close this session.
 		closingWriter := NewResponseWriter(meta.SessionID, w.link.Writer, protocol.TransferTypeStream)
@@ -391,7 +421,7 @@ func (w *ServerWorker) handleStatusKeep(meta *FrameMetadata, reader *buf.Buffere
 }
 
 func (w *ServerWorker) handleStatusEnd(meta *FrameMetadata, reader *buf.BufferedReader) error {
-	if s, found := w.sessionManager.Get(meta.SessionID); found {
+	if s, found := w.sessionManager.active(meta.SessionID); found {
 		s.Close(false)
 	}
 	if meta.Option.Has(OptionData) {
