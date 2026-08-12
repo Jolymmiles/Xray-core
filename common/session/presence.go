@@ -20,6 +20,12 @@ type PresenceProvider interface {
 	SnapshotPresence(context.Context) PresenceScope
 }
 
+// PresenceProviderSource exposes structural presence without changing the
+// stable dispatcher interface.
+type PresenceProviderSource interface {
+	PresenceProvider() PresenceProvider
+}
+
 // PresenceTracker prepares online ownership for a subject.
 type PresenceTracker interface {
 	Prepare(PresenceSubject) PresenceReservation
@@ -47,6 +53,7 @@ type PresenceScope struct {
 
 // NewPresenceScope returns a scope only for a complete trackable subject.
 func NewPresenceScope(subject PresenceSubject, tracker PresenceTracker) PresenceScope {
+	subject.IP = subject.IP.Unmap()
 	if tracker == nil || subject.Email == "" || !subject.IP.IsValid() || subject.IP.IsUnspecified() || subject.IP.IsLoopback() {
 		return PresenceScope{}
 	}

@@ -128,6 +128,7 @@ type DefaultDispatcher struct {
 	fdns                dns.FakeDNSEngine
 	snifferTemplate     Sniffer
 	detourCache         atomic.Pointer[detourCache]
+	presenceProvider    session.PresenceProvider
 }
 
 type detourCacheKey struct {
@@ -279,7 +280,12 @@ func (d *DefaultDispatcher) Init(config *Config, om outbound.Manager, router rou
 	d.sniffingRequirement, _ = router.(sniffingAttributeRequirement)
 	d.policy = pm
 	d.stats = sm
+	d.presenceProvider = newDefaultPresenceProvider(newPresenceTracker(pm, sm))
 	return nil
+}
+
+func (d *DefaultDispatcher) PresenceProvider() session.PresenceProvider {
+	return d.presenceProvider
 }
 
 // Type implements common.HasType.

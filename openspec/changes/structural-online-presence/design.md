@@ -150,8 +150,8 @@ The release candidate must pass format, full tests, vet, checkptr, full race, de
 ## Migration Plan
 
 1. Delete the empty superseded OpenSpec stub and commit this proposal/design/spec/tasks as the sole active online-presence plan.
-2. Add neutral contracts, exact map tokens/handoff, and direct ownership through RED-GREEN-REFACTOR.
-3. Propagate trusted raw peers and build authenticated principal scopes across all inbound transports.
+2. Add neutral contracts, exact map tokens/handoff, and the production tracker through RED-GREEN-REFACTOR.
+3. Propagate trusted raw peers and build authenticated principal scopes across all inbound transports, then migrate direct ownership without any interim effective-source fallback.
 4. Migrate SMUX/H2MUX streams, then transactional legacy Mux sessions.
 5. Replace global XUDP state with per-owner runtime and attachment transactions.
 6. Migrate reverse RVS data slots and owner drains.

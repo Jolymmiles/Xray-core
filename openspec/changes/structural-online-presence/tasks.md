@@ -13,15 +13,15 @@
 - [x] 2.3 RED: add `app/stats` tests for generation-qualified acquire/release, mixed legacy/exact refs, stale tokens, same/different-IP replacement, batch validation, concurrent iteration/count, and unregister/re-register isolation; observe failures.
 - [x] 2.4 GREEN: deepen the built-in `OnlineMap` with exact tokens and atomic single/batch replacement while leaving the stable interface unchanged; run targeted tests and race/count stress.
 - [x] 2.5 RED: add dispatcher tracker tests for policy sampling, exact-map pinning, no-op degradation, activate/handoff/batch handoff, custom/different-map ordering, and sanitized rate limiting; observe failures.
-- [ ] 2.6 GREEN: implement the sole production tracker/provider seam and principal digest framing without changing routing/stats feature interfaces; run dispatcher/stats tests and race.
-- [ ] 2.7 RED: add direct `Dispatch`/`DispatchLink` tests proving route-time activation, exact cancellation, early route-failure release, half-close behavior, and no acquisition in External/Untracked modes; observe failures.
-- [ ] 2.8 GREEN: migrate direct ownership and delayed route acceptance to structural leases while preserving traffic wrappers; remove the superseded direct `AddIP`/`RemoveIP` callback path.
-- [ ] 2.9 Run format, targeted vet, checkptr, race `-count=100`, and full tests for `common/session`, `app/stats`, and `app/dispatcher`; fix every new failure before continuing.
+- [x] 2.6 GREEN: implement the sole production tracker/provider seam and principal digest framing without changing routing/stats feature interfaces; run dispatcher/stats tests and race.
+- [ ] 2.7 After task 3.10, RED: add direct `Dispatch`/`DispatchLink` tests proving route-time activation, exact cancellation, early route-failure release, half-close behavior, and no acquisition in External/Untracked modes; observe failures.
+- [ ] 2.8 After task 3.10, GREEN: migrate direct ownership and delayed route acceptance to trusted structural leases while preserving traffic wrappers; remove the superseded direct `AddIP`/`RemoveIP` callback path.
+- [ ] 2.9 After tasks 2.7-2.8, run format, targeted vet, checkptr, race `-count=100`, and full tests for `common/session`, `app/stats`, and `app/dispatcher`; fix every new failure before continuing.
 
 ## 3. Trusted physical peer and authenticated subjects
 
-- [ ] 3.1 RED: add canonicalization and principal golden tests for IPv4/mapped IPv4/IPv6, zone/port removal, invalid/loopback/unspecified rejection, deterministic account framing, inbound isolation, and non-reusable entropy fallback.
-- [ ] 3.2 GREEN: implement canonical peer conversion and keyed authenticated principal derivation behind the provider; run targeted tests and race.
+- [x] 3.1 RED: add canonicalization and principal golden tests for IPv4/mapped IPv4/IPv6, zone/port removal, invalid/loopback/unspecified rejection, deterministic account framing, inbound isolation, and non-reusable entropy fallback.
+- [x] 3.2 GREEN: implement canonical peer conversion and keyed authenticated principal derivation behind the provider; run targeted tests and race.
 - [ ] 3.3 RED: add stream-listener tests proving the raw accepted TCP/Unix peer survives PROXY/TLS/REALITY/mask wrapping separately from effective `RemoteAddr`.
 - [ ] 3.4 GREEN: capture and expose immutable raw stream peers at the system listener and propagate them through TCP workers without changing routing/log source semantics.
 - [ ] 3.5 RED: add WebSocket, HTTP Upgrade, gRPC, SplitHTTP H1/H2/H3 tests proving raw connection/QUIC peers survive XFF and multi-request virtual connections.
