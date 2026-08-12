@@ -488,9 +488,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 
 	sniffingRequest := content.SniffingRequest
 	inbound, outbound := d.getLinkWithInbound(ctx, sessionInbound)
-	presence := d.directPresence(ctx)
+	presenceScope, presence := d.directPresence(ctx)
 	if !sniffingRequest.Enabled {
-		go d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
+		go d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presenceScope, presence)
 	} else {
 		go func() {
 			cReader := newCachedReader(outbound.Reader.(*pipe.Reader))
@@ -517,7 +517,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 					}
 				}
 			}
-			d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
+			d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presenceScope, presence)
 		}()
 	}
 	return inbound, nil
@@ -545,9 +545,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	d.configureSniffingAttributes(content)
 	sniffingRequest := content.SniffingRequest
 	outbound = wrapLinkWithInbound(ctx, d.policy, d.stats, outbound, sniffingRequest.Enabled, sessionInbound)
-	presence := d.directPresence(ctx)
+	presenceScope, presence := d.directPresence(ctx)
 	if !sniffingRequest.Enabled {
-		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
+		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presenceScope, presence)
 	} else {
 		cReader := newCachedReader(outbound.Reader.(buf.TimeoutReader))
 		outbound.Reader = cReader
@@ -573,7 +573,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				}
 			}
 		}
-		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
+		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presenceScope, presence)
 	}
 
 	return nil
@@ -633,18 +633,19 @@ func sniff(ctx context.Context, cReader *cachedReader, metadataOnly bool, networ
 	return contentResult, contentErr
 }
 
-func (d *DefaultDispatcher) directPresence(ctx context.Context) session.PresenceReservation {
+func (d *DefaultDispatcher) directPresence(ctx context.Context) (session.PresenceScope, session.PresenceReservation) {
 	if session.PresenceModeFromContext(ctx) != session.PresenceModeContext || d.presenceProvider == nil {
-		return nil
+		return session.PresenceScope{}, nil
 	}
 	inbound := session.InboundFromContext(ctx)
 	if inbound == nil || inbound.User == nil || !d.policy.ForLevel(inbound.User.Level).Stats.UserOnline {
-		return nil
+		return session.PresenceScope{}, nil
 	}
-	return d.presenceProvider.SnapshotPresence(ctx).Prepare()
+	scope := d.presenceProvider.SnapshotPresence(ctx)
+	return scope, scope.Prepare()
 }
 
-func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, ob *session.Outbound, content *session.Content, routingLink routing.Context, presence session.PresenceReservation) {
+func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, ob *session.Outbound, content *session.Content, routingLink routing.Context, presenceScope session.PresenceScope, presence session.PresenceReservation) {
 	accepted := false
 	if presence != nil {
 		defer func() {
@@ -725,6 +726,17 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 		common.Close(link.Writer)
 		common.Interrupt(link.Reader)
 		return
+	}
+
+	if claimant, ok := handler.(session.PresenceClaimant); ok && claimant.ClaimsPresence(ctx) {
+		if presence != nil {
+			presence.Abort()
+			presence = nil
+		}
+		if presenceScope.Subject().Email == "" && d.presenceProvider != nil {
+			presenceScope = d.presenceProvider.SnapshotPresence(ctx)
+		}
+		ctx = session.ContextWithPresenceMode(session.ContextWithPresenceScope(ctx, presenceScope), session.PresenceModeUntracked)
 	}
 
 	handlerTag := handler.Tag()

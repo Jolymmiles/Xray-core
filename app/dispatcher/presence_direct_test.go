@@ -76,6 +76,46 @@ func TestDirectPresenceModesSuppressDispatcherOwnership(t *testing.T) {
 	}
 }
 
+func TestDirectPresenceRouteClaimSuppressesOnlyRecognizedCarrier(t *testing.T) {
+	handler := &claimingPresenceOutbound{claimed: make(chan session.PresenceSubject, 2)}
+	dispatcher, manager := newDirectPresenceDispatcher(t, handler)
+	carrierCtx, cancelCarrier := context.WithCancel(directPresenceContext(session.PresenceModeContext))
+	defer cancelCarrier()
+	if err := dispatcher.DispatchLink(carrierCtx, net.TCPDestination(net.DomainAddress("carrier.example"), 443), directPresenceLink()); err != nil {
+		t.Fatal(err)
+	}
+	if onlineMap := manager.GetOnlineMap(directPresenceMetric); onlineMap != nil && onlineMap.Count() != 0 {
+		t.Fatalf("recognized carrier published online count %d", onlineMap.Count())
+	}
+	if subject := <-handler.claimed; subject.Email != "alice@example.com" || subject.IP.String() != "192.0.2.44" {
+		t.Fatalf("claimed carrier scope = %+v", subject)
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(directPresenceContext(session.PresenceModeContext))
+	if err := dispatcher.DispatchLink(requestCtx, net.TCPDestination(net.DomainAddress("ordinary.example"), 443), directPresenceLink()); err != nil {
+		t.Fatal(err)
+	}
+	assertOnlineMap(t, manager, directPresenceMetric, 1, "192.0.2.44")
+	cancelRequest()
+	waitOnlineCount(t, manager, directPresenceMetric, 0)
+}
+
+type claimingPresenceOutbound struct {
+	statelessOutbound
+	claimed chan session.PresenceSubject
+}
+
+func (*claimingPresenceOutbound) ClaimsPresence(ctx context.Context) bool {
+	outbounds := session.OutboundsFromContext(ctx)
+	return len(outbounds) != 0 && outbounds[len(outbounds)-1].Target.Address.Domain() == "carrier.example"
+}
+
+func (o *claimingPresenceOutbound) Dispatch(ctx context.Context, _ *transport.Link) {
+	if o.ClaimsPresence(ctx) {
+		o.claimed <- session.PresenceScopeFromContext(ctx).Subject()
+	}
+}
+
 func directPresenceLink() *transport.Link {
 	reader, writer := pipe.New()
 	return &transport.Link{Reader: reader, Writer: writer}

@@ -26,6 +26,12 @@ type PresenceProviderSource interface {
 	PresenceProvider() PresenceProvider
 }
 
+// PresenceClaimant identifies an outbound that structurally owns selected
+// requests instead of the direct request context.
+type PresenceClaimant interface {
+	ClaimsPresence(context.Context) bool
+}
+
 // PresenceTracker prepares online ownership for a subject.
 type PresenceTracker interface {
 	Prepare(PresenceSubject) PresenceReservation

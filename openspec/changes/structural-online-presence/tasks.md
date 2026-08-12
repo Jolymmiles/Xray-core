@@ -64,12 +64,12 @@
 
 ## 7. Reverse RVS data-session ownership
 
-- [ ] 7.1 RED: add dispatcher/Portal tests proving route-time carrier claim suppresses direct online ownership while an ordinary request through the same outbound retains it.
-- [ ] 7.2 GREEN: implement the private route-time external-owner seam and pass immutable scopes into built-in Portal/VLESS carrier workers without changing stable outbound/dispatcher interfaces.
-- [ ] 7.3 RED: add RVS tests for idle/control/heartbeat zero, one/many data refs, picker-selected carrier IP, spoofed frame source rejection, policy per slot, and last-data-close with live carrier.
-- [ ] 7.4 GREEN: add explicit `DispatchRVS` data-slot transactions and keep ordinary/control dispatch Untracked while preserving carrier traffic/timeout accounting.
-- [ ] 7.5 RED: add owner/worker close tests for late registration, activation-phase shutdown, End/EOF/cancel/DRAIN races, reentrant callbacks, user removal, and full core close.
-- [ ] 7.6 GREEN: implement concurrent-idempotent Portal/Bridge/dynamic VLESS owner drains for handlers, monitors, pickers, tasks, controls, workers, managers, runtimes, leases, timers, and goroutines.
+- [x] 7.1 RED: add dispatcher/Portal tests proving route-time carrier claim suppresses direct online ownership while an ordinary request through the same outbound retains it.
+- [x] 7.2 GREEN: implement the private route-time external-owner seam and pass immutable scopes into built-in Portal/VLESS carrier workers without changing stable outbound/dispatcher interfaces.
+- [x] 7.3 RED: add RVS tests for idle/control/heartbeat zero, one/many data refs, picker-selected carrier IP, spoofed frame source rejection, policy per slot, and last-data-close with live carrier.
+- [x] 7.4 GREEN: add explicit `DispatchRVS` data-slot transactions and keep ordinary/control dispatch Untracked while preserving carrier traffic/timeout accounting.
+- [x] 7.5 RED: add owner/worker close tests for late registration, activation-phase shutdown, End/EOF/cancel/DRAIN races, reentrant callbacks, user removal, and full core close.
+- [x] 7.6 GREEN: implement concurrent-idempotent Portal/Bridge/dynamic VLESS owner drains for handlers, monitors, pickers, tasks, controls, workers, managers, runtimes, leases, timers, and goroutines.
 - [ ] 7.7 Run reverse/VLESS/mux unit, frame goldens, race/checkptr/vet, `-count=100` shutdown stress, 1,000-slot soak, StatsService integration, and old/new RVS version skew.
 
 ## 8. WireGuard authenticated endpoint and flow owners

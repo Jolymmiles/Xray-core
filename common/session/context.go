@@ -29,6 +29,7 @@ const (
 	mitmAlpn11Key             ctx.SessionKey = 11 // used by TLS dialer
 	mitmServerNameKey         ctx.SessionKey = 12 // used by TLS dialer
 	presenceModeKey           ctx.SessionKey = 15 // online presence lifecycle owner
+	presenceScopeKey          ctx.SessionKey = 16 // immutable structural presence scope
 
 	streamSettingsKey ctx.SessionKey = 13
 	routingContextKey ctx.SessionKey = 14
@@ -468,4 +469,16 @@ func PresenceModeFromContext(parent context.Context) PresenceMode {
 		return PresenceModeContext
 	}
 	return mode
+}
+
+// ContextWithPresenceScope carries an immutable authenticated scope to a
+// built-in structural owner.
+func ContextWithPresenceScope(parent context.Context, scope PresenceScope) context.Context {
+	return &metadataContext{Context: parent, key: presenceScopeKey, value: scope}
+}
+
+// PresenceScopeFromContext returns the scope claimed during route selection.
+func PresenceScopeFromContext(parent context.Context) PresenceScope {
+	scope, _ := parent.Value(presenceScopeKey).(PresenceScope)
+	return scope
 }

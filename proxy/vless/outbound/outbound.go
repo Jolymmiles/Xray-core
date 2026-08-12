@@ -424,28 +424,38 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 }
 
 type Reverse struct {
+	mu          sync.Mutex
 	tag         string
 	dispatcher  routing.Dispatcher
 	ctx         context.Context
 	handler     *Handler
 	workers     []*reverse.BridgeWorker
 	monitorTask *task.Periodic
+	closed      bool
+	closeOnce   sync.Once
+	workersDone sync.WaitGroup
 }
 
 func (r *Reverse) monitor() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	workers := append([]*reverse.BridgeWorker(nil), r.workers...)
+	r.mu.Unlock()
 	var activeWorkers []*reverse.BridgeWorker
-	for _, w := range r.workers {
+	for _, w := range workers {
 		if w.IsActive() {
 			activeWorkers = append(activeWorkers, w)
+		} else if w.Closed() {
+			_ = w.Close()
 		}
-	}
-	if len(activeWorkers) != len(r.workers) {
-		r.workers = activeWorkers
 	}
 
 	var numConnections uint32
 	var numWorker uint32
-	for _, w := range r.workers {
+	for _, w := range activeWorkers {
 		if w.IsActive() {
 			numConnections += w.Connections()
 			numWorker++
@@ -466,8 +476,17 @@ func (r *Reverse) monitor() error {
 			return nil
 		}
 		w.Worker = worker
-		r.workers = append(r.workers, w)
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			return w.Close()
+		}
+		activeWorkers = append(activeWorkers, w)
+		r.workers = activeWorkers
+		r.workersDone.Add(1)
+		r.mu.Unlock()
 		go func() {
+			defer r.workersDone.Done()
 			ctx := session.ContextWithOutbounds(r.ctx, []*session.Outbound{{
 				Target: net.Destination{Address: net.DomainAddress("v1.rvs.cool")},
 			}})
@@ -475,7 +494,13 @@ func (r *Reverse) monitor() error {
 			common.Interrupt(reader1)
 			common.Interrupt(reader2)
 		}()
+		return nil
 	}
+	r.mu.Lock()
+	if !r.closed {
+		r.workers = activeWorkers
+	}
+	r.mu.Unlock()
 	return nil
 }
 
@@ -484,5 +509,18 @@ func (r *Reverse) Start() error {
 }
 
 func (r *Reverse) Close() error {
-	return r.monitorTask.Close()
+	var result error
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		workers := r.workers
+		r.workers = nil
+		r.mu.Unlock()
+		result = r.monitorTask.Close()
+		for _, worker := range workers {
+			result = errors.Combine(result, worker.Close())
+		}
+		r.workersDone.Wait()
+	})
+	return result
 }

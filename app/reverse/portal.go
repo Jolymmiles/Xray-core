@@ -61,7 +61,7 @@ func (p *Portal) Start() error {
 }
 
 func (p *Portal) Close() error {
-	return p.ohm.RemoveHandler(context.Background(), p.tag)
+	return errors.Combine(p.picker.Close(), p.ohm.RemoveHandler(context.Background(), p.tag))
 }
 
 func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) error {
@@ -72,7 +72,7 @@ func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) err
 	}
 
 	if isDomain(ob.Target, p.domain) {
-		muxClient, err := mux.NewClientWorker(*link, mux.ClientStrategy{})
+		muxClient, err := mux.NewClientWorkerWithPresence(*link, mux.ClientStrategy{}, session.PresenceScopeFromContext(ctx))
 		if err != nil {
 			return errors.New("failed to create mux client worker").Base(err).AtWarning()
 		}
@@ -98,12 +98,19 @@ func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) err
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 	}
 
-	return p.client.Dispatch(ctx, link)
+	return p.client.DispatchRVS(ctx, link)
 }
 
 type Outbound struct {
 	portal *Portal
 	tag    string
+}
+
+// ClaimsPresence identifies reverse carriers before direct route ownership is
+// activated. Ordinary requests through the same outbound remain direct.
+func (o *Outbound) ClaimsPresence(ctx context.Context) bool {
+	outbounds := session.OutboundsFromContext(ctx)
+	return len(outbounds) != 0 && outbounds[len(outbounds)-1] != nil && isDomain(outbounds[len(outbounds)-1].Target, o.portal.domain)
 }
 
 func (o *Outbound) Tag() string {
@@ -137,9 +144,11 @@ func (o *Outbound) ProxySettings() *serial.TypedMessage {
 }
 
 type StaticMuxPicker struct {
-	access  sync.Mutex
-	workers []*PortalWorker
-	cTask   *task.Periodic
+	access    sync.Mutex
+	workers   []*PortalWorker
+	cTask     *task.Periodic
+	closed    bool
+	closeOnce sync.Once
 }
 
 func NewStaticMuxPicker() (*StaticMuxPicker, error) {
@@ -161,7 +170,7 @@ func (p *StaticMuxPicker) cleanup() error {
 		if !w.Closed() {
 			activeWorkers = append(activeWorkers, w)
 		} else {
-			w.timer.SetTimeout(0)
+			_ = w.Close()
 		}
 	}
 
@@ -183,7 +192,7 @@ func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
 	var minIdx int = -1
 	var minConn uint32 = 9999
 	for i, w := range p.workers {
-		if w.draining {
+		if w.Draining() {
 			continue
 		}
 		if w.IsFull() {
@@ -216,19 +225,41 @@ func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
 
 func (p *StaticMuxPicker) AddWorker(worker *PortalWorker) {
 	p.access.Lock()
-	defer p.access.Unlock()
-
+	if p.closed {
+		p.access.Unlock()
+		_ = worker.Close()
+		return
+	}
 	p.workers = append(p.workers, worker)
+	p.access.Unlock()
+}
+
+func (p *StaticMuxPicker) Close() error {
+	var result error
+	p.closeOnce.Do(func() {
+		result = p.cTask.Close()
+		p.access.Lock()
+		p.closed = true
+		workers := p.workers
+		p.workers = nil
+		p.access.Unlock()
+		for _, worker := range workers {
+			result = errors.Combine(result, worker.Close())
+		}
+	})
+	return result
 }
 
 type PortalWorker struct {
-	client   *mux.ClientWorker
-	control  *task.Periodic
-	writer   buf.Writer
-	reader   buf.Reader
-	draining bool
-	counter  uint32
-	timer    *signal.ActivityTimer
+	mu        sync.Mutex
+	client    *mux.ClientWorker
+	control   *task.Periodic
+	writer    buf.Writer
+	reader    buf.Reader
+	draining  bool
+	counter   uint32
+	timer     *signal.ActivityTimer
+	closeOnce sync.Once
 }
 
 func NewPortalWorker(client *mux.ClientWorker) (*PortalWorker, error) {
@@ -270,7 +301,9 @@ func (w *PortalWorker) heartbeat() error {
 		return errors.New("client worker stopped")
 	}
 
+	w.mu.Lock()
 	if w.draining || w.writer == nil {
+		w.mu.Unlock()
 		return errors.New("already disposed")
 	}
 
@@ -280,29 +313,64 @@ func (w *PortalWorker) heartbeat() error {
 	if w.client.TotalConnections() > 256 {
 		w.draining = true
 		msg.State = Control_DRAIN
-
-		defer func() {
-			common.Close(w.writer)
-			common.Interrupt(w.reader)
-			w.writer = nil
-		}()
 	}
 
 	w.counter = (w.counter + 1) % 5
-	if w.draining || w.counter == 1 {
+	write := w.draining || w.counter == 1
+	draining := w.draining
+	writer := w.writer
+	reader := w.reader
+	if draining {
+		w.writer = nil
+	}
+	w.mu.Unlock()
+	if write {
 		b, err := proto.Marshal(msg)
 		common.Must(err)
 		mb := buf.MergeBytes(nil, b)
 		w.timer.Update()
-		return w.writer.WriteMultiBuffer(mb)
+		err = writer.WriteMultiBuffer(mb)
+		if draining {
+			common.Close(writer)
+			common.Interrupt(reader)
+		}
+		return err
 	}
 	return nil
 }
 
 func (w *PortalWorker) IsFull() bool {
-	return w.client.IsFull()
+	w.mu.Lock()
+	draining := w.draining
+	w.mu.Unlock()
+	return draining || w.client.IsFull()
+}
+
+func (w *PortalWorker) Draining() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.draining
 }
 
 func (w *PortalWorker) Closed() bool {
 	return w.client.Closed()
+}
+
+func (w *PortalWorker) Close() error {
+	var result error
+	w.closeOnce.Do(func() {
+		if w.control != nil {
+			result = w.control.Close()
+		}
+		if w.timer != nil {
+			w.timer.SetTimeout(0)
+		}
+		w.mu.Lock()
+		writer, reader := w.writer, w.reader
+		w.writer, w.reader = nil, nil
+		w.draining = true
+		w.mu.Unlock()
+		result = errors.Combine(result, common.Close(writer), common.Interrupt(reader), w.client.Close())
+	})
+	return result
 }
