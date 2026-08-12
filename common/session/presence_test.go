@@ -18,7 +18,8 @@ func (t *recordingPresenceTracker) Prepare(subject PresenceSubject) PresenceRese
 
 type testPresenceReservation struct{}
 
-func (testPresenceReservation) Activate() PresenceLease                        { return testPresenceLease{} }
+func (testPresenceReservation) Activate() PresenceLease { return testPresenceLease{} }
+
 func (testPresenceReservation) Handoff(PresenceLease) PresenceLease            { return testPresenceLease{} }
 func (testPresenceReservation) HandoffAll(old []PresenceLease) []PresenceLease { return old }
 func (testPresenceReservation) Abort()                                         {}

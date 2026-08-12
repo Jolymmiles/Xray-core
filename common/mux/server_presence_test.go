@@ -176,6 +176,7 @@ func (d *muxPresenceDispatcher) Dispatch(ctx context.Context, _ X.Destination) (
 	reader, writer := pipe.New(pipe.WithoutSizeLimit())
 	return &transport.Link{Reader: reader, Writer: writer}, nil
 }
+
 func (*muxPresenceDispatcher) DispatchLink(context.Context, X.Destination, *transport.Link) error {
 	return errors.New("unexpected DispatchLink")
 }
@@ -210,12 +211,14 @@ func (r *muxPresenceReservation) Activate() session.PresenceLease {
 	r.once.Do(func() { r.tracker.active.Add(1) })
 	return lease
 }
+
 func (r *muxPresenceReservation) Handoff(old session.PresenceLease) session.PresenceLease {
 	if old != nil {
 		old.Close()
 	}
 	return r.Activate()
 }
+
 func (*muxPresenceReservation) HandoffAll([]session.PresenceLease) []session.PresenceLease {
 	return nil
 }

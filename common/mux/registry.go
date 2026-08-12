@@ -319,6 +319,7 @@ func (r *serverSessionRegistry) close()           { r.registry.close() }
 func (r *serverSessionRegistry) closeIfIdle(size, count int) bool {
 	return r.registry.closeIfIdle(size, count)
 }
+
 func (r *serverSessionRegistry) isClosing() bool {
 	return r.registry.isClosing()
 }
