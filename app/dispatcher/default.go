@@ -346,9 +346,6 @@ func (d *DefaultDispatcher) getLinkWithInbound(ctx context.Context, sessionInbou
 			}
 		}
 
-		if p.Stats.UserOnline {
-			trackOnlineIP(ctx, d.stats, user.Email, sessionInbound.Source.Address.String())
-		}
 	}
 
 	return inboundLink, outboundLink
@@ -395,20 +392,9 @@ func wrapLinkWithInbound(ctx context.Context, policyManager policy.Manager, stat
 				}
 			}
 		}
-		if p.Stats.UserOnline {
-			trackOnlineIP(ctx, statsManager, user.Email, sessionInbound.Source.Address.String())
-		}
 	}
 
 	return link
-}
-
-func trackOnlineIP(ctx context.Context, sm stats.Manager, email, ip string) {
-	name := "user>>>" + email + ">>>online"
-	if om, _ := sm.GetOrRegisterOnlineMap(name); om != nil {
-		om.AddIP(ip)
-		context.AfterFunc(ctx, func() { om.RemoveIP(ip) })
-	}
 }
 
 func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResult, request session.SniffingRequest, destination net.Destination) (string, bool) {
@@ -502,8 +488,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 
 	sniffingRequest := content.SniffingRequest
 	inbound, outbound := d.getLinkWithInbound(ctx, sessionInbound)
+	presence := d.directPresence(ctx)
 	if !sniffingRequest.Enabled {
-		go d.routedDispatch(ctx, outbound, destination, ob, content, routingLink)
+		go d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
 	} else {
 		go func() {
 			cReader := newCachedReader(outbound.Reader.(*pipe.Reader))
@@ -530,7 +517,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 					}
 				}
 			}
-			d.routedDispatch(ctx, outbound, destination, ob, content, routingLink)
+			d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
 		}()
 	}
 	return inbound, nil
@@ -558,8 +545,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	d.configureSniffingAttributes(content)
 	sniffingRequest := content.SniffingRequest
 	outbound = wrapLinkWithInbound(ctx, d.policy, d.stats, outbound, sniffingRequest.Enabled, sessionInbound)
+	presence := d.directPresence(ctx)
 	if !sniffingRequest.Enabled {
-		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink)
+		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
 	} else {
 		cReader := newCachedReader(outbound.Reader.(buf.TimeoutReader))
 		outbound.Reader = cReader
@@ -585,7 +573,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				}
 			}
 		}
-		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink)
+		d.routedDispatch(ctx, outbound, destination, ob, content, routingLink, presence)
 	}
 
 	return nil
@@ -645,7 +633,26 @@ func sniff(ctx context.Context, cReader *cachedReader, metadataOnly bool, networ
 	return contentResult, contentErr
 }
 
-func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, ob *session.Outbound, content *session.Content, routingLink routing.Context) {
+func (d *DefaultDispatcher) directPresence(ctx context.Context) session.PresenceReservation {
+	if session.PresenceModeFromContext(ctx) != session.PresenceModeContext || d.presenceProvider == nil {
+		return nil
+	}
+	inbound := session.InboundFromContext(ctx)
+	if inbound == nil || inbound.User == nil || !d.policy.ForLevel(inbound.User.Level).Stats.UserOnline {
+		return nil
+	}
+	return d.presenceProvider.SnapshotPresence(ctx).Prepare()
+}
+
+func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, ob *session.Outbound, content *session.Content, routingLink routing.Context, presence session.PresenceReservation) {
+	accepted := false
+	if presence != nil {
+		defer func() {
+			if !accepted {
+				presence.Abort()
+			}
+		}()
+	}
 	var handler outbound.Handler
 
 	if routingLink == nil {
@@ -741,5 +748,10 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 		log.Record(&accessRecord)
 	}
 
+	if presence != nil {
+		lease := presence.Activate()
+		context.AfterFunc(ctx, lease.Close)
+	}
+	accepted = true
 	handler.Dispatch(ctx, link)
 }
