@@ -123,8 +123,10 @@ func (v *Listener) keepAccepting() {
 			}
 			continue
 		}
+		conn = net.CapturePhysicalPeer(conn)
 
 		go func() {
+			physicalPeerSource := conn
 			if v.tlsConfig != nil {
 				conn = tls.Server(conn, v.tlsConfig)
 			} else if v.realityConfig != nil {
@@ -139,6 +141,7 @@ func (v *Listener) keepAccepting() {
 			if v.authConfig != nil {
 				conn = v.authConfig.Server(conn)
 			}
+			conn = net.PreservePhysicalPeer(physicalPeerSource, conn)
 			v.addConn(stat.Connection(conn))
 		}()
 	}

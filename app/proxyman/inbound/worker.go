@@ -2,6 +2,7 @@ package inbound
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,9 +61,19 @@ func getTProxyType(s *internet.MemoryStreamConfig) internet.SocketConfig_TProxyM
 	return s.SocketSettings.Tproxy
 }
 
+func physicalPeerFromConn(conn net.Conn) netip.Addr {
+	peer, ok := net.PhysicalPeer(conn)
+	if !ok {
+		return netip.Addr{}
+	}
+	peerIP, _ := net.CanonicalPhysicalPeer(peer)
+	return peerIP
+}
+
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
+	physicalPeer := physicalPeerFromConn(conn)
 
 	outbound := session.Outbound{}
 	if w.recvOrigDest {
@@ -121,11 +132,12 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 		local = net.DestinationFromAddr(localAddr)
 	}
 	inbound := session.Inbound{
-		Source:  source,
-		Local:   local,
-		Gateway: net.TCPDestination(w.address, w.port),
-		Tag:     w.tag,
-		Conn:    conn,
+		Source:       source,
+		PhysicalPeer: physicalPeer,
+		Local:        local,
+		Gateway:      net.TCPDestination(w.address, w.port),
+		Tag:          w.tag,
+		Conn:         conn,
 	}
 
 	content := session.Content{}

@@ -71,6 +71,30 @@ func TestZeroPresenceScopeIsAllocationFreeNoop(t *testing.T) {
 	}
 }
 
+func TestPresenceScopeCanonicalizesAndRejectsLocalIP(t *testing.T) {
+	tracker := new(recordingPresenceTracker)
+	for _, ip := range []netip.Addr{
+		{},
+		netip.IPv4Unspecified(),
+		netip.IPv6Unspecified(),
+		netip.MustParseAddr("127.0.0.1"),
+		netip.IPv6Loopback(),
+		netip.MustParseAddr("::ffff:127.0.0.1"),
+	} {
+		scope := NewPresenceScope(PresenceSubject{Email: "alice@example.com", IP: ip}, tracker)
+		scope.Prepare()
+		if tracker.subject != (PresenceSubject{}) {
+			t.Fatalf("non-canonical IP %s reached tracker as %+v", ip, tracker.subject)
+		}
+	}
+
+	mapped := PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("::ffff:192.0.2.1")}
+	NewPresenceScope(mapped, tracker).Prepare()
+	if got := tracker.subject.IP; got != netip.MustParseAddr("192.0.2.1") {
+		t.Fatalf("mapped IPv4 reached tracker as %s", got)
+	}
+}
+
 func TestPresenceModeIsExplicitAndDefaultsToContext(t *testing.T) {
 	if got := PresenceModeFromContext(context.Background()); got != PresenceModeContext {
 		t.Fatalf("default presence mode = %v, want Context", got)

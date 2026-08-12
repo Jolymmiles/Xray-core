@@ -2,11 +2,11 @@ package finalmask
 
 import (
 	"context"
-	"net"
 	"slices"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/net"
 )
 
 type Udpmask interface {
@@ -223,6 +223,7 @@ func (m *TcpmaskManager) WrapConnClient(raw net.Conn) (net.Conn, error) {
 }
 
 func (m *TcpmaskManager) WrapConnServer(raw net.Conn) (net.Conn, error) {
+	source := raw
 	var err error
 	for _, mask := range slices.Backward(m.tcpmasks) {
 		raw, err = mask.WrapConnServer(raw)
@@ -230,7 +231,7 @@ func (m *TcpmaskManager) WrapConnServer(raw net.Conn) (net.Conn, error) {
 			return nil, err
 		}
 	}
-	return raw, nil
+	return net.PreservePhysicalPeer(source, raw), nil
 }
 
 func (m *TcpmaskManager) WrapListener(l net.Listener) (net.Listener, error) {

@@ -20,6 +20,23 @@ type DefaultListener struct {
 	controllers []func(network, address string, c syscall.RawConn) error
 }
 
+type physicalPeerListener struct {
+	net.Listener
+	proxyProtocol bool
+}
+
+func (l *physicalPeerListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	conn = net.CapturePhysicalPeer(conn)
+	if !l.proxyProtocol {
+		return conn, nil
+	}
+	return net.PreservePhysicalPeer(conn, proxyproto.NewConn(conn, proxyproto.WithPolicy(proxyproto.REQUIRE))), nil
+}
+
 func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []func(network, address string, c syscall.RawConn) error) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
@@ -167,8 +184,10 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
 
 	l, err = callback(lc.Listen(ctx, network, address))
 	if err == nil && sockopt != nil && sockopt.AcceptProxyProtocol {
-		policyFunc := func(upstream net.Addr) (proxyproto.Policy, error) { return proxyproto.REQUIRE, nil }
-		l = &proxyproto.Listener{Listener: l, Policy: policyFunc}
+		l = &physicalPeerListener{
+			Listener:      l,
+			proxyProtocol: true,
+		}
 	}
 	return l, err
 }

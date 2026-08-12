@@ -4,6 +4,7 @@ package session // import "github.com/xtls/xray-core/common/session"
 import (
 	"context"
 	"math/rand"
+	"net/netip"
 
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/errors"
@@ -37,6 +38,8 @@ func ExportIDToError(ctx context.Context) errors.ExportOption {
 type Inbound struct {
 	// Source address of the inbound connection.
 	Source net.Destination
+	// PhysicalPeer is the immutable server-observed peer before address rewriting.
+	PhysicalPeer netip.Addr
 	// Local address of the inbound connection.
 	Local net.Destination
 	// Gateway address.
