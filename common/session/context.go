@@ -28,6 +28,7 @@ const (
 	fullHandlerKey            ctx.SessionKey = 10 // outbound gets full handler
 	mitmAlpn11Key             ctx.SessionKey = 11 // used by TLS dialer
 	mitmServerNameKey         ctx.SessionKey = 12 // used by TLS dialer
+	presenceModeKey           ctx.SessionKey = 15 // online presence lifecycle owner
 
 	streamSettingsKey ctx.SessionKey = 13
 	routingContextKey ctx.SessionKey = 14
@@ -452,4 +453,19 @@ func ContextWithStreamSettings(ctx context.Context, streamSettings any) context.
 
 func StreamSettingsFromContext(ctx context.Context) any {
 	return ctx.Value(streamSettingsKey)
+}
+
+// ContextWithPresenceMode selects the online-presence owner for a dispatch.
+func ContextWithPresenceMode(parent context.Context, mode PresenceMode) context.Context {
+	return &metadataContext{Context: parent, key: presenceModeKey, value: mode}
+}
+
+// PresenceModeFromContext returns Context for compatibility when no explicit
+// mode is present.
+func PresenceModeFromContext(parent context.Context) PresenceMode {
+	mode, ok := parent.Value(presenceModeKey).(PresenceMode)
+	if !ok || mode > PresenceModeUntracked {
+		return PresenceModeContext
+	}
+	return mode
 }
