@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -43,13 +44,17 @@ type Server struct {
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 
-	tun   tun.Device
-	stack *stack.Stack
-	dev   *device.Device
-	mu    sync.Mutex
+	tun    tun.Device
+	stack  *stack.Stack
+	dev    *device.Device
+	mu     sync.Mutex
+	closed bool
 
-	pub   [32]byte
-	users *sync.Map
+	pub              [32]byte
+	users            *sync.Map
+	presence         *wireGuardPresence
+	presenceProvider session.PresenceProvider
+	observation      atomic.Uint64
 }
 
 func NewServer(ctx context.Context, conf *DeviceConfig) (*Server, error) {
@@ -113,6 +118,10 @@ func NewServer(ctx context.Context, conf *DeviceConfig) (*Server, error) {
 		users.Store(user.Account.(*MemoryAccount).Pub, user)
 	}
 
+	var presenceProvider session.PresenceProvider
+	if source, ok := d.(session.PresenceProviderSource); ok {
+		presenceProvider = source.PresenceProvider()
+	}
 	return &Server{
 		conf:          conf,
 		ctx:           core.ToBackgroundDetachedContext(ctx),
@@ -129,8 +138,10 @@ func NewServer(ctx context.Context, conf *DeviceConfig) (*Server, error) {
 		tun:   tun,
 		stack: stack,
 
-		pub:   pub,
-		users: users,
+		pub:              pub,
+		users:            users,
+		presence:         newWireGuardPresence(),
+		presenceProvider: presenceProvider,
 	}, nil
 }
 
@@ -161,6 +172,7 @@ func (s *Server) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
 		return err
 	}
 	s.users.Store(peer.Pub, user)
+	s.presence.Allow(peer.Pub)
 	return nil
 }
 
@@ -176,6 +188,7 @@ func (s *Server) RemoveUser(ctx context.Context, email string) error {
 		if err != nil {
 			return err
 		}
+		s.presence.Remove(peer.Pub)
 		s.users.Delete(peer.Pub)
 	}
 	return nil
@@ -235,15 +248,20 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 // Close implements common.Closable.Close.
 func (s *Server) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.dev != nil {
-		s.dev.Close()
-		s.dev = nil
-		s.tun = nil
-	} else if s.tun != nil {
-		s.tun.Close()
-		s.tun = nil
+	if s.closed {
+		s.mu.Unlock()
+		return nil
 	}
+	s.closed = true
+	dev, tunnel := s.dev, s.tun
+	s.dev, s.tun = nil, nil
+	s.mu.Unlock()
+	if dev != nil {
+		dev.Close()
+	} else if tunnel != nil {
+		_ = tunnel.Close()
+	}
+	s.presence.Close()
 	return nil
 }
 
@@ -251,6 +269,9 @@ func (s *Server) Close() error {
 func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("wireguard server closed")
+	}
 	if s.dev != nil {
 		return nil
 	}
@@ -296,7 +317,11 @@ func (s *Server) Start() error {
 			})
 		},
 	}
-	dev := device.NewDevice(s.tun, bind, logger)
+	observedTun := &authenticatedTun{Device: s.tun}
+	dev := device.NewDevice(observedTun, bind, logger)
+	observedTun.observe = func(bufs [][]byte, offset int) {
+		s.observeAuthenticatedData(dev, bufs, offset)
+	}
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + s.conf.SecretKey + "\n")
 	s.users.Range(func(key, value any) bool {
@@ -349,11 +374,17 @@ func (s *Server) HandleConnection(conn net.Conn, dest net.Destination) {
 		return
 	}
 
-	user := s.GetUserByAddr(context.TODO(), addr)
-	if user == nil {
+	pub, endpoint, user, ok := s.authenticatedPeer(addr)
+	if !ok {
 		errors.LogError(context.Background(), "nil user form ", remote, " to ", dest)
 		return
 	}
+	flow := s.presence.Open(pub)
+	if flow == nil {
+		errors.LogError(context.Background(), "missing authenticated endpoint binding")
+		return
+	}
+	defer flow.Close()
 
 	source := net.DestinationFromAddr(remote)
 	inbound := session.Inbound{
@@ -361,10 +392,12 @@ func (s *Server) HandleConnection(conn net.Conn, dest net.Destination) {
 		Tag:           s.tag,
 		CanSpliceCopy: 3,
 		Source:        source,
+		PhysicalPeer:  endpoint.Addr().Unmap(),
 		User:          user,
 	}
 
 	ctx = session.ContextWithInbound(ctx, &inbound)
+	ctx = session.ContextWithPresenceMode(ctx, session.PresenceModeExternal)
 	ctx = session.ContextWithContent(ctx, &session.Content{
 		SniffingRequest: s.sniffingRequest,
 	})
@@ -384,6 +417,90 @@ func (s *Server) HandleConnection(conn net.Conn, dest net.Destination) {
 	}
 	if err := s.dispatcher.DispatchLink(ctx, dest, link); err != nil {
 		errors.LogError(ctx, errors.New("connection closed").Base(err))
+	}
+}
+
+func (s *Server) observeAuthenticatedData(dev *device.Device, bufs [][]byte, offset int) {
+	state, err := dev.IpcGet()
+	if err != nil {
+		return
+	}
+	seen := make(map[netip.Addr]struct{}, len(bufs))
+	for _, buffer := range bufs {
+		if offset < 0 || offset > len(buffer) {
+			continue
+		}
+		inner, ok := wireGuardPacketSource(buffer[offset:])
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[inner]; duplicate {
+			continue
+		}
+		seen[inner] = struct{}{}
+		pub, endpoint, ok := authenticatedPeerState(state, inner)
+		if !ok {
+			continue
+		}
+		value, ok := s.users.Load(pub)
+		if !ok {
+			continue
+		}
+		user := value.(*protocol.MemoryUser)
+		inbound := &session.Inbound{
+			Name:         "wireguard",
+			Tag:          s.tag,
+			PhysicalPeer: endpoint.Addr().Unmap(),
+			User:         user,
+		}
+		ctx := session.ContextWithInbound(s.ctx, inbound)
+		scope := session.PresenceScope{}
+		if s.presenceProvider != nil {
+			scope = s.presenceProvider.SnapshotPresence(ctx)
+		}
+		s.presence.Observe(pub, s.observation.Add(1), endpoint.Addr(), scope)
+	}
+}
+
+func (s *Server) authenticatedPeer(inner netip.Addr) ([32]byte, netip.AddrPort, *protocol.MemoryUser, bool) {
+	s.mu.Lock()
+	dev := s.dev
+	s.mu.Unlock()
+	if dev == nil {
+		return [32]byte{}, netip.AddrPort{}, nil, false
+	}
+	state, err := dev.IpcGet()
+	if err != nil {
+		return [32]byte{}, netip.AddrPort{}, nil, false
+	}
+	pub, endpoint, ok := authenticatedPeerState(state, inner)
+	if !ok {
+		return [32]byte{}, netip.AddrPort{}, nil, false
+	}
+	value, ok := s.users.Load(pub)
+	if !ok {
+		return [32]byte{}, netip.AddrPort{}, nil, false
+	}
+	return pub, endpoint, value.(*protocol.MemoryUser), true
+}
+
+func wireGuardPacketSource(packet []byte) (netip.Addr, bool) {
+	if len(packet) == 0 {
+		return netip.Addr{}, false
+	}
+	switch packet[0] >> 4 {
+	case 4:
+		if len(packet) < 20 {
+			return netip.Addr{}, false
+		}
+		return netip.AddrFrom4([4]byte(packet[12:16])), true
+	case 6:
+		if len(packet) < 40 {
+			return netip.Addr{}, false
+		}
+		return netip.AddrFrom16([16]byte(packet[8:24])), true
+	default:
+		return netip.Addr{}, false
 	}
 }
 
