@@ -25,12 +25,14 @@ import (
 type Server struct {
 	dispatcher routing.Dispatcher
 	smux       *singmux.Service
+	runtime    *Runtime
 }
 
 func newServer(dispatcher routing.Dispatcher) *Server {
 	return &Server{
 		dispatcher: dispatcher,
 		smux:       singmux.NewService(dispatcher),
+		runtime:    newRuntime(),
 	}
 }
 
@@ -70,10 +72,10 @@ func (s *Server) Dispatch(ctx context.Context, dest net.Destination) (*transport
 	uplinkReader, uplinkWriter := pipe.New(opts...)
 	downlinkReader, downlinkWriter := pipe.New(opts...)
 
-	_, err := NewServerWorker(ctx, s.dispatcher, &transport.Link{
+	_, err := newServerWorker(ctx, s.dispatcher, &transport.Link{
 		Reader: uplinkReader,
 		Writer: downlinkWriter,
-	})
+	}, s.runtime, false)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +113,7 @@ func (s *Server) DispatchLink(ctx context.Context, dest net.Destination, link *t
 	if dest.Address != muxCoolAddress {
 		return s.dispatcher.DispatchLink(ctx, dest, link)
 	}
-	worker, err := NewServerWorker(ctx, s.dispatcher, link)
+	worker, err := newServerWorker(ctx, s.dispatcher, link, s.runtime, false)
 	if err != nil {
 		return err
 	}
@@ -132,7 +134,7 @@ func (s *Server) Start() error {
 
 // Close implements common.Closable.
 func (s *Server) Close() error {
-	return nil
+	return s.runtime.Close()
 }
 
 type ServerWorker struct {
@@ -140,12 +142,20 @@ type ServerWorker struct {
 	link           *transport.Link
 	sessionManager *serverSessionRegistry
 	presence       session.PresenceScope
+	runtime        *Runtime
+	workerToken    uint64
+	ownRuntime     bool
+	responseSink   *xudpResponseSink
 	done           *done.Instance
 	timer          *time.Ticker
 	finishOnce     sync.Once
 }
 
 func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.Link) (*ServerWorker, error) {
+	return newServerWorker(ctx, d, link, newRuntime(), true)
+}
+
+func newServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.Link, runtime *Runtime, ownRuntime bool) (*ServerWorker, error) {
 	presence := session.PresenceScope{}
 	if source, ok := d.(session.PresenceProviderSource); ok && source.PresenceProvider() != nil {
 		presence = source.PresenceProvider().SnapshotPresence(ctx)
@@ -155,9 +165,13 @@ func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 		link:           link,
 		sessionManager: newServerSessionRegistry(),
 		presence:       presence,
+		runtime:        runtime,
+		workerToken:    runtime.workerToken(),
+		ownRuntime:     ownRuntime,
 		done:           done.New(),
 		timer:          time.NewTicker(60 * time.Second),
 	}
+	worker.responseSink = runtime.newResponseSink(link.Writer)
 	if inbound := session.InboundFromContext(ctx); inbound != nil {
 		inbound.CanSpliceCopy = 3
 	}
@@ -186,8 +200,12 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 func (w *ServerWorker) finish() {
 	w.finishOnce.Do(func() {
 		w.sessionManager.close()
+		w.responseSink.close()
 		common.Interrupt(w.link.Writer)
 		common.Interrupt(w.link.Reader)
+		if w.ownRuntime {
+			_ = w.runtime.Close()
+		}
 		common.Must(w.done.Close())
 	})
 }
@@ -277,68 +295,45 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 	if meta.GlobalID != [8]byte{} { // MUST ignore empty Global ID
 		mb, err := NewPacketReader(reader, &meta.Target).ReadMultiBuffer()
 		if err != nil {
+			admission.abort()
 			return err
 		}
-		XUDPManager.Lock()
-		x := XUDPManager.Map[meta.GlobalID]
-		if x == nil {
-			x = &XUDP{GlobalID: meta.GlobalID}
-			XUDPManager.Map[meta.GlobalID] = x
-			XUDPManager.Unlock()
-		} else {
-			if x.Status == Initializing { // nearly impossible
-				XUDPManager.Unlock()
-				errors.LogWarningInner(ctx, errors.New("conflict"), "XUDP hit ", meta.GlobalID)
-				// It's not a good idea to return an err here, so just let client wait.
-				// Client will receive an End frame after sending a Keep frame.
-				return nil
-			}
-			x.Status = Initializing
-			XUDPManager.Unlock()
-			x.Mux.Close(false) // detach from previous Mux
-			b := buf.New()
-			b.Write(mb[0].Bytes())
-			b.UDP = mb[0].UDP
-			if err = x.Mux.output.WriteMultiBuffer(mb); err != nil {
-				x.Interrupt()
-				mb = buf.MultiBuffer{b}
-			} else {
-				b.Release()
-				mb = nil
-			}
-			errors.LogInfoInner(ctx, err, "XUDP hit ", meta.GlobalID)
-		}
-		if mb != nil {
-			ctx = session.ContextWithTimeoutOnly(session.ContextWithPresenceMode(ctx, session.PresenceModeUntracked), true)
-			// Actually, it won't return an error in Xray-core's implementations.
-			link, err := w.dispatcher.Dispatch(ctx, meta.Target)
-			if err != nil {
-				XUDPManager.Lock()
-				delete(XUDPManager.Map, x.GlobalID)
-				XUDPManager.Unlock()
-				err = errors.New("XUDP new ", meta.GlobalID).Base(errors.New("failed to dispatch request to ", meta.Target).Base(err))
-				return err // it will break the whole Mux connection
-			}
-			link.Writer.WriteMultiBuffer(mb) // it's meaningless to test a new pipe
-			x.Mux = &Session{
-				input:  link.Reader,
-				output: link.Writer,
-			}
-			errors.LogInfoInner(ctx, err, "XUDP new ", meta.GlobalID)
-		}
-		x.Mux = &Session{
-			input:        x.Mux.input,
-			output:       x.Mux.output,
-			ID:           meta.SessionID,
-			transferType: protocol.TransferTypePacket,
-			XUDP:         x,
-		}
-		x.Status = Active
-		if !admission.beginCommit() || !admission.finishCommit(x.Mux, nil) {
+		xudpCtx, cancel := context.WithCancel(session.ContextWithTimeoutOnly(ctx, true))
+		if !admission.prepare(cancel) {
+			cancel()
 			admission.abort()
-			return errors.New("failed to add new session")
+			buf.ReleaseMulti(mb)
+			return errors.New("failed to prepare XUDP attachment")
 		}
-		go handle(ctx, x.Mux, w.link.Writer)
+		txCtx, finishTransaction, ok := w.runtime.beginTransaction(xudpCtx)
+		if !ok {
+			cancel()
+			admission.abort()
+			buf.ReleaseMulti(mb)
+			return errors.New("XUDP runtime is closing")
+		}
+		defer finishTransaction()
+		key := w.runtime.xudpKey(w.presence, w.workerToken, meta.GlobalID)
+		flow, err := w.runtime.xudpFlow(txCtx, key, meta.Target, w.dispatcher)
+		if err != nil {
+			cancel()
+			admission.abort()
+			buf.ReleaseMulti(mb)
+			return errors.New("failed to prepare XUDP flow").Base(err)
+		}
+		owner, err := flow.attach(admission, w.presence, w.responseSink)
+		if err != nil {
+			cancel()
+			admission.abort()
+			buf.ReleaseMulti(mb)
+			return errors.New("failed to attach XUDP flow").Base(err)
+		}
+		context.AfterFunc(xudpCtx, func() { _ = owner.Close(false) })
+		if err := owner.output.WriteMultiBuffer(mb); err != nil {
+			_ = owner.Close(false)
+			w.runtime.removeFlow(key, flow)
+			return errors.New("failed to write initial XUDP payload").Base(err)
+		}
 		return nil
 	}
 
