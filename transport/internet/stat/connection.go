@@ -3,6 +3,7 @@ package stat
 import (
 	"net"
 
+	corenet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/stats"
 )
 
@@ -38,7 +39,7 @@ func TryUnwrapStatsConn(conn net.Conn) net.Conn {
 		return conn
 	}
 	if conn, ok := conn.(*CounterConnection); ok {
-		return conn.Connection
+		return corenet.UnwrapPhysicalPeer(conn.Connection)
 	}
-	return conn
+	return corenet.UnwrapPhysicalPeer(conn)
 }
