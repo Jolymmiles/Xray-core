@@ -45,6 +45,7 @@ func (s *server) Handle(conn net.Conn) {
 
 // upgrade execute a fake websocket upgrade process and return the available connection
 func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
+	conn = net.CapturePhysicalPeer(conn)
 	// timeout and header limit are the same as websocket
 	conn.SetReadDeadline(time.Now().Add(time.Second * 4))
 	defer conn.SetReadDeadline(time.Time{})
@@ -93,7 +94,7 @@ func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
 	}
 	remoteAddr = http_proto.ApplyTrustedXForwardedFor(req.Header, trustedXFF, remoteAddr)
 
-	return stat.Connection(newConnection(conn, remoteAddr)), nil
+	return stat.Connection(net.PreservePhysicalPeer(conn, newConnection(conn, remoteAddr))), nil
 }
 
 func (s *server) keepAccepting() {
@@ -143,6 +144,7 @@ func ListenHTTPUpgrade(ctx context.Context, address net.Address, port net.Port, 
 		}
 		errors.LogInfo(ctx, "listening TCP(for HttpUpgrade) on ", address, ":", port)
 	}
+	listener = internet.CapturePhysicalPeerListener(listener)
 
 	if streamSettings.TcpmaskManager != nil {
 		listener, _ = streamSettings.TcpmaskManager.WrapListener(listener)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,10 +30,16 @@ func TestDialAndListenDeliversFirstSmallWrite(t *testing.T) {
 	}
 	firstReceived := make(chan error, 1)
 	secondReceived := make(chan error, 1)
+	physicalPeer := make(chan string, 1)
 	firstPayload := []byte("\x00b831381d-6324-4d53-ad4f-8cda48b30811")
 	secondPayload := []byte("second-mkcp-packet")
 
 	listener, err := kcp.NewListener(context.Background(), coreNet.LocalHostIP, 0, streamConfig, func(connection stat.Connection) {
+		if peer, ok := coreNet.PhysicalPeer(connection); ok {
+			physicalPeer <- peer.String()
+		} else {
+			physicalPeer <- ""
+		}
 		_ = connection.SetReadDeadline(time.Now().Add(3 * time.Second))
 		actual := make([]byte, len(firstPayload))
 		_, err := io.ReadFull(connection, actual)
@@ -74,6 +81,9 @@ func TestDialAndListenDeliversFirstSmallWrite(t *testing.T) {
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("mKCP listener did not receive the first small write")
+	}
+	if got := <-physicalPeer; !strings.HasPrefix(got, "127.0.0.1:") {
+		t.Fatalf("mKCP physical peer = %q, want loopback UDP peer", got)
 	}
 
 	if _, err := client.Write(secondPayload); err != nil {

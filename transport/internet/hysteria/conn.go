@@ -17,9 +17,10 @@ import (
 )
 
 type interConn struct {
-	stream *quic.Stream
-	local  net.Addr
-	remote net.Addr
+	stream       *quic.Stream
+	local        net.Addr
+	remote       net.Addr
+	physicalPeer net.Addr
 
 	client bool
 	user   *protocol.MemoryUser
@@ -27,6 +28,11 @@ type interConn struct {
 
 func (c *interConn) User() *protocol.MemoryUser {
 	return c.user
+}
+
+func (c *interConn) PhysicalPeer() net.Addr {
+	peer, _ := net.CopyPhysicalPeer(c.physicalPeer)
+	return peer
 }
 
 func (c *interConn) Read(b []byte) (int, error) {
@@ -71,8 +77,9 @@ func (c *interConn) SetWriteDeadline(t time.Time) error {
 }
 
 type InterConn struct {
-	local  net.Addr
-	remote net.Addr
+	local        net.Addr
+	remote       net.Addr
+	physicalPeer net.Addr
 
 	id      uint32
 	ch      chan []byte
@@ -86,6 +93,11 @@ type InterConn struct {
 
 func (i *InterConn) User() *protocol.MemoryUser {
 	return i.user
+}
+
+func (i *InterConn) PhysicalPeer() net.Addr {
+	peer, _ := net.CopyPhysicalPeer(i.physicalPeer)
+	return peer
 }
 
 func (c *InterConn) Time() time.Time {
@@ -178,6 +190,7 @@ type udpSessionManager struct {
 	addConn        internet.ConnHandler
 	udpIdleTimeout time.Duration
 	user           *protocol.MemoryUser
+	physicalPeer   net.Addr
 	send           func([]byte) error
 }
 
@@ -258,8 +271,9 @@ func (m *udpSessionManager) udp() (*InterConn, error) {
 	}
 
 	udpConn := &InterConn{
-		local:  m.conn.LocalAddr(),
-		remote: m.conn.RemoteAddr(),
+		local:        m.conn.LocalAddr(),
+		remote:       m.conn.RemoteAddr(),
+		physicalPeer: m.physicalPeer,
 
 		id:      m.next,
 		ch:      make(chan []byte, udpMessageChanSize),
@@ -293,8 +307,9 @@ func (m *udpSessionManager) feed(id uint32, d []byte) {
 	created := !ok
 	if !ok {
 		udpConn = &InterConn{
-			local:  m.conn.LocalAddr(),
-			remote: m.conn.RemoteAddr(),
+			local:        m.conn.LocalAddr(),
+			remote:       m.conn.RemoteAddr(),
+			physicalPeer: m.physicalPeer,
 
 			id:      id,
 			ch:      make(chan []byte, udpMessageChanSize),

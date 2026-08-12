@@ -111,9 +111,9 @@ func (l *Listener) OnReceive(payload *buf.Buffer, src net.Destination) {
 			RemoteAddr:   remoteAddr,
 			Conversation: conv,
 		}, writer, writer, l.config)
-		netConn = conn
+		netConn = net.CapturePhysicalPeer(conn)
 		if l.tlsConfig != nil {
-			netConn = tls.Server(conn, l.tlsConfig)
+			netConn = net.PreservePhysicalPeer(netConn, tls.Server(conn, l.tlsConfig))
 		}
 
 		l.sessions[id] = conn

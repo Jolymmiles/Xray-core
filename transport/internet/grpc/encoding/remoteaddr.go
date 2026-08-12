@@ -13,7 +13,7 @@ import (
 func remoteAddrFromContext(ctx context.Context, trusted []string) net.Addr {
 	var remoteAddr net.Addr
 	if pr, ok := peer.FromContext(ctx); ok {
-		remoteAddr = pr.Addr
+		remoteAddr = net.EffectiveAddress(pr.Addr)
 	} else {
 		remoteAddr = &net.TCPAddr{
 			IP:   []byte{0, 0, 0, 0},
@@ -33,6 +33,14 @@ func remoteAddrFromContext(ctx context.Context, trusted []string) net.Addr {
 		}
 	}
 	return remoteAddr
+}
+
+func physicalPeerFromContext(ctx context.Context) (net.Addr, bool) {
+	pr, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	return net.PhysicalPeerFromAddress(pr.Addr)
 }
 
 func parseTrustedXForwardedFor(md metadata.MD, trusted []string, remoteAddr net.Addr) net.Address {
