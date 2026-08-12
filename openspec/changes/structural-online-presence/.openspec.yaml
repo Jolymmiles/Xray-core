@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-12
+goal: Exact online state for direct, SMUX/H2MUX, legacy Mux, XUDP, reverse RVS,
+  and WireGuard without wire, config, protobuf, or Stats API changes.
