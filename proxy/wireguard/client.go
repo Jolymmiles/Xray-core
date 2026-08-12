@@ -264,7 +264,11 @@ func (h *Handler) init(ctx context.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		conn, err := internet.DialSystem(ctx, dest, h.streamSettings.SocketSettings)
+		var socketSettings *internet.SocketConfig
+		if h.streamSettings != nil {
+			socketSettings = h.streamSettings.SocketSettings
+		}
+		conn, err := internet.DialSystem(ctx, dest, socketSettings)
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +281,7 @@ func (h *Handler) init(ctx context.Context) error {
 		default:
 			panic(reflect.TypeOf(c))
 		}
-		if h.streamSettings.UdpmaskManager != nil {
+		if h.streamSettings != nil && h.streamSettings.UdpmaskManager != nil {
 			newConn, err := h.streamSettings.UdpmaskManager.WrapPacketConnClient(pktConn)
 			if err != nil {
 				pktConn.Close()
