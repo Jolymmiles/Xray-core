@@ -404,7 +404,6 @@ func (h *Handler) SetOutboundGateway(ctx context.Context, ob *session.Outbound) 
 		// case addr.Family().IsDomain():
 		default:
 			ob.Gateway = addr
-
 		}
 
 	}

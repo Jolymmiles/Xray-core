@@ -39,6 +39,10 @@ func (r *Rule) Apply(ctx routing.Context) bool {
 func (rr *RoutingRule) BuildCondition() (Condition, error) {
 	conds := NewConditionChan()
 
+	if len(rr.LocalOs) > 0 {
+		conds.Add(NewLocalOSMatcher(rr.LocalOs))
+	}
+
 	if len(rr.InboundTag) > 0 {
 		conds.Add(NewInboundTagMatcher(rr.InboundTag))
 	}
