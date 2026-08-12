@@ -281,6 +281,7 @@ func (noopDispatcherPresenceType) Handoff(old session.PresenceLease) session.Pre
 	}
 	return noopDispatcherPresence
 }
+
 func (noopDispatcherPresenceType) HandoffAll(old []session.PresenceLease) []session.PresenceLease {
 	for _, lease := range old {
 		if lease != nil {

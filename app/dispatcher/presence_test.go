@@ -52,6 +52,7 @@ func (m *recordingExactOnlineMap) AcquireOnlineLease(ip string) uint64 {
 	m.live[m.next] = ip
 	return m.next
 }
+
 func (m *recordingExactOnlineMap) ReplaceOnlineLeases(old []uint64, ip string, newCount int) ([]uint64, bool) {
 	m.replaceCalls++
 	if len(old) != newCount {
@@ -73,6 +74,7 @@ func (m *recordingExactOnlineMap) ReplaceOnlineLeases(old []uint64, ip string, n
 	}
 	return replacements, true
 }
+
 func (m *recordingExactOnlineMap) ReleaseOnlineLease(token uint64) {
 	if _, found := m.live[token]; !found {
 		return
@@ -80,6 +82,7 @@ func (m *recordingExactOnlineMap) ReleaseOnlineLease(token uint64) {
 	m.releaseCalls++
 	delete(m.live, token)
 }
+
 func (m *recordingExactOnlineMap) Count() int {
 	ips := make(map[string]bool)
 	for _, ip := range m.live {

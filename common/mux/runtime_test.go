@@ -149,6 +149,7 @@ func (noopPresenceReservation) Handoff(old session.PresenceLease) session.Presen
 	}
 	return noopPresenceLease{}
 }
+
 func (noopPresenceReservation) HandoffAll([]session.PresenceLease) []session.PresenceLease {
 	return nil
 }

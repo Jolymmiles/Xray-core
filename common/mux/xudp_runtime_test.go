@@ -286,6 +286,7 @@ func (d *xudpRuntimeDispatcher) Dispatch(ctx context.Context, _ X.Destination) (
 	d.backends <- peer
 	return server, nil
 }
+
 func (*xudpRuntimeDispatcher) DispatchLink(context.Context, X.Destination, *transport.Link) error {
 	return errors.New("unexpected DispatchLink")
 }
@@ -342,6 +343,7 @@ func (r *xudpPresenceReservation) Activate() session.PresenceLease {
 	})
 	return r.lease
 }
+
 func (r *xudpPresenceReservation) Handoff(old session.PresenceLease) session.PresenceLease {
 	if r.tracker.handoffStarted != nil {
 		r.tracker.handoffOnce.Do(func() { close(r.tracker.handoffStarted) })
@@ -353,6 +355,7 @@ func (r *xudpPresenceReservation) Handoff(old session.PresenceLease) session.Pre
 	}
 	return lease
 }
+
 func (*xudpPresenceReservation) HandoffAll([]session.PresenceLease) []session.PresenceLease {
 	return nil
 }
