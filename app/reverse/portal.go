@@ -340,10 +340,7 @@ func (w *PortalWorker) heartbeat() error {
 }
 
 func (w *PortalWorker) IsFull() bool {
-	w.mu.Lock()
-	draining := w.draining
-	w.mu.Unlock()
-	return draining || w.client.IsFull()
+	return w.client.IsFull()
 }
 
 func (w *PortalWorker) Draining() bool {
