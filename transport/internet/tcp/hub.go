@@ -69,6 +69,7 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 			_ = listener.Close()
 		}
 	}()
+	listener = internet.CapturePhysicalPeerListener(listener)
 
 	if streamSettings.TcpmaskManager != nil {
 		wrappedListener, err := streamSettings.TcpmaskManager.WrapListener(listener)

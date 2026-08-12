@@ -94,6 +94,7 @@ func (h *httpHandler) AuthHTTP(w http.ResponseWriter, r *http.Request) bool {
 					addConn:        h.addConn,
 					udpIdleTimeout: time.Duration(h.config.UdpIdleTimeout) * time.Second,
 					user:           h.user,
+					physicalPeer:   h.conn.RemoteAddr(),
 				}
 				go udpSM.clean()
 				go udpSM.run()
@@ -128,9 +129,10 @@ func (h *httpHandler) StreamDispatcher(ft http3.FrameType, stream *quic.Stream, 
 		}
 
 		h.addConn(&interConn{
-			stream: stream,
-			local:  h.conn.LocalAddr(),
-			remote: h.conn.RemoteAddr(),
+			stream:       stream,
+			local:        h.conn.LocalAddr(),
+			remote:       h.conn.RemoteAddr(),
+			physicalPeer: h.conn.RemoteAddr(),
 
 			user: h.user,
 		})

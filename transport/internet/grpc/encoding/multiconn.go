@@ -35,13 +35,17 @@ func NewMultiHunkConn(hc MultiHunkConn, cancel context.CancelFunc, trustedXForwa
 	rAddr := remoteAddrFromContext(hc.Context(), trustedXForwardedFor)
 	lAddr := localAddrFromContext(hc.Context())
 	wrc := NewMultiHunkReadWriter(hc, cancel)
-	return cnc.NewConnection(
+	conn := cnc.NewConnection(
 		cnc.ConnectionInputMulti(wrc),
 		cnc.ConnectionOutputMulti(wrc),
 		cnc.ConnectionOnClose(wrc),
 		cnc.ConnectionRemoteAddr(rAddr),
 		cnc.ConnectionLocalAddr(lAddr),
 	)
+	if peer, ok := physicalPeerFromContext(hc.Context()); ok {
+		return net.WithPhysicalPeer(peer, conn)
+	}
+	return conn
 }
 
 func (h *MultiHunkReaderWriter) forceFetch() error {

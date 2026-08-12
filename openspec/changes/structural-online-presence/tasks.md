@@ -22,12 +22,12 @@
 
 - [x] 3.1 RED: add canonicalization and principal golden tests for IPv4/mapped IPv4/IPv6, zone/port removal, invalid/loopback/unspecified rejection, deterministic account framing, inbound isolation, and non-reusable entropy fallback.
 - [x] 3.2 GREEN: implement canonical peer conversion and keyed authenticated principal derivation behind the provider; run targeted tests and race.
-- [ ] 3.3 RED: add stream-listener tests proving the raw accepted TCP/Unix peer survives PROXY/TLS/REALITY/mask wrapping separately from effective `RemoteAddr`.
-- [ ] 3.4 GREEN: capture and expose immutable raw stream peers at the system listener and propagate them through TCP workers without changing routing/log source semantics.
-- [ ] 3.5 RED: add WebSocket, HTTP Upgrade, gRPC, SplitHTTP H1/H2/H3 tests proving raw connection/QUIC peers survive XFF and multi-request virtual connections.
-- [ ] 3.6 GREEN: propagate the raw peer through HTTP `ConnContext`, virtual connection adapters, and creator-request state for all HTTP transports.
-- [ ] 3.7 RED: add direct UDP, mKCP, and Hysteria tests proving kernel/QUIC packet peers are frozen and virtual/original-destination metadata cannot replace them.
-- [ ] 3.8 GREEN: propagate trusted packet peers through UDP workers, mKCP, and Hysteria while making Unix/unknown/synthetic paths explicitly untracked.
+- [x] 3.3 RED: add stream-listener tests proving the raw accepted TCP/Unix peer survives PROXY/TLS/REALITY/mask wrapping separately from effective `RemoteAddr`.
+- [x] 3.4 GREEN: capture and expose immutable raw stream peers at the system listener and propagate them through TCP workers without changing routing/log source semantics.
+- [x] 3.5 RED: add WebSocket, HTTP Upgrade, gRPC, SplitHTTP H1/H2/H3 tests proving raw connection/QUIC peers survive XFF and multi-request virtual connections.
+- [x] 3.6 GREEN: propagate the raw peer through HTTP `ConnContext`, virtual connection adapters, and creator-request state for all HTTP transports.
+- [x] 3.7 RED: add direct UDP, mKCP, and Hysteria tests proving kernel/QUIC packet peers are frozen and virtual/original-destination metadata cannot replace them.
+- [x] 3.8 GREEN: propagate trusted packet peers through UDP workers, mKCP, and Hysteria while making Unix/unknown/synthetic paths explicitly untracked.
 - [ ] 3.9 RED: add authenticated VLESS/Trojan/VMess/inbound-worker tests proving the provider snapshots user plus trusted peer after authentication and before frame source rewriting.
 - [ ] 3.10 GREEN: wire provider snapshots into built-in authenticated inbound owners and expose the optional provider source without changing stable dispatcher interfaces.
 - [ ] 3.11 Run the full transport/auth package unit, race, checkptr, vet, VLESS/REALITY, spoofed-PROXY/XFF, and process compatibility gates; fix every failure before mux work.

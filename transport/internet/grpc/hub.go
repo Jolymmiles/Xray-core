@@ -123,6 +123,7 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
 				return
 			}
 		}
+		streamListener = internet.CapturePhysicalPeerListener(streamListener)
 
 		if settings.TcpmaskManager != nil {
 			streamListener, _ = settings.TcpmaskManager.WrapListener(streamListener)
@@ -134,7 +135,7 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
 		if config := reality.ConfigFromStreamSettings(settings); config != nil {
 			streamListener = goreality.NewListener(streamListener, config.GetREALITYConfig())
 		}
-		if err = s.Serve(streamListener); err != nil {
+		if err = s.Serve(internet.PhysicalPeerContextListener(streamListener)); err != nil {
 			errors.LogInfoInner(ctx, err, "Listener for gRPC ended")
 		}
 	}()

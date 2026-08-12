@@ -72,7 +72,11 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	}
 	remoteAddr = http_proto.ApplyTrustedXForwardedFor(request.Header, trustedXFF, remoteAddr)
 
-	h.ln.addConn(NewConnection(conn, remoteAddr, extraReader, h.ln.config.HeartbeatPeriod))
+	virtualConn := net.Conn(NewConnection(conn, remoteAddr, extraReader, h.ln.config.HeartbeatPeriod))
+	if peer, ok := internet.PhysicalPeerFromContext(request.Context()); ok {
+		virtualConn = net.WithPhysicalPeer(peer, virtualConn)
+	}
+	h.ln.addConn(virtualConn)
 }
 
 type Listener struct {
@@ -116,6 +120,7 @@ func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSet
 		}
 		errors.LogInfo(ctx, "listening TCP(for WS) on ", address, ":", port)
 	}
+	listener = internet.CapturePhysicalPeerListener(listener)
 
 	if streamSettings.TcpmaskManager != nil {
 		listener, _ = streamSettings.TcpmaskManager.WrapListener(listener)
@@ -142,6 +147,7 @@ func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSet
 		},
 		ReadHeaderTimeout: time.Second * 4,
 		MaxHeaderBytes:    8192,
+		ConnContext:       internet.ContextWithPhysicalPeer,
 	}
 
 	go func() {

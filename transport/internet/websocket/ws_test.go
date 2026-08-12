@@ -3,6 +3,7 @@ package websocket_test
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,7 @@ func Test_listenWSAndDial(t *testing.T) {
 
 func TestDialWithRemoteAddr(t *testing.T) {
 	listenPort := tcp.PickPort()
+	physicalPeer := make(chan string, 1)
 	listen, err := ListenWS(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
 		ProtocolName: "websocket",
 		ProtocolSettings: &Config{
@@ -83,6 +85,11 @@ func TestDialWithRemoteAddr(t *testing.T) {
 			TrustedXForwardedFor: []string{"X-Forwarded-For"},
 		},
 	}, func(conn stat.Connection) {
+		if peer, ok := net.PhysicalPeer(conn); ok {
+			physicalPeer <- peer.String()
+		} else {
+			physicalPeer <- ""
+		}
 		go func(c stat.Connection) {
 			defer c.Close()
 
@@ -113,6 +120,9 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	common.Must(err)
 	if string(b[:n]) != "1.1.1.1:0" {
 		t.Error("response: ", string(b[:n]))
+	}
+	if got := <-physicalPeer; !strings.HasPrefix(got, "127.0.0.1:") {
+		t.Fatalf("physical peer = %q, want loopback socket peer", got)
 	}
 
 	common.Must(listen.Close())

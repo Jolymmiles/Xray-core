@@ -2,9 +2,11 @@ package encoding
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 
+	corenet "github.com/xtls/xray-core/common/net"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 )
@@ -49,5 +51,62 @@ func TestRemoteAddrFromContext(t *testing.T) {
 				t.Fatalf("unexpected remote address: %s", remoteAddr.String())
 			}
 		})
+	}
+}
+
+type physicalPeerHunkConn struct {
+	ctx context.Context
+}
+
+func (c physicalPeerHunkConn) Context() context.Context { return c.ctx }
+func (physicalPeerHunkConn) Send(*Hunk) error           { return nil }
+func (physicalPeerHunkConn) Recv() (*Hunk, error)       { return nil, io.EOF }
+func (physicalPeerHunkConn) SendMsg(any) error          { return nil }
+func (physicalPeerHunkConn) RecvMsg(any) error          { return io.EOF }
+
+type physicalPeerMultiHunkConn struct {
+	ctx context.Context
+}
+
+func (c physicalPeerMultiHunkConn) Context() context.Context { return c.ctx }
+func (physicalPeerMultiHunkConn) Send(*MultiHunk) error      { return nil }
+func (physicalPeerMultiHunkConn) Recv() (*MultiHunk, error)  { return nil, io.EOF }
+func (physicalPeerMultiHunkConn) SendMsg(any) error          { return nil }
+func (physicalPeerMultiHunkConn) RecvMsg(any) error          { return io.EOF }
+
+func TestGRPCVirtualConnectionsCarryPhysicalPeer(t *testing.T) {
+	effective := &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345}
+	physical := &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321}
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: corenet.WithPhysicalPeerAddress(effective, physical),
+	})
+	connections := []net.Conn{
+		NewHunkConn(physicalPeerHunkConn{ctx: ctx}, nil, nil),
+		NewMultiHunkConn(physicalPeerMultiHunkConn{ctx: ctx}, nil, nil),
+	}
+	for _, conn := range connections {
+		got, ok := corenet.PhysicalPeer(conn)
+		if !ok || got.String() != physical.String() {
+			t.Fatalf("%T physical peer = %v, ok=%v", conn, got, ok)
+		}
+		if got := conn.RemoteAddr().String(); got != effective.String() {
+			t.Fatalf("%T effective remote = %s, want %s", conn, got, effective)
+		}
+	}
+}
+
+func TestGRPCContextSeparatesPhysicalPeerFromEffectiveRemote(t *testing.T) {
+	effective := &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345}
+	physical := &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321}
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: corenet.WithPhysicalPeerAddress(effective, physical),
+	})
+
+	if got := remoteAddrFromContext(ctx, nil).String(); got != effective.String() {
+		t.Fatalf("effective remote = %s, want %s", got, effective)
+	}
+	got, ok := physicalPeerFromContext(ctx)
+	if !ok || got.String() != physical.String() {
+		t.Fatalf("physical peer = %v, ok=%v, want %s", got, ok, physical)
 	}
 }

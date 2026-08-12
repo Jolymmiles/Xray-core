@@ -673,6 +673,7 @@ func XtlsFilterTls(buffer buf.MultiBuffer, trafficState *TrafficState, ctx conte
 func UnwrapRawConn(conn net.Conn) (net.Conn, stats.Counter, stats.Counter) {
 	var readCounter, writerCounter stats.Counter
 	if conn != nil {
+		conn = net.UnwrapPhysicalPeer(conn)
 		isEncryption := false
 		if commonConn, ok := conn.(*encryption.CommonConn); ok {
 			conn = commonConn.Conn
@@ -683,6 +684,7 @@ func UnwrapRawConn(conn net.Conn) (net.Conn, stats.Counter, stats.Counter) {
 		}
 		if statConn, ok := conn.(*stat.CounterConnection); ok {
 			conn = statConn.Connection
+			conn = net.UnwrapPhysicalPeer(conn)
 			readCounter = statConn.ReadCounter
 			writerCounter = statConn.WriteCounter
 		}

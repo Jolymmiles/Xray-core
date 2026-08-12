@@ -40,13 +40,17 @@ func NewHunkConn(hc HunkConn, cancel context.CancelFunc, trustedXForwardedFor []
 	rAddr := remoteAddrFromContext(hc.Context(), trustedXForwardedFor)
 	lAddr := localAddrFromContext(hc.Context())
 	wrc := NewHunkReadWriter(hc, cancel)
-	return cnc.NewConnection(
+	conn := cnc.NewConnection(
 		cnc.ConnectionInput(wrc),
 		cnc.ConnectionOutput(wrc),
 		cnc.ConnectionOnClose(wrc),
 		cnc.ConnectionRemoteAddr(rAddr),
 		cnc.ConnectionLocalAddr(lAddr),
 	)
+	if peer, ok := physicalPeerFromContext(hc.Context()); ok {
+		return net.WithPhysicalPeer(peer, conn)
+	}
+	return conn
 }
 
 func (h *HunkReaderWriter) forceFetch() error {

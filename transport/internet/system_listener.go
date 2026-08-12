@@ -37,6 +37,11 @@ func (l *physicalPeerListener) Accept() (net.Conn, error) {
 	return net.PreservePhysicalPeer(conn, proxyproto.NewConn(conn, proxyproto.WithPolicy(proxyproto.REQUIRE))), nil
 }
 
+// CapturePhysicalPeerListener freezes accepted peers before transport wrappers.
+func CapturePhysicalPeerListener(listener net.Listener) net.Listener {
+	return &physicalPeerListener{Listener: listener}
+}
+
 func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []func(network, address string, c syscall.RawConn) error) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {

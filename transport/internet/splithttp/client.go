@@ -188,37 +188,49 @@ func (c *DefaultDialerClient) Close() error {
 
 type WaitReadCloser struct {
 	Wait chan struct{}
-	io.ReadCloser
+
+	access    sync.Mutex
+	reader    io.ReadCloser
+	readyOnce sync.Once
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (w *WaitReadCloser) Set(rc io.ReadCloser) {
-	w.ReadCloser = rc
-	defer func() {
-		if recover() != nil {
-			rc.Close()
-		}
-	}()
-	close(w.Wait)
+	accepted := false
+	w.readyOnce.Do(func() {
+		w.access.Lock()
+		w.reader = rc
+		w.access.Unlock()
+		accepted = true
+		close(w.Wait)
+	})
+	if !accepted {
+		_ = rc.Close()
+	}
 }
 
 func (w *WaitReadCloser) Read(b []byte) (int, error) {
-	if w.ReadCloser == nil {
-		if <-w.Wait; w.ReadCloser == nil {
-			return 0, io.ErrClosedPipe
-		}
+	<-w.Wait
+	w.access.Lock()
+	reader := w.reader
+	w.access.Unlock()
+	if reader == nil {
+		return 0, io.ErrClosedPipe
 	}
-	return w.ReadCloser.Read(b)
+	return reader.Read(b)
 }
 
 func (w *WaitReadCloser) Close() error {
-	if w.ReadCloser != nil {
-		return w.ReadCloser.Close()
-	}
-	defer func() {
-		if recover() != nil && w.ReadCloser != nil {
-			w.ReadCloser.Close()
+	w.readyOnce.Do(func() { close(w.Wait) })
+	<-w.Wait
+	w.closeOnce.Do(func() {
+		w.access.Lock()
+		reader := w.reader
+		w.access.Unlock()
+		if reader != nil {
+			w.closeErr = reader.Close()
 		}
-	}()
-	close(w.Wait)
-	return nil
+	})
+	return w.closeErr
 }

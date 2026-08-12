@@ -66,9 +66,9 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 
 	if !found {
 		transportConfig := streamSettings.ProtocolSettings.(*Config)
-		var xmuxConfig XmuxConfig
-		if transportConfig.Xmux != nil {
-			xmuxConfig = *transportConfig.Xmux
+		xmuxConfig := transportConfig.Xmux
+		if xmuxConfig == nil {
+			xmuxConfig = &XmuxConfig{}
 		}
 
 		xmuxManager = NewXmuxManager(xmuxConfig, func() XmuxConn {
@@ -595,11 +595,12 @@ func (w uploadWriter) Write(b []byte) (int, error) {
 
 	var writed int
 	for _, buff := range buffer.MultiBuffer {
+		length := int(buff.Len())
 		err := w.WriteMultiBuffer(buf.MultiBuffer{buff})
 		if err != nil {
 			return writed, err
 		}
-		writed += int(buff.Len())
+		writed += length
 	}
 	return writed, nil
 }

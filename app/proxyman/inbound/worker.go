@@ -70,6 +70,17 @@ func physicalPeerFromConn(conn net.Conn) netip.Addr {
 	return peerIP
 }
 
+func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
+	if source.Network != net.Network_UDP || !source.IsValid() || !source.Address.Family().IsIP() {
+		return netip.Addr{}
+	}
+	peer, _ := net.CanonicalPhysicalPeer(&net.UDPAddr{
+		IP:   source.Address.IP(),
+		Port: int(source.Port),
+	})
+	return peer
+}
+
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
@@ -379,10 +390,11 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 			}
 
 			ctx = session.ContextWithInbound(ctx, &session.Inbound{
-				Source:  source,
-				Local:   local, // Due to some limitations, in UDP connections, localIP is always equal to listen interface IP
-				Gateway: net.UDPDestination(w.address, w.port),
-				Tag:     w.tag,
+				Source:       source,
+				PhysicalPeer: physicalPeerFromUDPDestination(source),
+				Local:        local, // Due to some limitations, in UDP connections, localIP is always equal to listen interface IP
+				Gateway:      net.UDPDestination(w.address, w.port),
+				Tag:          w.tag,
 			})
 			content := new(session.Content)
 			content.SniffingRequest = w.sniffingRequest

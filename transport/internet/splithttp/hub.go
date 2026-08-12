@@ -171,6 +171,10 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			Port: remoteAddr.(*net.TCPAddr).Port,
 		}
 	}
+	physicalPeer, hasPhysicalPeer := internet.PhysicalPeerFromContext(request.Context())
+	if !hasPhysicalPeer && request.ProtoMajor == 3 {
+		physicalPeer, hasPhysicalPeer = net.CopyPhysicalPeer(remoteAddr)
+	}
 	var trustedXFF []string
 	if h.socketSettings != nil {
 		trustedXFF = h.socketSettings.TrustedXForwardedFor
@@ -387,7 +391,11 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			conn.reader = currentSession.uploadQueue
 		}
 
-		h.ln.addConn(stat.Connection(&conn))
+		virtualConn := net.Conn(&conn)
+		if hasPhysicalPeer {
+			virtualConn = net.WithPhysicalPeer(physicalPeer, virtualConn)
+		}
+		h.ln.addConn(stat.Connection(virtualConn))
 
 		// "A ResponseWriter may not be used after [Handler.ServeHTTP] has returned."
 		select {
@@ -536,6 +544,9 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 		}
 		errors.LogInfo(ctx, "listening TCP for XHTTP on ", address, ":", port)
 	}
+	if l.listener != nil {
+		l.listener = internet.CapturePhysicalPeerListener(l.listener)
+	}
 
 	if !l.isH3 && streamSettings.TcpmaskManager != nil {
 		l.listener, _ = streamSettings.TcpmaskManager.WrapListener(l.listener)
@@ -563,6 +574,7 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			ReadHeaderTimeout: time.Second * 4,
 			MaxHeaderBytes:    l.config.GetNormalizedServerMaxHeaderBytes(),
 			Protocols:         protocols,
+			ConnContext:       internet.ContextWithPhysicalPeer,
 		}
 		go func() {
 			if err := l.server.Serve(l.listener); err != nil {
