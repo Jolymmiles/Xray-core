@@ -48,6 +48,15 @@ func (s *Server) Type() interface{} {
 	return s.dispatcher.Type()
 }
 
+// PresenceProvider exposes the authenticated dispatcher provider to inbound
+// proxies that dispatch through the mux server.
+func (s *Server) PresenceProvider() session.PresenceProvider {
+	if source, ok := s.dispatcher.(session.PresenceProviderSource); ok {
+		return source.PresenceProvider()
+	}
+	return nil
+}
+
 // Dispatch implements routing.Dispatcher
 func (s *Server) Dispatch(ctx context.Context, dest net.Destination) (*transport.Link, error) {
 	if singmux.IsDestination(dest) {

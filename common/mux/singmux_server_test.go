@@ -10,6 +10,7 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	X "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
@@ -17,8 +18,11 @@ import (
 )
 
 type smuxEchoDispatcher struct {
-	target chan X.Destination
+	target   chan X.Destination
+	provider session.PresenceProvider
 }
+
+func (d *smuxEchoDispatcher) PresenceProvider() session.PresenceProvider { return d.provider }
 
 func (*smuxEchoDispatcher) Dispatch(context.Context, X.Destination) (*transport.Link, error) {
 	return nil, io.ErrClosedPipe
@@ -72,6 +76,20 @@ func newSMUXTestClient(t *testing.T, server *Server) *singmux.Client {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+func TestServerExposesUnderlyingPresenceProvider(t *testing.T) {
+	provider := smuxPresenceProvider{}
+	server := newServer(&smuxEchoDispatcher{provider: provider})
+	if server.PresenceProvider() != provider {
+		t.Fatal("mux server did not expose the underlying presence provider")
+	}
+}
+
+type smuxPresenceProvider struct{}
+
+func (smuxPresenceProvider) SnapshotPresence(context.Context) session.PresenceScope {
+	return session.PresenceScope{}
 }
 
 func TestServerAcceptsSMUXTCP(t *testing.T) {

@@ -11,15 +11,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xtls/xray-core/common/session"
 	"golang.org/x/net/http2"
 )
 
-func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, brutal *serverBrutalController) error {
+func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, brutal *serverBrutalController, presence session.PresenceScope) error {
 	server := &http2.Server{}
 	server.ServeConn(carrier, &http2.ServeConnOpts{
 		Context: ctx,
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			s.handleH2MuxStream(writer, request, carrier, brutal)
+			s.handleH2MuxStream(writer, request, carrier, brutal, presence)
 		}),
 	})
 	if err := ctx.Err(); err != nil {
@@ -28,7 +29,7 @@ func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, brutal *serv
 	return net.ErrClosed
 }
 
-func (s *Service) handleH2MuxStream(writer http.ResponseWriter, request *http.Request, carrier net.Conn, brutal *serverBrutalController) {
+func (s *Service) handleH2MuxStream(writer http.ResponseWriter, request *http.Request, carrier net.Conn, brutal *serverBrutalController, presence session.PresenceScope) {
 	if request.Method != http.MethodConnect {
 		http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
 		return
@@ -61,7 +62,7 @@ func (s *Service) handleH2MuxStream(writer http.ResponseWriter, request *http.Re
 		localAddr:  carrier.LocalAddr(),
 		remoteAddr: carrier.RemoteAddr(),
 	}
-	s.handleStream(request.Context(), stream, handshakeSlots, brutal)
+	s.handleStream(request.Context(), stream, handshakeSlots, brutal, presence)
 }
 
 type h2MuxServerStream struct {
