@@ -24,6 +24,16 @@ type physicalPeerSyscallTestConn struct {
 	*physicalPeerTestConn
 }
 
+type physicalPeerCloseWriteTestConn struct {
+	*physicalPeerSyscallTestConn
+	closed bool
+}
+
+func (c *physicalPeerCloseWriteTestConn) CloseWrite() error {
+	c.closed = true
+	return nil
+}
+
 type physicalPeerNetConnWrapper struct {
 	Conn
 }
@@ -49,6 +59,23 @@ func TestPhysicalPeerWrapperPreservesOnlyExistingSyscallCapability(t *testing.T)
 	}
 	if got := UnwrapPhysicalPeer(wrappedRaw); got != raw {
 		t.Fatalf("unwrapped raw connection = %T, want original", got)
+	}
+}
+
+func TestPhysicalPeerWrapperPreservesCloseWriteCapability(t *testing.T) {
+	raw := &physicalPeerCloseWriteTestConn{physicalPeerSyscallTestConn: &physicalPeerSyscallTestConn{
+		physicalPeerTestConn: &physicalPeerTestConn{remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 1}},
+	}}
+	wrapped := CapturePhysicalPeer(raw)
+	closeWriter, ok := wrapped.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatalf("captured connection lost CloseWrite: %T", wrapped)
+	}
+	if err := closeWriter.CloseWrite(); err != nil || !raw.closed {
+		t.Fatalf("CloseWrite = %v, delegated = %v", err, raw.closed)
+	}
+	if _, ok := wrapped.(syscall.Conn); !ok {
+		t.Fatalf("captured connection lost syscall.Conn: %T", wrapped)
 	}
 }
 
