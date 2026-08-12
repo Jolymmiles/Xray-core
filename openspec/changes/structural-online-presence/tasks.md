@@ -47,19 +47,19 @@
 - [x] 5.4 GREEN: implement the token-qualified `ServerSessionRegistry`, two-phase publication, idempotent owner close, and in-flight shutdown barrier.
 - [x] 5.5 RED: add normal Mux tests proving each committed TCP/packet-UDP session owns one External lease and an idle live carrier owns none.
 - [x] 5.6 GREEN: migrate normal Mux sessions to the registry/lease bundle and start pumps only after complete publication.
-- [ ] 5.7 Add one `mux.Runtime` per long-lived owner with worker registration, close admission, transaction barrier, and idempotent full drain; keep XUDP behavior unchanged until its slice.
+- [x] 5.7 Add one `mux.Runtime` per long-lived owner with worker registration, close admission, transaction barrier, and idempotent full drain; keep XUDP behavior unchanged until its slice.
 - [ ] 5.8 Run frame goldens before/after, normal Mux unit/race/checkptr/vet, `-count=100` lifecycle interleavings, and old/new TCP/packet-UDP version skew.
 
 ## 6. XUDP attachment runtime and rebind
 
-- [ ] 6.1 RED: add runtime identity tests proving per-owner isolation, principal/worker-token keys, destination freeze, duplicate SessionID rejection, and absence of package-global reuse.
-- [ ] 6.2 GREEN: move XUDP registry and one expiry scheduler into `mux.Runtime`; make backend dispatch Untracked and flow/cache own no presence.
-- [ ] 6.3 RED: add initial-attachment tests for buffered first payload, publish-before-pump, exactly one lease, detach-to-cached online zero, backend EOF, and cached expiry.
-- [ ] 6.4 GREEN: implement token/epoch-qualified attachment publication, bounded generation-tagged pumps, detach/cache, and exact cleanup.
-- [ ] 6.5 RED: add same/different-IP rebind tests for precommit preservation, one winning concurrent transaction, atomic handoff, stale callbacks, postcommit first-write failure, and no resurrection.
-- [ ] 6.6 GREEN: implement the irreversible rebind transaction, exact lease handoff, start barrier, old attachment retirement, and generation-safe callback/pump routing.
-- [ ] 6.7 RED: add blocked backend/sink, queue-drain, active/pending/cached shutdown, concurrent close, and scheduler-goroutine leak tests.
-- [ ] 6.8 GREEN: complete runtime close ordering and remove package-global `XUDPManager`, package-init scheduler, cache-owned context tracking, and obsolete cleanup paths.
+- [x] 6.1 RED: add runtime identity tests proving per-owner isolation, principal/worker-token keys, destination freeze, duplicate SessionID rejection, and absence of package-global reuse.
+- [x] 6.2 GREEN: move XUDP registry and one expiry scheduler into `mux.Runtime`; make backend dispatch Untracked and flow/cache own no presence.
+- [x] 6.3 RED: add initial-attachment tests for buffered first payload, publish-before-pump, exactly one lease, detach-to-cached online zero, backend EOF, and cached expiry.
+- [x] 6.4 GREEN: implement token/epoch-qualified attachment publication, bounded generation-tagged pumps, detach/cache, and exact cleanup.
+- [x] 6.5 RED: add same/different-IP rebind tests for precommit preservation, one winning concurrent transaction, atomic handoff, stale callbacks, postcommit first-write failure, and no resurrection.
+- [x] 6.6 GREEN: implement the irreversible rebind transaction, exact lease handoff, start barrier, old attachment retirement, and generation-safe callback/pump routing.
+- [x] 6.7 RED: add blocked backend/sink, queue-drain, active/pending/cached shutdown, concurrent close, and scheduler-goroutine leak tests.
+- [x] 6.8 GREEN: complete runtime close ordering and remove package-global `XUDPManager`, package-init scheduler, cache-owned context tracking, and obsolete cleanup paths.
 - [ ] 6.9 Run XUDP/mux unit, frame golden, race/checkptr/vet, `-count=100` rebind/shutdown stress, 1,000-rebind lifecycle soak, and old/new XUDP version skew.
 
 ## 7. Reverse RVS data-session ownership
