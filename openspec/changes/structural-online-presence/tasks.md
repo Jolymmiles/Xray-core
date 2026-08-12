@@ -8,10 +8,10 @@
 
 ## 2. Neutral contracts, exact stats, and direct ownership
 
-- [ ] 2.1 RED: add `common/session` tests for immutable scope, allocation-free no-op objects, one-shot reservation terminals, explicit ownership modes, and concurrent idempotent lease close; observe the intended failures.
-- [ ] 2.2 GREEN: implement the minimal neutral presence subject/provider/tracker/reservation/lease/scope and private context mode metadata; run `common/session` tests and race.
-- [ ] 2.3 RED: add `app/stats` tests for generation-qualified acquire/release, mixed legacy/exact refs, stale tokens, same/different-IP replacement, batch validation, concurrent iteration/count, and unregister/re-register isolation; observe failures.
-- [ ] 2.4 GREEN: deepen the built-in `OnlineMap` with exact tokens and atomic single/batch replacement while leaving the stable interface unchanged; run targeted tests and race/count stress.
+- [x] 2.1 RED: add `common/session` tests for immutable scope, allocation-free no-op objects, one-shot reservation terminals, explicit ownership modes, and concurrent idempotent lease close; observe the intended failures.
+- [x] 2.2 GREEN: implement the minimal neutral presence subject/provider/tracker/reservation/lease/scope and private context mode metadata; run `common/session` tests and race.
+- [x] 2.3 RED: add `app/stats` tests for generation-qualified acquire/release, mixed legacy/exact refs, stale tokens, same/different-IP replacement, batch validation, concurrent iteration/count, and unregister/re-register isolation; observe failures.
+- [x] 2.4 GREEN: deepen the built-in `OnlineMap` with exact tokens and atomic single/batch replacement while leaving the stable interface unchanged; run targeted tests and race/count stress.
 - [ ] 2.5 RED: add dispatcher tracker tests for policy sampling, exact-map pinning, no-op degradation, activate/handoff/batch handoff, custom/different-map ordering, and sanitized rate limiting; observe failures.
 - [ ] 2.6 GREEN: implement the sole production tracker/provider seam and principal digest framing without changing routing/stats feature interfaces; run dispatcher/stats tests and race.
 - [ ] 2.7 RED: add direct `Dispatch`/`DispatchLink` tests proving route-time activation, exact cancellation, early route-failure release, half-close behavior, and no acquisition in External/Untracked modes; observe failures.
