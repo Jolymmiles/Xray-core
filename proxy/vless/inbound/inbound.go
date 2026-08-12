@@ -234,6 +234,9 @@ func (h *Handler) RemoveReverse(u *protocol.MemoryUser) {
 	if u != nil {
 		a := u.Account.(*vless.MemoryAccount)
 		if a.Reverse != nil && a.Reverse.Tag != "" {
+			if handler := h.outboundHandlerManager.GetHandler(a.Reverse.Tag); handler != nil {
+				_ = handler.Close()
+			}
 			h.outboundHandlerManager.RemoveHandler(h.ctx, a.Reverse.Tag)
 		}
 	}
@@ -652,7 +655,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		if err != nil {
 			return err
 		}
-		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, link), h.observer)
+		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, link), h.observer, dispatch)
 	}
 
 	if err := dispatch.DispatchLink(ctx, request.Destination(), link); err != nil {
@@ -695,8 +698,12 @@ func (r *Reverse) Tag() string {
 	return r.tag
 }
 
-func (r *Reverse) NewMux(ctx context.Context, link *transport.Link, observer features.Feature) error {
-	muxClient, err := mux.NewClientWorker(*link, mux.ClientStrategy{})
+func (r *Reverse) NewMux(ctx context.Context, link *transport.Link, observer features.Feature, dispatcher routing.Dispatcher) error {
+	scope := session.PresenceScope{}
+	if source, ok := dispatcher.(session.PresenceProviderSource); ok && source.PresenceProvider() != nil {
+		scope = source.PresenceProvider().SnapshotPresence(ctx)
+	}
+	muxClient, err := mux.NewClientWorkerWithPresence(*link, mux.ClientStrategy{}, scope)
 	if err != nil {
 		return errors.New("failed to create mux client worker").Base(err).AtWarning()
 	}
@@ -723,7 +730,7 @@ func (r *Reverse) Dispatch(ctx context.Context, link *transport.Link) {
 			link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 			link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		}
-		r.client.Dispatch(session.ContextWithIsReverseMux(ctx, true), link)
+		r.client.DispatchRVS(session.ContextWithIsReverseMux(ctx, true), link)
 	}
 }
 
@@ -732,7 +739,7 @@ func (r *Reverse) Start() error {
 }
 
 func (r *Reverse) Close() error {
-	return nil
+	return r.picker.Close()
 }
 
 func (r *Reverse) SenderSettings() *serial.TypedMessage {

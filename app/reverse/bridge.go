@@ -2,6 +2,7 @@ package reverse
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -18,11 +19,14 @@ import (
 
 // Bridge is a component in reverse proxy, that relays connections from Portal to local address.
 type Bridge struct {
+	mu          sync.Mutex
 	dispatcher  routing.Dispatcher
 	tag         string
 	domain      string
 	workers     []*BridgeWorker
 	monitorTask *task.Periodic
+	closed      bool
+	closeOnce   sync.Once
 }
 
 // NewBridge creates a new Bridge instance.
@@ -46,32 +50,33 @@ func NewBridge(config *BridgeConfig, dispatcher routing.Dispatcher) (*Bridge, er
 	return b, nil
 }
 
-func (b *Bridge) cleanup() {
+func activeBridgeWorkers(workers []*BridgeWorker) []*BridgeWorker {
 	var activeWorkers []*BridgeWorker
-
-	for _, w := range b.workers {
+	for _, w := range workers {
 		if w.IsActive() {
 			activeWorkers = append(activeWorkers, w)
 		}
 		if w.Closed() {
-			if w.Timer != nil {
-				w.Timer.SetTimeout(0)
-			}
+			_ = w.Close()
 		}
 	}
-
-	if len(activeWorkers) != len(b.workers) {
-		b.workers = activeWorkers
-	}
+	return activeWorkers
 }
 
 func (b *Bridge) monitor() error {
-	b.cleanup()
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	workers := append([]*BridgeWorker(nil), b.workers...)
+	b.mu.Unlock()
+	activeWorkers := activeBridgeWorkers(workers)
 
 	var numConnections uint32
 	var numWorker uint32
 
-	for _, w := range b.workers {
+	for _, w := range activeWorkers {
 		if w.IsActive() {
 			numConnections += w.Connections()
 			numWorker++
@@ -84,8 +89,21 @@ func (b *Bridge) monitor() error {
 			errors.LogWarningInner(context.Background(), err, "failed to create bridge worker")
 			return nil
 		}
-		b.workers = append(b.workers, worker)
+		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return worker.Close()
+		}
+		activeWorkers = append(activeWorkers, worker)
+		b.workers = activeWorkers
+		b.mu.Unlock()
+		return nil
 	}
+	b.mu.Lock()
+	if !b.closed {
+		b.workers = activeWorkers
+	}
+	b.mu.Unlock()
 
 	return nil
 }
@@ -95,7 +113,19 @@ func (b *Bridge) Start() error {
 }
 
 func (b *Bridge) Close() error {
-	return b.monitorTask.Close()
+	var result error
+	b.closeOnce.Do(func() {
+		b.mu.Lock()
+		b.closed = true
+		workers := b.workers
+		b.workers = nil
+		b.mu.Unlock()
+		result = b.monitorTask.Close()
+		for _, worker := range workers {
+			result = errors.Combine(result, worker.Close())
+		}
+	})
+	return result
 }
 
 type BridgeWorker struct {
@@ -104,6 +134,8 @@ type BridgeWorker struct {
 	Dispatcher routing.Dispatcher
 	State      Control_State
 	Timer      *signal.ActivityTimer
+	stateMu    sync.Mutex
+	closeOnce  sync.Once
 }
 
 func NewBridgeWorker(domain string, tag string, d routing.Dispatcher) (*BridgeWorker, error) {
@@ -147,11 +179,23 @@ func (w *BridgeWorker) Start() error {
 }
 
 func (w *BridgeWorker) Close() error {
-	return nil
+	var result error
+	w.closeOnce.Do(func() {
+		if w.Timer != nil {
+			w.Timer.SetTimeout(0)
+		}
+		if w.Worker != nil {
+			result = w.Worker.Close()
+		}
+	})
+	return result
 }
 
 func (w *BridgeWorker) IsActive() bool {
-	return w.State == Control_ACTIVE && !w.Worker.Closed()
+	w.stateMu.Lock()
+	active := w.State == Control_ACTIVE
+	w.stateMu.Unlock()
+	return active && !w.Worker.Closed()
 }
 
 func (w *BridgeWorker) Closed() bool {
@@ -188,9 +232,9 @@ func (w *BridgeWorker) handleInternalConn(link *transport.Link) {
 				}
 				return
 			}
-			if ctl.State != w.State {
-				w.State = ctl.State
-			}
+			w.stateMu.Lock()
+			w.State = ctl.State
+			w.stateMu.Unlock()
 		}
 	}
 }

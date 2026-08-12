@@ -28,12 +28,27 @@ type ClientManager struct {
 }
 
 func (m *ClientManager) Dispatch(ctx context.Context, link *transport.Link) error {
+	return m.dispatch(ctx, link, false)
+}
+
+// DispatchRVS publishes one reverse data session on its selected carrier.
+func (m *ClientManager) DispatchRVS(ctx context.Context, link *transport.Link) error {
+	return m.dispatch(ctx, link, true)
+}
+
+func (m *ClientManager) dispatch(ctx context.Context, link *transport.Link, rvs bool) error {
 	for i := 0; i < 16; i++ {
 		worker, err := m.Picker.PickAvailable()
 		if err != nil {
 			return err
 		}
-		if worker.Dispatch(ctx, link) {
+		var accepted bool
+		if rvs {
+			accepted = worker.DispatchRVS(ctx, link)
+		} else {
+			accepted = worker.Dispatch(ctx, link)
+		}
+		if accepted {
 			return nil
 		}
 	}
@@ -180,6 +195,7 @@ type ClientWorker struct {
 	timer          *time.Ticker
 	strategy       ClientStrategy
 	finishOnce     sync.Once
+	presence       session.PresenceScope
 }
 
 var (
@@ -189,12 +205,19 @@ var (
 
 // NewClientWorker creates a new mux.Client.
 func NewClientWorker(stream transport.Link, s ClientStrategy) (*ClientWorker, error) {
+	return NewClientWorkerWithPresence(stream, s, session.PresenceScope{})
+}
+
+// NewClientWorkerWithPresence binds an authenticated carrier scope to RVS
+// data sessions while leaving control and ordinary mux sessions untracked.
+func NewClientWorkerWithPresence(stream transport.Link, s ClientStrategy, presence session.PresenceScope) (*ClientWorker, error) {
 	c := &ClientWorker{
 		sessionManager: newClientSessionManager(),
 		link:           stream,
 		done:           done.New(),
 		timer:          time.NewTicker(time.Second * 16),
 		strategy:       s,
+		presence:       presence,
 	}
 
 	go c.fetchOutput()
@@ -321,6 +344,15 @@ func (m *ClientWorker) IsFull() bool {
 }
 
 func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool {
+	return m.dispatch(ctx, link, false)
+}
+
+// DispatchRVS commits one reverse data session with the carrier scope.
+func (m *ClientWorker) DispatchRVS(ctx context.Context, link *transport.Link) bool {
+	return m.dispatch(ctx, link, true)
+}
+
+func (m *ClientWorker) dispatch(ctx context.Context, link *transport.Link, rvs bool) bool {
 	if m.IsFull() {
 		return false
 	}
@@ -331,13 +363,23 @@ func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool 
 		return false
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
+	reservation := session.PresenceScope{}.Prepare()
+	if rvs {
+		streamCtx = session.ContextWithPresenceMode(streamCtx, session.PresenceModeExternal)
+		reservation = m.presence.Prepare()
+	}
 	if !admission.prepare(cancel) || !admission.beginCommit() {
 		cancel()
+		reservation.Abort()
 		admission.abort()
 		return false
 	}
 	s := &Session{input: link.Reader, output: link.Writer, done: done.New()}
-	if !admission.finishCommit(s, nil) {
+	lease := session.PresenceLease(nil)
+	if rvs {
+		lease = reservation.Activate()
+	}
+	if !admission.finishCommit(s, lease) {
 		return false
 	}
 	context.AfterFunc(streamCtx, func() { _ = s.Close(false) })
