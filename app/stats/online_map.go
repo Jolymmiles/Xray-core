@@ -18,8 +18,7 @@ type ipEntry struct {
 }
 
 // OnlineMap is a refcount-based implementation of stats.OnlineMap.
-// IPs are tracked by reference counting: AddIP increments, RemoveIP decrements.
-// An IP is removed from the map when its reference count reaches zero.
+// Legacy and exact references coexist; an IP is removed after both reach zero.
 type OnlineMap struct {
 	entries    map[string]ipEntry
 	leases     map[uint64]string
@@ -42,29 +41,29 @@ func NewOnlineMap() *OnlineMap {
 
 func nextOnlineMapGeneration() uint64 {
 	for {
-		if generation := onlineMapGeneration.Add(1); generation != 0 {
-			return generation
+		generation := onlineMapGeneration.Load()
+		if generation == ^uint64(0) {
+			return 0
+		}
+		if onlineMapGeneration.CompareAndSwap(generation, generation+1) {
+			return generation + 1
 		}
 	}
 }
 
 // AddIP implements stats.OnlineMap.
 func (om *OnlineMap) AddIP(ip string) {
-	if ip == localhostIPv4 || ip == localhostIPv6 {
+	if ip == "" || ip == localhostIPv4 || ip == localhostIPv6 {
 		return
 	}
 	now := time.Now().Unix()
 	om.access.Lock()
 	defer om.access.Unlock()
-	if e, ok := om.entries[ip]; ok {
-		e.legacyRefs++
-		e.lastSeen = now
-		om.entries[ip] = e
-	} else {
-		om.entries[ip] = ipEntry{
-			legacyRefs: 1,
-			lastSeen:   now,
-		}
+	entry, exists := om.entries[ip]
+	entry.legacyRefs++
+	entry.lastSeen = now
+	om.entries[ip] = entry
+	if !exists {
 		om.count.Add(1)
 	}
 }
@@ -73,17 +72,17 @@ func (om *OnlineMap) AddIP(ip string) {
 func (om *OnlineMap) RemoveIP(ip string) {
 	om.access.Lock()
 	defer om.access.Unlock()
-	e, ok := om.entries[ip]
-	if !ok || e.legacyRefs == 0 {
+	entry, exists := om.entries[ip]
+	if !exists || entry.legacyRefs == 0 {
 		return
 	}
-	e.legacyRefs--
-	if e.legacyRefs+e.exactRefs == 0 {
+	entry.legacyRefs--
+	if entry.legacyRefs+entry.exactRefs == 0 {
 		delete(om.entries, ip)
 		om.count.Add(-1)
-	} else {
-		om.entries[ip] = e
+		return
 	}
+	om.entries[ip] = entry
 }
 
 // OnlineMapGeneration identifies this concrete map instance.
@@ -93,7 +92,7 @@ func (om *OnlineMap) OnlineMapGeneration() uint64 {
 
 // AcquireOnlineLease adds one exact reference and returns its ownership token.
 func (om *OnlineMap) AcquireOnlineLease(ip string) uint64 {
-	if ip == "" || ip == localhostIPv4 || ip == localhostIPv6 {
+	if om.generation == 0 || ip == "" || ip == localhostIPv4 || ip == localhostIPv6 {
 		return 0
 	}
 
@@ -102,6 +101,9 @@ func (om *OnlineMap) AcquireOnlineLease(ip string) uint64 {
 	defer om.access.Unlock()
 
 	token := om.nextTokenLocked()
+	if token == 0 {
+		return 0
+	}
 	om.leases[token] = ip
 
 	entry, exists := om.entries[ip]
@@ -126,6 +128,10 @@ func (om *OnlineMap) ReplaceOnlineLeases(old []uint64, ip string, newCount int) 
 
 	om.access.Lock()
 	defer om.access.Unlock()
+
+	if om.generation == 0 || uint64(newCount) > ^uint64(0)-om.nextToken {
+		return nil, false
+	}
 
 	seen := make(map[uint64]struct{}, len(old))
 	for _, token := range old {
@@ -194,10 +200,10 @@ func (om *OnlineMap) ReleaseOnlineLease(token uint64) {
 }
 
 func (om *OnlineMap) nextTokenLocked() uint64 {
-	om.nextToken++
-	if om.nextToken == 0 {
-		om.nextToken++
+	if om.nextToken == ^uint64(0) {
+		return 0
 	}
+	om.nextToken++
 	return om.nextToken
 }
 

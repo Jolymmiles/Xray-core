@@ -231,6 +231,62 @@ func TestXUDPRuntimeCloseDrainsActiveAttachmentAndBackend(t *testing.T) {
 	}
 }
 
+func TestXUDPRuntimeCloseWaitsForAuthorizedRebindPublication(t *testing.T) {
+	runtime := newRuntime()
+	tracker := newXUDPPresenceTracker()
+	tracker.handoffStarted = make(chan struct{})
+	tracker.handoffRelease = make(chan struct{})
+	backendReader, backendWriter := pipe.New(pipe.WithoutSizeLimit())
+	key := xudpRuntimeKey{principal: [32]byte{21}, globalID: [8]byte{22}}
+	flow := newXUDPFlow(runtime, key, X.UDPDestination(X.DomainAddress("example.com"), 53), &transport.Link{Reader: backendReader, Writer: backendWriter})
+	runtime.mu.Lock()
+	runtime.flows[key] = flow
+	runtime.mu.Unlock()
+	registry := newSessionRegistry()
+	sink := runtime.newResponseSink(buf.Discard)
+	firstScope := session.NewPresenceScope(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("192.0.2.10")}, tracker)
+	first, err := flow.attach(registry.reserve(1), firstScope, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondScope := session.NewPresenceScope(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("198.51.100.20")}, tracker)
+	_, finishTransaction, ok := runtime.beginTransaction(context.Background())
+	if !ok {
+		t.Fatal("runtime rejected rebind transaction")
+	}
+	attachDone := make(chan error, 1)
+	go func() {
+		defer finishTransaction()
+		_, err := flow.attach(registry.reserve(2), secondScope, sink)
+		attachDone <- err
+	}()
+	select {
+	case <-tracker.handoffStarted:
+	case <-time.After(time.Second):
+		t.Fatal("rebind did not reach authorized handoff")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- runtime.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("runtime close returned before authorized publication: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(tracker.handoffRelease)
+	if err := <-attachDone; err != nil {
+		t.Fatalf("authorized rebind failed instead of publishing: %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close(false)
+	waitXUDPIPs(t, tracker)
+	if registry.activeCount() != 0 {
+		t.Fatalf("runtime close left %d active sessions", registry.activeCount())
+	}
+}
+
 func TestXUDPRuntimeThousandRebindsEndAtZero(t *testing.T) {
 	runtime := newRuntime()
 	defer runtime.Close()
@@ -241,7 +297,7 @@ func TestXUDPRuntimeThousandRebindsEndAtZero(t *testing.T) {
 	runtime.mu.Lock()
 	runtime.flows[key] = flow
 	runtime.mu.Unlock()
-	registry := newServerSessionRegistry()
+	registry := newSessionRegistry()
 	sink := runtime.newResponseSink(buf.Discard)
 	var owner *Session
 	for index := range 1000 {

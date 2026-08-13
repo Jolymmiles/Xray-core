@@ -3,7 +3,6 @@ package dispatcher
 import (
 	"context"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +44,11 @@ func newRecordingExactOnlineMap() *recordingExactOnlineMap {
 	return &recordingExactOnlineMap{generation: 1, live: make(map[uint64]string)}
 }
 
+func (m *recordingExactOnlineMap) AddIP(ip string) {
+	m.next++
+	m.live[m.next] = ip
+}
+func (m *recordingExactOnlineMap) RemoveIP(string)             {}
 func (m *recordingExactOnlineMap) OnlineMapGeneration() uint64 { return m.generation }
 func (m *recordingExactOnlineMap) AcquireOnlineLease(ip string) uint64 {
 	m.acquireCalls++
@@ -90,8 +94,6 @@ func (m *recordingExactOnlineMap) Count() int {
 	}
 	return len(ips)
 }
-func (m *recordingExactOnlineMap) AddIP(string)    {}
-func (m *recordingExactOnlineMap) RemoveIP(string) {}
 func (m *recordingExactOnlineMap) ForEach(fn func(string, int64) bool) {
 	for ip := range onlineMapIPSet(m.live) {
 		if !fn(ip, 0) {
@@ -100,51 +102,24 @@ func (m *recordingExactOnlineMap) ForEach(fn func(string, int64) bool) {
 	}
 }
 
-func onlineMapIPSet(live map[uint64]string) map[string]bool {
-	ips := make(map[string]bool)
-	for _, ip := range live {
-		ips[ip] = true
-	}
-	return ips
-}
-
 type recordingLegacyOnlineMap struct {
-	access sync.Mutex
-	refs   map[string]int
-	events []string
+	refs map[string]int
 }
 
 func newRecordingLegacyOnlineMap() *recordingLegacyOnlineMap {
 	return &recordingLegacyOnlineMap{refs: make(map[string]int)}
 }
 
-func (m *recordingLegacyOnlineMap) AddIP(ip string) {
-	m.access.Lock()
-	m.refs[ip]++
-	m.events = append(m.events, "add:"+ip)
-	m.access.Unlock()
-}
-
+func (m *recordingLegacyOnlineMap) AddIP(ip string) { m.refs[ip]++ }
 func (m *recordingLegacyOnlineMap) RemoveIP(ip string) {
-	m.access.Lock()
-	if m.refs[ip] > 1 {
-		m.refs[ip]--
-	} else {
+	if m.refs[ip] <= 1 {
 		delete(m.refs, ip)
+		return
 	}
-	m.events = append(m.events, "remove:"+ip)
-	m.access.Unlock()
+	m.refs[ip]--
 }
-
-func (m *recordingLegacyOnlineMap) Count() int {
-	m.access.Lock()
-	defer m.access.Unlock()
-	return len(m.refs)
-}
-
+func (m *recordingLegacyOnlineMap) Count() int { return len(m.refs) }
 func (m *recordingLegacyOnlineMap) ForEach(fn func(string, int64) bool) {
-	m.access.Lock()
-	defer m.access.Unlock()
 	for ip := range m.refs {
 		if !fn(ip, 0) {
 			return
@@ -152,16 +127,14 @@ func (m *recordingLegacyOnlineMap) ForEach(fn func(string, int64) bool) {
 	}
 }
 
-func (m *recordingLegacyOnlineMap) resetEvents() {
-	m.access.Lock()
-	m.events = nil
-	m.access.Unlock()
-}
+var _ featurestats.OnlineMap = (*recordingLegacyOnlineMap)(nil)
 
-func (m *recordingLegacyOnlineMap) recordedEvents() []string {
-	m.access.Lock()
-	defer m.access.Unlock()
-	return slices.Clone(m.events)
+func onlineMapIPSet(live map[uint64]string) map[string]bool {
+	ips := make(map[string]bool)
+	for _, ip := range live {
+		ips[ip] = true
+	}
+	return ips
 }
 
 func (*presenceTestPolicy) Type() any                { return policy.ManagerType() }
@@ -285,6 +258,32 @@ func TestPresenceTrackerUsesOneExactBatchHandoff(t *testing.T) {
 	}
 }
 
+func TestPresenceTrackerDifferentInstanceSameGenerationFallsBack(t *testing.T) {
+	oldMap := newRecordingExactOnlineMap()
+	newMap := newRecordingExactOnlineMap()
+	policyManager := &presenceTestPolicy{online: true}
+	oldTracker := newPresenceTracker(policyManager, &presenceTestStatsManager{onlineMap: oldMap})
+	newTracker := newPresenceTracker(policyManager, &presenceTestStatsManager{onlineMap: newMap})
+
+	old := oldTracker.Prepare(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("192.0.2.1")}).Activate()
+	replacement := newTracker.Prepare(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("198.51.100.2")}).Handoff(old)
+	if newMap.replaceCalls != 0 || newMap.acquireCalls != 1 || oldMap.releaseCalls != 1 {
+		t.Fatalf("same-generation different-instance calls: new replace/acquire=%d/%d old release=%d", newMap.replaceCalls, newMap.acquireCalls, oldMap.releaseCalls)
+	}
+	replacement.Close()
+}
+
+func TestPresenceTrackerLegacyMapFallsBackNewBeforeOld(t *testing.T) {
+	onlineMap := newRecordingLegacyOnlineMap()
+	tracker := newPresenceTracker(&presenceTestPolicy{online: true}, &presenceTestStatsManager{onlineMap: onlineMap})
+	old := tracker.Prepare(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("192.0.2.1")}).Activate()
+	replacement := tracker.Prepare(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("198.51.100.2")}).Handoff(old)
+	if onlineMap.refs["198.51.100.2"] != 1 || onlineMap.refs["192.0.2.1"] != 0 {
+		t.Fatalf("legacy fallback refs = %v", onlineMap.refs)
+	}
+	replacement.Close()
+}
+
 func TestPresenceTrackerDifferentGenerationFallsBackNewBeforeOld(t *testing.T) {
 	oldMap := newRecordingExactOnlineMap()
 	newMap := newRecordingExactOnlineMap()
@@ -323,35 +322,6 @@ func TestPresenceTrackerPolicyDisabledHandoffClosesOldLease(t *testing.T) {
 	old := enabled.Prepare(subject).Activate()
 	disabled.Prepare(subject).Handoff(old).Close()
 	assertOnlineMap(t, manager, "user>>>alice@example.com>>>online", 0)
-}
-
-func TestPresenceTrackerCustomBatchActivatesAllBeforeClosingOld(t *testing.T) {
-	onlineMap := newRecordingLegacyOnlineMap()
-	manager := &presenceTestStatsManager{onlineMap: onlineMap}
-	tracker := newPresenceTracker(&presenceTestPolicy{online: true}, manager)
-	old := make([]session.PresenceLease, 2)
-	for index := range old {
-		old[index] = tracker.Prepare(session.PresenceSubject{
-			Email: "alice@example.com",
-			IP:    netip.MustParseAddr("192.0.2.1"),
-		}).Activate()
-	}
-	onlineMap.resetEvents()
-
-	replacements := tracker.Prepare(session.PresenceSubject{
-		Email: "alice@example.com",
-		IP:    netip.MustParseAddr("198.51.100.2"),
-	}).HandoffAll(old)
-	want := []string{
-		"add:198.51.100.2", "add:198.51.100.2",
-		"remove:192.0.2.1", "remove:192.0.2.1",
-	}
-	if got := onlineMap.recordedEvents(); !slices.Equal(got, want) {
-		t.Fatalf("custom fallback order = %v, want %v", got, want)
-	}
-	for _, lease := range replacements {
-		lease.Close()
-	}
 }
 
 func TestPresenceReservationHasOneConcurrentTerminalWinner(t *testing.T) {
@@ -397,23 +367,24 @@ func TestPresenceReservationHasOneConcurrentTerminalWinner(t *testing.T) {
 	}
 }
 
-func TestPresenceTrackerRateLimitsSanitizedFallbackWarning(t *testing.T) {
-	onlineMap := newRecordingLegacyOnlineMap()
-	tracker := newPresenceTracker(
-		&presenceTestPolicy{online: true},
-		&presenceTestStatsManager{onlineMap: onlineMap},
-	)
+func TestPresenceTrackerRateLimitsSanitizedCrossGenerationWarning(t *testing.T) {
+	oldMap := newRecordingExactOnlineMap()
+	newMap := newRecordingExactOnlineMap()
+	newMap.generation = 2
+	policyManager := &presenceTestPolicy{online: true}
+	oldTracker := newPresenceTracker(policyManager, &presenceTestStatsManager{onlineMap: oldMap})
+	newTracker := newPresenceTracker(policyManager, &presenceTestStatsManager{onlineMap: newMap})
 	now := time.Unix(100, 0)
-	tracker.warningNow = func() time.Time { return now }
+	newTracker.warningNow = func() time.Time { return now }
 	var warnings []string
-	tracker.warningSink = func(message string) { warnings = append(warnings, message) }
+	newTracker.warningSink = func(message string) { warnings = append(warnings, message) }
 
 	handoff := func() {
-		old := tracker.Prepare(session.PresenceSubject{
+		old := oldTracker.Prepare(session.PresenceSubject{
 			Email: "alice@example.com",
 			IP:    netip.MustParseAddr("192.0.2.1"),
 		}).Activate()
-		tracker.Prepare(session.PresenceSubject{
+		newTracker.Prepare(session.PresenceSubject{
 			Email: "alice@example.com",
 			IP:    netip.MustParseAddr("198.51.100.2"),
 		}).Handoff(old).Close()

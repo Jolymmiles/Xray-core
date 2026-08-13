@@ -111,9 +111,9 @@ func (r *presenceReservation) Handoff(old session.PresenceLease) session.Presenc
 	if r == nil || !r.terminal.CompareAndSwap(false, true) {
 		return noopDispatcherPresence
 	}
-	if oldLease, ok := old.(*presenceLease); ok && r.exactMap != nil && oldLease.exactMap != nil &&
+	if oldLease, ok := old.(*presenceLease); ok && r.exactMap != nil && oldLease.exactMap == r.exactMap &&
 		oldLease.generation == r.exactMap.OnlineMapGeneration() && oldLease.closed.CompareAndSwap(false, true) {
-		if tokens, replaced := r.exactMap.ReplaceOnlineLeases([]uint64{oldLease.token}, r.ip, 1); replaced && len(tokens) == 1 && tokens[0] != 0 {
+		if tokens, replaced := r.exactMap.ReplaceOnlineLeases([]uint64{oldLease.token}, r.ip, 1); replaced && validReplacementTokens(tokens, []uint64{oldLease.token}, 1) {
 			return &presenceLease{exactMap: r.exactMap, generation: oldLease.generation, token: tokens[0]}
 		}
 		r.warnAtomicFallback()
@@ -143,17 +143,18 @@ func (r *presenceReservation) HandoffAll(old []session.PresenceLease) []session.
 	exactLeases := make([]*presenceLease, len(old))
 	exactTokens := make([]uint64, len(old))
 	canReplace := r.exactMap != nil
+	generation := uint64(0)
 	if canReplace {
-		generation := r.exactMap.OnlineMapGeneration()
-		for index, lease := range old {
-			exactLease, ok := lease.(*presenceLease)
-			if !ok || exactLease.exactMap == nil || exactLease.generation != generation || exactLease.closed.Load() {
-				canReplace = false
-				break
-			}
-			exactLeases[index] = exactLease
-			exactTokens[index] = exactLease.token
+		generation = r.exactMap.OnlineMapGeneration()
+	}
+	for index, lease := range old {
+		exactLease, ok := lease.(*presenceLease)
+		if !ok || exactLease.exactMap != r.exactMap || exactLease.generation != generation || exactLease.closed.Load() {
+			canReplace = false
+			break
 		}
+		exactLeases[index] = exactLease
+		exactTokens[index] = exactLease.token
 	}
 	if canReplace {
 		for index, lease := range exactLeases {
@@ -166,18 +167,15 @@ func (r *presenceReservation) HandoffAll(old []session.PresenceLease) []session.
 	}
 	if canReplace {
 		tokens, replaced := r.exactMap.ReplaceOnlineLeases(exactTokens, r.ip, len(old))
-		if replaced && validReplacementTokens(tokens, len(old)) {
+		if replaced && validReplacementTokens(tokens, exactTokens, len(old)) {
 			replacements := make([]session.PresenceLease, len(tokens))
-			generation := r.exactMap.OnlineMapGeneration()
 			for index, token := range tokens {
 				replacements[index] = &presenceLease{exactMap: r.exactMap, generation: generation, token: token}
 			}
 			return replacements
 		}
 		if replaced {
-			for _, token := range tokens {
-				r.exactMap.ReleaseOnlineLease(token)
-			}
+			r.warnAtomicFallback()
 		}
 	}
 	if hasRealPresenceLease(old) {
@@ -220,14 +218,22 @@ func hasRealPresenceLease(leases []session.PresenceLease) bool {
 	return false
 }
 
-func validReplacementTokens(tokens []uint64, want int) bool {
+func validReplacementTokens(tokens, old []uint64, want int) bool {
 	if len(tokens) != want {
 		return false
+	}
+	seen := make(map[uint64]struct{}, len(tokens)+len(old))
+	for _, token := range old {
+		seen[token] = struct{}{}
 	}
 	for _, token := range tokens {
 		if token == 0 {
 			return false
 		}
+		if _, exists := seen[token]; exists {
+			return false
+		}
+		seen[token] = struct{}{}
 	}
 	return true
 }

@@ -140,7 +140,7 @@ func (s *Server) Close() error {
 type ServerWorker struct {
 	dispatcher     routing.Dispatcher
 	link           *transport.Link
-	sessionManager *serverSessionRegistry
+	sessionManager *sessionRegistry
 	presence       session.PresenceScope
 	runtime        *Runtime
 	workerToken    uint64
@@ -163,7 +163,7 @@ func newServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 	worker := &ServerWorker{
 		dispatcher:     d,
 		link:           link,
-		sessionManager: newServerSessionRegistry(),
+		sessionManager: newSessionRegistry(),
 		presence:       presence,
 		runtime:        runtime,
 		workerToken:    runtime.workerToken(),
@@ -373,6 +373,7 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 	if !admission.finishCommit(s, lease) {
 		return errors.New("failed to add new session")
 	}
+	admission.completeCommit()
 	context.AfterFunc(streamCtx, func() { _ = s.Close(false) })
 	go handle(ctx, s, w.link.Writer)
 	if !meta.Option.Has(OptionData) {
