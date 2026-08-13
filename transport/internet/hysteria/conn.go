@@ -285,6 +285,11 @@ func (m *udpSessionManager) udp() (*InterConn, error) {
 	return udpConn, nil
 }
 
+func (m *udpSessionManager) dispatchConnection(udpConn *InterConn) {
+	// A handler owns the connection until processing ends, which for UDP may be the idle timeout.
+	go m.addConn(udpConn)
+}
+
 func (m *udpSessionManager) feed(id uint32, d []byte) {
 	m.RLock()
 	udpConn, ok := m.m[id]
@@ -328,6 +333,6 @@ func (m *udpSessionManager) feed(id uint32, d []byte) {
 	m.Unlock()
 
 	if created {
-		m.addConn(udpConn)
+		m.dispatchConnection(udpConn)
 	}
 }
