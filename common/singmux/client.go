@@ -64,6 +64,10 @@ type clientSession interface {
 	Close() error
 }
 
+type transactionalClientSession interface {
+	OpenStreamAccounted(context.Context, func(func())) (net.Conn, error)
+}
+
 type smuxClientSession struct {
 	*mplsmux.Session
 }
@@ -77,6 +81,13 @@ func (s *smuxClientSession) OpenStream(ctx context.Context, accounted func()) (n
 		accounted()
 	}
 	return stream, err
+}
+
+func (s *smuxClientSession) OpenStreamAccounted(ctx context.Context, accounted func(func())) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.Session.OpenStreamWithAccounting(accounted)
 }
 
 func NewClient(options Options) (*Client, error) {
@@ -211,8 +222,9 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 		c.pending[selected]++
 		c.mu.Unlock()
 		var accounted sync.Once
-		finishAccounting := func() {
+		finishAccounting := func(publish func()) {
 			c.mu.Lock()
+			publish()
 			if c.pending[selected] <= 1 {
 				delete(c.pending, selected)
 			} else {
@@ -220,8 +232,18 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 			}
 			c.mu.Unlock()
 		}
-		stream, err := selected.OpenStream(ctx, func() { accounted.Do(finishAccounting) })
-		accounted.Do(finishAccounting)
+		var stream net.Conn
+		var err error
+		if transactional, ok := selected.(transactionalClientSession); ok {
+			stream, err = transactional.OpenStreamAccounted(ctx, func(publish func()) {
+				accounted.Do(func() { finishAccounting(publish) })
+			})
+		} else {
+			stream, err = selected.OpenStream(ctx, func() {
+				accounted.Do(func() { finishAccounting(func() {}) })
+			})
+		}
+		accounted.Do(func() { finishAccounting(func() {}) })
 		c.mu.Lock()
 		if err == nil {
 			if c.closed {

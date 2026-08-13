@@ -377,6 +377,28 @@ func TestReadAndAcceptDeadlines(t *testing.T) {
 	}
 }
 
+func TestAcceptStreamSkipsAbortedBacklogStream(t *testing.T) {
+	session := &Session{
+		streams:       make(map[uint32]*Stream),
+		accepts:       make(chan *Stream, 2),
+		done:          make(chan struct{}),
+		acceptChanged: make(chan struct{}),
+	}
+	aborted := newStream(session, 1)
+	healthy := newStream(session, 3)
+	session.streams[healthy.id] = healthy
+	session.accepts <- aborted
+	session.accepts <- healthy
+
+	accepted, err := session.AcceptStream()
+	if err != nil {
+		t.Fatalf("AcceptStream after backlog abort: %v", err)
+	}
+	if accepted != healthy {
+		t.Fatalf("AcceptStream returned %p, want healthy stream %p", accepted, healthy)
+	}
+}
+
 func TestAcceptStreamDoesNotReturnBacklogAfterSessionClose(t *testing.T) {
 	for range 128 {
 		session := &Session{
@@ -436,7 +458,7 @@ func TestCarrierFailureUnblocksStream(t *testing.T) {
 	}
 }
 
-func TestSessionFailureDiscardsBufferedReceiveData(t *testing.T) {
+func TestSessionFailureDeliversBufferedReceiveDataBeforeError(t *testing.T) {
 	local, peer := net.Pipe()
 	config := DefaultConfig()
 	config.KeepAliveDisabled = true
@@ -482,17 +504,387 @@ func TestSessionFailureDiscardsBufferedReceiveData(t *testing.T) {
 
 	destination := bytes.Repeat([]byte{0xcc}, len("stale"))
 	count, err := stream.Read(destination)
-	if count != 0 || err == nil {
-		t.Fatalf("Read after session failure = (%d, %v), want (0, carrier error)", count, err)
+	if count != len("stale") || err != nil || string(destination) != "stale" {
+		t.Fatalf("first Read after session failure = (%d, %v, %q), want buffered payload", count, err, destination)
 	}
-	if bytes.Contains(destination, []byte("stale")) {
-		t.Fatalf("Read exposed buffered data after session failure: %q", destination)
+	if count, err = stream.Read(destination); count != 0 || err == nil {
+		t.Fatalf("second Read after session failure = (%d, %v), want carrier error", count, err)
 	}
 	session.receiveMu.Lock()
 	receiveUsed := session.receiveUsed
 	session.receiveMu.Unlock()
 	if receiveUsed != 0 {
 		t.Fatalf("receive credit after session failure = %d, want 0", receiveUsed)
+	}
+}
+
+func TestSessionFailureDeliversBufferedMultiBufferBeforeError(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	writeFrame := func(command frameCommand, streamID uint32, payload []byte) {
+		t.Helper()
+		encoded := make([]byte, frameHeaderSize+len(payload))
+		encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), command, streamID, len(payload))
+		copy(encoded[frameHeaderSize:], payload)
+		if _, writeErr := peer.Write(encoded); writeErr != nil {
+			t.Fatalf("write %v frame: %v", command, writeErr)
+		}
+	}
+
+	writeFrame(frameOpen, 1, nil)
+	stream, err := session.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(frameData, 1, []byte("retained"))
+	writeFrame(frameKeepalive, 0, nil)
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.CloseChan():
+	case <-time.After(time.Second):
+		t.Fatal("session did not observe carrier failure")
+	}
+
+	multiBuffer, err := stream.ReadMultiBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, multiBuffer.Len())
+	multiBuffer.Copy(payload)
+	buf.ReleaseMulti(multiBuffer)
+	if string(payload) != "retained" {
+		t.Fatalf("ReadMultiBuffer payload = %q, want retained", payload)
+	}
+	if next, readErr := stream.ReadMultiBuffer(); next != nil || readErr == nil {
+		t.Fatalf("second ReadMultiBuffer = (%v, %v), want (nil, carrier error)", next, readErr)
+	}
+}
+
+func TestAcceptedStreamCloseRacingSessionFailureDrainsOnce(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	writeFrame := func(command frameCommand, streamID uint32, payload []byte) {
+		t.Helper()
+		encoded := make([]byte, frameHeaderSize+len(payload))
+		encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), command, streamID, len(payload))
+		copy(encoded[frameHeaderSize:], payload)
+		if _, writeErr := peer.Write(encoded); writeErr != nil {
+			t.Fatalf("write %v frame: %v", command, writeErr)
+		}
+	}
+
+	writeFrame(frameOpen, 1, nil)
+	stream, err := session.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(frameData, 1, []byte("discarded"))
+	writeFrame(frameKeepalive, 0, nil)
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		<-start
+		results <- stream.Close()
+	}()
+	go func() {
+		<-start
+		results <- session.Close()
+	}()
+	close(start)
+	for range 2 {
+		select {
+		case <-results:
+		case <-time.After(time.Second):
+			t.Fatal("concurrent stream/session close did not finish")
+		}
+	}
+	if err := stream.Close(); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("second stream Close error = %v, want %v", err, io.ErrClosedPipe)
+	}
+
+	session.receiveMu.Lock()
+	receiveUsed := session.receiveUsed
+	session.receiveMu.Unlock()
+	stream.stateMu.Lock()
+	chunks, buffered := len(stream.chunks), stream.buffered
+	stream.stateMu.Unlock()
+	if receiveUsed != 0 || chunks != 0 || buffered != 0 {
+		t.Fatalf("ownership after Close/fail race: credit=%d chunks=%d buffered=%d, want 0/0/0", receiveUsed, chunks, buffered)
+	}
+}
+
+func TestAcceptStreamRacingFailureDoesNotClaimBacklog(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	stream := newStream(session, 1)
+	session.streamsMu.Lock()
+	session.streams[stream.id] = stream
+	session.accepts <- stream
+	acceptResult := make(chan error, 1)
+	go func() {
+		accepted, acceptErr := session.AcceptStream()
+		if accepted != nil {
+			acceptResult <- errors.New("AcceptStream exposed backlog after failure")
+			return
+		}
+		acceptResult <- acceptErr
+	}()
+
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for len(session.accepts) != 0 {
+		select {
+		case <-deadline.C:
+			session.streamsMu.Unlock()
+			t.Fatal("AcceptStream did not remove the backlog entry")
+		default:
+			runtime.Gosched()
+		}
+	}
+	failureDone := make(chan struct{})
+	go func() {
+		session.fail(io.EOF)
+		close(failureDone)
+	}()
+	select {
+	case <-session.done:
+	case <-deadline.C:
+		session.streamsMu.Unlock()
+		t.Fatal("failure did not close the session")
+	}
+	session.streamsMu.Unlock()
+
+	select {
+	case acceptErr := <-acceptResult:
+		if !errors.Is(acceptErr, io.EOF) {
+			t.Fatalf("AcceptStream error = %v, want %v", acceptErr, io.EOF)
+		}
+	case <-deadline.C:
+		t.Fatal("AcceptStream remained blocked after failure")
+	}
+	select {
+	case <-failureDone:
+	case <-deadline.C:
+		t.Fatal("failure cleanup remained blocked")
+	}
+}
+
+func TestSessionFailureDrainsUnacceptedRemoteStream(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	writeFrame := func(command frameCommand, streamID uint32, payload []byte) {
+		t.Helper()
+		encoded := make([]byte, frameHeaderSize+len(payload))
+		encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), command, streamID, len(payload))
+		copy(encoded[frameHeaderSize:], payload)
+		if _, writeErr := peer.Write(encoded); writeErr != nil {
+			t.Fatalf("write %v frame: %v", command, writeErr)
+		}
+	}
+
+	writeFrame(frameOpen, 1, nil)
+	writeFrame(frameData, 1, []byte("private"))
+	// Completing a following control frame proves that DATA was enqueued
+	// without relying on scheduler timing.
+	writeFrame(frameKeepalive, 0, nil)
+
+	session.streamsMu.Lock()
+	privateStream := session.streams[1]
+	streamCountBeforeFailure := len(session.streams)
+	session.streamsMu.Unlock()
+	if privateStream == nil || streamCountBeforeFailure != 1 || len(session.accepts) != 1 {
+		t.Fatalf("precondition: stream=%p map=%d backlog=%d, want non-nil/1/1", privateStream, streamCountBeforeFailure, len(session.accepts))
+	}
+
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.CloseChan():
+	case <-time.After(time.Second):
+		t.Fatal("session did not observe carrier failure")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if stream, acceptErr := session.AcceptStream(); stream != nil || acceptErr == nil {
+		t.Errorf("AcceptStream after failure = (%v, %v), want (nil, carrier error)", stream, acceptErr)
+	}
+	session.streamsMu.Lock()
+	streamCount := len(session.streams)
+	session.streamsMu.Unlock()
+	if streamCount != 0 {
+		t.Errorf("private streams retained in map = %d, want 0", streamCount)
+	}
+	if backlog := len(session.accepts); backlog != 0 {
+		t.Errorf("private streams retained in accept backlog = %d, want 0", backlog)
+	}
+	session.receiveMu.Lock()
+	receiveUsed := session.receiveUsed
+	session.receiveMu.Unlock()
+	if receiveUsed != 0 {
+		t.Errorf("receive credit retained by private stream = %d, want 0", receiveUsed)
+	}
+	privateStream.stateMu.Lock()
+	chunks, buffered, stopped := len(privateStream.chunks), privateStream.buffered, privateStream.sessionClosed
+	privateStream.stateMu.Unlock()
+	if chunks != 0 || buffered != 0 || !stopped {
+		t.Errorf("private stream after failure: chunks=%d buffered=%d stopped=%v, want 0/0/true", chunks, buffered, stopped)
+	}
+}
+
+func TestSessionFailureReleasesUnacceptedBufferedStream(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	writeFrame := func(command frameCommand, streamID uint32, payload []byte) {
+		t.Helper()
+		encoded := make([]byte, frameHeaderSize+len(payload))
+		encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), command, streamID, len(payload))
+		copy(encoded[frameHeaderSize:], payload)
+		if _, writeErr := peer.Write(encoded); writeErr != nil {
+			t.Fatalf("write %v frame: %v", command, writeErr)
+		}
+	}
+
+	writeFrame(frameOpen, 1, nil)
+	writeFrame(frameData, 1, []byte("unaccepted"))
+	writeFrame(frameKeepalive, 0, nil)
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.CloseChan():
+	case <-time.After(time.Second):
+		t.Fatal("session did not observe carrier failure")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	session.receiveMu.Lock()
+	receiveUsed := session.receiveUsed
+	session.receiveMu.Unlock()
+	if receiveUsed != 0 {
+		t.Fatalf("unaccepted receive credit after session failure = %d, want 0", receiveUsed)
+	}
+}
+
+func TestOpenStreamFailureReleasesBufferedCandidate(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Client(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, openErr := session.OpenStream()
+		openDone <- openErr
+	}()
+
+	const streamID uint32 = 3
+	var stream *Stream
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		stream = session.lookupStream(streamID)
+		if stream != nil {
+			break
+		}
+	}
+	if stream == nil {
+		t.Fatal("OpenStream did not publish candidate")
+	}
+	payload := []byte("orphan")
+	encoded := make([]byte, frameHeaderSize+len(payload))
+	encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), frameData, streamID, len(payload))
+	copy(encoded[frameHeaderSize:], payload)
+	if _, err := peer.Write(encoded); err != nil {
+		t.Fatal(err)
+	}
+	var barrier [frameHeaderSize]byte
+	encodeFrameHeader(&barrier, frameKeepalive, 0, 0)
+	if _, err := peer.Write(barrier[:]); err != nil {
+		t.Fatal(err)
+	}
+	stream.stateMu.Lock()
+	buffered := stream.buffered
+	stream.stateMu.Unlock()
+	if buffered != len(payload) {
+		t.Fatalf("candidate buffered bytes = %d, want %d", buffered, len(payload))
+	}
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-openDone; err == nil {
+		t.Fatal("OpenStream unexpectedly succeeded")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	session.receiveMu.Lock()
+	receiveUsed := session.receiveUsed
+	session.receiveMu.Unlock()
+	if receiveUsed != 0 {
+		t.Fatalf("failed OpenStream receive credit = %d, want 0", receiveUsed)
 	}
 }
 
@@ -773,6 +1165,169 @@ func (c *blockingWriteConn) Close() error {
 		close(c.closed)
 	}
 	return nil
+}
+
+type immediateWriteConn struct {
+	writeErr error
+}
+
+func (*immediateWriteConn) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *immediateWriteConn) Write(payload []byte) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	return len(payload), nil
+}
+
+func (*immediateWriteConn) Close() error {
+	return nil
+}
+
+func newSubmitTestSession(connection io.ReadWriteCloser, queueSize int) *Session {
+	return &Session{
+		conn:           connection,
+		streams:        make(map[uint32]*Stream),
+		accepts:        make(chan *Stream, 1),
+		writeQueue:     make(chan outboundFrame, queueSize),
+		done:           make(chan struct{}),
+		receiveChanged: make(chan struct{}, 1),
+		acceptChanged:  make(chan struct{}),
+	}
+}
+
+func TestTransferredSuccessfulWriteReturnsActualResultAfterSessionFailure(t *testing.T) {
+	previousProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previousProcs)
+
+	session := newSubmitTestSession(&immediateWriteConn{}, 1)
+	result := make(chan error, 1)
+	submitDone := make(chan error, 1)
+	go func() {
+		submitDone <- session.submitResult(frameOpen, 3, nil, time.Time{}, result)
+	}()
+
+	var request outboundFrame
+	select {
+	case request = <-session.writeQueue:
+	case <-time.After(time.Second):
+		t.Fatal("frame was not transferred to the write queue")
+	}
+	writeErr := session.writeFrame(request.encoded)
+	releaseFrameBuffer(request.encoded)
+	if writeErr != nil {
+		t.Fatalf("carrier Write error = %v, want nil", writeErr)
+	}
+
+	session.fail(io.EOF)
+	// With one runnable submitter and one P, this yields after done is closed
+	// while the successful carrier result is still unpublished.
+	runtime.Gosched()
+	request.result <- writeErr
+
+	select {
+	case err := <-submitDone:
+		if err != nil {
+			t.Fatalf("submitWithStateResult error = %v, want nil from successful transferred write", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transferred successful write did not complete")
+	}
+}
+
+func TestTransferredFailedWriteReturnsCarrierError(t *testing.T) {
+	writeFailure := errors.New("carrier write failed")
+	session := newSubmitTestSession(&immediateWriteConn{writeErr: writeFailure}, 1)
+	result := make(chan error, 1)
+	submitDone := make(chan error, 1)
+	go func() {
+		submitDone <- session.submitResult(frameOpen, 3, nil, time.Time{}, result)
+	}()
+
+	var request outboundFrame
+	select {
+	case request = <-session.writeQueue:
+	case <-time.After(time.Second):
+		t.Fatal("frame was not transferred to the write queue")
+	}
+	writeErr := session.writeFrame(request.encoded)
+	releaseFrameBuffer(request.encoded)
+	request.result <- writeErr
+	session.fail(writeErr)
+
+	select {
+	case err := <-submitDone:
+		if !errors.Is(err, writeFailure) {
+			t.Fatalf("submitWithStateResult error = %v, want %v", err, writeFailure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transferred failed write did not complete")
+	}
+}
+
+func TestQueuedWriteCompletesAfterActiveWriteFailure(t *testing.T) {
+	writeFailure := errors.New("active carrier write failed")
+	session := newSubmitTestSession(&immediateWriteConn{writeErr: writeFailure}, 2)
+	activeResult := make(chan error, 1)
+	activeDone := make(chan error, 1)
+	go func() {
+		activeDone <- session.submitResult(frameOpen, 3, nil, time.Time{}, activeResult)
+	}()
+
+	var active outboundFrame
+	select {
+	case active = <-session.writeQueue:
+	case <-time.After(time.Second):
+		t.Fatal("active frame was not transferred to the write queue")
+	}
+
+	queuedResult := make(chan error, 1)
+	queuedDone := make(chan error, 1)
+	go func() {
+		queuedDone <- session.submitResult(frameOpen, 5, nil, time.Time{}, queuedResult)
+	}()
+	queueDeadline := time.NewTimer(time.Second)
+	defer queueDeadline.Stop()
+	for len(session.writeQueue) != 1 {
+		select {
+		case <-queueDeadline.C:
+			t.Fatal("second frame was not left queued behind the active write")
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	writeErr := session.writeFrame(active.encoded)
+	releaseFrameBuffer(active.encoded)
+	active.result <- writeErr
+	session.fail(writeErr)
+
+	for name, completed := range map[string]<-chan error{
+		"active": activeDone,
+		"queued": queuedDone,
+	} {
+		select {
+		case err := <-completed:
+			if !errors.Is(err, writeFailure) {
+				t.Errorf("%s submit error = %v, want %v", name, err, writeFailure)
+			}
+		case <-time.After(time.Second):
+			t.Errorf("%s submit did not complete", name)
+		}
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- session.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Session.Close deadlocked after active and queued write completion")
+	}
 }
 
 func TestSessionCloseCompletesWhenSubmitParksOnFullWriteQueue(t *testing.T) {

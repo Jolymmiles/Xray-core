@@ -26,10 +26,11 @@ type Session struct {
 	config Config
 	client bool
 
-	nextStreamID atomic.Uint32
-	streamsMu    sync.Mutex
-	streams      map[uint32]*Stream
-	accepts      chan *Stream
+	nextStreamID   atomic.Uint32
+	streamsMu      sync.Mutex
+	streams        map[uint32]*Stream
+	accepts        chan *Stream
+	acceptSubmitMu sync.Mutex
 
 	writeQueue chan outboundFrame
 	submitMu   sync.Mutex
@@ -101,6 +102,12 @@ func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session,
 }
 
 func (s *Session) OpenStream() (*Stream, error) {
+	return s.OpenStreamWithAccounting(func(publish func()) { publish() })
+}
+
+// OpenStreamWithAccounting atomically transfers one pending pool reservation
+// to the published stream count before the potentially blocking carrier write.
+func (s *Session) OpenStreamWithAccounting(accounted func(publish func())) (*Stream, error) {
 	if s.IsClosed() {
 		return nil, s.terminalError()
 	}
@@ -109,14 +116,24 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, errors.New("SMUX stream ID space exhausted")
 	}
 	stream := newStream(s, streamID)
-	s.streamsMu.Lock()
-	s.streams[streamID] = stream
-	s.streamsMu.Unlock()
+	accounted(func() {
+		s.streamsMu.Lock()
+		s.streams[streamID] = stream
+		s.streamsMu.Unlock()
+	})
 	if err := s.submitResult(frameOpen, streamID, nil, time.Time{}, stream.writeResult); err != nil {
 		s.removeStream(streamID)
-		stream.sessionStopped()
+		stream.sessionStoppedAndDrain()
 		return nil, err
 	}
+	s.streamsMu.Lock()
+	if s.streams[streamID] != stream || s.IsClosed() {
+		s.streamsMu.Unlock()
+		stream.sessionStoppedAndDrain()
+		return nil, s.terminalError()
+	}
+	stream.applicationOwned = true
+	s.streamsMu.Unlock()
 	return stream, nil
 }
 
@@ -134,9 +151,17 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		select {
 		case stream := <-s.accepts:
 			stopTimer()
+			s.streamsMu.Lock()
 			if s.IsClosed() {
+				s.streamsMu.Unlock()
 				return nil, s.terminalError()
 			}
+			if s.streams[stream.id] != stream {
+				s.streamsMu.Unlock()
+				continue
+			}
+			stream.applicationOwned = true
+			s.streamsMu.Unlock()
 			return stream, nil
 		case <-changed:
 			stopTimer()
@@ -328,12 +353,7 @@ queued:
 			stopTimer()
 		case <-s.done:
 			stopTimer()
-			select {
-			case err := <-request.result:
-				return err
-			default:
-				return s.terminalError()
-			}
+			return <-request.result
 		}
 	}
 }
@@ -409,6 +429,11 @@ func (s *Session) readLoop() {
 }
 
 func (s *Session) acceptRemoteStream(streamID uint32) {
+	s.acceptSubmitMu.Lock()
+	defer s.acceptSubmitMu.Unlock()
+	if s.IsClosed() {
+		return
+	}
 	s.streamsMu.Lock()
 	if _, exists := s.streams[streamID]; exists {
 		s.streamsMu.Unlock()
@@ -509,11 +534,38 @@ func (s *Session) fail(err error) {
 		close(s.acceptChanged)
 		s.acceptChanged = make(chan struct{})
 		s.acceptMu.Unlock()
+
+		// Closing done wakes a producer blocked on a full accept backlog. This
+		// barrier guarantees that no remote OPEN can publish after the drain.
+		s.acceptSubmitMu.Lock()
+		s.acceptSubmitMu.Unlock()
+		for {
+			select {
+			case <-s.accepts:
+			default:
+				goto acceptsDrained
+			}
+		}
+
+	acceptsDrained:
+		var privateStreams []*Stream
+		var applicationStreams []*Stream
 		s.streamsMu.Lock()
-		for _, stream := range s.streams {
-			stream.sessionStopped()
+		for streamID, stream := range s.streams {
+			if stream.applicationOwned {
+				applicationStreams = append(applicationStreams, stream)
+				continue
+			}
+			delete(s.streams, streamID)
+			privateStreams = append(privateStreams, stream)
 		}
 		s.streamsMu.Unlock()
+		for _, stream := range applicationStreams {
+			stream.sessionStopped()
+		}
+		for _, stream := range privateStreams {
+			stream.sessionStoppedAndDrain()
+		}
 	})
 }
 

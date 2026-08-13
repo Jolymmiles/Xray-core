@@ -35,18 +35,19 @@ type Stream struct {
 	writeMu sync.Mutex
 	stateMu sync.Mutex
 
-	chunks        []receiveChunk
-	buffered      int
-	localClosed   bool
-	remoteClosed  bool
-	sessionClosed bool
-	readChanged   chan struct{}
-	writeChanged  chan struct{}
-	bufferChanged chan struct{}
-	bufferWaiting bool
-	readDeadline  time.Time
-	writeDeadline time.Time
-	writeResult   chan error
+	chunks           []receiveChunk
+	buffered         int
+	applicationOwned bool // guarded by Session.streamsMu
+	localClosed      bool
+	remoteClosed     bool
+	sessionClosed    bool
+	readChanged      chan struct{}
+	writeChanged     chan struct{}
+	bufferChanged    chan struct{}
+	bufferWaiting    bool
+	readDeadline     time.Time
+	writeDeadline    time.Time
+	writeResult      chan error
 }
 
 func newStream(session *Session, streamID uint32) *Stream {
@@ -376,13 +377,20 @@ func (s *Stream) remoteStopped() {
 
 func (s *Stream) sessionStopped() {
 	s.stateMu.Lock()
-	if s.sessionClosed {
-		s.stateMu.Unlock()
-		return
+	if !s.sessionClosed {
+		s.sessionClosed = true
+		s.notifyAllLocked()
 	}
-	s.sessionClosed = true
+	s.stateMu.Unlock()
+}
+
+func (s *Stream) sessionStoppedAndDrain() {
+	s.stateMu.Lock()
+	if !s.sessionClosed {
+		s.sessionClosed = true
+		s.notifyAllLocked()
+	}
 	queued, queuedBytes := s.drainLocked()
-	s.notifyAllLocked()
 	s.stateMu.Unlock()
 
 	for _, chunk := range queued {

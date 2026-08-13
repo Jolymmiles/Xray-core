@@ -25,7 +25,11 @@ side as finished: already-buffered data is delivered before EOF. A carrier
 write already queued before a concurrent close reports its actual write result,
 not a synthetic EOF. A local close
 discards unread data, sends one close frame, and removes the stream from its
-session. Carrier failure wakes all pending stream and accept operations.
+session. Carrier failure wakes all pending stream and accept operations. A
+remote stream still owned by the session's accept backlog is removed and its
+buffered receive data is released; it is never exposed by a later accept. Once
+an accept transfers ownership to the application, buffered data remains
+readable before the terminal carrier error.
 
 Writes enter a bounded FIFO carrier queue as complete wire frames. This gives
 each submitted frame an explicit lifetime and prevents caller-buffer reuse from
