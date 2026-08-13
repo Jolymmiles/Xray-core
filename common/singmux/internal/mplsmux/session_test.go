@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -435,6 +436,66 @@ func TestCarrierFailureUnblocksStream(t *testing.T) {
 	}
 }
 
+func TestSessionFailureDiscardsBufferedReceiveData(t *testing.T) {
+	local, peer := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(local, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = session.Close()
+	})
+
+	writeFrame := func(command frameCommand, streamID uint32, payload []byte) {
+		t.Helper()
+		encoded := make([]byte, frameHeaderSize+len(payload))
+		encodeFrameHeader((*[frameHeaderSize]byte)(encoded[:frameHeaderSize]), command, streamID, len(payload))
+		copy(encoded[frameHeaderSize:], payload)
+		if _, writeErr := peer.Write(encoded); writeErr != nil {
+			t.Fatalf("write %v frame: %v", command, writeErr)
+		}
+	}
+
+	writeFrame(frameOpen, 1, nil)
+	stream, err := session.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(frameData, 1, []byte("stale"))
+	// A completed following frame is the carrier barrier proving DATA has been
+	// enqueued before failure; no timer or private accounting establishes it.
+	writeFrame(frameKeepalive, 0, nil)
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.CloseChan():
+	case <-time.After(time.Second):
+		t.Fatal("session did not observe carrier failure")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destination := bytes.Repeat([]byte{0xcc}, len("stale"))
+	count, err := stream.Read(destination)
+	if count != 0 || err == nil {
+		t.Fatalf("Read after session failure = (%d, %v), want (0, carrier error)", count, err)
+	}
+	if bytes.Contains(destination, []byte("stale")) {
+		t.Fatalf("Read exposed buffered data after session failure: %q", destination)
+	}
+	session.receiveMu.Lock()
+	receiveUsed := session.receiveUsed
+	session.receiveMu.Unlock()
+	if receiveUsed != 0 {
+		t.Fatalf("receive credit after session failure = %d, want 0", receiveUsed)
+	}
+}
+
 func TestInvalidRemoteOpenParityClosesSession(t *testing.T) {
 	local, remote := net.Pipe()
 	config := DefaultConfig()
@@ -712,6 +773,85 @@ func (c *blockingWriteConn) Close() error {
 		close(c.closed)
 	}
 	return nil
+}
+
+func TestSessionCloseCompletesWhenSubmitParksOnFullWriteQueue(t *testing.T) {
+	carrier := newBlockingWriteConn()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Client(carrier, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = carrier.Close()
+		_ = session.Close()
+	})
+
+	if _, err := session.OpenStream(); err != nil {
+		t.Fatal(err)
+	}
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- session.submitResult(frameOpen, 5, nil, time.Time{}, make(chan error, 1))
+	}()
+	select {
+	case <-carrier.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("carrier write did not park")
+	}
+
+	for range cap(session.writeQueue) {
+		encoded := acquireFrameBuffer(frameHeaderSize)
+		encodeFrameHeader((*[frameHeaderSize]byte)(encoded), frameOpen, 7, 0)
+		session.writeQueue <- outboundFrame{encoded: encoded, result: make(chan error, 1)}
+	}
+
+	submitStarted := make(chan struct{})
+	submitResult := make(chan error, 1)
+	go func() {
+		result := make(chan error, 1)
+		submitResult <- session.submitWithStateResult(frameOpen, 9, nil, func() (time.Time, <-chan struct{}, error) {
+			select {
+			case <-submitStarted:
+			default:
+				close(submitStarted)
+			}
+			return time.Time{}, nil, nil
+		}, result)
+	}()
+	<-submitStarted
+	parkDeadline := time.Now().Add(time.Second)
+	for session.submitMu.TryLock() {
+		session.submitMu.Unlock()
+		if time.Now().After(parkDeadline) {
+			t.Fatal("submit did not park on the full write queue")
+		}
+		runtime.Gosched()
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- session.Close() }()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		_ = carrier.Close()
+		t.Fatal("Session.Close did not complete while submit was parked on a full write queue")
+	}
+	select {
+	case err := <-submitResult:
+		if err == nil {
+			t.Fatal("parked submit succeeded after session close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked submit did not return after session close")
+	}
+	if err := <-firstResult; err == nil {
+		t.Fatal("active carrier write succeeded after session close")
+	}
 }
 
 func TestSetWriteDeadlineUnblocksActiveWrite(t *testing.T) {

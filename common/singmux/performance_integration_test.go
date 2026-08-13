@@ -81,8 +81,8 @@ func startXrayPerformanceTopology(t *testing.T, workDir string, binaries e2eBina
 	privateKey = copyScenarioFile(t, privateKey, filepath.Join(scenarioDir, "server.key"))
 	serverPath := filepath.Join(scenarioDir, "server.json")
 	clientPath := filepath.Join(scenarioDir, "client.json")
-	writeConfig(t, serverPath, quietStressConfig(xrayConfig(t, true, carrier, serverPort, 0, true, certificate, privateKey)))
-	writeConfig(t, clientPath, quietStressConfig(xrayConfig(t, false, carrier, serverPort, socksPort, true, certificate, privateKey)))
+	writeConfig(t, serverPath, quietStressConfig(xrayConfig(t, true, carrier, serverPort, 0, "smux", true, certificate, privateKey)))
+	writeConfig(t, clientPath, quietStressConfig(xrayConfig(t, false, carrier, serverPort, socksPort, "smux", true, certificate, privateKey)))
 	serverArgs := []string{"run", "-config", serverPath}
 	server := startE2EProcess(t, binaries.xray, serverArgs...)
 	waitTCP(t, server, serverPort)

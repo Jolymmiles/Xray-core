@@ -180,7 +180,7 @@ go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStress
 The hardening gate raises every topology to 50 cycles:
 
 ```sh
-XRAY_SMUX_STRESS_CYCLES=50 go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
+XRAY_SMUX_STRESS_CYCLES=50 go test -timeout=45m -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 ```
 
 On Linux, the stress test also captures a historical baseline and delta for the
