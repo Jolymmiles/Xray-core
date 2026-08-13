@@ -1,8 +1,8 @@
 ## Context
 
-The built-in stats manager exposes `user>>><email>>>online` as a refcounted set of unique IP strings. The default dispatcher currently calls `AddIP` and attaches `RemoveIP` to the request context. That approximation is acceptable only for a direct logical request. SMUX, H2MUX, legacy Mux, XUDP, and reverse RVS have independent logical lifetimes inside longer-lived carriers, so context/carrier ownership leaves stale entries, cannot transfer a rebind, or counts an idle transport as online.
+The built-in stats manager exposes `user>>><email>>>online` as a refcounted set of unique IP strings. The previous dispatcher called `AddIP` and attached `RemoveIP` to the request context. That approximation was acceptable only for a direct logical request. SMUX, H2MUX, legacy Mux, XUDP, and reverse RVS have independent logical lifetimes inside longer-lived carriers, so context/carrier ownership leaves stale entries, cannot transfer a rebind, or counts an idle transport as online.
 
-The implementation base is current `main` at `v26.8.15` (`816ae651`). The experiments `0ee156e7` and `a65687a3` are not ancestors and are prior art only. The change must integrate with the current in-tree `common/singmux` stack, Brutal controls, H2MUX, pooled inbound contexts, reverse workers, and WireGuard device. Stable routing/stats interfaces, protobuf/config schemas, and wire formats are compatibility boundaries.
+The implementation base is current `main` at `v26.8.15` (`816ae651`). The experiments `0ee156e7` and `a65687a3` are not ancestors and are prior art only. The change must integrate with the current in-tree `common/singmux` stack, Brutal controls, H2MUX, pooled inbound contexts, reverse workers, and WireGuard device. StatsService/CLI results, protobuf/config schemas, and wire formats are compatibility boundaries.
 
 The principal stakeholder is the Xray server operator relying on exact Remnawave/StatsService online state under multiplexing, rebind, roaming, and shutdown. Linux/amd64 is the release and performance target; Darwin is a development platform only.
 
@@ -19,7 +19,7 @@ The principal stakeholder is the Xray server operator relying on exact Remnawave
 
 **Non-Goals:**
 
-- No new mux field, capability bit, protocol negotiation, protobuf, JSON setting, public stats method, database migration, TTL poller, or UI timestamp.
+- No new mux field, capability bit, protocol negotiation, protobuf, JSON setting, StatsService method, database migration, TTL poller, or UI timestamp.
 - No accurate-presence retrofit for an old server binary.
 - No trusted use of PROXY, XFF, frame `Inbound.Source`, an inner tunnel address, Unix/domain addresses, loopback, or unspecified IP as physical presence identity.
 - No context bridge, structural/legacy feature flag, package-global replacement registry, alternate online source of truth, YAMUX, or third-party mux dependency.
@@ -41,20 +41,20 @@ This keeps the trust decision at the transport seam. Reading `Inbound.Source` la
 
 ```go
 type PresenceSubject struct {
-	Email        string
-	Level        uint32
-	IP           netip.Addr
-	PrincipalKey [32]byte
-	Reusable     bool
+ Email        string
+ Level        uint32
+ IP           netip.Addr
+ PrincipalKey [32]byte
+ Reusable     bool
 }
 
 type PresenceProvider interface { SnapshotPresence(context.Context) PresenceScope }
 type PresenceTracker interface { Prepare(PresenceSubject) PresenceReservation }
 type PresenceReservation interface {
-	Activate() PresenceLease
-	Handoff(PresenceLease) PresenceLease
-	HandoffAll([]PresenceLease) []PresenceLease
-	Abort()
+ Activate() PresenceLease
+ Handoff(PresenceLease) PresenceLease
+ HandoffAll([]PresenceLease) []PresenceLease
+ Abort()
 }
 type PresenceLease interface { Close() }
 ```
@@ -63,19 +63,19 @@ type PresenceLease interface { Close() }
 
 `app/dispatcher/presence.go` is the sole production adapter. It derives a process-local keyed principal digest from authenticated account identity plus inbound scope, evaluates `UserOnline` policy per reservation, pins the exact stats map, and degrades telemetry failures to no-op. Email and IP are not inputs to the principal digest, so physical movement preserves identity while equal email strings cannot merge different accounts.
 
-Three private modes are explicit: `Context` for a direct logical request, `External` for a structural owner, and `Untracked` for carrier/control/cache/synthetic work. Built-in constructors never infer a mode. `External` with a missing scope stays no-op and never falls back to context ownership. Stable `features/routing.Dispatcher`, `features/stats.Manager`, and `features/stats.OnlineMap` do not change.
+Three private modes are explicit: `Context` for a direct logical request, `External` for a structural owner, and `Untracked` for carrier/control/cache/synthetic work. Built-in constructors never infer a mode. `External` with a missing scope stays no-op and never falls back to context ownership. Stable `features/routing.Dispatcher`, `features/stats.Manager`, and `features/stats.OnlineMap` interfaces do not change.
 
 Context-only mux ownership and a global observer registry were rejected because both recreate indirect lifetime coupling. A second public feature was rejected because one deep adapter hides all policy, identity, degradation, and map details behind the neutral interface.
 
 ### 3. Give the built-in OnlineMap exact capabilities
 
-The concrete `app/stats.OnlineMap` keeps legacy and exact references separately. Each instance has a non-zero process-unique generation; each exact acquire returns a non-zero token recorded as token-to-IP under the map lock. Exact release accepts only the token, never a caller-supplied IP, so an old close cannot remove a new reference. Stable `AddIP`/`RemoveIP` operate only on legacy refs, while external visibility and unique count use their sum.
+The concrete `app/stats.OnlineMap` keeps legacy and exact references separately. Each instance has a non-zero process-unique generation; each exact acquire returns a non-zero token recorded as token-to-IP under the map lock. Exact release accepts only the token, never a caller-supplied IP, so an old close cannot remove a new reference. Stable `AddIP`/`RemoveIP` continue to mutate only legacy references.
 
-A private capability supports acquire, release, generation query, and `ReplaceOnlineLeases`. Replacement validates all distinct old tokens before mutation, consumes them, creates fresh tokens even for the same IP, and changes the complete single/batch set under one map lock. A failed validation performs no mutation. Other references on the old IP survive.
+A private built-in capability supports acquire, release, instance identity, generation query, and `ReplaceOnlineLeases`. Replacement validates all distinct old tokens before mutation, consumes them, creates fresh tokens even for the same IP, and changes the complete single/batch set under one map lock. A failed validation performs no mutation. Other references on the old IP survive.
 
-Tracker leases pin the exact map instance, generation, and token. Unregister/re-register creates a new generation; old leases release only the detached old object. Different-generation or custom maps use availability-preserving activate-new-before-close-old fallback and one rate-limited warning. This rare fallback may overlap but never creates an offline gap or fails traffic.
+Tracker leases pin the exact map instance, generation, and token. The pinned instance is authoritative and generation is supplementary. Neither generation nor token may be reused while stale work can exist; identity exhaustion and malformed replacement fail closed without mutation. Batch handoff requires owner exclusion. Unregister/re-register leaves old leases pinned to the detached old object.
 
-String-only `HandoffIP` was rejected because it cannot distinguish stale owners. Extending the stable stats interface was rejected because this is an internal capability and custom maps must remain compatible.
+Different-instance, different-generation, or alternative maps use availability-preserving activate-new-before-close-old degraded handoff and one sanitized rate-limited warning. This rare fallback may overlap but never creates an offline gap or fails traffic. Extending the stable stats interface and string-only exact handoff were rejected because exact ownership is private and stale owners cannot be distinguished by IP strings.
 
 ### 4. Put each lease beside its data owner
 
@@ -92,7 +92,7 @@ One-direction TCP half-close is not terminal until the owning protocol state mac
 
 ### 5. Separate admission from publication
 
-Legacy mux uses private `ClientSessionManager` and `ServerSessionRegistry` modules over token-qualified slots. Client IDs are allocated locally without overwriting occupied 16-bit IDs. Server peer IDs are reserved before any dispatcher/presence work, so duplicates are rejected without touching the existing owner.
+Legacy mux uses one deep private Session transaction module over token-qualified slots plus a narrow client allocation module. Client IDs are allocated locally without overwriting occupied 16-bit IDs. Peer-supplied server IDs are reserved directly by the deep transaction module before any dispatcher/presence work, so duplicates are rejected without touching the existing owner.
 
 Slots progress through allocated/reserved, preparing, activating, active, closing, and closed states. Resources and reservation are candidates until `BeginCommit` joins an in-flight barrier. Presence activates outside the lock. `FinishCommit` publishes link, cancel, lease, and owner token atomically; only then may pumps start. Close and stale callbacks compare `(SessionID, ownerToken)`.
 
@@ -104,7 +104,7 @@ The existing one manager and overwrite behavior were rejected because peer-suppl
 
 Each long-lived mux owner has one private runtime containing its flow registry, worker/transaction barrier, clock, and one expiry scheduler. Reusable keys are `(PrincipalKey, GlobalID)` only when the subject is securely reusable; otherwise `(workerOwnerToken, GlobalID)` restricts reuse to one authenticated carrier. Target network/address/port is frozen and mismatches are rejected. There is no package-global registry.
 
-An XUDP flow owns backend I/O and bounded pumps, not presence. Its current attachment owns the server slot, carrier response sink, epoch/token, and lease. Preparation buffers the first payload and starts no goroutine. Precommit failure leaves the old attachment untouched. Successful rebind freezes old admission, performs the exact lease handoff outside locks, publishes the new epoch/resources, then retires the old resources. Postcommit write failure closes the new attachment and never resurrects the old one.
+An XUDP flow owns backend I/O and bounded pumps, not presence. Its current attachment owns the server slot, carrier response sink, epoch/token, and lease. One deep rebind transaction owns validation, exact handoff, Session-slot publication, Attachment publication, old retirement, and post-authorization close routing. Preparation buffers the first payload and starts no goroutine. `beginCommit` is final authorization: before it failure preserves the old attachment; after it Session slot and Attachment publication must finish, and concurrent shutdown closes the published state through the normal terminal path. Postcommit write failure closes the new attachment and never resurrects the old one.
 
 Every queued write/read/expiry/close callback captures flow token, epoch, and attachment token; mismatches may clean only callback-owned data. Detach immediately removes presence and enters cached state. Expiry may evict only the same detached generation. Runtime close drains transactions, attachments, flows, pumps, buffers, and scheduler before completion.
 
@@ -114,7 +114,7 @@ Every queued write/read/expiry/close callback captures flow token, epoch, and at
 
 Generic `app/reverse.Portal` learns that a request is a carrier only after routing. Direct online activation therefore moves to route acceptance while traffic wrappers remain pre-route. A private optional outbound capability accepts a recognized carrier's link plus immutable scope as externally owned. If Portal declines an ordinary request, direct context ownership activates normally; a recognized carrier setup failure never falls back.
 
-VLESS `RequestCommandRvs` can classify the carrier after authentication and passes its scope directly. Client workers retain the immutable carrier scope but use it only for `DispatchRVS` data-slot transactions. Ordinary dispatch creates control slots without presence. Portal/dynamic inbound and bridge/dynamic outbound owners gain explicit admission barriers and concurrent-idempotent close methods that drain monitors, pickers, controls, workers, registries, runtimes, leases, timers, and goroutines.
+VLESS `RequestCommandRvs` can classify the carrier after authentication and passes its scope directly. Client workers retain the immutable carrier scope but use it only for `DispatchRVS` data-slot transactions. Ordinary dispatch creates control slots without presence. Generic mux Session cleanup remains the terminal data-slot owner; no RVS-specific cleanup module is added. While the reverse owner is Open, DRAIN carriers are lowest-priority fallback only when no non-draining replacement exists. Closing immediately rejects new data slots. Portal/dynamic inbound and bridge/dynamic outbound owners signal Closed only after admission, handler calls, construction, periodic callbacks, controls, workers, sessions, leases, timers, and mux goroutines drain.
 
 Carrier wrapping remains for traffic/timeout accounting. Removing it entirely was rejected because online ownership and byte accounting are separate concerns.
 
@@ -128,7 +128,7 @@ Publishing the inner tunnel address was rejected because it is configured virtua
 
 ### 9. Degrade telemetry, never transport correctness
 
-Anonymous/no-email users, disabled policy, and unsupported paths quietly use no-op objects. Missing trusted provenance, stats lookup/registration failure, cross-generation/custom-map fallback, and impossible stale transitions emit rate-limited warnings without email, principal key, or raw address. Production adds no new public metrics or config. Transport/lifecycle errors still abort or close their exact owner and are never hidden as telemetry failure.
+Anonymous/no-email users, disabled policy, and unsupported paths quietly use no-op objects. Missing trusted provenance, stats lookup/registration failure, different-instance/generation degraded handoff, alternative-map fallback, and impossible stale transitions emit rate-limited warnings without email, principal key, or raw address. Production adds no new public metrics or config. Transport/lifecycle errors still abort or close their exact owner and are never hidden as telemetry failure.
 
 ### 10. Prove compatibility and release as one unit
 
@@ -140,7 +140,7 @@ The release candidate must pass format, full tests, vet, checkptr, full race, de
 
 - **[A logical owner closes through several concurrent terminal paths]** -> One token-qualified close primitive detaches under lock and closes resources/lease outside it; duplicate close is a no-op and race tests force every interleaving.
 - **[Two-phase stats and lifecycle locks expose short transition states]** -> Guarantees apply after the transition returns; exact single/batch map replacement is one linearization point, and owner publication never precedes lease activation.
-- **[A custom OnlineMap cannot replace tokens atomically]** -> Activate replacements before closing old leases, warn once, preserve traffic and availability, and document that strict atomicity belongs to the built-in map.
+- **[An alternative OnlineMap lacks private exact replacement]** -> Activate replacements before closing old leases, warn once, preserve traffic and availability, and keep strict atomicity inside the built-in adapter.
 - **[Raw peer propagation is missed by a virtual transport]** -> The transport matrix has explicit tests for every built-in inbound; absence becomes visible no-op telemetry and cannot silently trust rewritten metadata.
 - **[XUDP rebind or WireGuard roam fails after handoff]** -> Commit is irreversible; close the new owner and never resurrect old presence. Precommit tests prove old state remains untouched.
 - **[Lifecycle bookkeeping adds hot-path overhead]** -> Keep the owner interface small, avoid new dependencies/goroutine-per-packet work, use one scheduler per runtime, and enforce same-runner 10% throughput/latency budgets.

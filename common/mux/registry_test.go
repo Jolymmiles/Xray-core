@@ -57,8 +57,8 @@ func TestClientSessionManagerRejectsExhaustedIDSpace(t *testing.T) {
 	}
 }
 
-func TestServerSessionRegistryRejectsDuplicateAndStaleToken(t *testing.T) {
-	registry := newServerSessionRegistry()
+func TestSessionRegistryReservesPeerIDsWithoutServerAdapter(t *testing.T) {
+	registry := newSessionRegistry()
 	first := registry.reserve(7)
 	if first == nil {
 		t.Fatal("first reservation failed")
@@ -78,7 +78,7 @@ func TestServerSessionRegistryRejectsDuplicateAndStaleToken(t *testing.T) {
 }
 
 func TestSessionAdmissionPublishesResourcesAndLeaseTogether(t *testing.T) {
-	registry := newServerSessionRegistry()
+	registry := newSessionRegistry()
 	admission := registry.reserve(9)
 	if _, found := registry.active(9); found {
 		t.Fatal("reserved slot was visible as active")
@@ -94,6 +94,7 @@ func TestSessionAdmissionPublishesResourcesAndLeaseTogether(t *testing.T) {
 	if !admission.finishCommit(owner, lease) {
 		t.Fatal("finish commit failed")
 	}
+	admission.completeCommit()
 	if got, found := registry.active(9); !found || got != owner {
 		t.Fatalf("active slot = %p, %v; want %p, true", got, found, owner)
 	}
@@ -116,8 +117,8 @@ func TestSessionAdmissionPublishesResourcesAndLeaseTogether(t *testing.T) {
 	}
 }
 
-func TestSessionAdmissionShutdownRejectsLateCommit(t *testing.T) {
-	registry := newServerSessionRegistry()
+func TestSessionAdmissionBeginCommitPublishesThenClosesDuringShutdown(t *testing.T) {
+	registry := newSessionRegistry()
 	admission := registry.reserve(11)
 	if !admission.beginCommit() {
 		t.Fatal("begin commit failed")
@@ -130,17 +131,20 @@ func TestSessionAdmissionShutdownRejectsLateCommit(t *testing.T) {
 	for !registry.isClosing() {
 		runtime.Gosched()
 	}
-	if admission.finishCommit(new(Session), new(countingRegistryLease)) {
-		t.Fatal("late commit published during shutdown")
+	lease := new(countingRegistryLease)
+	owner := new(Session)
+	if !admission.finishCommit(owner, lease) {
+		t.Fatal("authorized commit was rejected during shutdown")
 	}
+	admission.completeCommit()
 	<-closed
-	if registry.admitted() != 0 {
-		t.Fatal("shutdown left admitted slots")
+	if registry.admitted() != 0 || lease.closed.Load() != 1 {
+		t.Fatalf("shutdown left admitted=%d lease closes=%d", registry.admitted(), lease.closed.Load())
 	}
 }
 
 func TestSessionRegistryShutdownCancelsPendingPreparation(t *testing.T) {
-	registry := newServerSessionRegistry()
+	registry := newSessionRegistry()
 	admission := registry.reserve(12)
 	ctx, cancel := context.WithCancel(context.Background())
 	if !admission.prepare(cancel) {
@@ -158,7 +162,7 @@ func TestSessionRegistryShutdownCancelsPendingPreparation(t *testing.T) {
 }
 
 func TestSessionRegistryClosesLeaseOutsideLock(t *testing.T) {
-	registry := newServerSessionRegistry()
+	registry := newSessionRegistry()
 	admission := registry.reserve(13)
 	if !admission.beginCommit() {
 		t.Fatal("begin commit failed")
@@ -169,6 +173,7 @@ func TestSessionRegistryClosesLeaseOutsideLock(t *testing.T) {
 	if !admission.finishCommit(owner, lease) {
 		t.Fatal("finish commit failed")
 	}
+	admission.completeCommit()
 	owner.Close(false)
 	select {
 	case got := <-reentered:
@@ -181,7 +186,7 @@ func TestSessionRegistryClosesLeaseOutsideLock(t *testing.T) {
 }
 
 func TestSessionOwnerConvergesConcurrentTerminalPaths(t *testing.T) {
-	registry := newServerSessionRegistry()
+	registry := newSessionRegistry()
 	admission := registry.reserve(14)
 	if !admission.beginCommit() {
 		t.Fatal("begin commit failed")
@@ -191,6 +196,7 @@ func TestSessionOwnerConvergesConcurrentTerminalPaths(t *testing.T) {
 	if !admission.finishCommit(owner, lease) {
 		t.Fatal("finish commit failed")
 	}
+	admission.completeCommit()
 	var callers sync.WaitGroup
 	for range 100 {
 		callers.Add(1)

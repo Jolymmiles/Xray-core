@@ -382,6 +382,7 @@ func (m *ClientWorker) dispatch(ctx context.Context, link *transport.Link, rvs b
 	if !admission.finishCommit(s, lease) {
 		return false
 	}
+	admission.completeCommit()
 	context.AfterFunc(streamCtx, func() { _ = s.Close(false) })
 	go fetchInput(streamCtx, s, m.link.Writer)
 	if _, ok := link.Reader.(*pipe.Reader); !ok {

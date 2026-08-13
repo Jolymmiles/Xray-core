@@ -8,7 +8,7 @@ This change makes online state follow the committed logical data owner exactly w
 
 - Introduce immutable authenticated presence scopes and one-shot reservation/lease ownership for direct requests, SMUX/H2MUX streams, legacy Mux sessions, XUDP attachments, reverse RVS data slots, and WireGuard logical flows.
 - Capture a canonical server-observed physical peer before PROXY, XFF, mux-frame, or virtual-source rewriting; missing trustworthy provenance is untracked rather than inferred.
-- Add generation-qualified exact leases and atomic single/batch handoff to the built-in online map without extending the stable stats interface.
+- Replace string-based online-map mutation with generation-qualified leases and atomic single/batch handoff.
 - Replace carrier-global session/XUDP state with token-checked per-owner registries, two-phase publication, explicit shutdown barriers, and per-runtime XUDP attachment generations.
 - Make carriers, controls, heartbeats, keepalives, cached XUDP backends, and synthetic/unknown-provenance paths untracked.
 - Preserve every existing mux/XUDP/RVS/WireGuard wire byte, protobuf/config schema, Stats RPC/CLI name, and unique-IP result.
@@ -26,7 +26,7 @@ This change replaces the empty active change `fix-online-ip-lifecycle-tracking`,
 
 ### Modified Capabilities
 
-None. The repository has no existing OpenSpec capability for online presence, and stable public stats/protocol contracts do not change.
+None. The repository has no existing OpenSpec capability for online presence. StatsService, CLI, configuration, protocol contracts, and the stable Go `features/stats.OnlineMap` interface do not change; exact ownership remains a private built-in capability.
 
 ## Impact
 

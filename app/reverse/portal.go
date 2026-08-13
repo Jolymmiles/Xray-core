@@ -20,12 +20,26 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+type portalState uint8
+
+const (
+	portalOpen portalState = iota
+	portalClosing
+	portalClosed
+)
+
 type Portal struct {
 	ohm    outbound.Manager
 	tag    string
 	domain string
 	picker *StaticMuxPicker
 	client *mux.ClientManager
+
+	lifecycleMu sync.Mutex
+	state       portalState
+	handlers    sync.WaitGroup
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func NewPortal(config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
@@ -61,10 +75,46 @@ func (p *Portal) Start() error {
 }
 
 func (p *Portal) Close() error {
-	return errors.Combine(p.picker.Close(), p.ohm.RemoveHandler(context.Background(), p.tag))
+	p.closeOnce.Do(func() {
+		p.lifecycleMu.Lock()
+		p.state = portalClosing
+		p.lifecycleMu.Unlock()
+		var removeErr error
+		if p.ohm != nil {
+			removeErr = p.ohm.RemoveHandler(context.Background(), p.tag)
+		}
+		p.handlers.Wait()
+		var pickerErr error
+		if p.picker != nil {
+			pickerErr = p.picker.Close()
+		}
+		p.lifecycleMu.Lock()
+		p.state = portalClosed
+		p.lifecycleMu.Unlock()
+		p.closeErr = errors.Combine(removeErr, pickerErr)
+	})
+	return p.closeErr
+}
+
+func (p *Portal) beginHandle() bool {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.state != portalOpen {
+		return false
+	}
+	p.handlers.Add(1)
+	return true
+}
+
+func (p *Portal) endHandle() {
+	p.handlers.Done()
 }
 
 func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) error {
+	if !p.beginHandle() {
+		return errors.New("portal is closing")
+	}
+	defer p.endHandle()
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 	if ob == nil {
@@ -185,6 +235,9 @@ func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
 	p.access.Lock()
 	defer p.access.Unlock()
 
+	if p.closed {
+		return nil, errors.New("picker is closing")
+	}
 	if len(p.workers) == 0 {
 		return nil, errors.New("empty worker list")
 	}

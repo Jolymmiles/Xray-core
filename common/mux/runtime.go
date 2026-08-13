@@ -176,19 +176,9 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closeOnce.Do(func() {
-		var flows []*xudpFlow
-		var sinks []*xudpResponseSink
 		var cancels []context.CancelFunc
 		r.mu.Lock()
 		r.closing = true
-		for key, flow := range r.flows {
-			delete(r.flows, key)
-			flows = append(flows, flow)
-		}
-		for sink := range r.sinks {
-			delete(r.sinks, sink)
-			sinks = append(sinks, sink)
-		}
 		for _, cancel := range r.transactions {
 			cancels = append(cancels, cancel)
 		}
@@ -197,6 +187,23 @@ func (r *Runtime) Close() error {
 		for _, cancel := range cancels {
 			cancel()
 		}
+
+		// Authorized transactions publish their complete owner state before
+		// runtime resources are detached. Their normal close path then drains it.
+		r.txns.Wait()
+
+		var flows []*xudpFlow
+		var sinks []*xudpResponseSink
+		r.mu.Lock()
+		for key, flow := range r.flows {
+			delete(r.flows, key)
+			flows = append(flows, flow)
+		}
+		for sink := range r.sinks {
+			delete(r.sinks, sink)
+			sinks = append(sinks, sink)
+		}
+		r.mu.Unlock()
 		for _, flow := range flows {
 			flow.close()
 		}
@@ -211,7 +218,6 @@ func (r *Runtime) Close() error {
 			<-r.done
 		}
 		r.pumps.Wait()
-		r.txns.Wait()
 	})
 	return nil
 }
@@ -338,6 +344,7 @@ func (f *xudpFlow) attach(admission *sessionAdmission, scope session.PresenceSco
 	f.rebinding = false
 	f.cond.Broadcast()
 	f.mu.Unlock()
+	admission.completeCommit()
 	if old != nil {
 		_ = old.session.Close(false)
 	}

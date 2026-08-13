@@ -15,12 +15,60 @@ func TestOnlineMapGenerationIdentifiesInstance(t *testing.T) {
 	}
 }
 
-func TestOnlineMapGenerationSkipsZeroAfterOverflow(t *testing.T) {
+func TestOnlineMapGenerationExhaustionDisablesExactOwnership(t *testing.T) {
 	previous := onlineMapGeneration.Swap(math.MaxUint64)
 	t.Cleanup(func() { onlineMapGeneration.Store(previous) })
 
-	if got := NewOnlineMap().OnlineMapGeneration(); got == 0 {
-		t.Fatal("online map generation wrapped to zero")
+	om := NewOnlineMap()
+	if got := om.OnlineMapGeneration(); got != 0 {
+		t.Fatalf("exhausted online map generation = %d, want 0", got)
+	}
+	if token := om.AcquireOnlineLease("192.0.2.1"); token != 0 {
+		t.Fatalf("exact acquire after generation exhaustion = %d, want 0", token)
+	}
+	if got := om.Count(); got != 0 {
+		t.Fatalf("generation exhaustion mutated count = %d", got)
+	}
+}
+
+func TestOnlineMapTokenExhaustionFailsWithoutMutation(t *testing.T) {
+	om := NewOnlineMap()
+	om.nextToken = math.MaxUint64
+	if token := om.AcquireOnlineLease("192.0.2.1"); token != 0 {
+		t.Fatalf("exhausted acquire token = %d, want 0", token)
+	}
+	if got := om.Count(); got != 0 || len(om.leases) != 0 {
+		t.Fatalf("exhausted acquire mutated count=%d leases=%v", got, om.leases)
+	}
+
+	om.nextToken = math.MaxUint64 - 1
+	old := om.AcquireOnlineLease("192.0.2.1")
+	if old != math.MaxUint64 {
+		t.Fatalf("last available token = %d, want %d", old, uint64(math.MaxUint64))
+	}
+	if replacements, ok := om.ReplaceOnlineLeases([]uint64{old}, "198.51.100.2", 1); ok || replacements != nil {
+		t.Fatalf("replacement after exhaustion = %v, %v; want nil, false", replacements, ok)
+	}
+	if got := onlineMapIPs(om); !maps.Equal(got, map[string]bool{"192.0.2.1": true}) {
+		t.Fatalf("exhausted replacement mutated map: %v", got)
+	}
+}
+
+func TestOnlineMapLegacyRemovalCannotConsumeExactLease(t *testing.T) {
+	om := NewOnlineMap()
+	token := om.AcquireOnlineLease("192.0.2.1")
+	om.RemoveIP("192.0.2.1")
+	if got := om.Count(); got != 1 {
+		t.Fatalf("legacy removal consumed exact lease: count = %d", got)
+	}
+	om.AddIP("192.0.2.1")
+	om.ReleaseOnlineLease(token)
+	if got := om.Count(); got != 1 {
+		t.Fatalf("exact release consumed legacy reference: count = %d", got)
+	}
+	om.RemoveIP("192.0.2.1")
+	if got := om.Count(); got != 0 {
+		t.Fatalf("count after releasing both reference kinds = %d, want 0", got)
 	}
 }
 
@@ -47,26 +95,6 @@ func TestOnlineMapExactLeaseReleaseUsesToken(t *testing.T) {
 	om.ReleaseOnlineLease(second)
 	if got := om.Count(); got != 0 {
 		t.Fatalf("count after final exact release = %d, want 0", got)
-	}
-}
-
-func TestOnlineMapLegacyRemovalCannotConsumeExactLease(t *testing.T) {
-	om := NewOnlineMap()
-	token := om.AcquireOnlineLease("192.0.2.1")
-
-	om.RemoveIP("192.0.2.1")
-	if got := om.Count(); got != 1 {
-		t.Fatalf("legacy removal consumed exact lease: count = %d", got)
-	}
-
-	om.AddIP("192.0.2.1")
-	om.ReleaseOnlineLease(token)
-	if got := om.Count(); got != 1 {
-		t.Fatalf("exact release consumed legacy reference: count = %d", got)
-	}
-	om.RemoveIP("192.0.2.1")
-	if got := om.Count(); got != 0 {
-		t.Fatalf("count after releasing both reference kinds = %d, want 0", got)
 	}
 }
 

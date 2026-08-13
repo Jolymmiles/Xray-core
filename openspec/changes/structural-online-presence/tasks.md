@@ -10,13 +10,14 @@
 
 - [x] 2.1 RED: add `common/session` tests for immutable scope, allocation-free no-op objects, one-shot reservation terminals, explicit ownership modes, and concurrent idempotent lease close; observe the intended failures.
 - [x] 2.2 GREEN: implement the minimal neutral presence subject/provider/tracker/reservation/lease/scope and private context mode metadata; run `common/session` tests and race.
-- [x] 2.3 RED: add `app/stats` tests for generation-qualified acquire/release, mixed legacy/exact refs, stale tokens, same/different-IP replacement, batch validation, concurrent iteration/count, and unregister/re-register isolation; observe failures.
-- [x] 2.4 GREEN: deepen the built-in `OnlineMap` with exact tokens and atomic single/batch replacement while leaving the stable interface unchanged; run targeted tests and race/count stress.
-- [x] 2.5 RED: add dispatcher tracker tests for policy sampling, exact-map pinning, no-op degradation, activate/handoff/batch handoff, custom/different-map ordering, and sanitized rate limiting; observe failures.
-- [x] 2.6 GREEN: implement the sole production tracker/provider seam and principal digest framing without changing routing/stats feature interfaces; run dispatcher/stats tests and race.
+- [ ] 2.3 RED: add `app/stats` and adapter tests for pinned-instance authority, generation/token non-reuse, identity exhaustion, malformed replacement, shared-IP legacy/exact refs, batch owner exclusion, and unregister/re-register isolation; observe failures.
+- [ ] 2.4 GREEN: deepen the private built-in exact adapter with pinned-instance identity and fail-closed exact replacement while preserving the stable `features/stats.OnlineMap` interface; run targeted tests and race/count stress.
+- [ ] 2.5 RED: add dispatcher tracker tests for exact-instance pinning, strict replacement validation, owner-excluded batch handoff, alternative/different-instance degraded ordering, and sanitized rate limiting; observe failures.
+- [ ] 2.6 GREEN: implement the private exact/degraded adapter seam without changing routing/stats feature interfaces; run dispatcher/stats tests and race.
 - [x] 2.7 After task 3.10, RED: add direct `Dispatch`/`DispatchLink` tests proving route-time activation, exact cancellation, early route-failure release, half-close behavior, and no acquisition in External/Untracked modes; observe failures.
 - [x] 2.8 After task 3.10, GREEN: migrate direct ownership and delayed route acceptance to trusted structural leases while preserving traffic wrappers; remove the superseded direct `AddIP`/`RemoveIP` callback path.
 - [x] 2.9 After tasks 2.7-2.8, run format, targeted vet, checkptr, race `-count=100`, and full tests for `common/session`, `app/stats`, and `app/dispatcher`; fix every new failure before continuing.
+- [ ] 2.10 Preserve stable legacy `AddIP`/`RemoveIP` compatibility while proving structural owners use only the private exact capability and degraded fallback.
 
 ## 3. Trusted physical peer and authenticated subjects
 
@@ -26,8 +27,8 @@
 - [x] 3.4 GREEN: capture and expose immutable raw stream peers at the system listener and propagate them through TCP workers without changing routing/log source semantics.
 - [x] 3.5 RED: add WebSocket, HTTP Upgrade, gRPC, SplitHTTP H1/H2/H3 tests proving raw connection/QUIC peers survive XFF and multi-request virtual connections.
 - [x] 3.6 GREEN: propagate the raw peer through HTTP `ConnContext`, virtual connection adapters, and creator-request state for all HTTP transports.
-- [x] 3.7 RED: add direct UDP, mKCP, and Hysteria tests proving kernel/QUIC packet peers are frozen and virtual/original-destination metadata cannot replace them.
-- [x] 3.8 GREEN: propagate trusted packet peers through UDP workers, mKCP, and Hysteria while making Unix/unknown/synthetic paths explicitly untracked.
+- [ ] 3.7 RED: add direct UDP, mKCP, Hysteria, finalmask/XDNS, and XHTTP/3 tests proving raw kernel/QUIC peers are frozen or the exact path stays no-op; synthetic/virtual/original-destination metadata cannot replace them.
+- [ ] 3.8 GREEN: propagate trusted packet peers through every evidenced packet/QUIC adapter and make every path lacking raw provenance, including synthetic finalmask/XDNS, explicitly untracked.
 - [ ] 3.9 RED: add authenticated VLESS/Trojan/VMess/inbound-worker tests proving the provider snapshots user plus trusted peer after authentication and before frame source rewriting.
 - [x] 3.10 GREEN: wire provider snapshots into built-in authenticated inbound owners and expose the optional provider source without changing stable dispatcher interfaces.
 - [ ] 3.11 Run the full transport/auth package unit, race, checkptr, vet, VLESS/REALITY, spoofed-PROXY/XFF, and process compatibility gates; fix every failure before mux work.
@@ -42,9 +43,9 @@
 ## 5. Transactional legacy Mux sessions
 
 - [x] 5.1 RED: add client allocator tests for wraparound, occupied-ID skipping, exhaustion, limits, owner-token reuse safety, activation visibility, and shutdown barriers.
-- [x] 5.2 GREEN: split and implement the private `ClientSessionManager` transaction state machine without changing 16-bit wire IDs.
-- [x] 5.3 RED: add server registry tests for reserve-before-dispatch, duplicate rejection, late dispatch/activation, stale token cleanup, End/EOF/write/cancel races, reentrant callbacks, and shutdown in every phase.
-- [x] 5.4 GREEN: implement the token-qualified `ServerSessionRegistry`, two-phase publication, idempotent owner close, and in-flight shutdown barrier.
+- [x] 5.2 GREEN: keep narrow client local-ID allocation policy over the shared deep Session transaction module without changing 16-bit wire IDs.
+- [x] 5.3 RED: test peer reservation directly through the shared Session transaction module: reserve-before-dispatch, duplicate rejection, late activation, stale token cleanup, terminal races, reentrant callbacks, and shutdown in every phase.
+- [x] 5.4 GREEN: keep peer reservation policy in the deep shared Session transaction module, remove the shallow server forwarding adapter, and preserve two-phase publication, idempotent owner close, and the in-flight shutdown barrier.
 - [x] 5.5 RED: add normal Mux tests proving each committed TCP/packet-UDP session owns one External lease and an idle live carrier owns none.
 - [x] 5.6 GREEN: migrate normal Mux sessions to the registry/lease bundle and start pumps only after complete publication.
 - [x] 5.7 Add one `mux.Runtime` per long-lived owner with worker registration, close admission, transaction barrier, and idempotent full drain; keep XUDP behavior unchanged until its slice.
@@ -56,8 +57,8 @@
 - [x] 6.2 GREEN: move XUDP registry and one expiry scheduler into `mux.Runtime`; make backend dispatch Untracked and flow/cache own no presence.
 - [x] 6.3 RED: add initial-attachment tests for buffered first payload, publish-before-pump, exactly one lease, detach-to-cached online zero, backend EOF, and cached expiry.
 - [x] 6.4 GREEN: implement token/epoch-qualified attachment publication, bounded generation-tagged pumps, detach/cache, and exact cleanup.
-- [x] 6.5 RED: add same/different-IP rebind tests for precommit preservation, one winning concurrent transaction, atomic handoff, stale callbacks, postcommit first-write failure, and no resurrection.
-- [x] 6.6 GREEN: implement the irreversible rebind transaction, exact lease handoff, start barrier, old attachment retirement, and generation-safe callback/pump routing.
+- [ ] 6.5 RED: add deterministic barriers before/after `beginCommit`, exact handoff, Session publication, Attachment publication, old retirement, queued stale callbacks, rebind first-write failure, and shutdown; observe the split-window failures.
+- [ ] 6.6 GREEN: deepen the standalone XUDP rebind transaction so `beginCommit` is final authorization, Session and Attachment publication then finish, and concurrent shutdown routes through normal published-state close.
 - [x] 6.7 RED: add blocked backend/sink, queue-drain, active/pending/cached shutdown, concurrent close, and scheduler-goroutine leak tests.
 - [x] 6.8 GREEN: complete runtime close ordering and remove package-global `XUDPManager`, package-init scheduler, cache-owned context tracking, and obsolete cleanup paths.
 - [ ] 6.9 Run XUDP/mux unit, frame golden, race/checkptr/vet, `-count=100` rebind/shutdown stress, 1,000-rebind lifecycle soak, and old/new XUDP version skew.
@@ -68,8 +69,8 @@
 - [x] 7.2 GREEN: implement the private route-time external-owner seam and pass immutable scopes into built-in Portal/VLESS carrier workers without changing stable outbound/dispatcher interfaces.
 - [x] 7.3 RED: add RVS tests for idle/control/heartbeat zero, one/many data refs, picker-selected carrier IP, spoofed frame source rejection, policy per slot, and last-data-close with live carrier.
 - [x] 7.4 GREEN: add explicit `DispatchRVS` data-slot transactions and keep ordinary/control dispatch Untracked while preserving carrier traffic/timeout accounting.
-- [x] 7.5 RED: add owner/worker close tests for late registration, activation-phase shutdown, End/EOF/cancel/DRAIN races, reentrant callbacks, user removal, and full core close.
-- [x] 7.6 GREEN: implement concurrent-idempotent Portal/Bridge/dynamic VLESS owner drains for handlers, monitors, pickers, tasks, controls, workers, managers, runtimes, leases, timers, and goroutines.
+- [ ] 7.5 RED: add deterministic owner close tests for handler calls, construction, periodic callbacks, late registration, activation, DRAIN fallback while Open, immediate Closing rejection, reentrant callbacks, and full core close.
+- [ ] 7.6 GREEN: implement full Portal/Bridge/dynamic VLESS Closed semantics: stop admission and join handler calls, construction, periodic callbacks, controls, workers, sessions, leases, timers, and mux goroutines; retain generic mux Session data cleanup.
 - [ ] 7.7 Run reverse/VLESS/mux unit, frame goldens, race/checkptr/vet, `-count=100` shutdown stress, 1,000-slot soak, StatsService integration, and old/new RVS version skew.
 
 ## 8. WireGuard authenticated endpoint and flow owners

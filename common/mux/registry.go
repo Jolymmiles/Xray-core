@@ -158,12 +158,13 @@ func (r *sessionRegistry) close() {
 }
 
 type sessionAdmission struct {
-	registry *sessionRegistry
-	id       uint16
-	token    uint64
-	mu       sync.Mutex
-	begun    bool
-	finished bool
+	registry  *sessionRegistry
+	id        uint16
+	token     uint64
+	mu        sync.Mutex
+	begun     bool
+	finished  bool
+	completed bool
 }
 
 func (a *sessionAdmission) prepare(cancel context.CancelFunc) bool {
@@ -209,7 +210,7 @@ func (a *sessionAdmission) finishCommit(owner *Session, lease session.PresenceLe
 	published := false
 	a.registry.mu.Lock()
 	slot := a.registry.slots[a.id]
-	if slot != nil && slot.token == a.token && slot.state == sessionSlotActivating && !slot.closeRequested && !a.registry.closing {
+	if slot != nil && slot.token == a.token && slot.state == sessionSlotActivating {
 		owner.ID = a.id
 		owner.ownerToken = a.token
 		owner.presenceLease = lease
@@ -218,15 +219,40 @@ func (a *sessionAdmission) finishCommit(owner *Session, lease session.PresenceLe
 		slot.owner = owner
 		slot.state = sessionSlotActive
 		published = true
-	} else if slot != nil && slot.token == a.token {
-		delete(a.registry.slots, a.id)
 	}
 	a.registry.mu.Unlock()
 	if !published {
 		closeRejectedSession(owner, lease)
+		a.mu.Lock()
+		a.completed = true
+		a.mu.Unlock()
+		a.registry.commits.Done()
+	}
+	return published
+}
+
+// completeCommit ends the authorization barrier after the caller has published
+// every owner-specific resource. A close requested after beginCommit is then
+// routed through the normal active-owner terminal path.
+func (a *sessionAdmission) completeCommit() {
+	a.mu.Lock()
+	if !a.begun || !a.finished || a.completed {
+		a.mu.Unlock()
+		return
+	}
+	a.completed = true
+	a.mu.Unlock()
+
+	closeRequested := false
+	a.registry.mu.Lock()
+	if slot := a.registry.slots[a.id]; slot != nil && slot.token == a.token && slot.state == sessionSlotActive {
+		closeRequested = slot.closeRequested || a.registry.closing
+	}
+	a.registry.mu.Unlock()
+	if closeRequested {
+		a.registry.closeActive(a.id, a.token)
 	}
 	a.registry.commits.Done()
-	return published
 }
 
 func (a *sessionAdmission) abort() {
@@ -296,32 +322,6 @@ func (m *clientSessionManager) count() int       { return m.registry.count() }
 func (m *clientSessionManager) close()           { m.registry.close() }
 func (m *clientSessionManager) closeIfIdle(size, count int) bool {
 	return m.registry.closeIfIdle(size, count)
-}
-
-type serverSessionRegistry struct{ registry *sessionRegistry }
-
-func newServerSessionRegistry() *serverSessionRegistry {
-	return &serverSessionRegistry{registry: newSessionRegistry()}
-}
-
-func (r *serverSessionRegistry) reserve(id uint16) *sessionAdmission {
-	return r.registry.reserve(id)
-}
-
-func (r *serverSessionRegistry) active(id uint16) (*Session, bool) {
-	return r.registry.active(id)
-}
-
-func (r *serverSessionRegistry) admitted() int    { return r.registry.admitted() }
-func (r *serverSessionRegistry) activeCount() int { return r.registry.activeCount() }
-func (r *serverSessionRegistry) count() int       { return r.registry.count() }
-func (r *serverSessionRegistry) close()           { r.registry.close() }
-func (r *serverSessionRegistry) closeIfIdle(size, count int) bool {
-	return r.registry.closeIfIdle(size, count)
-}
-
-func (r *serverSessionRegistry) isClosing() bool {
-	return r.registry.isClosing()
 }
 
 func closeRejectedSession(owner *Session, lease session.PresenceLease) {
