@@ -102,6 +102,11 @@ func withPhysicalPeer(peer Addr, conn Conn) Conn {
 	carrier := &physicalPeerConn{Conn: conn, peer: peer}
 	syscallConn, hasSyscall := conn.(syscall.Conn)
 	closeWriter, hasCloseWrite := conn.(closeWriteConn)
+	if !hasCloseWrite {
+		if raw, ok := conn.(interface{ Raw() Conn }); ok {
+			closeWriter, hasCloseWrite = raw.Raw().(closeWriteConn)
+		}
+	}
 	switch {
 	case hasSyscall && hasCloseWrite:
 		return &physicalPeerSyscallCloseWriteConn{physicalPeerConn: carrier, Conn: syscallConn, closeWriteConn: closeWriter}
