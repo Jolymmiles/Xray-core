@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,6 +121,32 @@ func (s *blockingOpenSession) OpenStream(ctx context.Context, accounted func()) 
 func (s *blockingOpenSession) NumStreams() int { return int(s.active.Load()) }
 func (*blockingOpenSession) IsClosed() bool    { return false }
 func (*blockingOpenSession) Close() error      { return nil }
+
+type accountingProbeSession struct {
+	client    *Client
+	active    atomic.Int32
+	published chan error
+}
+
+func (s *accountingProbeSession) OpenStream(context.Context, func()) (net.Conn, error) {
+	return nil, errors.New("non-transactional open used")
+}
+
+func (s *accountingProbeSession) OpenStreamAccounted(ctx context.Context, accounted func(func())) (net.Conn, error) {
+	accounted(func() {
+		if pending := s.client.pending[s]; pending != 1 {
+			s.published <- fmt.Errorf("pending during publication = %d, want 1", pending)
+			return
+		}
+		s.active.Store(1)
+		s.published <- nil
+	})
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (s *accountingProbeSession) NumStreams() int { return int(s.active.Load()) }
+func (*accountingProbeSession) IsClosed() bool    { return false }
+func (*accountingProbeSession) Close() error      { return nil }
 
 type closingOpenSession struct {
 	started chan struct{}
@@ -894,6 +922,40 @@ func TestClientPrunesDrainedRetiredSessions(t *testing.T) {
 	}
 }
 
+func TestClientPendingPublicationAndAccountingAreAtomic(t *testing.T) {
+	session := &accountingProbeSession{published: make(chan error, 1)}
+	client := &Client{
+		streamLimit: defaultMinStreams,
+		sessions:    []clientSession{session},
+	}
+	session.client = client
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.openStream(ctx)
+		result <- err
+	}()
+	select {
+	case err := <-session.published:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream publication did not run")
+	}
+
+	client.mu.Lock()
+	active, pending := session.NumStreams(), client.pending[session]
+	client.mu.Unlock()
+	if active != 1 || pending != 0 {
+		t.Fatalf("accounting after publication = active %d + pending %d, want 1 + 0", active, pending)
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want %v", err, context.Canceled)
+	}
+}
+
 func TestClientPendingLoadStopsDoubleCountingReflectedReservation(t *testing.T) {
 	first := &blockingOpenSession{started: make(chan struct{}, 2), reflectOnOpen: true}
 	second := &blockingOpenSession{started: make(chan struct{}, 1)}
@@ -934,6 +996,112 @@ func TestClientPendingLoadStopsDoubleCountingReflectedReservation(t *testing.T) 
 	for range 2 {
 		if err := <-result; !errors.Is(err, context.Canceled) {
 			t.Fatalf("openStream error = %v, want %v", err, context.Canceled)
+		}
+	}
+}
+
+type realSessionGateConn struct {
+	net.Conn
+	writes  atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *realSessionGateConn) Write(payload []byte) (int, error) {
+	// The carrier request is the first write. Hold the first SMUX OPEN frame.
+	if c.writes.Add(1) == 2 {
+		close(c.started)
+		<-c.release
+	}
+	return c.Conn.Write(payload)
+}
+
+type realSessionGateDialer struct {
+	service     *Service
+	dials       atomic.Int32
+	started     chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func (d *realSessionGateDialer) releaseOpen() {
+	d.releaseOnce.Do(func() { close(d.release) })
+}
+
+func (d *realSessionGateDialer) DialContext(context.Context, X.Destination) (net.Conn, error) {
+	clientConnection, serverConnection := net.Pipe()
+	go func() { _ = d.service.NewConnection(context.Background(), serverConnection) }()
+	if d.dials.Add(1) == 1 {
+		return &realSessionGateConn{
+			Conn: clientConnection, started: d.started, release: d.release,
+		}, nil
+	}
+	return clientConnection, nil
+}
+
+func TestClientRealSMUXPendingOpenCountedOnce(t *testing.T) {
+	dispatcher := &echoDispatcher{target: make(chan X.Destination, 2)}
+	dialer := &realSessionGateDialer{
+		service: NewService(dispatcher),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client, err := NewClient(Options{Dialer: dialer, Protocol: "smux", MaxStreams: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		dialer.releaseOpen()
+		_ = client.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+	dispatchResults := make(chan error, 2)
+	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
+	dispatch := func() {
+		clientLink, _ := linkPair()
+		dispatchResults <- client.Dispatch(ctx, clientLink, destination)
+	}
+	go dispatch()
+	select {
+	case <-dialer.started:
+	case <-ctx.Done():
+		t.Fatal("first real SMUX OPEN did not reach the gated carrier write")
+	}
+
+	client.mu.Lock()
+	if got := len(client.sessions); got != 1 {
+		client.mu.Unlock()
+		t.Fatalf("sessions before parallel open = %d, want 1", got)
+	}
+	first := client.sessions[0]
+	active, pending := first.NumStreams(), client.pending[first]
+	client.mu.Unlock()
+	if active+pending != 1 {
+		t.Fatalf("published first open accounting = active %d + pending %d, want one logical open", active, pending)
+	}
+
+	go dispatch()
+	dialer.releaseOpen()
+	for range 2 {
+		select {
+		case <-dispatcher.target:
+		case <-ctx.Done():
+			t.Fatal("parallel dispatch did not complete SMUX stream admission")
+		}
+	}
+	if got := dialer.dials.Load(); got != 1 {
+		t.Fatalf("parallel opens created %d real SMUX carriers, want one", got)
+	}
+
+	cancel()
+	_ = client.Close()
+	for range 2 {
+		select {
+		case <-dispatchResults:
+		case <-time.After(time.Second):
+			t.Fatal("Dispatch did not return after client shutdown")
 		}
 	}
 }
