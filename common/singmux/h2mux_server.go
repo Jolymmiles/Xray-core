@@ -15,13 +15,24 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, brutal *serverBrutalController, presence session.PresenceScope) error {
+func (c *serviceCarrier) wrapH2MuxHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !c.beginHandler() {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		defer c.finishHandler()
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, owner *serviceCarrier, brutal *serverBrutalController, presence session.PresenceScope) error {
 	server := &http2.Server{}
 	server.ServeConn(carrier, &http2.ServeConnOpts{
 		Context: ctx,
-		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		Handler: owner.wrapH2MuxHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			s.handleH2MuxStream(writer, request, carrier, brutal, presence)
-		}),
+		})),
 	})
 	if err := ctx.Err(); err != nil {
 		return err

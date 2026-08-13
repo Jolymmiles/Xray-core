@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
@@ -144,6 +145,93 @@ func TestServiceBoundsH2MuxPendingHandshakes(t *testing.T) {
 	defer secondWriter.Close()
 	if secondResponse.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("second HTTP status = %d, want 503", secondResponse.StatusCode)
+	}
+}
+
+type lateH2OwnershipProbe struct {
+	dispatches int
+	leases     int
+	owners     int
+}
+
+func (p *lateH2OwnershipProbe) ServeHTTP(http.ResponseWriter, *http.Request) {
+	p.dispatches++
+	p.leases++
+	p.owners++
+}
+
+func TestServiceH2MuxWrapperRejectsLateHandlerBeforeOwnership(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	owner := &serviceCarrier{Conn: server, ctx: ctx, cancel: cancel}
+	owner.handlerCond = sync.NewCond(&owner.handlerMu)
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := new(lateH2OwnershipProbe)
+	handler := owner.wrapH2MuxHandler(probe)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodConnect, "https://example.com", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("late H2 handler status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if probe.dispatches != 0 || probe.leases != 0 || probe.owners != 0 {
+		t.Fatalf("late H2 handler ownership = dispatches %d, leases %d, owners %d; want all zero",
+			probe.dispatches, probe.leases, probe.owners)
+	}
+	owner.handlerMu.Lock()
+	handlers := owner.handlers
+	owner.handlerMu.Unlock()
+	if handlers != 0 {
+		t.Fatalf("late H2 handler registrations = %d, want 0", handlers)
+	}
+}
+
+func TestServiceCloseCancelsH2MUXHandlerAndWaitsForServeConn(t *testing.T) {
+	dispatcher := &lifecycleBlockingDispatcher{
+		echoDispatcher: &echoDispatcher{target: make(chan X.Destination, 1)},
+		started:        make(chan struct{}),
+		canceled:       make(chan struct{}),
+		finished:       make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+	service := NewService(dispatcher)
+	client, closeCarrier := startH2MuxService(t, service, []byte{0, 2})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(dispatcher.release) }) }
+	t.Cleanup(func() {
+		release()
+		closeCarrier()
+	})
+
+	response, bodyWriter := openH2MuxStream(t, client)
+	t.Cleanup(func() {
+		_ = bodyWriter.Close()
+		_ = response.Body.Close()
+	})
+	if err := writeStreamRequest(bodyWriter, 0, X.TCPDestination(X.DomainAddress("example.com"), 443)); err != nil {
+		t.Fatal(err)
+	}
+	if err := readStreamResponse(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	waitSignal(t, dispatcher.started, "H2MUX handler did not enter the dispatcher")
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- service.Close() }()
+	waitSignal(t, dispatcher.canceled, "Service.Close did not cancel the H2MUX handler context")
+	select {
+	case err := <-closeResult:
+		t.Fatalf("Service.Close returned before the H2MUX handler completed: %v", err)
+	default:
+	}
+
+	release()
+	waitSignal(t, dispatcher.finished, "H2MUX handler did not finish")
+	if err := waitResult(t, closeResult, "Service.Close did not wait for H2MUX ServeConn completion"); err != nil {
+		t.Fatalf("Service.Close error = %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ package singmux
 import (
 	"context"
 	"errors"
+	"io"
 	"maps"
 	"net"
 	"sync"
@@ -29,6 +30,169 @@ type Service struct {
 	handshakeSlotsOnce      sync.Once
 	handshakeSlots          chan struct{}
 	setBrutalOptions        func(net.Conn, uint64) error
+
+	lifecycleOnce sync.Once
+	lifecycleMu   sync.Mutex
+	lifecycleCond *sync.Cond
+	closing       bool
+	carriers      map[*serviceCarrier]struct{}
+	closeDone     chan struct{}
+	closeErr      error
+}
+
+type serviceCarrier struct {
+	net.Conn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closeOnce   sync.Once
+	closeErr    error
+	handlerMu   sync.Mutex
+	handlerCond *sync.Cond
+	stopping    bool
+	handlers    int
+}
+
+func (c *serviceCarrier) Close() error {
+	c.closeOnce.Do(func() {
+		c.handlerMu.Lock()
+		c.stopping = true
+		c.handlerMu.Unlock()
+		// Cancel stream work before physical close makes the protocol loops exit
+		// and NewConnection starts waiting for handlers.
+		c.cancel()
+		c.closeErr = c.Conn.Close()
+	})
+	return c.closeErr
+}
+
+func (c *serviceCarrier) beginHandler() bool {
+	c.handlerMu.Lock()
+	defer c.handlerMu.Unlock()
+	if c.stopping {
+		return false
+	}
+	c.handlers++
+	return true
+}
+
+func (c *serviceCarrier) finishHandler() {
+	c.handlerMu.Lock()
+	c.handlers--
+	c.handlerCond.Broadcast()
+	c.handlerMu.Unlock()
+}
+
+func (c *serviceCarrier) waitHandlers() {
+	c.handlerMu.Lock()
+	for c.handlers != 0 {
+		c.handlerCond.Wait()
+	}
+	c.handlerMu.Unlock()
+}
+
+func (s *Service) initLifecycle() {
+	s.lifecycleOnce.Do(func() {
+		s.lifecycleCond = sync.NewCond(&s.lifecycleMu)
+		s.carriers = make(map[*serviceCarrier]struct{})
+		s.closeDone = make(chan struct{})
+	})
+}
+
+func (s *Service) admitCarrier(ctx context.Context, connection net.Conn) (*serviceCarrier, error) {
+	s.initLifecycle()
+	s.lifecycleMu.Lock()
+	if s.closing {
+		s.lifecycleMu.Unlock()
+		closeErr := abnormalCloseError(connection.Close())
+		return nil, errors.Join(net.ErrClosed, closeErr)
+	}
+	carrierCtx, cancel := context.WithCancel(ctx)
+	carrier := &serviceCarrier{Conn: connection, ctx: carrierCtx, cancel: cancel}
+	carrier.handlerCond = sync.NewCond(&carrier.handlerMu)
+	s.carriers[carrier] = struct{}{}
+	s.lifecycleMu.Unlock()
+	return carrier, nil
+}
+
+func (s *Service) releaseCarrier(carrier *serviceCarrier) {
+	_ = carrier.Close()
+	carrier.waitHandlers()
+	s.lifecycleMu.Lock()
+	delete(s.carriers, carrier)
+	s.lifecycleCond.Broadcast()
+	s.lifecycleMu.Unlock()
+}
+
+func abnormalCloseError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var abnormal []error
+		for _, child := range joined.Unwrap() {
+			if child = abnormalCloseError(child); child != nil {
+				abnormal = append(abnormal, child)
+			}
+		}
+		return errors.Join(abnormal...)
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		child := wrapped.Unwrap()
+		filtered := abnormalCloseError(child)
+		if filtered == nil {
+			return nil
+		}
+		if errors.Is(child, net.ErrClosed) || errors.Is(child, io.ErrClosedPipe) {
+			return filtered
+		}
+		return err
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return nil
+	}
+	return err
+}
+
+// Close stops carrier admission, interrupts every admitted carrier, and waits
+// until every NewConnection call has reached terminal completion.
+func (s *Service) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.initLifecycle()
+	s.lifecycleMu.Lock()
+	if s.closing {
+		done := s.closeDone
+		s.lifecycleMu.Unlock()
+		<-done
+		return s.closeErr
+	}
+	s.closing = true
+	carriers := make([]*serviceCarrier, 0, len(s.carriers))
+	for carrier := range s.carriers {
+		carriers = append(carriers, carrier)
+	}
+	s.lifecycleMu.Unlock()
+
+	closeResults := make(chan error, len(carriers))
+	for _, carrier := range carriers {
+		go func() { closeResults <- abnormalCloseError(carrier.Close()) }()
+	}
+	var closeErrors []error
+	for range carriers {
+		if err := <-closeResults; err != nil {
+			closeErrors = append(closeErrors, err)
+		}
+	}
+
+	s.lifecycleMu.Lock()
+	for len(s.carriers) != 0 {
+		s.lifecycleCond.Wait()
+	}
+	s.closeErr = errors.Join(closeErrors...)
+	close(s.closeDone)
+	s.lifecycleMu.Unlock()
+	return s.closeErr
 }
 
 func (s *Service) pendingHandshakeSlots() chan struct{} {
@@ -61,18 +225,23 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		return errors.New("SMUX carrier connection is required")
 	}
 	if s == nil || s.dispatcher == nil {
+		_ = connection.Close()
 		return errors.New("SMUX dispatcher is required")
 	}
-	rawConnection := connection
-	watchDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = rawConnection.Close()
-		case <-watchDone:
+	parentCtx := ctx
+	carrier, err := s.admitCarrier(parentCtx, connection)
+	if err != nil {
+		return err
+	}
+	defer s.releaseCarrier(carrier)
+	connection = carrier
+	ctx = carrier.ctx
+	stopParentClose := context.AfterFunc(parentCtx, func() { _ = carrier.Close() })
+	defer func() {
+		if !stopParentClose() {
+			_ = carrier.Close()
 		}
 	}()
-	defer close(watchDone)
 
 	deadline := time.Now().Add(s.carrierHandshakeTimeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
@@ -96,8 +265,9 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		presence = s.presenceProvider.SnapshotPresence(ctx)
 	}
 	brutal := newServerBrutalController(ctx, s.setBrutalOptions)
+	brutal.closeCarrier = carrier.Close
 	if request.Protocol == protocolH2MUX {
-		return s.serveH2Mux(ctx, connection, brutal, presence)
+		return s.serveH2Mux(ctx, connection, carrier, brutal, presence)
 	}
 	config := mplsmux.DefaultConfig()
 	config.KeepAliveDisabled = true
@@ -107,11 +277,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	}
 
 	handshakeSlots := s.pendingHandshakeSlots()
-	var handlers sync.WaitGroup
-	defer func() {
-		_ = session.Close()
-		handlers.Wait()
-	}()
+	defer func() { _ = session.Close() }()
 	for {
 		stream, acceptErr := session.AcceptStream()
 		if acceptErr != nil {
@@ -122,9 +288,13 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		}
 		select {
 		case handshakeSlots <- struct{}{}:
-			handlers.Add(1)
+			if !carrier.beginHandler() {
+				<-handshakeSlots
+				_ = stream.Abort()
+				continue
+			}
 			go func() {
-				defer handlers.Done()
+				defer carrier.finishHandler()
 				s.handleStream(ctx, stream, handshakeSlots, brutal, presence)
 			}()
 		case <-ctx.Done():
@@ -152,8 +322,8 @@ func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSl
 			return
 		}
 		closeCarrier, _ := brutal.handle(ctx, stream, s.streamDeadline(ctx))
-		if closeCarrier && brutal.physical != nil {
-			_ = brutal.physical.Close()
+		if closeCarrier && brutal.closeCarrier != nil {
+			_ = brutal.closeCarrier()
 		}
 		return
 	}

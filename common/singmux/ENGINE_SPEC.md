@@ -52,3 +52,40 @@ Session shutdown closes and interrupts the carrier, then waits for the read,
 write, and optional keepalive loops to exit before `Close` returns. A caller
 may release pooled carrier adapters after `Close` without a background SMUX
 loop retaining or reading them.
+
+## Server service lifecycle
+
+`singmux.Service` is the sole lifecycle owner for every admitted SMUX and
+H2MUX physical carrier. Admission and the transition to shutdown are
+linearized under one private service lock. Once shutdown starts, a new
+`NewConnection` call closes its transferred carrier and fails with
+`net.ErrClosed` without reading a handshake.
+
+`Service.Close` first stops carrier admission. For every carrier admitted
+before that point it stops stream-handler admission, cancels the carrier and
+stream contexts, and promptly starts the physical `Close`; one blocked carrier
+`Close` does not delay interruption of another carrier. It waits for every
+physical close call and then for the carrier registry's terminal barrier, so
+every admitted `NewConnection` has returned.
+
+For MPL SMUX, `NewConnection` owns the serving session and joins every admitted
+application handler before leaving the registry. Thus each admitted handler's
+stream cleanup, presence lease, buffer and credit ownership is terminal before
+`Service.Close` returns. A cooperative dispatcher must return after its context
+is canceled; otherwise `Service.Close` continues waiting rather than reporting
+false completion.
+
+For H2MUX, the observable transport lifecycle seam is `http2.Server.ServeConn`.
+`NewConnection` waits for `ServeConn` to return and joins every wrapper
+invocation that successfully entered handler admission. A wrapper invocation
+that arrives after its carrier starts stopping rejects before dispatcher,
+presence lease, stream buffer, or handler ownership is acquired. Private
+`x/net/http2` scheduler goroutines outside `ServeConn` and admitted wrapper
+invocations are not owned or claimed as joined by `Service`.
+
+Concurrent calls to `Close` are safe and observe the same terminal result.
+
+`common/mux.Server` coordinates shutdown but does not own a second carrier
+registry. Its `Close` delegates to both `singmux.Service` and the legacy mux
+runtime and preserves errors from both paths. These lifecycle rules do not
+change SMUX or H2MUX wire bytes.

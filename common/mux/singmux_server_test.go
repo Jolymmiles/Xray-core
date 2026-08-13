@@ -2,8 +2,10 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -76,6 +78,169 @@ func newSMUXTestClient(t *testing.T, server *Server) *singmux.Client {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+type handshakeObservedConn struct {
+	net.Conn
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *handshakeObservedConn) Read(payload []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.Conn.Read(payload)
+}
+
+type gatedServerHandshakeConn struct {
+	net.Conn
+	started      chan struct{}
+	readReturned chan struct{}
+	allowReturn  chan struct{}
+	startOnce    sync.Once
+	returnOnce   sync.Once
+}
+
+func (c *gatedServerHandshakeConn) Read(payload []byte) (int, error) {
+	c.startOnce.Do(func() { close(c.started) })
+	n, err := c.Conn.Read(payload)
+	c.returnOnce.Do(func() { close(c.readReturned) })
+	<-c.allowReturn
+	return n, err
+}
+
+type abnormalCloseServerConn struct {
+	net.Conn
+	closeErr error
+	started  chan struct{}
+	once     sync.Once
+}
+
+func (c *abnormalCloseServerConn) Read(payload []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.Conn.Read(payload)
+}
+
+func (c *abnormalCloseServerConn) Close() error {
+	_ = c.Conn.Close()
+	return errors.Join(net.ErrClosed, c.closeErr)
+}
+
+func TestServerClosePreservesSMUXErrorIdentity(t *testing.T) {
+	server := newServer(&smuxEchoDispatcher{target: make(chan X.Destination, 1)})
+	clientConnection, serverConnection := net.Pipe()
+	closeErr := errors.New("flush failed")
+	carrier := &abnormalCloseServerConn{
+		Conn:     serverConnection,
+		closeErr: closeErr,
+		started:  make(chan struct{}),
+	}
+	connectionResult := make(chan error, 1)
+	go func() { connectionResult <- server.smux.NewConnection(context.Background(), carrier) }()
+	t.Cleanup(func() {
+		_ = clientConnection.Close()
+		_ = serverConnection.Close()
+		_ = server.Close()
+	})
+
+	select {
+	case <-carrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("SMUX carrier handshake did not start")
+	}
+	if err := server.Close(); !errors.Is(err, closeErr) {
+		t.Fatalf("Server.Close error = %v, want errors.Is(_, %v)", err, closeErr)
+	}
+	select {
+	case <-connectionResult:
+	case <-time.After(time.Second):
+		t.Fatal("SMUX NewConnection did not complete")
+	}
+}
+
+func TestServerCloseStartsBothOwnersBeforeWaiting(t *testing.T) {
+	server := newServer(&smuxEchoDispatcher{target: make(chan X.Destination, 1)})
+	clientConnection, serverConnection := net.Pipe()
+	carrier := &gatedServerHandshakeConn{
+		Conn:         serverConnection,
+		started:      make(chan struct{}),
+		readReturned: make(chan struct{}),
+		allowReturn:  make(chan struct{}),
+	}
+	connectionResult := make(chan error, 1)
+	go func() { connectionResult <- server.smux.NewConnection(context.Background(), carrier) }()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(carrier.allowReturn) }) }
+	t.Cleanup(func() {
+		release()
+		_ = clientConnection.Close()
+		_ = serverConnection.Close()
+		_ = server.Close()
+	})
+
+	select {
+	case <-carrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("SMUX carrier handshake did not start")
+	}
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- server.Close() }()
+	select {
+	case <-carrier.readReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Server.Close did not interrupt the SMUX handshake")
+	}
+	_, finishTransaction, ok := server.runtime.beginTransaction(context.Background())
+	if ok {
+		finishTransaction()
+		t.Fatal("Server.Close left Runtime admission open while SMUX shutdown was blocked")
+	}
+
+	release()
+	select {
+	case <-connectionResult:
+	case <-time.After(time.Second):
+		t.Fatal("SMUX NewConnection did not complete")
+	}
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Server.Close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Server.Close did not complete")
+	}
+}
+
+func TestServerCloseShutsDownSMUXServiceAndLegacyRuntime(t *testing.T) {
+	server := newServer(&smuxEchoDispatcher{target: make(chan X.Destination, 1)})
+	clientConnection, serverConnection := net.Pipe()
+	carrier := &handshakeObservedConn{Conn: serverConnection, started: make(chan struct{})}
+	connectionResult := make(chan error, 1)
+	go func() { connectionResult <- server.smux.NewConnection(context.Background(), carrier) }()
+	t.Cleanup(func() {
+		_ = clientConnection.Close()
+		_ = serverConnection.Close()
+		_ = server.Close()
+	})
+
+	select {
+	case <-carrier.started:
+	case <-time.After(time.Second):
+		t.Fatal("SMUX carrier handshake did not start")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("Server.Close error = %v", err)
+	}
+	select {
+	case <-connectionResult:
+	case <-time.After(time.Second):
+		t.Fatal("SMUX NewConnection did not complete after Server.Close")
+	}
+	_, finishTransaction, ok := server.runtime.beginTransaction(context.Background())
+	if ok {
+		finishTransaction()
+		t.Fatal("Server.Close left the legacy Runtime open")
+	}
 }
 
 func TestServerExposesUnderlyingPresenceProvider(t *testing.T) {

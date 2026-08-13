@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
 	"sync"
 	"time"
@@ -92,7 +93,6 @@ func (s *Server) dispatchSMUX(ctx context.Context) *transport.Link {
 		cnc.ConnectionOutputMulti(uplinkReader),
 	)
 	go func() {
-		defer conn.Close()
 		if err := s.smux.NewConnection(ctx, conn); err != nil && errors.Cause(err) != io.EOF {
 			errors.LogInfoInner(ctx, err, "failed to handle SMUX connection")
 		}
@@ -107,7 +107,6 @@ func (s *Server) DispatchLink(ctx context.Context, dest net.Destination, link *t
 			cnc.ConnectionInputMulti(link.Writer),
 			cnc.ConnectionOutputMulti(link.Reader),
 		)
-		defer conn.Close()
 		return s.smux.NewConnection(ctx, conn)
 	}
 	if dest.Address != muxCoolAddress {
@@ -134,7 +133,10 @@ func (s *Server) Start() error {
 
 // Close implements common.Closable.
 func (s *Server) Close() error {
-	return s.runtime.Close()
+	smuxResult := make(chan error, 1)
+	go func() { smuxResult <- s.smux.Close() }()
+	runtimeErr := s.runtime.Close()
+	return stderrors.Join(<-smuxResult, runtimeErr)
 }
 
 type ServerWorker struct {
