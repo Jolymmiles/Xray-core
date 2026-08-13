@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	appstats "github.com/xtls/xray-core/app/stats"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/features/policy"
@@ -88,7 +89,10 @@ func formatPresenceIP(ip netip.Addr) string {
 }
 
 func exactMapFromOnlineMap(onlineMap stats.OnlineMap) exactOnlineMap {
-	exactMap, _ := onlineMap.(exactOnlineMap)
+	exactMap, ok := onlineMap.(*appstats.OnlineMap)
+	if !ok {
+		return nil
+	}
 	return exactMap
 }
 

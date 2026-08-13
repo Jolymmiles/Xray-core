@@ -328,6 +328,9 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 			buf.ReleaseMulti(mb)
 			return errors.New("failed to attach XUDP flow").Base(err)
 		}
+		// Runtime shutdown joins publication, then closes the flow to unblock any
+		// post-commit backend write. The deferred call remains the error-path guard.
+		finishTransaction()
 		context.AfterFunc(xudpCtx, func() { _ = owner.Close(false) })
 		if err := owner.output.WriteMultiBuffer(mb); err != nil {
 			_ = owner.Close(false)

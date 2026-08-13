@@ -2,7 +2,7 @@
 
 The built-in stats manager exposes `user>>><email>>>online` as a refcounted set of unique IP strings. The previous dispatcher called `AddIP` and attached `RemoveIP` to the request context. That approximation was acceptable only for a direct logical request. SMUX, H2MUX, legacy Mux, XUDP, and reverse RVS have independent logical lifetimes inside longer-lived carriers, so context/carrier ownership leaves stale entries, cannot transfer a rebind, or counts an idle transport as online.
 
-The implementation base is current `main` at `v26.8.15` (`816ae651`). The experiments `0ee156e7` and `a65687a3` are not ancestors and are prior art only. The change must integrate with the current in-tree `common/singmux` stack, Brutal controls, H2MUX, pooled inbound contexts, reverse workers, and WireGuard device. StatsService/CLI results, protobuf/config schemas, and wire formats are compatibility boundaries.
+The original pre-change implementation base is `v26.8.15` (`816ae651`), which remains the immutable compatibility peer. Canonical continuation work now starts from `v26.8.18` (`90a94762`) because `v26.8.16` through `v26.8.18` were published before completion. The experiments `0ee156e7` and `a65687a3` are not ancestors and are prior art only. The change must integrate with the current in-tree `common/singmux` stack, Brutal controls, H2MUX, pooled inbound contexts, reverse workers, and WireGuard device. StatsService/CLI results, protobuf/config schemas, and wire formats are compatibility boundaries.
 
 The principal stakeholder is the Xray server operator relying on exact Remnawave/StatsService online state under multiplexing, rebind, roaming, and shutdown. Linux/amd64 is the release and performance target; Darwin is a development platform only.
 
@@ -15,7 +15,7 @@ The principal stakeholder is the Xray server operator relying on exact Remnawave
 - Keep idle carriers, controls, heartbeats, keepalives, cached XUDP backends, and unauthenticated synthetic paths offline.
 - Preserve traffic accounting, public StatsService/CLI behavior, protocol bytes, configuration, and old/new interoperability.
 - Make duplicate admission, late callbacks, rebind/roam, and shutdown deterministic and race-safe.
-- Release the complete migration as `v26.8.16` only after all unit, race, checkptr, vet, interop, stress, performance, and Linux gates pass.
+- Release the complete migration as `v26.8.19` only after all unit, race, checkptr, vet, interop, stress, performance, and Linux gates pass; `v26.8.16` through `v26.8.18` were published before completion and are not reusable.
 
 **Non-Goals:**
 
@@ -108,7 +108,7 @@ An XUDP flow owns backend I/O and bounded pumps, not presence. Its current attac
 
 Every queued write/read/expiry/close callback captures flow token, epoch, and attachment token; mismatches may clean only callback-owned data. Detach immediately removes presence and enters cached state. Expiry may evict only the same detached generation. Runtime close drains transactions, attachments, flows, pumps, buffers, and scheduler before completion.
 
-`context.WithoutCancel` ownership and cached-backend presence were rejected because backend reuse is not evidence of an online logical client.
+A parent-derived `context.WithoutCancel` backend owner and cached-backend presence were rejected because backend reuse is not evidence of an online logical client. The runtime instead creates an explicit flow-owned cancellation context, copies only dispatch values through a narrow context wrapper, keeps prepublication cancellation bridged to the transaction, and transfers cancellation ownership to the published flow.
 
 ### 7. Claim reverse carriers at route time
 
@@ -144,7 +144,7 @@ The release candidate must pass format, full tests, vet, checkptr, full race, de
 - **[Raw peer propagation is missed by a virtual transport]** -> The transport matrix has explicit tests for every built-in inbound; absence becomes visible no-op telemetry and cannot silently trust rewritten metadata.
 - **[XUDP rebind or WireGuard roam fails after handoff]** -> Commit is irreversible; close the new owner and never resurrect old presence. Precommit tests prove old state remains untouched.
 - **[Lifecycle bookkeeping adds hot-path overhead]** -> Keep the owner interface small, avoid new dependencies/goroutine-per-packet work, use one scheduler per runtime, and enforce same-runner 10% throughput/latency budgets.
-- **[Mixed releases observe different online semantics]** -> Wire/config remains compatible and exactness is required only on a new server. Rollback replaces the whole candidate binary/container with `v26.8.15`.
+- **[Mixed releases observe different online semantics]** -> Wire/config remains compatible and exactness is required only on a new server. `v26.8.15` remains the immutable pre-change compatibility peer; rollback of the continuation replaces the whole candidate binary/container with current immutable `v26.8.18`.
 - **[Administrative map replacement hides a prepared old generation]** -> Leases pin exact instances for safe release, but unregister remains an explicit visibility reset; no hidden pinning semantics are added.
 
 ## Migration Plan
@@ -157,9 +157,9 @@ The release candidate must pass format, full tests, vet, checkptr, full race, de
 6. Migrate reverse RVS data slots and owner drains.
 7. Add authenticated WireGuard endpoint binding and batch flow handoff.
 8. Add cross-path StatsService, version-skew, third-party interop, soak/performance, CI, and legacy-path deletion.
-9. Merge the reviewed feature branch with latest origin/upstream `main`, rerun all release gates on canonical `main`, bump to `26.8.16`, push `main`, create/push the annotated tag, publish the canonical GitHub release, and wait for the official Linux asset matrix.
+9. Continue from canonical `main` at `v26.8.18`, merge latest `origin/main`, latest `upstream/main`, and the reviewed migration, rerun all release gates, bump and verify version `26.8.19`, push `main`, create/push the annotated `v26.8.19` tag, publish the canonical GitHub release, and wait for the official Linux asset matrix. If upstream first occupies the candidate version, merge that upstream release before selecting a new unused higher version.
 
-There is no data/config migration and no feature flag. Canary uses the exact release artifact in a mixed `v26.8.15` topology. Any pre-publication failure blocks the tag and rolls the canary back to `v26.8.15`. Published tags/assets are never replaced.
+There is no data/config migration and no feature flag. Compatibility canaries use the exact candidate artifact with immutable pre-change `v26.8.15`; continuation rollback uses the whole current `v26.8.18` artifact. Any pre-publication failure blocks `v26.8.19`. Published tags/assets are never moved or replaced.
 
 ## Open Questions
 

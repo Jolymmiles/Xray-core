@@ -102,10 +102,10 @@
 - [ ] 10.5 Build and inspect the complete release platform matrix with release flags; smoke `xray version`, configuration load, checksums, `file`, and `go version -m` for the Linux/amd64 artifact.
 - [ ] 10.6 Review every OpenSpec requirement/task against authoritative tests, source searches, command logs, interop results, and artifacts; leave no unchecked or indirect completion claim.
 
-## 11. Stable v26.8.16 release
+## 11. Stable v26.8.19 continuation release
 
-- [ ] 11.1 Fetch latest origin/upstream main and tags, resolve version collisions, merge the reviewed feature branch into canonical `main`, and rerun all release gates on the exact merged commit.
-- [ ] 11.2 Bump `core/core.go` to `26.8.16`, verify `core.Version()`, commit the release-only change, and rerun version/build smoke tests.
-- [ ] 11.3 Push canonical `main`, create and push annotated tag `v26.8.16`, and verify remote `main`, tag, and release workflow `head_sha` resolve to the same commit.
-- [ ] 11.4 Publish the canonical GitHub Release `Xray-core v26.8.16` with English notes and wait until every official workflow matrix job is green and all expected ZIP/digest assets are present.
-- [ ] 11.5 Archive this OpenSpec with the immutable release tag/result, confirm rollback remains whole-binary `v26.8.15` with unchanged config, and mark the migration complete only after the release audit passes.
+- [ ] 11.1 Fetch latest origin/upstream main and tags, retain immutable `v26.8.15` as the pre-change compatibility peer and `v26.8.18` as the continuation rollback boundary, record that `v26.8.16` through `v26.8.18` are published and unavailable, merge latest `origin/main` and `upstream/main` plus the reviewed migration into canonical `main`, and rerun all release gates on the exact merged commit.
+- [ ] 11.2 Bump `core/core.go` to `26.8.19`, verify `core.Version()`, commit the release-only change, and rerun version/build smoke tests. If upstream occupies `v26.8.19`, first merge that upstream release into the combined history, then choose a new unused higher version and update this OpenSpec before tagging.
+- [ ] 11.3 Push canonical `main`, create and push annotated tag `v26.8.19`, and verify remote `main`, tag, and release workflow `head_sha` resolve to the same commit. Never move a published tag.
+- [ ] 11.4 Publish the canonical GitHub Release `Xray-core v26.8.19` only from the verified canonical tag, with English notes, and wait until every official workflow matrix job is green and all expected ZIP/digest assets are present.
+- [ ] 11.5 Archive this OpenSpec with the immutable release tag/result, confirm `v26.8.15` compatibility and whole-binary `v26.8.18` continuation rollback with unchanged config, and mark the migration complete only after the release audit passes.

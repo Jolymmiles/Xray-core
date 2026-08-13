@@ -1,7 +1,15 @@
 package reverse
 
 import (
+	"context"
+	"io"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/signal"
+	"github.com/xtls/xray-core/common/task"
 
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/transport"
@@ -27,6 +35,104 @@ func TestPortalCloseWaitsForAdmittedHandler(t *testing.T) {
 	<-closed
 	if portal.beginHandle() {
 		t.Fatal("closed portal admitted a new handler")
+	}
+}
+
+func TestPortalCloseStopsCarrierBeforeJoiningHandler(t *testing.T) {
+	reader, writer := pipe.New(pipe.WithoutSizeLimit())
+	client, err := mux.NewClientWorker(transport.Link{Reader: reader, Writer: writer}, mux.ClientStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picker, err := NewStaticMuxPicker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	picker.AddWorker(&PortalWorker{client: client})
+	portal := &Portal{state: portalOpen, picker: picker}
+	if !portal.beginHandle() {
+		t.Fatal("open portal rejected carrier handler")
+	}
+	handlerStarted := make(chan struct{})
+	handlerDone := make(chan struct{})
+	go func() {
+		close(handlerStarted)
+		<-client.WaitClosed()
+		portal.endHandle()
+		close(handlerDone)
+	}()
+	<-handlerStarted
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- portal.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		_ = client.Close()
+		<-closeDone
+		t.Fatal("portal close waited for carrier handler before stopping its worker")
+	}
+	<-handlerDone
+}
+
+type blockingPortalHeartbeatWriter struct {
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingPortalHeartbeatWriter) WriteMultiBuffer(payload buf.MultiBuffer) error {
+	buf.ReleaseMulti(payload)
+	w.once.Do(func() { close(w.started) })
+	<-w.closed
+	return io.ErrClosedPipe
+}
+
+func (w *blockingPortalHeartbeatWriter) Close() error {
+	select {
+	case <-w.closed:
+	default:
+		close(w.closed)
+	}
+	return nil
+}
+
+func TestPortalWorkerCloseUnblocksAndJoinsHeartbeat(t *testing.T) {
+	reader, writer := pipe.New(pipe.WithoutSizeLimit())
+	client, err := mux.NewClientWorker(transport.Link{Reader: reader, Writer: writer}, mux.ClientStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeatWriter := &blockingPortalHeartbeatWriter{started: make(chan struct{}), closed: make(chan struct{})}
+	worker := &PortalWorker{
+		client: client,
+		writer: heartbeatWriter,
+		reader: reader,
+		timer:  signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour),
+	}
+	worker.control = &task.Periodic{Execute: worker.heartbeat, Interval: time.Hour}
+	heartbeatDone := make(chan error, 1)
+	go func() { heartbeatDone <- worker.heartbeat() }()
+	<-heartbeatWriter.started
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- worker.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PortalWorker.Close did not unblock and join heartbeat")
+	}
+	if err := <-heartbeatDone; err == nil {
+		t.Fatal("blocked heartbeat succeeded after worker close")
+	}
+	if err := worker.heartbeat(); err == nil {
+		t.Fatal("worker admitted heartbeat after close")
 	}
 }
 

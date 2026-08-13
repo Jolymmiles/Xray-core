@@ -99,6 +99,18 @@ type xudpRuntimeKey struct {
 	worker    uint64
 }
 
+// xudpBackendContext preserves dispatch values while giving backend work an
+// explicit flow-owned cancellation lifetime. Parent cancellation is bridged
+// only until the candidate flow is published.
+type xudpBackendContext struct {
+	context.Context
+	values context.Context
+}
+
+func (c *xudpBackendContext) Value(key any) any {
+	return c.values.Value(key)
+}
+
 func (r *Runtime) xudpKey(scope session.PresenceScope, worker uint64, globalID [8]byte) xudpRuntimeKey {
 	subject := scope.Subject()
 	key := xudpRuntimeKey{globalID: globalID}
@@ -223,18 +235,19 @@ func (r *Runtime) Close() error {
 }
 
 type xudpFlow struct {
-	runtime    *Runtime
-	key        xudpRuntimeKey
-	target     xudpDestination
-	backend    *transport.Link
-	mu         sync.Mutex
-	cond       *sync.Cond
-	attachment *xudpAttachment
-	nextEpoch  uint64
-	rebinding  bool
-	expires    time.Time
-	closed     bool
-	closeOnce  sync.Once
+	runtime       *Runtime
+	key           xudpRuntimeKey
+	target        xudpDestination
+	backend       *transport.Link
+	backendCancel context.CancelFunc
+	mu            sync.Mutex
+	cond          *sync.Cond
+	attachment    *xudpAttachment
+	nextEpoch     uint64
+	rebinding     bool
+	expires       time.Time
+	closed        bool
+	closeOnce     sync.Once
 }
 
 type xudpAttachment struct {
@@ -266,20 +279,29 @@ func (r *Runtime) xudpFlow(ctx context.Context, key xudpRuntimeKey, target net.D
 	}
 	r.mu.Unlock()
 
-	backendCtx := session.ContextWithPresenceMode(ctx, session.PresenceModeUntracked)
+	backendLifecycle, backendCancel := context.WithCancel(context.Background())
+	backendBase := &xudpBackendContext{Context: backendLifecycle, values: ctx}
+	backendCtx := session.ContextWithPresenceMode(backendBase, session.PresenceModeUntracked)
+	stopParentCancel := context.AfterFunc(ctx, backendCancel)
 	backend, err := dispatcher.Dispatch(backendCtx, target)
 	if err != nil {
+		stopParentCancel()
+		backendCancel()
 		return nil, err
 	}
 	r.mu.Lock()
 	if r.closing {
 		r.mu.Unlock()
+		stopParentCancel()
+		backendCancel()
 		common.Interrupt(backend.Reader)
 		common.Close(backend.Writer)
 		return nil, errors.New("mux runtime is closing")
 	}
 	if existing := r.flows[key]; existing != nil {
 		r.mu.Unlock()
+		stopParentCancel()
+		backendCancel()
 		common.Interrupt(backend.Reader)
 		common.Close(backend.Writer)
 		if !existing.target.matches(target) {
@@ -287,7 +309,17 @@ func (r *Runtime) xudpFlow(ctx context.Context, key xudpRuntimeKey, target net.D
 		}
 		return existing, nil
 	}
+	// Dispatch remains transaction-cancelable until this ownership transfer.
+	// Once the callback is stopped, the flow owns backend cancellation.
+	if !stopParentCancel() {
+		r.mu.Unlock()
+		backendCancel()
+		common.Interrupt(backend.Reader)
+		common.Close(backend.Writer)
+		return nil, errors.New("XUDP backend dispatch canceled")
+	}
 	candidate := newXUDPFlow(r, key, target, backend)
+	candidate.backendCancel = backendCancel
 	r.flows[key] = candidate
 	r.mu.Unlock()
 	r.startScheduler()
@@ -336,6 +368,7 @@ func (f *xudpFlow) attach(admission *sessionAdmission, scope session.PresenceSco
 	if f.closed || owner.terminated.Load() {
 		f.rebinding = false
 		f.mu.Unlock()
+		admission.completeCommit()
 		_ = owner.Close(false)
 		return nil, errors.New("XUDP flow closed during attachment")
 	}
@@ -384,6 +417,9 @@ func (f *xudpFlow) close() {
 		f.mu.Unlock()
 		if attachment != nil {
 			_ = attachment.session.Close(false)
+		}
+		if f.backendCancel != nil {
+			f.backendCancel()
 		}
 		common.Interrupt(f.backend.Reader)
 		common.Close(f.backend.Writer)
