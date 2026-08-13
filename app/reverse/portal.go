@@ -83,11 +83,11 @@ func (p *Portal) Close() error {
 		if p.ohm != nil {
 			removeErr = p.ohm.RemoveHandler(context.Background(), p.tag)
 		}
-		p.handlers.Wait()
 		var pickerErr error
 		if p.picker != nil {
 			pickerErr = p.picker.Close()
 		}
+		p.handlers.Wait()
 		p.lifecycleMu.Lock()
 		p.state = portalClosed
 		p.lifecycleMu.Unlock()
@@ -213,22 +213,25 @@ func NewStaticMuxPicker() (*StaticMuxPicker, error) {
 
 func (p *StaticMuxPicker) cleanup() error {
 	p.access.Lock()
-	defer p.access.Unlock()
-
 	var activeWorkers []*PortalWorker
-	for _, w := range p.workers {
-		if !w.Closed() {
-			activeWorkers = append(activeWorkers, w)
+	var closedWorkers []*PortalWorker
+	for _, worker := range p.workers {
+		if worker.Closed() {
+			closedWorkers = append(closedWorkers, worker)
 		} else {
-			_ = w.Close()
+			activeWorkers = append(activeWorkers, worker)
 		}
 	}
-
 	if len(activeWorkers) != len(p.workers) {
 		p.workers = activeWorkers
 	}
+	p.access.Unlock()
 
-	return nil
+	var result error
+	for _, worker := range closedWorkers {
+		result = errors.Combine(result, worker.Close())
+	}
+	return result
 }
 
 func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
@@ -304,15 +307,18 @@ func (p *StaticMuxPicker) Close() error {
 }
 
 type PortalWorker struct {
-	mu        sync.Mutex
-	client    *mux.ClientWorker
-	control   *task.Periodic
-	writer    buf.Writer
-	reader    buf.Reader
-	draining  bool
-	counter   uint32
-	timer     *signal.ActivityTimer
-	closeOnce sync.Once
+	mu               sync.Mutex
+	client           *mux.ClientWorker
+	control          *task.Periodic
+	writer           buf.Writer
+	reader           buf.Reader
+	draining         bool
+	counter          uint32
+	timer            *signal.ActivityTimer
+	closeOnce        sync.Once
+	heartbeatMu      sync.Mutex
+	heartbeatClosing bool
+	heartbeats       sync.WaitGroup
 }
 
 func NewPortalWorker(client *mux.ClientWorker) (*PortalWorker, error) {
@@ -350,6 +356,14 @@ func NewPortalWorker(client *mux.ClientWorker) (*PortalWorker, error) {
 }
 
 func (w *PortalWorker) heartbeat() error {
+	w.heartbeatMu.Lock()
+	if w.heartbeatClosing {
+		w.heartbeatMu.Unlock()
+		return errors.New("portal worker is closing")
+	}
+	w.heartbeats.Add(1)
+	w.heartbeatMu.Unlock()
+	defer w.heartbeats.Done()
 	if w.Closed() {
 		return errors.New("client worker stopped")
 	}
@@ -412,6 +426,9 @@ func (w *PortalWorker) Close() error {
 		if w.control != nil {
 			result = w.control.Close()
 		}
+		w.heartbeatMu.Lock()
+		w.heartbeatClosing = true
+		w.heartbeatMu.Unlock()
 		if w.timer != nil {
 			w.timer.SetTimeout(0)
 		}
@@ -420,7 +437,9 @@ func (w *PortalWorker) Close() error {
 		w.writer, w.reader = nil, nil
 		w.draining = true
 		w.mu.Unlock()
+		// Close captured I/O before joining a heartbeat that may be blocked in it.
 		result = errors.Combine(result, common.Close(writer), common.Interrupt(reader), w.client.Close())
+		w.heartbeats.Wait()
 	})
 	return result
 }

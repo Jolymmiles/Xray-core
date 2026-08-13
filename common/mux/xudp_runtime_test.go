@@ -287,6 +287,184 @@ func TestXUDPRuntimeCloseWaitsForAuthorizedRebindPublication(t *testing.T) {
 	}
 }
 
+func TestXUDPRuntimeCloseCancelsBlockedBackendDispatch(t *testing.T) {
+	runtime := newRuntime()
+	txCtx, finishTransaction, ok := runtime.beginTransaction(context.Background())
+	if !ok {
+		t.Fatal("runtime rejected backend dispatch transaction")
+	}
+	dispatcher := &blockingXUDPDispatcher{started: make(chan struct{})}
+	dispatchDone := make(chan error, 1)
+	go func() {
+		defer finishTransaction()
+		_, err := runtime.xudpFlow(txCtx, xudpRuntimeKey{globalID: [8]byte{45}}, X.UDPDestination(X.DomainAddress("example.com"), 53), dispatcher)
+		dispatchDone <- err
+	}()
+	<-dispatcher.started
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- runtime.Close() }()
+	select {
+	case err := <-dispatchDone:
+		if err == nil {
+			t.Fatal("blocked backend dispatch succeeded during runtime close")
+		}
+	case <-time.After(100 * time.Millisecond):
+		dispatcher.release()
+		<-dispatchDone
+		<-closeDone
+		t.Fatal("runtime close did not cancel blocked backend dispatch")
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type blockingXUDPDispatcher struct {
+	started        chan struct{}
+	once           sync.Once
+	releaseChannel chan struct{}
+}
+
+func (d *blockingXUDPDispatcher) Dispatch(ctx context.Context, _ X.Destination) (*transport.Link, error) {
+	d.once.Do(func() {
+		d.releaseChannel = make(chan struct{})
+		close(d.started)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-d.releaseChannel:
+		return nil, io.ErrClosedPipe
+	}
+}
+func (d *blockingXUDPDispatcher) release() { close(d.releaseChannel) }
+func (*blockingXUDPDispatcher) DispatchLink(context.Context, X.Destination, *transport.Link) error {
+	return io.ErrClosedPipe
+}
+func (*blockingXUDPDispatcher) Start() error      { return nil }
+func (*blockingXUDPDispatcher) Close() error      { return nil }
+func (*blockingXUDPDispatcher) Type() interface{} { return routing.DispatcherType() }
+
+func TestXUDPBackendContextOutlivesAttachmentPublication(t *testing.T) {
+	runtime := newRuntime()
+	tracker := newXUDPPresenceTracker()
+	contextObserved := make(chan context.Context, 1)
+	dispatcher := &xudpRuntimeDispatcher{
+		provider:        &xudpRuntimeProvider{tracker: tracker, principal: [32]byte{43}, reusable: true},
+		modes:           make(chan session.PresenceMode, 4),
+		backends:        make(chan *transport.Link, 4),
+		contextObserved: contextObserved,
+	}
+	worker, peer := startXUDPWorker(t, runtime, dispatcher, "192.0.2.10")
+	defer worker.Close()
+	_ = sendXUDPAttachment(t, peer, 1, X.UDPDestination(X.DomainAddress("example.com"), 53), [8]byte{44}, "active")
+	backend := waitXUDPBackend(t, dispatcher)
+	assertXUDPPayload(t, backend.Reader, "active")
+	backendCtx := <-contextObserved
+	select {
+	case <-backendCtx.Done():
+		t.Fatal("attachment publication canceled the live XUDP backend context")
+	default:
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backendCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("runtime close did not cancel the XUDP backend context")
+	}
+}
+
+func TestXUDPRuntimeCloseUnblocksPostCommitInitialWrite(t *testing.T) {
+	runtime := newRuntime()
+	tracker := newXUDPPresenceTracker()
+	backendReader := newBlockingXUDPReader()
+	backendWriter := &blockingRuntimeWriter{started: make(chan struct{}), closed: make(chan struct{})}
+	dispatcher := &xudpRuntimeDispatcher{
+		provider: &xudpRuntimeProvider{tracker: tracker, principal: [32]byte{41}, reusable: true},
+		modes:    make(chan session.PresenceMode, 4),
+		backends: make(chan *transport.Link, 4),
+		newBackend: func() (*transport.Link, *transport.Link) {
+			server := &transport.Link{Reader: backendReader, Writer: backendWriter}
+			peer := &transport.Link{Reader: backendReader, Writer: backendWriter}
+			return server, peer
+		},
+	}
+	worker, peer := startXUDPWorker(t, runtime, dispatcher, "192.0.2.10")
+	defer worker.Close()
+	_ = sendXUDPAttachment(t, peer, 1, X.UDPDestination(X.DomainAddress("example.com"), 53), [8]byte{42}, "blocked")
+	select {
+	case <-backendWriter.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial XUDP write did not block")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- runtime.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		_ = backendWriter.Close()
+		<-closeDone
+		t.Fatal("runtime close waited for post-commit initial write before closing its backend")
+	}
+}
+
+func TestXUDPFlowCloseCompletesAuthorizedAttachmentCommit(t *testing.T) {
+	runtime := newRuntime()
+	tracker := newXUDPPresenceTracker()
+	tracker.handoffStarted = make(chan struct{})
+	tracker.handoffRelease = make(chan struct{})
+	backendReader, backendWriter := pipe.New(pipe.WithoutSizeLimit())
+	key := xudpRuntimeKey{principal: [32]byte{31}, globalID: [8]byte{32}}
+	flow := newXUDPFlow(runtime, key, X.UDPDestination(X.DomainAddress("example.com"), 53), &transport.Link{Reader: backendReader, Writer: backendWriter})
+	runtime.mu.Lock()
+	runtime.flows[key] = flow
+	runtime.mu.Unlock()
+	registry := newSessionRegistry()
+	sink := runtime.newResponseSink(buf.Discard)
+	firstScope := session.NewPresenceScope(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("192.0.2.10")}, tracker)
+	if _, err := flow.attach(registry.reserve(1), firstScope, sink); err != nil {
+		t.Fatal(err)
+	}
+
+	secondScope := session.NewPresenceScope(session.PresenceSubject{Email: "alice@example.com", IP: netip.MustParseAddr("198.51.100.20")}, tracker)
+	attachDone := make(chan error, 1)
+	go func() {
+		_, err := flow.attach(registry.reserve(2), secondScope, sink)
+		attachDone <- err
+	}()
+	select {
+	case <-tracker.handoffStarted:
+	case <-time.After(time.Second):
+		t.Fatal("rebind did not reach authorized handoff")
+	}
+	flow.close()
+	close(tracker.handoffRelease)
+	if err := <-attachDone; err == nil {
+		t.Fatal("attachment succeeded after flow close")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		registry.close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("registry close blocked on an authorized attachment commit")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestXUDPRuntimeThousandRebindsEndAtZero(t *testing.T) {
 	runtime := newRuntime()
 	defer runtime.Close()
@@ -324,17 +502,21 @@ func TestXUDPRuntimeThousandRebindsEndAtZero(t *testing.T) {
 }
 
 type xudpRuntimeDispatcher struct {
-	provider   *xudpRuntimeProvider
-	modes      chan session.PresenceMode
-	backends   chan *transport.Link
-	dispatches atomic.Int32
-	newBackend func() (*transport.Link, *transport.Link)
+	provider        *xudpRuntimeProvider
+	modes           chan session.PresenceMode
+	backends        chan *transport.Link
+	dispatches      atomic.Int32
+	newBackend      func() (*transport.Link, *transport.Link)
+	contextObserved chan context.Context
 }
 
 func (d *xudpRuntimeDispatcher) PresenceProvider() session.PresenceProvider { return d.provider }
 func (d *xudpRuntimeDispatcher) Dispatch(ctx context.Context, _ X.Destination) (*transport.Link, error) {
 	d.dispatches.Add(1)
 	d.modes <- session.PresenceModeFromContext(ctx)
+	if d.contextObserved != nil {
+		d.contextObserved <- ctx
+	}
 	server, peer := muxPresenceLinkPair()
 	if d.newBackend != nil {
 		server, peer = d.newBackend()

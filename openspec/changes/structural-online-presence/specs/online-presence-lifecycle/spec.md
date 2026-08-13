@@ -367,6 +367,8 @@ The migration MUST be released only as one complete structural implementation af
 
 #### Scenario: Stable release and rollback boundary
 
-- **WHEN** all gates pass on canonical merged `main`, version reports `26.8.16`, official workflow assets and digests are green, and the GitHub release is published from the same commit
-- **THEN** the migration is complete and the OpenSpec may be archived with tag `v26.8.16`
-- **AND** rollback consists only of deploying the immutable `v26.8.15` binary/container with unchanged configuration
+- **WHEN** all gates pass on canonical merged `main`, version reports `26.8.19`, official workflow assets and digests are green, and the GitHub release is published from annotated tag `v26.8.19` at the same commit
+- **THEN** the migration is complete and the OpenSpec may be archived with tag `v26.8.19`
+- **AND** compatibility remains proven against immutable pre-change `v26.8.15`, while continuation rollback consists only of deploying the immutable `v26.8.18` binary/container with unchanged configuration
+- **AND** canonical release history includes latest `origin/main` and `upstream/main`; if upstream occupies `v26.8.19`, that upstream release is merged first and only then is a new unused higher version selected
+- **AND** no published tag is moved

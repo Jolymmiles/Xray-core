@@ -16,7 +16,7 @@ This change makes online state follow the committed logical data owner exactly w
 
 ### Supersedes
 
-This change replaces the empty active change `fix-online-ip-lifecycle-tracking`, the context-lifecycle experiment `0ee156e7`, and the incomplete structural prototype `a65687a3`. Those are prior-art evidence only. The decisive difference is that online presence belongs to committed logical sessions or attachments, never to an outer context, physical carrier, reusable backend, worker, or cache lifetime.
+This change replaces the empty active change `fix-online-ip-lifecycle-tracking`, the context-lifecycle experiment `0ee156e7`, and the incomplete structural prototype `a65687a3`. Those commits and the completed Wayfinder map/tickets are prior-art evidence only; this `structural-online-presence` OpenSpec is the sole executable semantic and task source. The decisive difference is that online presence belongs to committed logical sessions or attachments, never to an outer context, physical carrier, reusable backend, worker, or cache lifetime.
 
 ## Capabilities
 
@@ -32,4 +32,4 @@ None. The repository has no existing OpenSpec capability for online presence. St
 
 Affected modules include `common/session`, `app/stats`, `app/dispatcher`, `app/proxyman/inbound`, `transport/internet`, `common/singmux`, `common/mux`, `app/reverse`, `proxy/vless`, `proxy/wireguard`, integration scenarios, and release CI. No new dependency, configuration field, wire negotiation, public core feature, protobuf, or database/state migration is introduced.
 
-The implementation starts from `v26.8.15` (`816ae651`). The old binary remains the whole-artifact rollback boundary and the version-skew peer for the candidate `v26.8.16` release.
+The implementation started from `v26.8.15` (`816ae651`). That pre-change binary remains the immutable version-skew peer for behavior compatibility. Tags `v26.8.16`, `v26.8.17`, and `v26.8.18` were published before this migration completed and cannot be reused. Current canonical `main` is `v26.8.18` (`90a94762`), which is the whole-artifact continuation rollback boundary; `v26.8.19` is the first unused candidate.
