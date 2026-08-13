@@ -94,6 +94,7 @@ func (m *recordingExactOnlineMap) Count() int {
 	}
 	return len(ips)
 }
+
 func (m *recordingExactOnlineMap) ForEach(fn func(string, int64) bool) {
 	for ip := range onlineMapIPSet(m.live) {
 		if !fn(ip, 0) {
