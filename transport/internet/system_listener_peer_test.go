@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xtls/reality"
 	corenet "github.com/xtls/xray-core/common/net"
 )
 
@@ -21,6 +22,16 @@ func (c *peerTestConn) RemoteAddr() stdnet.Addr { return c.remote }
 
 type peerTestListener struct {
 	conn stdnet.Conn
+}
+
+type peerCloseWriteTestConn struct {
+	*peerTestConn
+	closedWrite bool
+}
+
+func (c *peerCloseWriteTestConn) CloseWrite() error {
+	c.closedWrite = true
+	return nil
 }
 
 func (l *peerTestListener) Accept() (stdnet.Conn, error) {
@@ -75,6 +86,33 @@ func TestPhysicalPeerListenerFreezesPeerBeforeProxyRewrite(t *testing.T) {
 	peer, ok = corenet.PhysicalPeer(conn)
 	if !ok || peer.String() != "192.0.2.9:54321" {
 		t.Fatalf("physical peer after PROXY read = %v, ok=%v", peer, ok)
+	}
+}
+
+func TestPhysicalPeerListenerPreservesRealityCloseWriteAcrossProxyProtocol(t *testing.T) {
+	server, client := stdnet.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	raw := &peerCloseWriteTestConn{peerTestConn: &peerTestConn{
+		Conn:   server,
+		local:  &stdnet.TCPAddr{IP: stdnet.ParseIP("203.0.113.1"), Port: 443},
+		remote: &stdnet.TCPAddr{IP: stdnet.ParseIP("192.0.2.9"), Port: 54321},
+	}}
+	listener := &physicalPeerListener{
+		Listener:      &peerTestListener{conn: raw},
+		proxyProtocol: true,
+	}
+
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	closeWriter, ok := conn.(reality.CloseWriteConn)
+	if !ok {
+		t.Fatalf("PROXY physical-peer connection lost reality.CloseWriteConn: %T", conn)
+	}
+	if err := closeWriter.CloseWrite(); err != nil || !raw.closedWrite {
+		t.Fatalf("CloseWrite = %v, delegated = %v", err, raw.closedWrite)
 	}
 }
 
