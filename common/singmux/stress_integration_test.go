@@ -169,12 +169,12 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 		serverBinary, serverArgs, serverConfig = peerServerConfig(t, binaries, peer, carrier, serverPort, true, certificate, privateKey)
 		clientBinary = binaries.xray
 		clientArgs = []string{"run", "-config", "client.json"}
-		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, true, certificate, privateKey)
+		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, "smux", true, certificate, privateKey)
 	} else {
 		serverBinary = binaries.xray
 		serverArgs = []string{"run", "-config", "server.json"}
-		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, true, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, true, certificate)
+		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, "smux", true, certificate, privateKey)
+		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, "smux", true, certificate)
 	}
 	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
 	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))

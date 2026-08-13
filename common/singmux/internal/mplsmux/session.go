@@ -302,6 +302,11 @@ func (s *Session) submitWithStateResult(command frameCommand, streamID uint32, p
 		case <-changed:
 			s.submitMu.Unlock()
 			stopTimer()
+		case <-s.done:
+			s.submitMu.Unlock()
+			stopTimer()
+			releaseFrameBuffer(encoded)
+			return s.terminalError()
 		}
 	}
 
@@ -484,13 +489,19 @@ func (s *Session) fail(err error) {
 		err = io.ErrClosedPipe
 	}
 	s.closeOnce.Do(func() {
-		s.submitMu.Lock()
 		s.errorMu.Lock()
 		s.lastError = err
 		s.errorMu.Unlock()
 		close(s.done)
-		s.submitMu.Unlock()
 		_ = s.conn.Close()
+
+		// Closing done wakes submitters parked on a full queue. The mutex is a
+		// barrier: after it is acquired no submitter can still transfer a frame
+		// into writeQueue, so the final drain owns every frame left there.
+		s.submitMu.Lock()
+		s.submitMu.Unlock()
+		s.failQueuedWrites(err)
+
 		s.receiveMu.Lock()
 		notify(s.receiveChanged)
 		s.receiveMu.Unlock()

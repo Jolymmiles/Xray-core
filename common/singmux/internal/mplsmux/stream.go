@@ -376,9 +376,19 @@ func (s *Stream) remoteStopped() {
 
 func (s *Stream) sessionStopped() {
 	s.stateMu.Lock()
+	if s.sessionClosed {
+		s.stateMu.Unlock()
+		return
+	}
 	s.sessionClosed = true
+	queued, queuedBytes := s.drainLocked()
 	s.notifyAllLocked()
 	s.stateMu.Unlock()
+
+	for _, chunk := range queued {
+		releaseReceiveBuffer(chunk.buffer)
+	}
+	s.session.releaseReceive(queuedBytes)
 }
 
 func (s *Stream) drainLocked() ([]receiveChunk, int) {
