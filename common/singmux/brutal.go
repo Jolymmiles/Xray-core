@@ -42,9 +42,10 @@ func ContextWithServerBrutalOptions(ctx context.Context, options BrutalOptions) 
 }
 
 type serverBrutalController struct {
-	options  BrutalOptions
-	physical net.Conn
-	set      func(net.Conn, uint64) error
+	options      BrutalOptions
+	physical     net.Conn
+	set          func(net.Conn, uint64) error
+	closeCarrier func() error
 
 	mu         sync.Mutex
 	negotiated bool
