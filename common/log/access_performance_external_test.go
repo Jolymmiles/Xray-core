@@ -2,6 +2,8 @@ package log_test
 
 import (
 	stdnet "net"
+	"runtime/debug"
+	"strings"
 	"testing"
 
 	corelog "github.com/xtls/xray-core/common/log"
@@ -78,6 +80,9 @@ func BenchmarkVLESSAccessEndpointPairLifecycle(b *testing.B) {
 }
 
 func TestVLESSAccessTypedEndpointAllocationBudget(t *testing.T) {
+	if checkptrInstrumented() {
+		t.Skip("checkptr instrumentation changes allocation counts")
+	}
 	source := xnet.TCPDestination(xnet.IPv4Address([4]byte{192, 0, 2, 1}), 12345)
 	target := xnet.TCPDestination(xnet.DomainAddress("example.com"), 443)
 	message := &corelog.AccessMessage{Status: corelog.AccessAccepted}
@@ -88,6 +93,19 @@ func TestVLESSAccessTypedEndpointAllocationBudget(t *testing.T) {
 	if allocations > 2 {
 		t.Fatalf("typed VLESS access endpoints allocations = %.0f, want at most 2", allocations)
 	}
+}
+
+func checkptrInstrumented() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-gcflags" && strings.Contains(setting.Value, "checkptr") {
+			return true
+		}
+	}
+	return false
 }
 
 func BenchmarkVLESSAccessTypedEndpointPairLifecycle(b *testing.B) {

@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"runtime/debug"
+	"strings"
 	"testing"
 
 	"github.com/xtls/xray-core/common/session"
@@ -117,6 +119,9 @@ func BenchmarkSniffHTTPAttributes(b *testing.B) {
 }
 
 func TestSniffHTTPAttributesAllocationBudget(t *testing.T) {
+	if checkptrInstrumented() {
+		t.Skip("checkptr instrumentation changes allocation counts")
+	}
 	content := new(session.Content)
 	ctx := session.ContextWithContent(context.Background(), content)
 	allocations := testing.AllocsPerRun(1000, func() {
@@ -130,6 +135,19 @@ func TestSniffHTTPAttributesAllocationBudget(t *testing.T) {
 	if allocations > 4 {
 		t.Fatalf("SniffHTTP attributes allocations = %.0f, want at most 4", allocations)
 	}
+}
+
+func checkptrInstrumented() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "-gcflags" && strings.Contains(setting.Value, "checkptr") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSniffHTTPAttributesOwnValues(t *testing.T) {
