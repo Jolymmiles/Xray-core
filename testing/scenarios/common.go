@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -125,20 +126,18 @@ func GetSourcePath() string {
 	return filepath.Join("github.com", "xtls", "xray-core", "main")
 }
 
+const serverShutdownGrace = 5 * time.Second
+
 func CloseAllServers(servers []*exec.Cmd) {
 	log.Record(&log.GeneralMessage{
 		Severity: log.Severity_Info,
 		Content:  "Closing all servers.",
 	})
-	for _, server := range servers {
-		if runtime.GOOS == "windows" {
-			server.Process.Kill()
-		} else {
-			server.Process.Signal(syscall.SIGTERM)
-		}
-	}
-	for _, server := range servers {
-		server.Process.Wait()
+	if err := closeAllServers(servers, serverShutdownGrace); err != nil {
+		log.Record(&log.GeneralMessage{
+			Severity: log.Severity_Warning,
+			Content:  err.Error(),
+		})
 	}
 	log.Record(&log.GeneralMessage{
 		Severity: log.Severity_Info,
@@ -151,16 +150,73 @@ func CloseServer(server *exec.Cmd) {
 		Severity: log.Severity_Info,
 		Content:  "Closing server.",
 	})
-	if runtime.GOOS == "windows" {
-		server.Process.Kill()
-	} else {
-		server.Process.Signal(syscall.SIGTERM)
+	if err := closeAllServers([]*exec.Cmd{server}, serverShutdownGrace); err != nil {
+		log.Record(&log.GeneralMessage{
+			Severity: log.Severity_Warning,
+			Content:  err.Error(),
+		})
 	}
-	server.Process.Wait()
 	log.Record(&log.GeneralMessage{
 		Severity: log.Severity_Info,
 		Content:  "Server closed.",
 	})
+}
+
+func closeAllServers(servers []*exec.Cmd, grace time.Duration) error {
+	failures := make([]string, 0)
+	for _, server := range servers {
+		if server == nil || server.Process == nil {
+			continue
+		}
+		var err error
+		if runtime.GOOS == "windows" {
+			err = server.Process.Kill()
+		} else {
+			err = server.Process.Signal(syscall.SIGTERM)
+		}
+		if err != nil && err != os.ErrProcessDone {
+			failures = append(failures, fmt.Sprintf("signal server process %d: %v", server.Process.Pid, err))
+		}
+	}
+	for _, server := range servers {
+		if server == nil || server.Process == nil {
+			continue
+		}
+		if err := waitForServerExit(server, grace); err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("server cleanup: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func waitForServerExit(server *exec.Cmd, grace time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Wait()
+	}()
+
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+	}
+
+	if err := server.Process.Kill(); err != nil && err != os.ErrProcessDone {
+		return fmt.Errorf("kill server process %d after %s: %w", server.Process.Pid, grace, err)
+	}
+	killTimer := time.NewTimer(grace)
+	defer killTimer.Stop()
+	select {
+	case <-done:
+		return fmt.Errorf("server process %d killed after %s", server.Process.Pid, grace)
+	case <-killTimer.C:
+		return fmt.Errorf("server process %d did not exit within %s after kill", server.Process.Pid, grace)
+	}
 }
 
 func withDefaultApps(config *core.Config) *core.Config {
