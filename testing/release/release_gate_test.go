@@ -43,6 +43,9 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"XRAY_NATIVE_LINUX_RELEASE: 1",
 		"testing/release/structural_presence.sh linux",
 		"mvdan.cc/gofumpt@v0.11.0",
+		"Restore Geodat Cache for release validation",
+		"test -s resources/geoip.dat",
+		"test -s resources/geosite.dat",
 		"needs: [check-assets, release-validation]",
 	})
 	assertFileContains(t, filepath.Join(root, "common", "singmux", "TESTING.md"), []string{
