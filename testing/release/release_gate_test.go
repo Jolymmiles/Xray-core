@@ -35,7 +35,27 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"GOAMD64=v1",
 		"go version -m",
 	})
-	assertFileContains(t, filepath.Join(root, ".github", "workflows", "release.yml"), []string{
+	releaseWorkflow := filepath.Join(root, ".github", "workflows", "release.yml")
+	assertFileContains(t, releaseWorkflow, []string{
+		"name: Build and Release",
+		"workflow_dispatch:",
+		"release:",
+		"types: [published]",
+		"build:",
+		"needs: check-assets",
+		"Upload binaries to release",
+	})
+	assertFileNotContains(t, releaseWorkflow, []string{
+		"\n  push:\n",
+		"\n  pull_request:\n",
+		"release-validation:",
+		"testing/release/structural_presence.sh linux",
+		"needs: [check-assets, release-validation]",
+	})
+	validationWorkflow := filepath.Join(root, ".github", "workflows", "pre-release-validation.yml")
+	assertFileContains(t, validationWorkflow, []string{
+		"name: Pre-release Validation",
+		"workflow_dispatch:",
 		"release-validation:",
 		"runs-on: ubuntu-24.04",
 		"fetch-depth: 0",
@@ -54,7 +74,11 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"SING_BOX_E2E_BIN=",
 		"MIHOMO_E2E_BIN=",
 		"rm -rf .interop",
-		"needs: [check-assets, release-validation]",
+	})
+	assertFileNotContains(t, validationWorkflow, []string{
+		"\n  release:\n",
+		"\n  push:\n",
+		"\n  pull_request:\n",
 	})
 	assertFileContains(t, filepath.Join(root, "common", "singmux", "TESTING.md"), []string{
 		"testing/release/structural_presence.sh linux",
@@ -64,6 +88,19 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"Structural online presence release gate (2026-08-13)",
 		"Linux runtime evidence remains pending",
 	})
+}
+
+func assertFileNotContains(t *testing.T, path string, forbidden []string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range forbidden {
+		if strings.Contains(string(content), marker) {
+			t.Errorf("%s unexpectedly contains %q", filepath.ToSlash(path), marker)
+		}
+	}
 }
 
 func assertFileContains(t *testing.T, path string, required []string) {

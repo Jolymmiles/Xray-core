@@ -1,0 +1,129 @@
+name: Pre-release Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-assets:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Restore Geodat Cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: resources
+          key: xray-geodat-
+
+      - name: Check Assets Existence
+        id: check-assets
+        run: |
+          [ -d 'resources' ] || mkdir resources
+          LIST=('geoip.dat' 'geosite.dat')
+          for FILE_NAME in "${LIST[@]}"
+          do
+            echo -e "Checking ${FILE_NAME}..."
+            if [ -s "./resources/${FILE_NAME}" ]; then
+              echo -e "${FILE_NAME} exists."
+            else
+              echo -e "${FILE_NAME} does not exist."
+              echo "missing=true" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+
+      - name: Trigger Asset Update Workflow if Assets Missing
+        if: steps.check-assets.outputs.missing == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: 'scheduled-assets-update.yml',
+              ref: context.ref
+            });
+            console.log('Triggered scheduled-assets-update.yml due to missing assets on branch:', context.ref);
+
+      - name: Sleep for 90 seconds if Assets Missing
+        if: steps.check-assets.outputs.missing == 'true'
+        run: sleep 90
+
+  release-validation:
+    needs: check-assets
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      XRAY_E2E_YT_INTERFACE: yt
+      XRAY_E2E_YT_IPV6: fd00:7872:6179::1
+      XRAY_STRUCTURAL_SOAK_SECONDS: 1800
+      XRAY_NATIVE_LINUX_RELEASE: 1
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pinned sing-box interop client
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Jolymmiles/sing-box
+          ref: 46f00de9aa060ab989353953051268c7c4745664
+          path: .interop/sing-box
+          persist-credentials: false
+
+      - name: Checkout pinned Mihomo interop client
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Jolymmiles/mihomo
+          ref: 2e1394a7cf4c2d25ac6290a05ee0e21f786073de
+          path: .interop/mihomo
+          persist-credentials: false
+
+      - name: Restore Geodat Cache for release validation
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: resources
+          key: xray-geodat-
+
+      - name: Verify Geodat Assets
+        run: |
+          test -s resources/geoip.dat
+          test -s resources/geosite.dat
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Build pinned interop clients
+        run: |
+          go -C .interop/sing-box build -trimpath -tags=with_utls,with_quic -o "$RUNNER_TEMP/sing-box" ./cmd/sing-box
+          go -C .interop/mihomo build -trimpath -o "$RUNNER_TEMP/mihomo" .
+          test -x "$RUNNER_TEMP/sing-box"
+          test -x "$RUNNER_TEMP/mihomo"
+          echo "SING_BOX_E2E_BIN=$RUNNER_TEMP/sing-box" >> "$GITHUB_ENV"
+          echo "MIHOMO_E2E_BIN=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+          rm -rf .interop
+
+      - name: Install release gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes iproute2
+          go install mvdan.cc/gofumpt@v0.11.0
+
+      - name: Configure production yt interface
+        run: |
+          sudo ip link add yt type dummy
+          sudo ip link set yt up
+          sudo ip -6 address add "${XRAY_E2E_YT_IPV6}/128" dev yt
+
+      - name: Run structural presence Linux release gate
+        run: testing/release/structural_presence.sh linux
