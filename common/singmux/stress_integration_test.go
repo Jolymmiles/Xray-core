@@ -25,12 +25,13 @@ const (
 )
 
 type stressTopology struct {
-	serverBinary string
-	serverArgs   []string
-	serverPort   int
-	client       *e2eProcess
-	server       *e2eProcess
-	socksPort    int
+	serverBinary   string
+	serverArgs     []string
+	serverPort     int
+	serverReadyLog string
+	client         *e2eProcess
+	server         *e2eProcess
+	socksPort      int
 }
 
 func TestConfiguredStressCycles(t *testing.T) {
@@ -46,6 +47,26 @@ func TestConfiguredStressCycles(t *testing.T) {
 			t.Fatalf("configuredStressCycles() = %d, want 50", cycles)
 		}
 	})
+}
+
+func TestStressServerReadyLog(t *testing.T) {
+	tests := []struct {
+		peer      string
+		direction string
+		want      string
+	}{
+		{peer: "sing-box", direction: "xray-client"},
+		{peer: "mihomo", direction: "xray-client", want: "Initial configuration complete"},
+		{peer: "sing-box", direction: "xray-server"},
+		{peer: "mihomo", direction: "xray-server"},
+	}
+	for _, test := range tests {
+		t.Run(test.peer+"/"+test.direction, func(t *testing.T) {
+			if got := stressServerReadyLog(test.peer, test.direction); got != test.want {
+				t.Fatalf("stressServerReadyLog(%q, %q) = %q, want %q", test.peer, test.direction, got, test.want)
+			}
+		})
+	}
 }
 
 func TestQuietStressConfigDisablesXrayAccessLog(t *testing.T) {
@@ -100,6 +121,7 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 				name := fmt.Sprintf("%s/%s/%s", peer, direction, carrier)
 				t.Run(name, func(t *testing.T) {
 					topology := startStressTopology(t, workDir, binaries, certificate, privateKey, peer, direction, carrier)
+					assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
 					resources := make([]processResourceSnapshot, 0, cycles)
 					for cycle := 0; cycle < cycles; cycle++ {
 						t.Run(fmt.Sprintf("cycle-%d", cycle+1), func(t *testing.T) {
@@ -111,6 +133,10 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 							stopE2EProcess(t, topology.server)
 							topology.server = startE2EProcess(t, topology.serverBinary, topology.serverArgs...)
 							waitTCP(t, topology.server, topology.serverPort)
+							if topology.serverReadyLog != "" {
+								waitProcessLog(t, topology.server, topology.serverReadyLog)
+							}
+							assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
 						}
 					}
 					assertNoLinearResourceGrowth(t, resources, cycles)
@@ -118,6 +144,13 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 			}
 		}
 	}
+}
+
+func stressServerReadyLog(peer, direction string) string {
+	if peer == "mihomo" && direction == "xray-client" {
+		return "Initial configuration complete"
+	}
+	return ""
 }
 
 func configuredStressCycles(t *testing.T) int {
@@ -185,10 +218,11 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 	writeConfig(t, serverPath, serverConfig)
 	writeConfig(t, clientPath, clientConfig)
 
+	serverReadyLog := stressServerReadyLog(peer, direction)
 	server := startE2EProcess(t, serverBinary, serverArgs...)
 	waitTCP(t, server, serverPort)
-	if peer == "mihomo" && direction == "xray-client" {
-		waitProcessLog(t, server, "Initial configuration complete")
+	if serverReadyLog != "" {
+		waitProcessLog(t, server, serverReadyLog)
 	}
 	client := startE2EProcess(t, clientBinary, clientArgs...)
 	waitSOCKS(t, client, socksPort)
@@ -202,12 +236,13 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 		}
 	})
 	return &stressTopology{
-		serverBinary: serverBinary,
-		serverArgs:   serverArgs,
-		serverPort:   serverPort,
-		client:       client,
-		server:       server,
-		socksPort:    socksPort,
+		serverBinary:   serverBinary,
+		serverArgs:     serverArgs,
+		serverPort:     serverPort,
+		serverReadyLog: serverReadyLog,
+		client:         client,
+		server:         server,
+		socksPort:      socksPort,
 	}
 }
 
@@ -215,6 +250,13 @@ func quietStressConfig(config []byte) []byte {
 	config = bytes.ReplaceAll(config, []byte(`"loglevel": "debug"`), []byte(`"loglevel": "warning", "access": "none"`))
 	config = bytes.ReplaceAll(config, []byte(`"level": "debug"`), []byte(`"level": "warn"`))
 	return config
+}
+
+func assertStressPathReady(t *testing.T, client *e2eProcess, socksPort int, destination *net.TCPAddr) {
+	t.Helper()
+	if err := runSOCKSTCP(socksPort, destination); err != nil {
+		t.Fatalf("SOCKS-to-server-to-echo path is not ready after server start: %v\nclient logs:\n%s", err, client.logs.String())
+	}
 }
 
 func stressTCP(t *testing.T, socksPort int, destination *net.TCPAddr, streamCount int) {
