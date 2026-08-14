@@ -102,12 +102,35 @@ func newSession(conn io.ReadWriteCloser, config *Config, client bool) (*Session,
 }
 
 func (s *Session) OpenStream() (*Stream, error) {
-	return s.OpenStreamWithAccounting(func(publish func()) { publish() })
+	stream, err := s.newOutboundStream()
+	if err != nil {
+		return nil, err
+	}
+	s.streamsMu.Lock()
+	s.streams[stream.id] = stream
+	s.streamsMu.Unlock()
+	return s.finishOutboundStream(stream)
 }
 
 // OpenStreamWithAccounting atomically transfers one pending pool reservation
 // to the published stream count before the potentially blocking carrier write.
 func (s *Session) OpenStreamWithAccounting(accounted func(publish func())) (*Stream, error) {
+	if accounted == nil {
+		return nil, errors.New("SMUX stream accounting callback is required")
+	}
+	stream, err := s.newOutboundStream()
+	if err != nil {
+		return nil, err
+	}
+	accounted(func() {
+		s.streamsMu.Lock()
+		s.streams[stream.id] = stream
+		s.streamsMu.Unlock()
+	})
+	return s.finishOutboundStream(stream)
+}
+
+func (s *Session) newOutboundStream() (*Stream, error) {
 	if s.IsClosed() {
 		return nil, s.terminalError()
 	}
@@ -115,19 +138,17 @@ func (s *Session) OpenStreamWithAccounting(accounted func(publish func())) (*Str
 	if streamID < 2 {
 		return nil, errors.New("SMUX stream ID space exhausted")
 	}
-	stream := newStream(s, streamID)
-	accounted(func() {
-		s.streamsMu.Lock()
-		s.streams[streamID] = stream
-		s.streamsMu.Unlock()
-	})
-	if err := s.submitResult(frameOpen, streamID, nil, time.Time{}, stream.writeResult); err != nil {
-		s.removeStream(streamID)
+	return newStream(s, streamID), nil
+}
+
+func (s *Session) finishOutboundStream(stream *Stream) (*Stream, error) {
+	if err := s.submitResult(frameOpen, stream.id, nil, time.Time{}, stream.writeResult); err != nil {
+		s.removeStream(stream.id)
 		stream.sessionStoppedAndDrain()
 		return nil, err
 	}
 	s.streamsMu.Lock()
-	if s.streams[streamID] != stream || s.IsClosed() {
+	if s.streams[stream.id] != stream || s.IsClosed() {
 		s.streamsMu.Unlock()
 		stream.sessionStoppedAndDrain()
 		return nil, s.terminalError()
