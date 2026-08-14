@@ -27,6 +27,7 @@
 /.factory/
 /.pi/
 /.serena/
+/.scratch/
 
 # Generated codebase analysis output
 **/graphify-out/
