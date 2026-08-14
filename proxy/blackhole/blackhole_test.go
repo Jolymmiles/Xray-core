@@ -3,6 +3,7 @@ package blackhole_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -22,12 +23,14 @@ func TestBlackholeHTTPResponse(t *testing.T) {
 
 	reader, writer := pipe.New(pipe.WithoutSizeLimit())
 
-	var mb buf.MultiBuffer
-	var rerr error
+	type readResult struct {
+		buffer buf.MultiBuffer
+		err    error
+	}
+	result := make(chan readResult, 1)
 	go func() {
-		b, e := reader.ReadMultiBuffer()
-		mb = b
-		rerr = e
+		buffer, err := reader.ReadMultiBuffer()
+		result <- readResult{buffer: buffer, err: err}
 	}()
 
 	link := transport.Link{
@@ -35,8 +38,14 @@ func TestBlackholeHTTPResponse(t *testing.T) {
 		Writer: writer,
 	}
 	common.Must(handler.Process(ctx, &link, nil))
-	common.Must(rerr)
-	if mb.IsEmpty() {
-		t.Error("expect http response, but nothing")
+
+	select {
+	case read := <-result:
+		common.Must(read.err)
+		if read.buffer.IsEmpty() {
+			t.Error("expect http response, but nothing")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP response")
 	}
 }
