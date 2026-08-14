@@ -7,6 +7,21 @@ The default suite covers the wire codec, padding, pool behavior, TCP and UDP
 adapters, Xray integration, the MPL SMUX engine, and the recursive external-mux
 dependency ban. The engine package is held above 80% statement coverage.
 
+The canonical release entrypoint is `testing/release/structural_presence.sh`.
+`standard` runs format, vet, repository-wide unit/race/checkptr, interop,
+version-skew, and aggregate lifecycle gates. `linux` additionally runs the
+non-skippable pinned Linux/amd64 50-cycle reconnect stress, nine-round
+performance comparison, real `yt` environment contract, 30-minute structural
+soak, and release artifact inspection. The release workflow must depend on this
+job; a missing Linux capability or environment value is a failure, not a skip.
+
+```sh
+testing/release/structural_presence.sh standard
+XRAY_E2E_YT_INTERFACE=yt XRAY_E2E_YT_IPV6=fd00:7872:6179::1 \
+  XRAY_STRUCTURAL_SOAK_SECONDS=1800 XRAY_NATIVE_LINUX_RELEASE=1 \
+  testing/release/structural_presence.sh linux
+```
+
 ```sh
 go test ./common/singmux/... ./common/mux ./app/proxyman/inbound ./app/proxyman/outbound ./infra/conf
 go test -race ./common/singmux/... ./common/mux
@@ -196,8 +211,17 @@ enforces the 10% median full-duplex regression limit. The Trojan result is diagn
 because it also compares the two projects' TLS and Trojan implementations.
 
 ```sh
-go test -tags 'integration stress performance' ./common/singmux -run '^TestSMUXServerPerformanceAgainstSingMux$' -count=3 -v
+go test -tags 'integration stress performance' ./common/singmux \
+  -run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstV26815)$' \
+  -count=3 -v
 ```
+
+`TestCandidatePerformanceAgainstV26815` builds the immutable `v26.8.15`
+revision and the candidate, keeps an identical candidate Xray SMUX client on
+both sides, warms both servers, and measures nine alternating full-duplex
+rounds. On Linux it fails above 10% median duration regression, 64 MiB RSS, 16
+threads, or 8 file descriptors. Other hosts record diagnostics only and cannot
+satisfy the release gate.
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
