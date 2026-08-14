@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/app/dispatcher"
@@ -83,6 +84,12 @@ type Handler struct {
 	observer               features.Feature
 	defaultDispatcher      routing.Dispatcher
 	ctx                    context.Context
+	reverseLifecycleMu     sync.Mutex
+	reverseClosed          bool
+	reverseClosing         chan struct{}
+	reverseCalls           sync.WaitGroup
+	closeOnce              sync.Once
+	closeErr               error
 	fallbacks              map[string]map[string]map[string]*Fallback // or nil
 	// regexps               map[string]*regexp.Regexp       // or nil
 }
@@ -205,6 +212,19 @@ func isMuxAndNotXUDP(request *protocol.RequestHeader, first *buf.Buffer) bool {
 }
 
 func (h *Handler) GetReverse(a *vless.MemoryAccount) (*Reverse, error) {
+	h.reverseLifecycleMu.Lock()
+	if h.reverseClosed {
+		h.reverseLifecycleMu.Unlock()
+		return nil, errors.New("VLESS inbound reverse owner is closing")
+	}
+	if h.reverseClosing == nil {
+		h.reverseClosing = make(chan struct{})
+	}
+	reverseClosing := h.reverseClosing
+	h.reverseCalls.Add(1)
+	h.reverseLifecycleMu.Unlock()
+	defer h.reverseCalls.Done()
+
 	u := h.validator.Get(a.ID.UUID())
 	if u == nil {
 		return nil, errors.New("reverse: user " + a.ID.String() + " doesn't exist anymore")
@@ -218,9 +238,19 @@ func (h *Handler) GetReverse(a *vless.MemoryAccount) (*Reverse, error) {
 		picker, _ := reverse.NewStaticMuxPicker()
 		r = &Reverse{tag: a.Reverse.Tag, picker: picker, client: &mux.ClientManager{Picker: picker}}
 		for len(h.outboundHandlerManager.ListHandlers(h.ctx)) == 0 {
-			time.Sleep(time.Second) // prevents this outbound from becoming the default outbound
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-reverseClosing:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				_ = r.Close()
+				return nil, errors.New("VLESS inbound reverse owner is closing")
+			case <-timer.C:
+			}
 		}
 		if err := h.outboundHandlerManager.AddHandler(h.ctx, r); err != nil {
+			_ = r.Close()
 			return nil, err
 		}
 	}
@@ -244,13 +274,24 @@ func (h *Handler) RemoveReverse(u *protocol.MemoryUser) {
 
 // Close implements common.Closable.Close().
 func (h *Handler) Close() error {
-	if h.decryption != nil {
-		h.decryption.Close()
-	}
-	for _, u := range h.validator.GetAll() {
-		h.RemoveReverse(u)
-	}
-	return errors.Combine(common.Close(h.validator))
+	h.closeOnce.Do(func() {
+		h.reverseLifecycleMu.Lock()
+		h.reverseClosed = true
+		if h.reverseClosing == nil {
+			h.reverseClosing = make(chan struct{})
+		}
+		close(h.reverseClosing)
+		h.reverseLifecycleMu.Unlock()
+		h.reverseCalls.Wait()
+		if h.decryption != nil {
+			h.decryption.Close()
+		}
+		for _, u := range h.validator.GetAll() {
+			h.RemoveReverse(u)
+		}
+		h.closeErr = errors.Combine(common.Close(h.validator))
+	})
+	return h.closeErr
 }
 
 // AddUser implements proxy.UserManager.AddUser().
