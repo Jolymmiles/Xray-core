@@ -7,7 +7,9 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
+	"time"
 
 	corenet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
@@ -190,11 +192,16 @@ func TestPresenceProviderSnapshotsAuthenticatedPhysicalPeer(t *testing.T) {
 }
 
 func TestPresenceProviderNeverFallsBackToEffectiveSource(t *testing.T) {
+	tracker := newPresenceTracker(&presenceTestPolicy{online: true}, &presenceTestStatsManager{})
 	provider := &defaultPresenceProvider{
-		tracker:  providerTestTracker{},
+		tracker:  tracker,
 		keyValid: true,
 		marshal:  proto.MarshalOptions{Deterministic: true}.Marshal,
 	}
+	now := time.Unix(100, 0)
+	tracker.warningNow = func() time.Time { return now }
+	var warnings []string
+	tracker.warningSink = func(message string) { warnings = append(warnings, message) }
 	user := &protocol.MemoryUser{
 		Account: principalTestAccount{message: wrapperspb.String("account")},
 		Email:   "alice@example.com",
@@ -207,6 +214,15 @@ func TestPresenceProviderNeverFallsBackToEffectiveSource(t *testing.T) {
 	})
 	if got := provider.SnapshotPresence(ctx).Subject(); got != (session.PresenceSubject{}) {
 		t.Fatalf("effective source became presence subject: %+v", got)
+	}
+	provider.SnapshotPresence(ctx)
+	if len(warnings) != 1 {
+		t.Fatalf("missing-provenance warnings = %v, want one", warnings)
+	}
+	for _, secret := range []string{"alice@example.com", "198.51.100.99", stringHex(provider.key[:])} {
+		if strings.Contains(warnings[0], secret) {
+			t.Fatalf("warning leaked %q: %q", secret, warnings[0])
+		}
 	}
 }
 

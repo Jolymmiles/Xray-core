@@ -60,6 +60,18 @@ func TestDirectPresenceDoesNotActivateWithoutAcceptedRoute(t *testing.T) {
 	}
 }
 
+func TestDirectPresenceDefaultContextModePreservesCompatibility(t *testing.T) {
+	dispatcher, manager := newDirectPresenceDispatcher(t, &statelessOutbound{})
+	ctx, cancel := context.WithCancel(directPresenceContextWithoutMode())
+	link := directPresenceLink()
+	if err := dispatcher.DispatchLink(ctx, net.TCPDestination(net.DomainAddress("example.com"), 443), link); err != nil {
+		t.Fatal(err)
+	}
+	assertOnlineMap(t, manager, directPresenceMetric, 1, "192.0.2.44")
+	cancel()
+	waitOnlineCount(t, manager, directPresenceMetric, 0)
+}
+
 func TestDirectPresenceModesSuppressDispatcherOwnership(t *testing.T) {
 	for name, mode := range map[string]session.PresenceMode{"External": session.PresenceModeExternal, "Untracked": session.PresenceModeUntracked} {
 		t.Run(name, func(t *testing.T) {
@@ -137,14 +149,17 @@ func newDirectPresenceDispatcher(t *testing.T, handler outbound.Handler) (*Defau
 }
 
 func directPresenceContext(mode session.PresenceMode) context.Context {
-	ctx := session.ContextWithConnection(context.Background(), 1, session.Inbound{
+	return session.ContextWithPresenceMode(directPresenceContextWithoutMode(), mode)
+}
+
+func directPresenceContextWithoutMode() context.Context {
+	return session.ContextWithConnection(context.Background(), 1, session.Inbound{
 		Source:       net.TCPDestination(net.ParseAddress("198.51.100.99"), 12345),
 		PhysicalPeer: netip.MustParseAddr("192.0.2.44"),
 		Tag:          "inbound-a",
 		Name:         "vless",
 		User:         &protocol.MemoryUser{Email: "alice@example.com", Level: 7},
 	}, session.Outbound{}, session.Content{})
-	return session.ContextWithPresenceMode(ctx, mode)
 }
 
 func waitOnlineCount(t *testing.T, manager *appstats.Manager, metric string, want int) {

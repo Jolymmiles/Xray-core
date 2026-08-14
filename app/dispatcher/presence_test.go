@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"sync"
@@ -21,10 +22,11 @@ type presenceTestPolicy struct {
 type presenceTestStatsManager struct {
 	featurestats.NoopManager
 	onlineMap featurestats.OnlineMap
+	err       error
 }
 
 func (m *presenceTestStatsManager) GetOrRegisterOnlineMap(string) (featurestats.OnlineMap, error) {
-	return m.onlineMap, nil
+	return m.onlineMap, m.err
 }
 
 func (m *presenceTestStatsManager) GetOnlineMap(string) featurestats.OnlineMap {
@@ -116,6 +118,7 @@ func (m *recordingLegacyOnlineMap) AddIP(ip string) {
 	m.events = append(m.events, "add "+ip)
 	m.refs[ip]++
 }
+
 func (m *recordingLegacyOnlineMap) RemoveIP(ip string) {
 	m.events = append(m.events, "remove "+ip)
 	if m.refs[ip] <= 1 {
@@ -179,6 +182,29 @@ func TestPresenceTrackerActivatesAndClosesExactLease(t *testing.T) {
 	lease.Close()
 	lease.Close()
 	assertOnlineMap(t, manager, metric, 0)
+}
+
+func TestPresenceTrackerStatsLookupFailureWarnsOnceWithoutSubjectData(t *testing.T) {
+	tracker := newPresenceTracker(&presenceTestPolicy{online: true}, &presenceTestStatsManager{err: errors.New("lookup failed")})
+	now := time.Unix(100, 0)
+	tracker.warningNow = func() time.Time { return now }
+	var warnings []string
+	tracker.warningSink = func(message string) { warnings = append(warnings, message) }
+	subject := session.PresenceSubject{
+		Email:        "alice@example.com",
+		IP:           netip.MustParseAddr("192.0.2.1"),
+		PrincipalKey: [32]byte{0xde, 0xad, 0xbe, 0xef},
+	}
+	tracker.Prepare(subject).Activate().Close()
+	tracker.Prepare(subject).Activate().Close()
+	if len(warnings) != 1 {
+		t.Fatalf("lookup warnings = %v, want one", warnings)
+	}
+	for _, secret := range []string{subject.Email, subject.IP.String(), "deadbeef"} {
+		if strings.Contains(warnings[0], secret) {
+			t.Fatalf("warning leaked %q: %q", secret, warnings[0])
+		}
+	}
 }
 
 func TestPresenceTrackerDisabledPolicyIsNoop(t *testing.T) {

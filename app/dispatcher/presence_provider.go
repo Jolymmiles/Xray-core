@@ -18,6 +18,10 @@ import (
 
 const principalDomainSeparator = "xray-online-principal-v1"
 
+type presenceDegradationReporter interface {
+	warnDegraded(string)
+}
+
 type defaultPresenceProvider struct {
 	tracker  session.PresenceTracker
 	key      [32]byte
@@ -44,6 +48,9 @@ func (p *defaultPresenceProvider) SnapshotPresence(ctx context.Context) session.
 	}
 	ip := inbound.PhysicalPeer.Unmap()
 	if !validPresenceIP(ip) {
+		if reporter, ok := p.tracker.(presenceDegradationReporter); ok {
+			reporter.warnDegraded("trusted peer unavailable")
+		}
 		return session.PresenceScope{}
 	}
 	principal, reusable := p.principalKey(inbound.User, inbound.Tag, inbound.Name)
