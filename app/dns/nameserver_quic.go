@@ -3,6 +3,7 @@ package dns
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/binary"
 	"net/url"
 	"sync"
@@ -33,6 +34,7 @@ type QUICNameServer struct {
 	destination     *net.Destination
 	connection      *quic.Conn
 	clientIP        net.IP
+	tlsRootCAs      *x509.CertPool
 }
 
 // NewQUICNameServer creates DNS-over-QUIC client object for local resolving
@@ -263,7 +265,9 @@ func (s *QUICNameServer) openConnection() (*quic.Conn, error) {
 		HandshakeIdleTimeout: handshakeTimeout,
 	}
 	tlsConfig.ServerName = s.destination.Address.String()
-	conn, err := quic.DialAddr(context.Background(), s.destination.NetAddr(), tlsConfig.GetTLSConfig(tls.WithNextProto("http/1.1", http2.NextProtoTLS, NextProtoDQ)), quicConfig)
+	clientTLSConfig := tlsConfig.GetTLSConfig(tls.WithNextProto("http/1.1", http2.NextProtoTLS, NextProtoDQ))
+	clientTLSConfig.RootCAs = s.tlsRootCAs
+	conn, err := quic.DialAddr(context.Background(), s.destination.NetAddr(), clientTLSConfig, quicConfig)
 	log.Record(&log.AccessMessage{
 		From:   "DNS",
 		To:     s.destination,
