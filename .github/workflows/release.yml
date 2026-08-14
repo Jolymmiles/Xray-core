@@ -14,7 +14,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
     steps:
       - name: Restore Geodat Cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: resources
           key: xray-geodat-
@@ -37,7 +37,7 @@ jobs:
           done
       - name: Trigger Asset Update Workflow if Assets Missing
         if: steps.check-assets.outputs.missing == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -54,8 +54,44 @@ jobs:
         if: steps.check-assets.outputs.missing == 'true'
         run: sleep 90
 
-  build:
+  release-validation:
     needs: check-assets
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      XRAY_E2E_YT_INTERFACE: yt
+      XRAY_E2E_YT_IPV6: fd00:7872:6179::1
+      XRAY_STRUCTURAL_SOAK_SECONDS: 1800
+      XRAY_NATIVE_LINUX_RELEASE: 1
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Install release gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes iproute2
+          go install mvdan.cc/gofumpt@v0.11.0
+
+      - name: Configure production yt interface
+        run: |
+          sudo ip link add yt type dummy
+          sudo ip link set yt up
+          sudo ip -6 address add "${XRAY_E2E_YT_IPV6}/128" dev yt
+
+      - name: Run structural presence Linux release gate
+        run: testing/release/structural_presence.sh linux
+
+  build:
+    needs: [check-assets, release-validation]
     permissions:
       contents: write
     strategy:
@@ -115,7 +151,7 @@ jobs:
       CGO_ENABLED: 0
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Show workflow information
         run: |
@@ -124,10 +160,11 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           check-latest: true
+          cache: false
 
       - name: Get project dependencies
         run: go mod download
@@ -145,7 +182,7 @@ jobs:
           fi
 
       - name: Restore Geodat Cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: resources
           key: xray-geodat-
@@ -177,7 +214,7 @@ jobs:
           done
 
       - name: Upload binaries to release
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
         if: github.event_name == 'release'
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -186,7 +223,7 @@ jobs:
           file_glob: true
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Xray-${{ env.ASSET_NAME }}
           path: |
