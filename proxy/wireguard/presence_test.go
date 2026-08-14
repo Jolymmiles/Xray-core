@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/xtls/xray-core/common/session"
+	presencefixture "github.com/xtls/xray-core/testing/presence"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -92,6 +93,27 @@ func TestWireGuardPresenceOwnsFlowsNotBindings(t *testing.T) {
 	if flow := presence.Open([32]byte{9}); flow != nil {
 		t.Fatal("missing endpoint binding created a flow owner")
 	}
+}
+
+func TestWireGuardStatsServiceTracksFlowAndRoam(t *testing.T) {
+	fixture := presencefixture.New(t)
+	presence := newWireGuardPresence()
+	pub := [32]byte{8}
+	presence.Observe(pub, 1, netip.MustParseAddr("192.0.2.10"), fixture.Scope(t, "wireguard-roam@example.com", "192.0.2.10"))
+	fixture.AssertIPs(t, "wireguard-roam@example.com")
+	first := presence.Open(pub)
+	second := presence.Open(pub)
+	fixture.AssertIPs(t, "wireguard-roam@example.com", "192.0.2.10")
+
+	presence.Observe(pub, 2, netip.MustParseAddr("198.51.100.20"), fixture.Scope(t, "wireguard-roam@example.com", "198.51.100.20"))
+	fixture.AssertIPs(t, "wireguard-roam@example.com", "198.51.100.20")
+	presence.Observe(pub, 1, netip.MustParseAddr("192.0.2.10"), fixture.Scope(t, "wireguard-roam@example.com", "192.0.2.10"))
+	fixture.AssertIPs(t, "wireguard-roam@example.com", "198.51.100.20")
+
+	first.Close()
+	fixture.AssertIPs(t, "wireguard-roam@example.com", "198.51.100.20")
+	second.Close()
+	fixture.AssertIPs(t, "wireguard-roam@example.com")
 }
 
 func TestWireGuardPresenceRoamsAllFlowsOnce(t *testing.T) {
