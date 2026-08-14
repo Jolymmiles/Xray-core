@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/apernet/quic-go"
+	quiccongestion "github.com/apernet/quic-go/congestion"
 	"github.com/xtls/xray-core/transport/internet/hysteria/congestion/bbr"
 	"github.com/xtls/xray-core/transport/internet/hysteria/congestion/brutal"
 )
@@ -36,13 +37,20 @@ func NormalizeBBRProfile(profile string) (string, error) {
 func UseBBR(conn *quic.Conn, profile bbr.Profile) {
 	conn.SetCongestionControl(bbr.NewBbrSender(
 		bbr.DefaultClock{},
-		bbr.GetInitialPacketSize(conn.RemoteAddr()),
+		seedPacketSize(conn.InitialPacketSize(), bbr.GetInitialPacketSize(conn.RemoteAddr())),
 		profile,
 	))
 }
 
-func UseBrutal(conn *quic.Conn, tx uint64) {
-	conn.SetCongestionControl(brutal.NewBrutalSender(tx))
+func seedPacketSize(quicSize, byAddr quiccongestion.ByteCount) quiccongestion.ByteCount {
+	if quicSize <= 0 {
+		return byAddr
+	}
+	return min(quicSize, byAddr)
+}
+
+func UseBrutal(conn *quic.Conn, tx uint64, disableLossCompensation bool) {
+	conn.SetCongestionControl(brutal.NewBrutalSender(tx, disableLossCompensation))
 }
 
 func UseConfigured(conn *quic.Conn, congestionType, bbrProfile string) {

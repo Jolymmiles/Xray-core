@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	googleuuid "github.com/google/uuid"
 	"github.com/xtls/xray-core/common/errors"
@@ -815,10 +816,18 @@ func (c *Xicmp) Build() (proto.Message, error) {
 	return config, nil
 }
 
+type RealmPortMapping struct {
+	Enabled  bool  `json:"enabled"`
+	Timeout  int64 `json:"timeout"`
+	Lifetime int64 `json:"lifetime"`
+}
+
 type Realm struct {
-	Url         string     `json:"url"`
-	StunServers []string   `json:"stunServers"`
-	TlsConfig   *TLSConfig `json:"tlsConfig"`
+	Url         string            `json:"url"`
+	StunServers []string          `json:"stunServers"`
+	TlsConfig   *TLSConfig        `json:"tlsConfig"`
+	IPMode      string            `json:"ipMode"`
+	PortMapping *RealmPortMapping `json:"portMapping"`
 }
 
 func (c *Realm) Build() (proto.Message, error) {
@@ -890,6 +899,35 @@ func (c *Realm) Build() (proto.Message, error) {
 		tlsConfig = tc.(*tls.Config)
 	}
 
+	var family realm.Family
+	switch strings.ToLower(c.IPMode) {
+	case "", "dual":
+		family = realm.Family_Dual
+	case "v4":
+		family = realm.Family_V4
+	case "v6":
+		family = realm.Family_V6
+	default:
+		return nil, errors.New("invalid ipMode: ", c.IPMode, "; valid values: dual, v4, v6")
+	}
+
+	var portMapping *realm.PortMapping
+	if c.PortMapping != nil {
+		maxSeconds := int64(^uint64(0)>>1) / int64(time.Second)
+		if c.PortMapping.Timeout < 0 || c.PortMapping.Timeout > maxSeconds {
+			return nil, errors.New("portMapping timeout is out of range")
+		}
+		const maxPortMappingLifetimeSeconds = int64(1<<32 - 1)
+		if c.PortMapping.Lifetime < 0 || c.PortMapping.Lifetime > maxPortMappingLifetimeSeconds {
+			return nil, errors.New("portMapping lifetime is out of range")
+		}
+		portMapping = &realm.PortMapping{
+			Enabled:  c.PortMapping.Enabled,
+			Timeout:  c.PortMapping.Timeout,
+			Lifetime: c.PortMapping.Lifetime,
+		}
+	}
+
 	return &realm.Config{
 		Scheme:      scheme,
 		Host:        host,
@@ -898,6 +936,8 @@ func (c *Realm) Build() (proto.Message, error) {
 		ID:          id,
 		StunServers: stunServers,
 		TlsConfig:   tlsConfig,
+		IpMode:      family,
+		PortMapping: portMapping,
 	}, nil
 }
 
@@ -928,20 +968,23 @@ func (c *Mask) Build(tcp bool) (proto.Message, error) {
 }
 
 type QuicParamsConfig struct {
-	Congestion                  string    `json:"congestion"`
-	Debug                       bool      `json:"debug"`
-	BbrProfile                  string    `json:"bbrProfile"`
-	BrutalUp                    Bandwidth `json:"brutalUp"`
-	BrutalDown                  Bandwidth `json:"brutalDown"`
-	UdpHop                      UdpHop    `json:"udpHop"`
-	InitStreamReceiveWindow     uint64    `json:"initStreamReceiveWindow"`
-	MaxStreamReceiveWindow      uint64    `json:"maxStreamReceiveWindow"`
-	InitConnectionReceiveWindow uint64    `json:"initConnectionReceiveWindow"`
-	MaxConnectionReceiveWindow  uint64    `json:"maxConnectionReceiveWindow"`
-	MaxIdleTimeout              int64     `json:"maxIdleTimeout"`
-	KeepAlivePeriod             int64     `json:"keepAlivePeriod"`
-	DisablePathMTUDiscovery     bool      `json:"disablePathMTUDiscovery"`
-	MaxIncomingStreams          int64     `json:"maxIncomingStreams"`
+	Congestion                    string    `json:"congestion"`
+	Debug                         bool      `json:"debug"`
+	BbrProfile                    string    `json:"bbrProfile"`
+	BrutalUp                      Bandwidth `json:"brutalUp"`
+	BrutalDown                    Bandwidth `json:"brutalDown"`
+	BrutalDisableLossCompensation bool      `json:"brutalDisableLossCompensation"`
+	UdpHop                        UdpHop    `json:"udpHop"`
+	InitStreamReceiveWindow       uint64    `json:"initStreamReceiveWindow"`
+	MaxStreamReceiveWindow        uint64    `json:"maxStreamReceiveWindow"`
+	InitConnectionReceiveWindow   uint64    `json:"initConnectionReceiveWindow"`
+	MaxConnectionReceiveWindow    uint64    `json:"maxConnectionReceiveWindow"`
+	MaxIdleTimeout                int64     `json:"maxIdleTimeout"`
+	KeepAlivePeriod               int64     `json:"keepAlivePeriod"`
+	DisablePathMTUDiscovery       bool      `json:"disablePathMTUDiscovery"`
+	MaxIncomingStreams            int64     `json:"maxIncomingStreams"`
+	DisableChromeParrot           bool      `json:"disableChromeParrot"`
+	DisableGSO                    bool      `json:"disableGSO"`
 }
 
 type FinalMask struct {
