@@ -73,12 +73,9 @@ func testLegacyMuxPresenceOwnsOnlyPublishedDataSession(t *testing.T, destination
 	case <-time.After(time.Second):
 		t.Fatal("server did not dispatch legacy Mux session")
 	}
-	waitMuxPresence(t, &dispatcher.tracker.active, 1)
-	if server.ActiveConnections() != 1 {
-		t.Fatalf("active sessions = %d, want 1", server.ActiveConnections())
-	}
+	waitMuxSessionState(t, server, &dispatcher.tracker.active, 1)
 	common.Close(requestWriter)
-	waitMuxPresence(t, &dispatcher.tracker.active, 0)
+	waitMuxSessionState(t, server, &dispatcher.tracker.active, 0)
 	if server.Closed() {
 		t.Fatal("session close terminated the live carrier")
 	}
@@ -235,6 +232,18 @@ func muxPresenceLinkPair() (*transport.Link, *transport.Link) {
 	uplinkReader, uplinkWriter := pipe.New(pipe.WithoutSizeLimit())
 	downlinkReader, downlinkWriter := pipe.New(pipe.WithoutSizeLimit())
 	return &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, &transport.Link{Reader: downlinkReader, Writer: uplinkWriter}
+}
+
+func waitMuxSessionState(t *testing.T, server *ServerWorker, active *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if active.Load() == want && server.ActiveConnections() == uint32(want) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("session state: active sessions=%d presence=%d, want %d", server.ActiveConnections(), active.Load(), want)
 }
 
 func waitMuxPresence(t *testing.T, active *atomic.Int32, want int32) {

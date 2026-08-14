@@ -59,7 +59,7 @@ func (r *sessionRegistry) active(id uint16) (*Session, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	slot := r.slots[id]
-	if slot == nil || slot.state != sessionSlotActive {
+	if slot == nil || slot.state != sessionSlotActive || slot.owner == nil {
 		return nil, false
 	}
 	return slot.owner, true
@@ -217,7 +217,6 @@ func (a *sessionAdmission) finishCommit(owner *Session, lease session.PresenceLe
 		owner.cancel = slot.cancel
 		owner.ownerClose = a.registry.closeActive
 		slot.owner = owner
-		slot.state = sessionSlotActive
 		published = true
 	}
 	a.registry.mu.Unlock()
@@ -245,7 +244,8 @@ func (a *sessionAdmission) completeCommit() {
 
 	closeRequested := false
 	a.registry.mu.Lock()
-	if slot := a.registry.slots[a.id]; slot != nil && slot.token == a.token && slot.state == sessionSlotActive {
+	if slot := a.registry.slots[a.id]; slot != nil && slot.token == a.token && slot.state == sessionSlotActivating && slot.owner != nil {
+		slot.state = sessionSlotActive
 		closeRequested = slot.closeRequested || a.registry.closing
 	}
 	a.registry.mu.Unlock()
