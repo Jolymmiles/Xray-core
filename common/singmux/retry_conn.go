@@ -21,12 +21,12 @@ type retryConn struct {
 	ctx    context.Context
 	opener func(context.Context) (net.Conn, error)
 
-	readMu   sync.Mutex
-	writeMu  sync.Mutex
-	stateMu  sync.Mutex
-	conn     net.Conn
-	replay   []byte
-	replaced chan struct{}
+	readMu      sync.Mutex
+	writePermit chan struct{}
+	stateMu     sync.Mutex
+	conn        net.Conn
+	replay      []byte
+	replaced    chan struct{}
 
 	confirmed     bool
 	replayAllowed bool
@@ -35,7 +35,24 @@ type retryConn struct {
 }
 
 func newRetryConn(ctx context.Context, initial net.Conn, opener func(context.Context) (net.Conn, error)) *retryConn {
-	return &retryConn{ctx: ctx, opener: opener, conn: initial, replayAllowed: true, replaced: make(chan struct{}, 1)}
+	connection := &retryConn{
+		ctx:           ctx,
+		opener:        opener,
+		writePermit:   make(chan struct{}, 1),
+		conn:          initial,
+		replaced:      make(chan struct{}, 1),
+		replayAllowed: true,
+	}
+	connection.releaseWrite()
+	return connection
+}
+
+func (c *retryConn) acquireWrite() {
+	<-c.writePermit
+}
+
+func (c *retryConn) releaseWrite() {
+	c.writePermit <- struct{}{}
 }
 
 func (c *retryConn) current() (net.Conn, error) {
@@ -101,8 +118,8 @@ func (c *retryConn) Write(payload []byte) (int, error) {
 	if len(payload) == 0 {
 		return 0, nil
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.acquireWrite()
+	defer c.releaseWrite()
 
 	total := 0
 	for total < len(payload) {
@@ -166,16 +183,32 @@ func (c *retryConn) awaitResponse(connection net.Conn) error {
 		if errors.As(err, &rejected) {
 			return err
 		}
+		ownsWrite := false
+		select {
+		case <-c.replaced:
+		case <-c.writePermit:
+			ownsWrite = true
+		case <-c.ctx.Done():
+			return c.ctx.Err()
+		}
 		current, currentErr := c.current()
 		if currentErr != nil {
+			if ownsWrite {
+				c.releaseWrite()
+			}
 			return err
 		}
 		if current != connection {
 			connection = current
-		} else if c.writeMu.TryLock() {
+			if ownsWrite {
+				c.releaseWrite()
+			}
+		} else if !ownsWrite {
+			return err
+		} else {
 			replacement, replay, retryErr := c.replaceLocked(connection)
 			if retryErr != nil {
-				c.writeMu.Unlock()
+				c.releaseWrite()
 				return err
 			}
 			connection = replacement
@@ -183,18 +216,8 @@ func (c *retryConn) awaitResponse(connection net.Conn) error {
 				if replayErr := writeFull(replacement, replay); replayErr != nil {
 					_ = replacement.Close()
 				}
-				c.writeMu.Unlock()
+				c.releaseWrite()
 			}()
-		} else {
-			select {
-			case <-c.replaced:
-				connection, currentErr = c.current()
-				if currentErr != nil || connection == nil {
-					return err
-				}
-			case <-c.ctx.Done():
-				return c.ctx.Err()
-			}
 		}
 		if err := readStreamResponse(connection); err != nil {
 			return err

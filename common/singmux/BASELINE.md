@@ -529,3 +529,34 @@ legacy Mux, XUDP, RVS, and WireGuard version-skew matrices on every cycle, in
 addition to the exact-owner batches. The contract test, shell syntax, vformat,
 source-removal audit, and strict OpenSpec validation pass after the correction.
 Native execution remains pending under task 10.3.
+
+### Stale-carrier write/read recovery (2026-08-14)
+
+The first `v26.8.19` release workflow exposed a reconnect race in all three
+same-SHA Linux runs. Random VLESS cycles either timed out or reset while the
+subsequent cycles recovered. A failed response read waited only for a writer to
+publish a replacement stream. If that stale writer returned success instead, it
+released the write path without publishing the notification, leaving the reader
+blocked until the outer request deadline.
+
+A deterministic regression now holds the stale writer through the failed read,
+then lets it return success. It failed before the fix with `read did not replace
+the stale stream after the writer released it`. Recovery now distinguishes two
+events: an early replacement notification lets a reader consume the response
+while replay is still writing, and a write permit lets the reader replace the
+stale stream when the writer completed without doing so. The focused tests pass
+normally, with race instrumentation, and with `-d=checkptr=2`.
+
+A full local hardening run used Go 1.26.5 on Darwin/arm64 from
+`e3502fd7` plus the dirty retry fix:
+
+```sh
+TMPDIR=/tmp XRAY_SMUX_STRESS_CYCLES=50 \
+  go test -timeout=45m -tags "integration stress" ./common/singmux \
+  -run "^TestSMUXProcessStressAndReconnect$" -count=1 -v
+```
+
+All 400/400 cycles passed across the eight Xray, sing-box, and Mihomo
+direction/carrier topologies in 2569.47 seconds. This proves the local reconnect
+harness and payload path; Darwin is not native Linux runtime evidence. The
+manual pinned-Linux pre-release workflow remains the authoritative release gate.
