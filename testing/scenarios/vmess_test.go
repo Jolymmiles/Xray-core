@@ -854,6 +854,8 @@ func TestVMessGCMMuxUDP(t *testing.T) {
 
 	servers, err := InitializeServerConfigs(serverConfig, clientConfig)
 	common.Must(err)
+	defer CloseAllServers(servers)
+	waitForTCPAndUDPPaths(t, clientPort, clientUDPPort, 20*time.Second)
 
 	for range "ab" {
 		var errg errgroup.Group
@@ -866,11 +868,6 @@ func TestVMessGCMMuxUDP(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
-
-	defer func() {
-		<-time.After(5 * time.Second)
-		CloseAllServers(servers)
-	}()
 }
 
 func TestVMessGCMLengthAuth(t *testing.T) {

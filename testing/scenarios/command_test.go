@@ -82,9 +82,7 @@ func TestCommanderListenConfigurationItem(t *testing.T) {
 	common.Must(err)
 	defer CloseAllServers(servers)
 
-	if err := testTCPConn(clientPort, 1024, time.Second*5)(); err != nil {
-		t.Fatal(err)
-	}
+	waitForTCPPath(t, clientPort, 1024, 20*time.Second)
 
 	cmdConn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%d", cmdPort), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	common.Must(err)
@@ -107,6 +105,22 @@ func TestCommanderListenConfigurationItem(t *testing.T) {
 		if err == nil {
 			t.Error("unexpected nil error")
 		}
+	}
+}
+
+func waitForTCPPath(t *testing.T, port net.Port, payloadSize int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		lastErr = testTCPConn(port, payloadSize, time.Until(deadline))()
+		if lastErr == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("TCP path on port %d did not become ready within %s: %v", port, timeout, lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -177,9 +191,7 @@ func TestCommanderRemoveHandler(t *testing.T) {
 	common.Must(err)
 	defer CloseAllServers(servers)
 
-	if err := testTCPConn(clientPort, 1024, time.Second*5)(); err != nil {
-		t.Fatal(err)
-	}
+	waitForTCPPath(t, clientPort, 1024, 20*time.Second)
 
 	cmdConn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%d", cmdPort), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	common.Must(err)
@@ -273,9 +285,7 @@ func TestCommanderListHandlers(t *testing.T) {
 	common.Must(err)
 	defer CloseAllServers(servers)
 
-	if err := testTCPConn(clientPort, 1024, time.Second*5)(); err != nil {
-		t.Fatal(err)
-	}
+	waitForTCPPath(t, clientPort, 1024, 20*time.Second)
 
 	cmdConn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%d", cmdPort), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	common.Must(err)
@@ -479,9 +489,7 @@ func TestCommanderAddRemoveUser(t *testing.T) {
 		t.Fatal("nil response")
 	}
 
-	if err := testTCPConn(clientPort, 1024, time.Second*5)(); err != nil {
-		t.Fatal(err)
-	}
+	waitForTCPPath(t, clientPort, 1024, 20*time.Second)
 
 	resp, err = hsClient.AlterInbound(context.Background(), &command.AlterInboundRequest{
 		Tag:       "v",

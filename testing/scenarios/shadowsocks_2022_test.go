@@ -209,6 +209,7 @@ func testShadowsocks2022Udp(t *testing.T, method string, password string) {
 	servers, err := InitializeServerConfigs(serverConfig, clientConfig)
 	common.Must(err)
 	defer CloseAllServers(servers)
+	waitForUDPPath(t, udpClientPort, 20*time.Second)
 
 	var errGroup errgroup.Group
 	for range 3 {
