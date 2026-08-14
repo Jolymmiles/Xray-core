@@ -52,6 +52,7 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"ref: 2e1394a7cf4c2d25ac6290a05ee0e21f786073de",
 		"SING_BOX_E2E_BIN=",
 		"MIHOMO_E2E_BIN=",
+		"rm -rf .interop",
 		"needs: [check-assets, release-validation]",
 	})
 	assertFileContains(t, filepath.Join(root, "common", "singmux", "TESTING.md"), []string{

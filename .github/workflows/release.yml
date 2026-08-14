@@ -110,6 +110,7 @@ jobs:
           test -x "$RUNNER_TEMP/mihomo"
           echo "SING_BOX_E2E_BIN=$RUNNER_TEMP/sing-box" >> "$GITHUB_ENV"
           echo "MIHOMO_E2E_BIN=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+          rm -rf .interop
 
       - name: Install release gate dependencies
         run: |
