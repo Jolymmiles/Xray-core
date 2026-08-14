@@ -12,8 +12,11 @@ The canonical release entrypoint is `testing/release/structural_presence.sh`.
 version-skew, and aggregate lifecycle gates. `linux` additionally runs the
 non-skippable pinned Linux/amd64 50-cycle reconnect stress, nine-round
 performance comparison, real `yt` environment contract, 30-minute structural
-soak, and release artifact inspection. The release workflow must depend on this
-job; a missing Linux capability or environment value is a failure, not a skip.
+soak, and release artifact inspection. The manual
+`.github/workflows/pre-release-validation.yml` workflow runs this gate before
+tagging. `.github/workflows/release.yml` is intentionally build-only so publishing
+a release never starts a duplicate soak. A missing Linux capability or environment
+value in pre-release validation is a failure, not a skip.
 
 ```sh
 testing/release/structural_presence.sh standard
