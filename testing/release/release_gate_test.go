@@ -38,6 +38,7 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 	assertFileContains(t, filepath.Join(root, ".github", "workflows", "release.yml"), []string{
 		"release-validation:",
 		"runs-on: ubuntu-24.04",
+		"fetch-depth: 0",
 		"XRAY_STRUCTURAL_SOAK_SECONDS: 1800",
 		"XRAY_E2E_YT_INTERFACE: yt",
 		"XRAY_NATIVE_LINUX_RELEASE: 1",
