@@ -15,9 +15,14 @@ import (
 )
 
 func TestGenerate(t *testing.T) {
-	err := generate(nil, true, true, "ca")
-	if err != nil {
+	output := t.TempDir() + "/ca"
+	if err := generate(nil, true, false, output); err != nil {
 		t.Fatal(err)
+	}
+	for _, suffix := range []string{".crt", ".key"} {
+		if _, err := os.Stat(output + suffix); err != nil {
+			t.Fatalf("generated certificate file %q: %v", suffix, err)
+		}
 	}
 }
 

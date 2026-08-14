@@ -11,6 +11,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -67,6 +68,12 @@ func NotAfter(t time.Time) Option {
 func DNSNames(names ...string) Option {
 	return func(c *x509.Certificate) {
 		c.DNSNames = names
+	}
+}
+
+func IPAddresses(addresses ...net.IP) Option {
+	return func(c *x509.Certificate) {
+		c.IPAddresses = addresses
 	}
 }
 
