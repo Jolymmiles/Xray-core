@@ -351,7 +351,7 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 	return conn, false
 }
 
-func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest net.Destination) {
+func (w *udpWorker) callback(b *buf.Buffer, source, originalDest, physicalPeer net.Destination) {
 	id := connID{
 		src: source,
 	}
@@ -391,7 +391,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 
 			ctx = session.ContextWithInbound(ctx, &session.Inbound{
 				Source:       source,
-				PhysicalPeer: physicalPeerFromUDPDestination(source),
+				PhysicalPeer: physicalPeerFromUDPDestination(physicalPeer),
 				Local:        local, // Due to some limitations, in UDP connections, localIP is always equal to listen interface IP
 				Gateway:      net.UDPDestination(w.address, w.port),
 				Tag:          w.tag,
@@ -421,7 +421,7 @@ func (w *udpWorker) removeConn(id connID) {
 func (w *udpWorker) handlePackets() {
 	receive := w.hub.Receive()
 	for payload := range receive {
-		w.callback(payload.Payload, payload.Source, payload.Target)
+		w.callback(payload.Payload, payload.Source, payload.Target, payload.PhysicalPeer)
 	}
 }
 

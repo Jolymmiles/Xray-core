@@ -9,7 +9,34 @@ import (
 	"github.com/xtls/xray-core/app/stats"
 	. "github.com/xtls/xray-core/app/stats/command"
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/mux"
+	X "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/session"
+	presencefixture "github.com/xtls/xray-core/testing/presence"
+	"github.com/xtls/xray-core/transport"
+	"github.com/xtls/xray-core/transport/pipe"
 )
+
+func TestRVSDataSlotIsVisibleThroughStatsService(t *testing.T) {
+	fixture := presencefixture.New(t)
+	scope := fixture.Scope(t, "reverse@example.com", "192.0.2.44")
+	carrierReader, carrierWriter := pipe.New(pipe.WithoutSizeLimit())
+	worker, err := mux.NewClientWorkerWithPresence(transport.Link{Reader: carrierReader, Writer: carrierWriter}, mux.ClientStrategy{}, scope)
+	common.Must(err)
+	defer worker.Close()
+	requestReader, requestWriter := pipe.New(pipe.WithoutSizeLimit())
+	_, responseWriter := pipe.New(pipe.WithoutSizeLimit())
+	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+		Target: X.TCPDestination(X.DomainAddress("public.example"), 443),
+	}})
+	if !worker.DispatchRVS(ctx, &transport.Link{Reader: requestReader, Writer: responseWriter}) {
+		t.Fatal("RVS data session was rejected")
+	}
+
+	fixture.AssertIPs(t, "reverse@example.com", "192.0.2.44")
+	common.Must(requestWriter.Close())
+	fixture.WaitIPs(t, "reverse@example.com")
+}
 
 func TestGetStats(t *testing.T) {
 	m, err := stats.NewManager(context.Background(), &stats.Config{})

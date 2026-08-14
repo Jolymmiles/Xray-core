@@ -30,6 +30,8 @@ type Hub struct {
 	cache        chan *udp.Packet
 	capacity     int
 	recvOrigDest bool
+	// Only direct kernel UDP reads prove their returned address is physical.
+	trustedReadAddr bool
 }
 
 func ListenUDP(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, options ...HubOption) (*Hub, error) {
@@ -77,7 +79,7 @@ func ListenUDP(ctx context.Context, address net.Address, port net.Port, streamSe
 	}
 
 	errors.LogInfo(ctx, "listening UDP on ", address, ":", port)
-	hub.udpConn, _ = hub.conn.(*net.UDPConn)
+	hub.udpConn, hub.trustedReadAddr = hub.conn.(*net.UDPConn)
 	hub.cache = make(chan *udp.Packet, hub.capacity)
 
 	go hub.start()
@@ -133,9 +135,13 @@ func (h *Hub) start() {
 			continue
 		}
 
+		source := net.UDPDestination(net.IPAddress(udpAddr.IP), net.Port(udpAddr.Port))
 		payload := &udp.Packet{
 			Payload: buffer,
-			Source:  net.UDPDestination(net.IPAddress(udpAddr.IP), net.Port(udpAddr.Port)),
+			Source:  source,
+		}
+		if h.trustedReadAddr {
+			payload.PhysicalPeer = source
 		}
 		if h.recvOrigDest && noob > 0 {
 			payload.Target = RetrieveOriginalDest(oobBytes[:noob])

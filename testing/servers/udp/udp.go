@@ -9,7 +9,6 @@ import (
 type Server struct {
 	Port         net.Port
 	MsgProcessor func(msg []byte) []byte
-	accepting    bool
 	conn         *net.UDPConn
 }
 
@@ -32,13 +31,11 @@ func (server *Server) Start() (net.Destination, error) {
 }
 
 func (server *Server) handleConnection(conn *net.UDPConn) {
-	server.accepting = true
-	for server.accepting {
+	for {
 		buffer := make([]byte, 2*1024)
 		nBytes, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			fmt.Printf("Failed to read from UDP: %v\n", err)
-			continue
+			return
 		}
 
 		response := server.MsgProcessor(buffer[:nBytes])
@@ -49,6 +46,5 @@ func (server *Server) handleConnection(conn *net.UDPConn) {
 }
 
 func (server *Server) Close() error {
-	server.accepting = false
 	return server.conn.Close()
 }
