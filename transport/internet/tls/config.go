@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -85,12 +86,67 @@ func (c *Config) loadSelfCertPool() (*x509.CertPool, error) {
 	return root, nil
 }
 
-// BuildCertificates builds a list of TLS certificates from proto definition.
+type certificateStore struct {
+	certificates atomic.Pointer[[]*tls.Certificate]
+}
+
+func newCertificateStore(certificates []*tls.Certificate) *certificateStore {
+	store := new(certificateStore)
+	store.certificates.Store(&certificates)
+	return store
+}
+
+func (s *certificateStore) snapshot() []*tls.Certificate {
+	certificates := s.certificates.Load()
+	if certificates == nil {
+		return nil
+	}
+	return *certificates
+}
+
+func (s *certificateStore) replace(index int, certificate *tls.Certificate) {
+	for {
+		current := s.certificates.Load()
+		if current == nil || index < 0 || index >= len(*current) {
+			return
+		}
+		updated := slices.Clone(*current)
+		updated[index] = certificate
+		if s.certificates.CompareAndSwap(current, &updated) {
+			return
+		}
+	}
+}
+
+type certificateRefresh struct {
+	entry          *Certificate
+	index          int
+	getX509KeyPair func() *tls.Certificate
+}
+
+// BuildCertificates builds an immutable point-in-time list of TLS certificates
+// from the protobuf definition. GetTLSConfig uses buildCertificateStore so hot
+// reloads can publish replacement certificates atomically.
 func (c *Config) BuildCertificates() []*tls.Certificate {
-	certs := make([]*tls.Certificate, 0, len(c.Certificate))
-	for _, entry := range c.Certificate {
-		if entry.Usage != Certificate_ENCIPHERMENT {
+	return c.buildCertificateStore(false).snapshot()
+}
+
+func (c *Config) buildCertificateStore(refresh bool) *certificateStore {
+	certificates := make([]*tls.Certificate, 0, len(c.Certificate))
+	refreshes := make([]certificateRefresh, 0, len(c.Certificate))
+	for _, configured := range c.Certificate {
+		if configured.Usage != Certificate_ENCIPHERMENT {
 			continue
+		}
+		entry := &Certificate{
+			Certificate:     slices.Clone(configured.Certificate),
+			Key:             slices.Clone(configured.Key),
+			Usage:           configured.Usage,
+			OcspStapling:    configured.OcspStapling,
+			CertificatePath: configured.CertificatePath,
+			KeyPath:         configured.KeyPath,
+			OneTimeLoading:  configured.OneTimeLoading,
+			BuildChain:      configured.BuildChain,
 		}
 		getX509KeyPair := func() *tls.Certificate {
 			keyPair, err := tls.X509KeyPair(entry.Certificate, entry.Key)
@@ -105,32 +161,46 @@ func (c *Config) BuildCertificates() []*tls.Certificate {
 			}
 			return &keyPair
 		}
-		if keyPair := getX509KeyPair(); keyPair != nil {
-			certs = append(certs, keyPair)
-		} else {
+		keyPair := getX509KeyPair()
+		if keyPair == nil {
 			continue
 		}
-		index := len(certs) - 1
-		setupOcspTicker(entry, func(isReloaded, isOcspstapling bool) {
-			cert := certs[index]
-			if isReloaded {
-				if newKeyPair := getX509KeyPair(); newKeyPair != nil {
-					cert = newKeyPair
-				} else {
-					return
-				}
-			}
-			if isOcspstapling {
-				if newOCSPData, err := ocsp.GetOCSPForCert(cert.Certificate); err != nil {
-					errors.LogWarningInner(context.Background(), err, "ignoring invalid OCSP")
-				} else if string(newOCSPData) != string(cert.OCSPStaple) {
-					cert.OCSPStaple = newOCSPData
-				}
-			}
-			certs[index] = cert
+		certificates = append(certificates, keyPair)
+		refreshes = append(refreshes, certificateRefresh{
+			entry:          entry,
+			index:          len(certificates) - 1,
+			getX509KeyPair: getX509KeyPair,
 		})
 	}
-	return certs
+
+	store := newCertificateStore(certificates)
+	if !refresh {
+		return store
+	}
+	for _, refresh := range refreshes {
+		setupOcspTicker(refresh.entry, func(isReloaded, isOcspstapling bool) {
+			certificate := store.snapshot()[refresh.index]
+			if isReloaded {
+				certificate = refresh.getX509KeyPair()
+				if certificate == nil {
+					return
+				}
+			} else {
+				copy := *certificate
+				certificate = &copy
+			}
+			if isOcspstapling {
+				newOCSPData, err := ocsp.GetOCSPForCert(certificate.Certificate)
+				if err != nil {
+					errors.LogWarningInner(context.Background(), err, "ignoring invalid OCSP")
+				} else if string(newOCSPData) != string(certificate.OCSPStaple) {
+					certificate.OCSPStaple = newOCSPData
+				}
+			}
+			store.replace(refresh.index, certificate)
+		})
+	}
+	return store
 }
 
 func setupOcspTicker(entry *Certificate, callback func(isReloaded, isOcspstapling bool)) {
@@ -283,8 +353,9 @@ func getGetCertificateFunc(c *tls.Config, ca []*Certificate) func(hello *tls.Cli
 	}
 }
 
-func getNewGetCertificateFunc(certs []*tls.Certificate, rejectUnknownSNI bool) func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+func getNewGetCertificateFunc(certificates *certificateStore, rejectUnknownSNI bool) func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		certs := certificates.snapshot()
 		if len(certs) == 0 {
 			return nil, errNoCertificates
 		}
@@ -450,7 +521,7 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 	if len(caCerts) > 0 {
 		config.GetCertificate = getGetCertificateFunc(config, caCerts)
 	} else {
-		config.GetCertificate = getNewGetCertificateFunc(c.BuildCertificates(), c.RejectUnknownSni)
+		config.GetCertificate = getNewGetCertificateFunc(c.buildCertificateStore(true), c.RejectUnknownSni)
 	}
 
 	if sn := c.parseServerName(); len(sn) > 0 {

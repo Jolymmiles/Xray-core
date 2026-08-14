@@ -3,6 +3,7 @@ package tls_test
 import (
 	gotls "crypto/tls"
 	"crypto/x509"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,6 +63,34 @@ func TestExpiredCertificate(t *testing.T) {
 	if !x509Cert.NotAfter.After(time.Now()) {
 		t.Error("NotAfter: ", x509Cert.NotAfter)
 	}
+}
+
+func TestCertificateRefreshConcurrentSelection(t *testing.T) {
+	generated, _ := cert.MustGenerate(nil, cert.CommonName("localhost"), cert.DNSNames("localhost"))
+	certificate := ParseCertificate(generated)
+	certificate.OcspStapling = 1
+
+	tlsConfig := (&Config{Certificate: []*Certificate{certificate}}).GetTLSConfig()
+	hello := &gotls.ClientHelloInfo{ServerName: "localhost"}
+	deadline := time.Now().Add(1500 * time.Millisecond)
+
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Go(func() {
+			for time.Now().Before(deadline) {
+				selected, err := tlsConfig.GetCertificate(hello)
+				if err != nil {
+					t.Errorf("GetCertificate() failed: %v", err)
+					return
+				}
+				if selected == nil {
+					t.Error("GetCertificate() returned nil")
+					return
+				}
+			}
+		})
+	}
+	readers.Wait()
 }
 
 func TestInsecureCertificates(t *testing.T) {
