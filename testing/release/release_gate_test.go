@@ -46,6 +46,12 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"Restore Geodat Cache for release validation",
 		"test -s resources/geoip.dat",
 		"test -s resources/geosite.dat",
+		"repository: Jolymmiles/sing-box",
+		"ref: 46f00de9aa060ab989353953051268c7c4745664",
+		"repository: Jolymmiles/mihomo",
+		"ref: 2e1394a7cf4c2d25ac6290a05ee0e21f786073de",
+		"SING_BOX_E2E_BIN=",
+		"MIHOMO_E2E_BIN=",
 		"needs: [check-assets, release-validation]",
 	})
 	assertFileContains(t, filepath.Join(root, "common", "singmux", "TESTING.md"), []string{
