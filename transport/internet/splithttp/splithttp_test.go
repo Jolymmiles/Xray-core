@@ -274,7 +274,6 @@ func Test_ListenXHAndDial_QUIC(t *testing.T) {
 				}
 				common.Must2(conn.Write(b.Bytes()))
 			}
-
 		}()
 	})
 	common.Must(err)
