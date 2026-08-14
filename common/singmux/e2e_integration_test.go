@@ -4,6 +4,7 @@ package singmux_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -27,11 +28,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	statscommand "github.com/xtls/xray-core/app/stats/command"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
-	testUUID     = "b831381d-6324-4d53-ad4f-8cda48b30811"
-	testPassword = "xray-smux-e2e-password"
+	testUUID          = "b831381d-6324-4d53-ad4f-8cda48b30811"
+	testPassword      = "xray-smux-e2e-password"
+	testPresenceEmail = "structural-presence@example.com"
 )
 
 type e2eBinaries struct {
@@ -201,8 +207,14 @@ func buildE2EBinary(t testing.TB, environment, output, directory, target string,
 
 func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, direction, carrier, network, protocol string, padding bool, tcpEcho, udpEcho net.Addr) {
 	t.Helper()
-	serverPort := freeTCPPort(t)
-	socksPort := freeTCPPort(t)
+	serverPort := freeWildcardTCPPort(t)
+	socksPort := freeTCPUDPPort(t)
+	apiPort := 0
+	wantOnlineIP := ""
+	if direction == "xray-server" {
+		apiPort = freeTCPPort(t)
+		wantOnlineIP = nonLoopbackHostIPv4(t)
+	}
 	scenarioDir := filepath.Join(workDir, strings.NewReplacer("/", "-", "=", "-").Replace(t.Name()))
 	if err := os.MkdirAll(scenarioDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -224,8 +236,8 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 	} else {
 		serverBinary = binaries.xray
 		serverArgs = []string{"run", "-config", filepath.Join(scenarioDir, "server.json")}
-		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, protocol, padding, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, protocol, padding, certificate)
+		serverConfig = xrayPresenceServerConfig(t, carrier, serverPort, apiPort, protocol, padding, certificate, privateKey)
+		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, protocol, padding, certificate, wantOnlineIP)
 	}
 
 	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
@@ -260,12 +272,22 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 			t.Logf("client logs:\n%s", client.logs.String())
 		}
 	})
+	var statsClient statscommand.StatsServiceClient
+	var assertOnline func()
+	if direction == "xray-server" {
+		statsClient = dialStatsService(t, apiPort)
+		assertOnline = func() { waitStatsOnlineIPs(t, statsClient, wantOnlineIP) }
+	}
 	if network == "tcp" {
-		testSOCKSTCP(t, socksPort, tcpEcho.(*net.TCPAddr))
+		testSOCKSTCP(t, socksPort, tcpEcho.(*net.TCPAddr), assertOnline)
 	} else {
-		testSOCKSUDP(t, socksPort, udpEcho.(*net.UDPAddr))
+		testSOCKSUDP(t, socksPort, udpEcho.(*net.UDPAddr), assertOnline)
 	}
 	if direction == "xray-server" {
+		if network == "udp" {
+			stopE2EProcess(t, client)
+		}
+		waitStatsOnlineIPs(t, statsClient)
 		assertStructuredAccessDestination(t, server, network, tcpEcho, udpEcho)
 	}
 }
@@ -297,19 +319,27 @@ func peerServerConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, 
 	return binaries.mihomo, []string{"-d", ".", "-f", "server.yaml"}, mihomoServerConfig(carrier, port, padding, certificate, privateKey)
 }
 
-func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate string) (string, []string, []byte) {
+func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate string, serverAddresses ...string) (string, []string, []byte) {
 	t.Helper()
+	serverAddress := "127.0.0.1"
+	if len(serverAddresses) != 0 {
+		serverAddress = serverAddresses[0]
+	}
 	if peer == "xray" {
-		return binaries.xray, []string{"run", "-config", "client.json"}, xrayConfig(t, false, carrier, serverPort, socksPort, protocol, padding, certificate, "")
+		return binaries.xray, []string{"run", "-config", "client.json"}, xrayConfig(t, false, carrier, serverPort, socksPort, protocol, padding, certificate, "", serverAddress)
 	}
 	if peer == "sing-box" {
-		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, protocol, padding, "", "")
+		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, protocol, padding, "", "", serverAddress)
 	}
-	return binaries.mihomo, []string{"-d", ".", "-f", "client.yaml"}, mihomoClientConfig(carrier, serverPort, socksPort, protocol, padding)
+	return binaries.mihomo, []string{"-d", ".", "-f", "client.yaml"}, mihomoClientConfig(carrier, serverPort, socksPort, protocol, padding, serverAddress)
 }
 
-func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string) []byte {
+func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string, serverAddresses ...string) []byte {
 	t.Helper()
+	serverAddress := "127.0.0.1"
+	if len(serverAddresses) != 0 {
+		serverAddress = serverAddresses[0]
+	}
 	config := map[string]any{"log": map[string]any{"loglevel": "debug"}}
 	if server {
 		config["log"] = map[string]any{
@@ -343,12 +373,12 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 		var settings map[string]any
 		if carrier == "vless" {
 			settings = map[string]any{"vnext": []any{map[string]any{
-				"address": "127.0.0.1", "port": serverPort,
+				"address": serverAddress, "port": serverPort,
 				"users": []any{map[string]any{"id": testUUID, "encryption": "none"}},
 			}}}
 		} else {
 			settings = map[string]any{"servers": []any{map[string]any{
-				"address": "127.0.0.1", "port": serverPort, "password": testPassword,
+				"address": serverAddress, "port": serverPort, "password": testPassword,
 			}}}
 		}
 		outbound := map[string]any{
@@ -360,6 +390,33 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 			outbound["streamSettings"] = xrayTLSSettings(false, certificate, "")
 		}
 		config["outbounds"] = []any{outbound}
+	}
+	encoded, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func xrayPresenceServerConfig(t *testing.T, carrier string, serverPort, apiPort int, protocol string, padding bool, certificate, privateKey string) []byte {
+	t.Helper()
+	encoded := xrayConfig(t, true, carrier, serverPort, 0, protocol, padding, certificate, privateKey)
+	var config map[string]any
+	if err := json.Unmarshal(encoded, &config); err != nil {
+		t.Fatal(err)
+	}
+	inbounds := config["inbounds"].([]any)
+	inbound := inbounds[0].(map[string]any)
+	inbound["listen"] = "0.0.0.0"
+	settings := inbound["settings"].(map[string]any)
+	clients := settings["clients"].([]any)
+	clients[0].(map[string]any)["email"] = testPresenceEmail
+	config["stats"] = map[string]any{}
+	config["policy"] = map[string]any{"levels": map[string]any{
+		"0": map[string]any{"statsUserOnline": true},
+	}}
+	config["api"] = map[string]any{
+		"tag": "api", "listen": fmt.Sprintf("127.0.0.1:%d", apiPort), "services": []string{"StatsService"},
 	}
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -413,8 +470,12 @@ func xrayTLSSettings(server bool, certificate, privateKey string) map[string]any
 	return settings
 }
 
-func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string) []byte {
+func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string, serverAddresses ...string) []byte {
 	t.Helper()
+	serverAddress := "127.0.0.1"
+	if len(serverAddresses) != 0 {
+		serverAddress = serverAddresses[0]
+	}
 	config := map[string]any{"log": map[string]any{"level": "debug", "timestamp": true}}
 	if server {
 		inbound := map[string]any{
@@ -432,7 +493,7 @@ func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksP
 	} else {
 		config["inbounds"] = []any{map[string]any{"type": "socks", "listen": "127.0.0.1", "listen_port": socksPort}}
 		outbound := map[string]any{
-			"type": carrier, "server": "127.0.0.1", "server_port": serverPort,
+			"type": carrier, "server": serverAddress, "server_port": serverPort,
 			"multiplex": map[string]any{"enabled": true, "protocol": protocol, "max_connections": 1, "padding": padding},
 		}
 		if carrier == "vless" {
@@ -462,14 +523,18 @@ func mihomoServerConfig(carrier string, port int, padding bool, certificate, pri
 	return []byte(fmt.Sprintf("mode: direct\nlog-level: warning\nlisteners:\n  - name: e2e-in\n    type: %s\n    listen: 127.0.0.1\n    port: %d\n%s%s    mux-option:\n      padding: %t\n", carrier, port, credentials, tls, padding))
 }
 
-func mihomoClientConfig(carrier string, serverPort, socksPort int, protocol string, padding bool) []byte {
+func mihomoClientConfig(carrier string, serverPort, socksPort int, protocol string, padding bool, serverAddresses ...string) []byte {
+	serverAddress := "127.0.0.1"
+	if len(serverAddresses) != 0 {
+		serverAddress = serverAddresses[0]
+	}
 	credentials := fmt.Sprintf("    uuid: %s\n    udp: true\n", testUUID)
 	tls := "    tls: false\n"
 	if carrier == "trojan" {
 		credentials = fmt.Sprintf("    password: %s\n    udp: true\n", testPassword)
 		tls = "    tls: true\n    servername: localhost\n    skip-cert-verify: true\n"
 	}
-	return []byte(fmt.Sprintf("socks-port: %d\nallow-lan: false\nmode: global\nlog-level: warning\nproxies:\n  - name: e2e-peer\n    type: %s\n    server: 127.0.0.1\n    port: %d\n%s%s    smux:\n      enabled: true\n      protocol: %s\n      max-connections: 1\n      padding: %t\nproxy-groups:\n  - name: GLOBAL\n    type: select\n    proxies:\n      - e2e-peer\n", socksPort, carrier, serverPort, credentials, tls, protocol, padding))
+	return []byte(fmt.Sprintf("socks-port: %d\nallow-lan: false\nmode: global\nlog-level: warning\nproxies:\n  - name: e2e-peer\n    type: %s\n    server: %s\n    port: %d\n%s%s    smux:\n      enabled: true\n      protocol: %s\n      max-connections: 1\n      padding: %t\nproxy-groups:\n  - name: GLOBAL\n    type: select\n    proxies:\n      - e2e-peer\n", socksPort, carrier, serverAddress, serverPort, credentials, tls, protocol, padding))
 }
 
 func writeConfig(t testing.TB, path string, content []byte) {
@@ -610,6 +675,49 @@ func waitSOCKS(t testing.TB, process *e2eProcess, port int) {
 	t.Fatalf("SOCKS endpoint did not become ready on %s: %v\n%s", address, lastErr, process.logs.String())
 }
 
+func TestFreeTCPUDPPortCanBindBothTransports(t *testing.T) {
+	port := freeTCPUDPPort(t)
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tcp.Close()
+}
+
+func freeTCPUDPPort(t testing.TB) int {
+	t.Helper()
+	for {
+		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := udp.LocalAddr().(*net.UDPAddr).Port
+		tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+		_ = udp.Close()
+		if err != nil {
+			continue
+		}
+		_ = tcp.Close()
+		return port
+	}
+}
+
+func freeWildcardTCPPort(t testing.TB) int {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	return port
+}
+
 func freeTCPPort(t testing.TB) int {
 	t.Helper()
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -663,14 +771,22 @@ func startUDPEcho(t *testing.T) net.Addr {
 	return connection.LocalAddr()
 }
 
-func testSOCKSTCP(t *testing.T, socksPort int, destination *net.TCPAddr) {
+func testSOCKSTCP(t *testing.T, socksPort int, destination *net.TCPAddr, callbacks ...func()) {
 	t.Helper()
-	if err := runSOCKSTCP(socksPort, destination); err != nil {
+	var afterEcho func()
+	if len(callbacks) != 0 {
+		afterEcho = callbacks[0]
+	}
+	if err := runSOCKSTCPWithCallback(socksPort, destination, afterEcho); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func runSOCKSTCP(socksPort int, destination *net.TCPAddr) error {
+	return runSOCKSTCPWithCallback(socksPort, destination, nil)
+}
+
+func runSOCKSTCPWithCallback(socksPort int, destination *net.TCPAddr, afterEcho func()) error {
 	connection, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial SOCKS: %w", err)
@@ -699,11 +815,18 @@ func runSOCKSTCP(socksPort int, destination *net.TCPAddr) error {
 	if !bytes.Equal(response, payload) {
 		return fmt.Errorf("TCP response = %q, want %q", response, payload)
 	}
+	if afterEcho != nil {
+		afterEcho()
+	}
 	return nil
 }
 
-func testSOCKSUDP(t *testing.T, socksPort int, destination *net.UDPAddr) {
+func testSOCKSUDP(t *testing.T, socksPort int, destination *net.UDPAddr, callbacks ...func()) {
 	t.Helper()
+	var afterEcho func()
+	if len(callbacks) != 0 {
+		afterEcho = callbacks[0]
+	}
 	control, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -748,6 +871,67 @@ func testSOCKSUDP(t *testing.T, socksPort int, destination *net.UDPAddr) {
 	if !bytes.Equal(response[offset:n], payload) {
 		t.Fatalf("UDP response = %q, want %q", response[offset:n], payload)
 	}
+	if afterEcho != nil {
+		afterEcho()
+	}
+}
+
+func nonLoopbackHostIPv4(t *testing.T) string {
+	t.Helper()
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range addresses {
+		ip, _, err := net.ParseCIDR(address.String())
+		if err == nil && ip.To4() != nil && !ip.IsLoopback() {
+			return ip.String()
+		}
+	}
+	t.Skip("structural presence interop requires a non-loopback IPv4 address")
+	return ""
+}
+
+func dialStatsService(t *testing.T, port int) statscommand.StatsServiceClient {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	connection, err := grpc.DialContext(ctx, fmt.Sprintf("127.0.0.1:%d", port), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	return statscommand.NewStatsServiceClient(connection)
+}
+
+func waitStatsOnlineIPs(t *testing.T, client statscommand.StatsServiceClient, want ...string) {
+	t.Helper()
+	const metric = "user>>>" + testPresenceEmail + ">>>online"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := client.GetStatsOnlineIpList(context.Background(), &statscommand.GetStatsRequest{Name: metric})
+		if err == nil && sameOnlineIPs(response.Ips, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	response, err := client.GetStatsOnlineIpList(context.Background(), &statscommand.GetStatsRequest{Name: metric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("StatsService online IPs = %v, want %v", response.Ips, want)
+}
+
+func sameOnlineIPs(got map[string]int64, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for _, ip := range want {
+		if _, found := got[ip]; !found {
+			return false
+		}
+	}
+	return true
 }
 
 func socksGreeting(connection net.Conn) error {

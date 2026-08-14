@@ -3,7 +3,10 @@
 package singmux_test
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
 	cryptotls "crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,11 +20,27 @@ import (
 	"time"
 )
 
-const (
-	realityPrivateKey = "aGSYystUbf59_9_6LKRxD27rmSW_-2_nyd9YG_Gwbks"
-	realityPublicKey  = "E59WjnvZcQMu7tR7_BgyhycuEdBS-CtKxfImRCdAvFM"
-	realityShortID    = "0123456789abcdef"
+var (
+	realityPrivateKey, realityPublicKey = generateRealityKeyPair()
+	realityShortID                      = generateRealityShortID()
 )
+
+func generateRealityKeyPair() (string, string) {
+	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	encoding := base64.RawURLEncoding
+	return encoding.EncodeToString(privateKey.Bytes()), encoding.EncodeToString(privateKey.PublicKey().Bytes())
+}
+
+func generateRealityShortID() string {
+	shortID := make([]byte, 8)
+	if _, err := rand.Read(shortID); err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%x", shortID)
+}
 
 func TestVLESSTCPProcessMatrix(t *testing.T) {
 	if testing.Short() {

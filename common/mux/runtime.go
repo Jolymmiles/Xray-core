@@ -365,13 +365,7 @@ func (f *xudpFlow) attach(admission *sessionAdmission, scope session.PresenceSco
 	}
 
 	f.mu.Lock()
-	if f.closed || owner.terminated.Load() {
-		f.rebinding = false
-		f.mu.Unlock()
-		admission.completeCommit()
-		_ = owner.Close(false)
-		return nil, errors.New("XUDP flow closed during attachment")
-	}
+	closed := f.closed
 	f.attachment = &xudpAttachment{token: epoch, session: owner, sink: sink}
 	f.expires = time.Time{}
 	f.rebinding = false
@@ -380,6 +374,9 @@ func (f *xudpFlow) attach(admission *sessionAdmission, scope session.PresenceSco
 	admission.completeCommit()
 	if old != nil {
 		_ = old.session.Close(false)
+	}
+	if closed {
+		_ = owner.Close(false)
 	}
 	return owner, nil
 }

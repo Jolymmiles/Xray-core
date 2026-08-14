@@ -94,6 +94,9 @@ func TestSessionAdmissionPublishesResourcesAndLeaseTogether(t *testing.T) {
 	if !admission.finishCommit(owner, lease) {
 		t.Fatal("finish commit failed")
 	}
+	if _, found := registry.active(9); found {
+		t.Fatal("session slot was visible before complete publication")
+	}
 	admission.completeCommit()
 	if got, found := registry.active(9); !found || got != owner {
 		t.Fatalf("active slot = %p, %v; want %p, true", got, found, owner)

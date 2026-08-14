@@ -446,8 +446,12 @@ func TestXUDPFlowCloseCompletesAuthorizedAttachmentCommit(t *testing.T) {
 	}
 	flow.close()
 	close(tracker.handoffRelease)
-	if err := <-attachDone; err == nil {
-		t.Fatal("attachment succeeded after flow close")
+	if err := <-attachDone; err != nil {
+		t.Fatalf("authorized attachment did not finish publication: %v", err)
+	}
+	waitXUDPIPs(t, tracker)
+	if registry.activeCount() != 0 {
+		t.Fatalf("flow close left %d published sessions", registry.activeCount())
 	}
 
 	closeDone := make(chan struct{})
@@ -478,7 +482,7 @@ func TestXUDPRuntimeThousandRebindsEndAtZero(t *testing.T) {
 	registry := newSessionRegistry()
 	sink := runtime.newResponseSink(buf.Discard)
 	var owner *Session
-	for index := range 1000 {
+	for index := range 1001 {
 		ip := netip.MustParseAddr("192.0.2.10")
 		if index%2 != 0 {
 			ip = netip.MustParseAddr("198.51.100.20")
@@ -493,6 +497,12 @@ func TestXUDPRuntimeThousandRebindsEndAtZero(t *testing.T) {
 	}
 	if owner == nil {
 		t.Fatal("no final attachment")
+	}
+	tracker.mu.Lock()
+	handoffs := tracker.handoffs
+	tracker.mu.Unlock()
+	if handoffs != 1000 {
+		t.Fatalf("XUDP handoffs = %d, want 1000", handoffs)
 	}
 	_ = owner.Close(false)
 	waitXUDPIPs(t, tracker)
@@ -549,6 +559,7 @@ func (p *xudpRuntimeProvider) SnapshotPresence(ctx context.Context) session.Pres
 type xudpPresenceTracker struct {
 	mu             sync.Mutex
 	next           uint64
+	handoffs       int
 	active         map[uint64]netip.Addr
 	handoffStarted chan struct{}
 	handoffRelease chan struct{}
@@ -583,6 +594,9 @@ func (r *xudpPresenceReservation) Activate() session.PresenceLease {
 }
 
 func (r *xudpPresenceReservation) Handoff(old session.PresenceLease) session.PresenceLease {
+	r.tracker.mu.Lock()
+	r.tracker.handoffs++
+	r.tracker.mu.Unlock()
 	if r.tracker.handoffStarted != nil {
 		r.tracker.handoffOnce.Do(func() { close(r.tracker.handoffStarted) })
 		<-r.tracker.handoffRelease
