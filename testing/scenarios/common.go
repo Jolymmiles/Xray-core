@@ -200,6 +200,41 @@ func testUDPConn(port net.Port, payloadSize int, timeout time.Duration) func() e
 	}
 }
 
+func waitForUDPPath(t *testing.T, port net.Port, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		probeTimeout := min(time.Second, time.Until(deadline))
+		lastErr = testUDPConn(port, 64, probeTimeout)()
+		if lastErr == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("UDP path on port %d did not become ready within %s: %v", port, timeout, lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForTCPAndUDPPaths(t *testing.T, tcpPort, udpPort net.Port, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var tcpErr, udpErr error
+	for {
+		probeTimeout := min(time.Second, time.Until(deadline))
+		tcpErr = testTCPConn(tcpPort, 64, probeTimeout)()
+		udpErr = testUDPConn(udpPort, 64, probeTimeout)()
+		if tcpErr == nil && udpErr == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("TCP/UDP paths on ports %d/%d did not become ready within %s: tcp=%v udp=%v", tcpPort, udpPort, timeout, tcpErr, udpErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func testTCPConn2(conn net.Conn, payloadSize int, timeout time.Duration) func() error {
 	return func() (err1 error) {
 		start := time.Now()
