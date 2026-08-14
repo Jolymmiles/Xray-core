@@ -360,3 +360,172 @@ REALITY/no-flow, and REALITY/Vision, repeated three times. Unit, race,
 checkptr, and vet gates passed. A static stripped Linux/amd64 `GOAMD64=v1`
 cross-build passed; Linux runtime, 5 GiB pressure, and network-counter evidence
 remain mandatory before a release capacity claim.
+
+## Structural online presence release gate (2026-08-13)
+
+The candidate source point for this gate is `87f58be1` with the structural
+presence worktree dirty. Validation used Go 1.26.5 on Darwin/arm64. The
+repository now has one fail-fast executable entrypoint:
+`testing/release/structural_presence.sh`. Its standard mode runs vformat,
+repository-wide vet, unit, race, and checkptr plus real SMUX/H2MUX/VLESS
+interop, immutable `v26.8.15` version-skew scenarios, and aggregate exact-owner
+lifecycle checks. Its Linux mode additionally requires Linux/amd64, a real
+`yt` interface and IPv6 assignment, 50 reconnect cycles, the nine-round server
+comparison, a minimum 30-minute repeated lifecycle soak, and stripped
+`GOAMD64=v1` artifact inspection.
+
+The release workflow pins the validation host to `ubuntu-24.04`, creates the
+isolated `yt` interface, and makes every platform build depend on this gate.
+The gofumpt dependency is pinned to v0.11.0. Missing environment, wrong host
+architecture, absent interface setup, a failed command, or a soak shorter than
+1,800 seconds terminates the job; none is converted to a skip.
+
+The release-gate contract, shell syntax, workflow YAML parse, and vformat
+check passed on the Darwin host. Initial repository runs exposed external DNS
+dependencies, checkptr-distorted allocation budgets, a blackhole test data race,
+and process tests that started traffic before complete TCP/UDP forwarding
+readiness. The blackhole RED was fixed with a bounded channel handoff. Commander,
+VMess mux UDP, and Shadowsocks 2022 UDP now use bounded full-path readiness.
+
+DoH, DoQ, and DNS-over-TCP tests now use local protocol servers that validate
+real framing, parsing, cache, A/AAAA filtering, and verified TLS/QUIC behavior;
+no external resolver, retry, or skip remains. Allocation budgets remain binding
+in normal builds and skip only allocation measurement when build metadata proves
+checkptr compiler instrumentation; functional package coverage still runs. After
+these corrections, vformat, `go vet ./...`, `go test -timeout 2h ./... -count=1`,
+`go test -gcflags=all=-d=checkptr=2 ./... -count=1`, and
+`go test -race ./... -count=1` all passed on Darwin/arm64. The canonical
+`testing/release/structural_presence.sh standard` entrypoint then passed end to
+end, including real SMUX/H2MUX interoperability, all five immutable `v26.8.15`
+version-skew process matrices, and aggregate exact-owner lifecycle checks. Task
+10.1 is complete. Linux runtime evidence remains pending:
+the pinned workflow has not yet run the 50-cycle reconnect gate, nine-round
+performance comparison, 30-minute soak, `yt` environment check, Linux network
+counter checks, or artifact smoke on this candidate. Therefore this entry
+establishes executable non-skippable release wiring, not release readiness or a
+Linux capacity/performance claim.
+
+### Critical lifecycle interleavings
+
+A focused candidate gate ran 26 deterministic barrier-controlled tests across
+`common/session`, `common/task`, `app/stats`, `app/dispatcher`,
+`app/proxyman/inbound`, `common/mux`, `app/reverse`, both VLESS owner packages,
+and `proxy/wireguard` with `-race -count=100`. All ten packages passed. The
+matrix covered concurrent reservation terminals, exact generation isolation and
+batch replacement, callback join, accepted-connection ownership, transactional
+session publication/shutdown, response-sink and authorized-transaction drain,
+SMUX plus legacy-runtime shutdown ordering, XUDP concurrent rebind and every
+blocked close boundary, Bridge/Portal construction and heartbeat joins,
+reverse-handler late registration/delayed start, and WireGuard concurrent
+admission/roam plus final drain.
+
+Every selected test has an explicit terminal assertion or bounded join, so the
+result verifies zero residual exact slots/leases, callbacks, published
+resources, response buffers/pumps, runtime schedulers/timers, owner workers, and
+test-owned goroutines for those interleavings. The earlier aggregate tests
+separately cover 7,000 exact owners, 1,000 XUDP rebinds, 1,000 RVS slots, and
+1,000 WireGuard handoffs ending at zero.
+
+### Release platform artifact matrix
+
+The complete official Linux matrix was cross-built from dirty source point
+`87f58be1` with Go 1.26.5, `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`,
+stripping/build-id release linker flags, and the workflow's architecture-specific
+optimization flags. Seventeen binaries passed: amd64 (`GOAMD64=v1`), 386, ARM
+v5/v6/v7, arm64, riscv64, loong64, mips64/mips64le, mips/mipsle hard-float and
+soft-float, ppc64/ppc64le, and s390x. The first MIPS32 attempt intentionally
+proved why the workflow uses package-local `-gcflags=-l=4`: applying
+`all=-l=4` fails in the Go runtime with prohibited write barriers. Rebuilding
+with the exact workflow branch passed.
+
+`file` reported every artifact as a statically linked, stripped ELF for its
+intended architecture. The Linux/amd64 binary ran inside a real linux/amd64
+container, reported Xray 26.8.18 at `v26.8.18-4-g87f58be1-dirty`, and accepted a
+minimal JSON configuration with `Configuration OK.`. `go version -m` recorded
+Go 1.26.5, `CGO_ENABLED=0`, `GOOS=linux`, `GOARCH=amd64`, `GOAMD64=v1`,
+`-trimpath`, and `-gcflags=all=-l=4`. Its SHA-256 is
+`dd9d625d2004835ff1391de7d6489f95f43ecfa3d0e1f0fd0905d2b88318dafb`.
+All 17 artifact hashes and inspection files are retained under
+`/tmp/xray-release-matrix-87f58be1`; they are verification artifacts, not
+release assets and were not added to the repository.
+
+### Immutable v26.8.15 candidate performance gate
+
+A new process gate builds immutable commit
+`816ae65180cc8e8ac6bac76ffcdbc561e93ebb7d` (`v26.8.15`) and the candidate,
+uses the same candidate Xray SMUX client and byte-identical server/client
+configuration, warms both servers at full 128-stream load, and measures nine
+alternating 128 MiB full-duplex rounds for VLESS and Trojan. Linux captures the
+server PIDs' RSS, thread, and FD counts and fails above 10% median duration,
+64 MiB RSS, 16 threads, or 8 FDs. The non-skippable Linux release script runs
+this gate with the existing sing-mux comparison three times.
+
+Three Darwin/arm64 harness runs passed payload integrity and process cleanup.
+They are diagnostic only: the latest medians were 2.248 s (`v26.8.15`) versus
+2.639 s (candidate), ratio 1.174, for VLESS and 2.608 s versus 3.281 s, ratio
+1.258, for Trojan. Earlier runs showed substantial variance, including VLESS
+ratios 1.158-1.208 and Trojan ratios 0.962-1.217. Candidate end RSS remained
+within 64 MiB of the old server in all runs. Darwin cannot collect the required
+thread/FD values for this harness and does not enforce any release budget.
+Therefore task 10.4 remains open until the pinned Linux job completes the three
+runs and supplies authoritative throughput/latency and resource verdicts.
+
+### SMUX lifecycle hot-path correction
+
+The first immutable candidate comparison exposed a repeatable local SMUX engine
+regression before the authoritative Linux release run. Five isolated two-second
+samples showed the candidate stream lifecycle at a 6.06 us median, 2,370 B/op,
+and 29 allocations versus immutable `v26.8.15` at 5.73 us, 2,338 B/op, and 28
+allocations. CPU profiles were saved under `/tmp/xray-smux-profiles`. Compiler
+escape output identified the ordinary `Session.OpenStream` accounting callback
+closure as the extra allocation. A RED allocation regression fixed the budget
+at 28.
+
+The direct `OpenStream` path now publishes without constructing the
+transactional callback; `OpenStreamWithAccounting` retains the atomic pool
+pending-to-active handoff and both paths share post-publication submission and
+ownership checks. Five isolated post-fix samples had a 5.89 us lifecycle median,
+2,338 B/op, and 28 allocations versus `v26.8.15` at 5.60 us, 2,338 B/op, and 28
+allocations. Round-trip and concurrent round-trip medians were also within the
+same local noise band. The full affected `common/singmux/internal/mplsmux`,
+`common/singmux`, and `common/mux` package sets passed normally, under race, and
+under checkptr. Transactional accounting and accepted/unaccepted failure tests
+passed 100 race repetitions. Allocation tests detect checkptr compiler metadata
+and skip only allocation measurement under instrumentation; functional checkptr
+coverage remains active. Post-optimization process validation passed all 40 SMUX
+and all 40 H2MUX Xray/sing-box/Mihomo cells plus direct, legacy Mux, XUDP, RVS,
+and WireGuard `v26.8.15` version-skew matrices.
+
+A Docker Desktop linux/amd64 Go 1.26.5 diagnostic run validated Linux RSS,
+thread, and FD collection but is emulated, not native release evidence. It
+showed VLESS ratio 1.093 and Trojan ratio 1.134, and exposed transient old-server
+FD growth from 139 to 267 while the candidate stayed at 139. The gate now stops
+both clients before comparing quiescent server resources and separately fails
+if either server grows by more than eight FDs under load. Performance budgets
+are enforced only when `XRAY_NATIVE_LINUX_RELEASE=1`; Linux release mode itself
+fails unless that marker is present, and only the pinned Ubuntu release job sets
+it. Task 10.4 remains open pending three native Linux runs.
+
+All release-workflow action references are now pinned to immutable commits and
+setup-go caching is disabled, resolving the workflow supply-chain and cache
+poisoning findings without broadening job permissions.
+
+### OpenSpec requirement audit and mixed-path soak correction
+
+The task 10.6 audit reviewed all 53 normative scenarios and all 79 tasks against
+the authoritative unit/race/checkptr tests, source-removal audit, real process
+interop and version-skew results, release wiring, and retained artifact records.
+The detailed matrix is recorded in
+`openspec/changes/structural-online-presence/evidence/requirements-audit.md`.
+After the task 10.1 correction loop, 72 tasks are complete and seven remain
+deliberately open: native pinned-Linux gates 10.3-10.4 and release tasks
+11.1-11.5. No pending Linux or publication condition is classified as green.
+
+The audit found that the original 30-minute loop repeated only in-process owner
+stress and therefore did not satisfy the specified mixed-path soak. A release
+contract regression first failed on the missing real-process commands. The Linux
+loop now runs the full real SMUX/H2MUX interop matrices and all five direct,
+legacy Mux, XUDP, RVS, and WireGuard version-skew matrices on every cycle, in
+addition to the exact-owner batches. The contract test, shell syntax, vformat,
+source-removal audit, and strict OpenSpec validation pass after the correction.
+Native execution remains pending under task 10.3.
