@@ -84,6 +84,9 @@ message QuicParams {
   int64 keep_alive_period = 11;
   bool disable_path_mtu_discovery = 12;
   int64 max_incoming_streams = 13;
+  bool brutal_disable_loss_compensation = 14;
+  bool disable_chrome_parrot = 15;
+  bool disableGSO = 16;
 }
 
 message ProxyConfig {

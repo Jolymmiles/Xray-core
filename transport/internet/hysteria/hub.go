@@ -2,6 +2,7 @@ package hysteria
 
 import (
 	"context"
+	"crypto/rand"
 	gotls "crypto/tls"
 	"net/http"
 	"net/http/httputil"
@@ -78,10 +79,10 @@ func (h *httpHandler) AuthHTTP(w http.ResponseWriter, r *http.Request) bool {
 				if quicParams.BrutalUp == 0 || down == 0 {
 					congestion.UseBBR(conn, bbr.Profile(quicParams.BbrProfile))
 				} else {
-					congestion.UseBrutal(conn, min(quicParams.BrutalUp, down))
+					congestion.UseBrutal(conn, min(quicParams.BrutalUp, down), quicParams.BrutalDisableLossCompensation)
 				}
 			case "force-brutal":
-				congestion.UseBrutal(conn, quicParams.BrutalUp)
+				congestion.UseBrutal(conn, quicParams.BrutalUp, quicParams.BrutalDisableLossCompensation)
 			default:
 				panic(quicParams.Congestion)
 			}
@@ -142,6 +143,11 @@ func (h *httpHandler) StreamDispatcher(ft http3.FrameType, stream *quic.Stream, 
 	}
 }
 
+var readStatelessResetKey = func(key []byte) error {
+	_, err := rand.Read(key)
+	return err
+}
+
 type Listener struct {
 	validator   *account.Validator
 	config      *Config
@@ -149,9 +155,13 @@ type Listener struct {
 	quicParams  *internet.QuicParams
 	addConn     internet.ConnHandler
 
-	pktConn  net.PacketConn
-	tr       *quic.Transport
-	listener *quic.Listener
+	pktConn    net.PacketConn
+	tr         *quic.Transport
+	listener   *quic.Listener
+	acceptDone chan struct{}
+	clients    sync.WaitGroup
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 func (l *Listener) handleClient(conn *quic.Conn) {
@@ -172,6 +182,7 @@ func (l *Listener) handleClient(conn *quic.Conn) {
 }
 
 func (l *Listener) keepAccepting() {
+	defer close(l.acceptDone)
 	for {
 		conn, err := l.listener.Accept(context.Background())
 		if err != nil {
@@ -180,7 +191,11 @@ func (l *Listener) keepAccepting() {
 			}
 			break
 		}
-		go l.handleClient(conn)
+		l.clients.Add(1)
+		go func() {
+			defer l.clients.Done()
+			l.handleClient(conn)
+		}()
 	}
 }
 
@@ -189,7 +204,12 @@ func (l *Listener) Addr() net.Addr {
 }
 
 func (l *Listener) Close() error {
-	return errors.Combine(l.listener.Close(), l.tr.Close(), l.pktConn.Close())
+	l.closeOnce.Do(func() {
+		l.closeErr = errors.Combine(l.listener.Close(), l.tr.Close(), l.pktConn.Close())
+		<-l.acceptDone
+		l.clients.Wait()
+	})
+	return l.closeErr
 }
 
 func Listen(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, handler internet.ConnHandler) (internet.Listener, error) {
@@ -309,7 +329,13 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		pktConn = newConn
 	}
 
-	tr := &quic.Transport{Conn: pktConn}
+	var statelessResetKey quic.StatelessResetKey
+	if err := readStatelessResetKey(statelessResetKey[:]); err != nil {
+		_ = pktConn.Close()
+		return nil, errors.New("failed to generate Hysteria stateless reset key").Base(err)
+	}
+	tr := internet.NewQUICTransport(pktConn, quicParams)
+	tr.StatelessResetKey = &statelessResetKey
 
 	listener, err := tr.Listen(tlsConfig.GetTLSConfig(tls.WithNextProto("h3")), quicConfig)
 	if err != nil {
@@ -325,9 +351,10 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		quicParams:  quicParams,
 		addConn:     handler,
 
-		pktConn:  pktConn,
-		tr:       tr,
-		listener: listener,
+		pktConn:    pktConn,
+		tr:         tr,
+		listener:   listener,
+		acceptDone: make(chan struct{}),
 	}
 
 	go l.keepAccepting()

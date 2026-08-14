@@ -438,13 +438,22 @@ func (c *httpServerConn) Close() error {
 
 type Listener struct {
 	sync.Mutex
-	server     http.Server
-	h3server   *http3.Server
-	listener   net.Listener
-	h3listener http3.QUICListener
-	config     *Config
-	addConn    internet.ConnHandler
-	isH3       bool
+	server       http.Server
+	h3server     *http3.Server
+	listener     net.Listener
+	h3listener   http3.QUICListener
+	h3transport  *quic.Transport
+	h3PacketConn net.PacketConn
+	h3ServeDone  chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
+	config       *Config
+	addConn      internet.ConnHandler
+	isH3         bool
+}
+
+var listenQUICEarly = func(transport *quic.Transport, tlsConfig *gotls.Config, config *quic.Config) (http3.QUICListener, error) {
+	return transport.ListenEarly(tlsConfig, config)
 }
 
 func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, addConn internet.ConnHandler) (internet.Listener, error) {
@@ -514,8 +523,12 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			DisablePathMTUDiscovery:        quicParams.DisablePathMtuDiscovery || (runtime.GOOS != "linux" && runtime.GOOS != "windows" && runtime.GOOS != "darwin"),
 		}
 
-		l.h3listener, err = quic.ListenEarly(Conn, tlsConfig, quicConfig)
+		l.h3transport = internet.NewQUICTransport(Conn, quicParams)
+		l.h3PacketConn = Conn
+		l.h3listener, err = listenQUICEarly(l.h3transport, tlsConfig, quicConfig)
 		if err != nil {
+			_ = l.h3transport.Close()
+			_ = l.h3PacketConn.Close()
 			return nil, errors.New("failed to listen QUIC for XHTTP/3 on ", address, ":", port).Base(err)
 		}
 		l.h3listener = &QListener{
@@ -529,7 +542,9 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 		l.h3server = &http3.Server{
 			Handler: handler,
 		}
+		l.h3ServeDone = make(chan struct{})
 		go func() {
+			defer close(l.h3ServeDone)
 			if err := l.h3server.ServeListener(l.h3listener); err != nil {
 				errors.LogErrorInner(ctx, err, "failed to serve HTTP/3 for XHTTP/3")
 			}
@@ -599,12 +614,19 @@ func (ln *Listener) Addr() net.Addr {
 
 // Close implements net.Listener.Close().
 func (ln *Listener) Close() error {
-	if ln.h3server != nil {
-		return ln.h3server.Close()
-	} else if ln.listener != nil {
-		return ln.listener.Close()
-	}
-	return errors.New("listener does not have an HTTP/3 server or a net.listener")
+	ln.closeOnce.Do(func() {
+		if ln.h3server != nil {
+			ln.closeErr = errors.Combine(ln.h3server.Close(), ln.h3transport.Close(), ln.h3PacketConn.Close())
+			<-ln.h3ServeDone
+			return
+		}
+		if ln.listener != nil {
+			ln.closeErr = ln.listener.Close()
+			return
+		}
+		ln.closeErr = errors.New("listener does not have an HTTP/3 server or a net.listener")
+	})
+	return ln.closeErr
 }
 
 func getTLSConfig(streamSettings *internet.MemoryStreamConfig) *gotls.Config {
@@ -634,7 +656,7 @@ func (l *QListener) Accept(ctx context.Context) (*quic.Conn, error) {
 	case "", "bbr":
 		congestion.UseBBR(conn, bbr.Profile(l.quicParams.BbrProfile))
 	case "force-brutal":
-		congestion.UseBrutal(conn, l.quicParams.BrutalUp)
+		congestion.UseBrutal(conn, l.quicParams.BrutalUp, l.quicParams.BrutalDisableLossCompensation)
 	default:
 		panic(l.quicParams.Congestion)
 	}
