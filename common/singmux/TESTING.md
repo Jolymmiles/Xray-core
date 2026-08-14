@@ -189,7 +189,10 @@ run validates the harness only; it is not Linux server-capacity evidence.
 The stress suite runs eight peer/direction/carrier topologies. Every topology
 runs three cycles with 128 concurrent full-duplex TCP streams carrying 1 MiB in
 each direction and 10,000 UDP datagrams across four destinations. The server is
-killed and restarted between cycles while the client remains running.
+killed and restarted between cycles while the client remains running. After
+each start, the harness waits for an available process-ready marker and requires
+a complete SOCKS-to-server-to-echo exchange before beginning the measured load;
+an open TCP or SOCKS port alone is not readiness evidence.
 
 ```sh
 go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
