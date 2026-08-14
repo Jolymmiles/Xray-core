@@ -124,10 +124,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 			Execute:  handler.reverse.monitor,
 			Interval: time.Second * 2,
 		}
-		go func() {
-			time.Sleep(2 * time.Second)
-			handler.reverse.Start()
-		}()
+		handler.reverse.scheduleStart(2 * time.Second)
 	}
 
 	handler.testpre = a.Testpre
@@ -424,16 +421,19 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 }
 
 type Reverse struct {
-	mu          sync.Mutex
-	tag         string
-	dispatcher  routing.Dispatcher
-	ctx         context.Context
-	handler     *Handler
-	workers     []*reverse.BridgeWorker
-	monitorTask *task.Periodic
-	closed      bool
-	closeOnce   sync.Once
-	workersDone sync.WaitGroup
+	mu           sync.Mutex
+	tag          string
+	dispatcher   routing.Dispatcher
+	ctx          context.Context
+	handler      *Handler
+	workers      []*reverse.BridgeWorker
+	monitorTask  *task.Periodic
+	closed       bool
+	startTimer   *time.Timer
+	delayedStart sync.WaitGroup
+	starts       sync.WaitGroup
+	closeOnce    sync.Once
+	workersDone  sync.WaitGroup
 }
 
 func (r *Reverse) monitor() error {
@@ -504,7 +504,29 @@ func (r *Reverse) monitor() error {
 	return nil
 }
 
+func (r *Reverse) scheduleStart(delay time.Duration) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.delayedStart.Add(1)
+	r.startTimer = time.AfterFunc(delay, func() {
+		defer r.delayedStart.Done()
+		_ = r.Start()
+	})
+	r.mu.Unlock()
+}
+
 func (r *Reverse) Start() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return errors.New("VLESS reverse owner is closing")
+	}
+	r.starts.Add(1)
+	r.mu.Unlock()
+	defer r.starts.Done()
 	return r.monitorTask.Start()
 }
 
@@ -515,7 +537,14 @@ func (r *Reverse) Close() error {
 		r.closed = true
 		workers := r.workers
 		r.workers = nil
+		startTimer := r.startTimer
+		r.startTimer = nil
 		r.mu.Unlock()
+		if startTimer != nil && startTimer.Stop() {
+			r.delayedStart.Done()
+		}
+		r.delayedStart.Wait()
+		r.starts.Wait()
 		result = r.monitorTask.Close()
 		for _, worker := range workers {
 			result = errors.Combine(result, worker.Close())
