@@ -26,6 +26,9 @@ type Bridge struct {
 	workers     []*BridgeWorker
 	monitorTask *task.Periodic
 	closed      bool
+	closing     chan struct{}
+	starts      sync.WaitGroup
+	callbacks   sync.WaitGroup
 	closeOnce   sync.Once
 }
 
@@ -42,6 +45,7 @@ func NewBridge(config *BridgeConfig, dispatcher routing.Dispatcher) (*Bridge, er
 		dispatcher: dispatcher,
 		tag:        config.Tag,
 		domain:     config.Domain,
+		closing:    make(chan struct{}),
 	}
 	b.monitorTask = &task.Periodic{
 		Execute:  b.monitor,
@@ -69,8 +73,10 @@ func (b *Bridge) monitor() error {
 		b.mu.Unlock()
 		return nil
 	}
+	b.callbacks.Add(1)
 	workers := append([]*BridgeWorker(nil), b.workers...)
 	b.mu.Unlock()
+	defer b.callbacks.Done()
 	activeWorkers := activeBridgeWorkers(workers)
 
 	var numConnections uint32
@@ -109,6 +115,14 @@ func (b *Bridge) monitor() error {
 }
 
 func (b *Bridge) Start() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return errors.New("bridge is closing")
+	}
+	b.starts.Add(1)
+	b.mu.Unlock()
+	defer b.starts.Done()
 	return b.monitorTask.Start()
 }
 
@@ -117,10 +131,13 @@ func (b *Bridge) Close() error {
 	b.closeOnce.Do(func() {
 		b.mu.Lock()
 		b.closed = true
+		close(b.closing)
 		workers := b.workers
 		b.workers = nil
 		b.mu.Unlock()
+		b.starts.Wait()
 		result = b.monitorTask.Close()
+		b.callbacks.Wait()
 		for _, worker := range workers {
 			result = errors.Combine(result, worker.Close())
 		}

@@ -35,11 +35,12 @@ type Portal struct {
 	picker *StaticMuxPicker
 	client *mux.ClientManager
 
-	lifecycleMu sync.Mutex
-	state       portalState
-	handlers    sync.WaitGroup
-	closeOnce   sync.Once
-	closeErr    error
+	lifecycleMu   sync.Mutex
+	state         portalState
+	registrations sync.WaitGroup
+	handlers      sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 func NewPortal(config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
@@ -68,6 +69,10 @@ func NewPortal(config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
 }
 
 func (p *Portal) Start() error {
+	if !p.beginRegistration() {
+		return errors.New("portal is closing")
+	}
+	defer p.registrations.Done()
 	return p.ohm.AddHandler(context.Background(), &Outbound{
 		portal: p,
 		tag:    p.tag,
@@ -79,6 +84,7 @@ func (p *Portal) Close() error {
 		p.lifecycleMu.Lock()
 		p.state = portalClosing
 		p.lifecycleMu.Unlock()
+		p.registrations.Wait()
 		var removeErr error
 		if p.ohm != nil {
 			removeErr = p.ohm.RemoveHandler(context.Background(), p.tag)
@@ -94,6 +100,16 @@ func (p *Portal) Close() error {
 		p.closeErr = errors.Combine(removeErr, pickerErr)
 	})
 	return p.closeErr
+}
+
+func (p *Portal) beginRegistration() bool {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.state != portalOpen {
+		return false
+	}
+	p.registrations.Add(1)
+	return true
 }
 
 func (p *Portal) beginHandle() bool {

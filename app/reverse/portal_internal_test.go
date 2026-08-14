@@ -10,6 +10,7 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/signal"
 	"github.com/xtls/xray-core/common/task"
+	"github.com/xtls/xray-core/features/outbound"
 
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/transport"
@@ -147,6 +148,59 @@ func TestStaticMuxPickerClosingRejectsDrainingFallback(t *testing.T) {
 	picker := &StaticMuxPicker{workers: []*PortalWorker{{client: client, draining: true}}, closed: true}
 	if got, err := picker.PickAvailable(); err == nil || got != nil {
 		t.Fatalf("closing picker selected draining fallback: worker=%v err=%v", got, err)
+	}
+}
+
+type portalOutboundManager struct {
+	mu       sync.Mutex
+	handlers map[string]outbound.Handler
+}
+
+func (*portalOutboundManager) Type() interface{} { return outbound.ManagerType() }
+func (*portalOutboundManager) Start() error      { return nil }
+func (*portalOutboundManager) Close() error      { return nil }
+
+func (m *portalOutboundManager) GetHandler(tag string) outbound.Handler {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.handlers[tag]
+}
+
+func (m *portalOutboundManager) GetDefaultHandler() outbound.Handler { return nil }
+
+func (m *portalOutboundManager) AddHandler(_ context.Context, handler outbound.Handler) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.handlers == nil {
+		m.handlers = make(map[string]outbound.Handler)
+	}
+	m.handlers[handler.Tag()] = handler
+	return nil
+}
+
+func (m *portalOutboundManager) RemoveHandler(_ context.Context, tag string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.handlers, tag)
+	return nil
+}
+
+func (m *portalOutboundManager) ListHandlers(context.Context) []outbound.Handler { return nil }
+
+func TestPortalStartRejectsRegistrationAfterClose(t *testing.T) {
+	manager := &portalOutboundManager{}
+	portal, err := NewPortal(&PortalConfig{Tag: "reverse", Domain: "reverse.example"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := portal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := portal.Start(); err == nil {
+		t.Fatal("closed portal accepted late outbound registration")
+	}
+	if handler := manager.GetHandler("reverse"); handler != nil {
+		t.Fatal("closed portal left a late outbound handler registered")
 	}
 }
 
