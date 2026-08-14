@@ -1,0 +1,12 @@
+# Local pi-fabric mesh identifiers are untracked process state, not credentials.
+.pi/fabric/mesh/state.json:generic-api-key:57
+.pi/fabric/mesh/state.json:generic-api-key:145
+.pi/fabric/mesh/state.json:generic-api-key:233
+
+# Deterministic parser/validation fixtures and non-secret protocol constants.
+infra/conf/reality_clientver_test.go:generic-api-key:20
+proxy/hysteria/account/config_performance_test.go:generic-api-key:29
+proxy/hysteria/account/config_performance_test.go:generic-api-key:32
+proxy/hysteria/account/config_performance_test.go:generic-api-key:33
+proxy/hysteria/account/config_performance_test.go:generic-api-key:184
+transport/internet/finalmask/salamander/salamander.go:generic-api-key:15
