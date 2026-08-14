@@ -68,6 +68,22 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Checkout pinned sing-box interop client
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Jolymmiles/sing-box
+          ref: 46f00de9aa060ab989353953051268c7c4745664
+          path: .interop/sing-box
+          persist-credentials: false
+
+      - name: Checkout pinned Mihomo interop client
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Jolymmiles/mihomo
+          ref: 2e1394a7cf4c2d25ac6290a05ee0e21f786073de
+          path: .interop/mihomo
+          persist-credentials: false
+
       - name: Restore Geodat Cache for release validation
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -85,6 +101,15 @@ jobs:
           go-version-file: go.mod
           check-latest: true
           cache: false
+
+      - name: Build pinned interop clients
+        run: |
+          go -C .interop/sing-box build -trimpath -tags=with_utls,with_quic -o "$RUNNER_TEMP/sing-box" ./cmd/sing-box
+          go -C .interop/mihomo build -trimpath -o "$RUNNER_TEMP/mihomo" .
+          test -x "$RUNNER_TEMP/sing-box"
+          test -x "$RUNNER_TEMP/mihomo"
+          echo "SING_BOX_E2E_BIN=$RUNNER_TEMP/sing-box" >> "$GITHUB_ENV"
+          echo "MIHOMO_E2E_BIN=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
 
       - name: Install release gate dependencies
         run: |
