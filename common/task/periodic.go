@@ -12,47 +12,56 @@ type Periodic struct {
 	// Execute is the task function
 	Execute func() error
 
-	access  sync.Mutex
-	timer   *time.Timer
-	running bool
+	access       sync.Mutex
+	stateChanged *sync.Cond
+	timer        *time.Timer
+	running      bool
+	closing      bool
+	callbacks    int
 }
 
-func (t *Periodic) hasClosed() bool {
-	t.access.Lock()
-	defer t.access.Unlock()
-
-	return !t.running
+func (t *Periodic) initStateChangedLocked() {
+	if t.stateChanged == nil {
+		t.stateChanged = sync.NewCond(&t.access)
+	}
 }
 
 func (t *Periodic) checkedExecute() error {
-	if t.hasClosed() {
+	t.access.Lock()
+	t.initStateChangedLocked()
+	if !t.running || t.closing {
+		t.access.Unlock()
 		return nil
 	}
+	t.callbacks++
+	t.access.Unlock()
 
-	if err := t.Execute(); err != nil {
-		t.access.Lock()
+	err := t.Execute()
+
+	t.access.Lock()
+	t.callbacks--
+	t.stateChanged.Broadcast()
+	if err != nil {
 		t.running = false
 		t.access.Unlock()
 		return err
 	}
-
-	t.access.Lock()
-	defer t.access.Unlock()
-
-	if !t.running {
-		return nil
+	if t.running && !t.closing {
+		t.timer = time.AfterFunc(t.Interval, func() {
+			_ = t.checkedExecute()
+		})
 	}
-
-	t.timer = time.AfterFunc(t.Interval, func() {
-		t.checkedExecute()
-	})
-
+	t.access.Unlock()
 	return nil
 }
 
 // Start implements common.Runnable.
 func (t *Periodic) Start() error {
 	t.access.Lock()
+	t.initStateChangedLocked()
+	for t.closing {
+		t.stateChanged.Wait()
+	}
 	if t.running {
 		t.access.Unlock()
 		return nil
@@ -60,26 +69,32 @@ func (t *Periodic) Start() error {
 	t.running = true
 	t.access.Unlock()
 
-	if err := t.checkedExecute(); err != nil {
-		t.access.Lock()
-		t.running = false
-		t.access.Unlock()
-		return err
-	}
-
-	return nil
+	return t.checkedExecute()
 }
 
 // Close implements common.Closable.
 func (t *Periodic) Close() error {
 	t.access.Lock()
-	defer t.access.Unlock()
-
+	t.initStateChangedLocked()
+	if t.closing {
+		for t.closing {
+			t.stateChanged.Wait()
+		}
+		t.access.Unlock()
+		return nil
+	}
+	t.closing = true
 	t.running = false
+	t.stateChanged.Broadcast()
 	if t.timer != nil {
 		t.timer.Stop()
 		t.timer = nil
 	}
-
+	for t.callbacks != 0 {
+		t.stateChanged.Wait()
+	}
+	t.closing = false
+	t.stateChanged.Broadcast()
+	t.access.Unlock()
 	return nil
 }
