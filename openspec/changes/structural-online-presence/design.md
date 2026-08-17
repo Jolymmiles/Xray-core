@@ -21,7 +21,7 @@ The principal stakeholder is the Xray server operator relying on exact Remnawave
 
 - No new mux field, capability bit, protocol negotiation, protobuf, JSON setting, StatsService method, database migration, TTL poller, or UI timestamp.
 - No accurate-presence retrofit for an old server binary.
-- No trusted use of PROXY, XFF, frame `Inbound.Source`, an inner tunnel address, Unix/domain addresses, loopback, or unspecified IP as physical presence identity.
+- No trusted use of PROXY without explicit `acceptProxyProtocol`, XFF, frame `Inbound.Source`, an inner tunnel address, Unix/domain addresses, loopback, or unspecified IP as physical presence identity.
 - No context bridge, structural/legacy feature flag, package-global replacement registry, alternate online source of truth, YAMUX, or third-party mux dependency.
 - No change to administrative `UnregisterOnlineMap` semantics beyond isolating detached generations from later releases.
 
@@ -29,11 +29,11 @@ The principal stakeholder is the Xray server operator relying on exact Remnawave
 
 ### 1. Capture immutable authenticated provenance
 
-The trusted presence IP is captured at the earliest raw socket `Accept` or packet `ReadFrom` boundary before PROXY, XFF, protocol, mux-frame, or routing rewrites. Transports preserve this value separately from their effective `RemoteAddr`; `app/proxyman/inbound` freezes it in session metadata. The provider snapshots it only after authentication has populated the user.
+The trusted presence IP is normally captured at the earliest raw socket `Accept` or packet `ReadFrom` boundary before XFF, protocol, mux-frame, or routing rewrites. Transports preserve this value separately from their effective `RemoteAddr`; `app/proxyman/inbound` freezes it in session metadata. When the existing `acceptProxyProtocol` option is enabled, a successfully parsed PROXY header is the operator's explicit trust decision, and the rewritten canonical remote IP replaces the raw socket peer for session presence. A missing, malformed, `LOCAL`, unchanged, or non-IP PROXY result remains untracked. The provider snapshots the selected value only after authentication has populated the user.
 
 The value is copied into `netip.Addr`, unmapped, stripped of port/zone, and rejected when invalid, unspecified, or loopback. Private and CGNAT unicast addresses remain valid because they may be the actual peer. Missing provenance yields a no-op scope; it never falls back to effective routing metadata.
 
-This keeps the trust decision at the transport seam. Reading `Inbound.Source` later was rejected because PROXY, XFF, reverse frames, and virtual inbounds can rewrite it.
+This keeps the trust decision at the transport seam. A PROXY-enabled listener must be reachable only from trusted proxies because any accepted upstream can otherwise assert a client address. Reading `Inbound.Source` later remains rejected because XFF, reverse frames, and virtual inbounds can rewrite it without the listener-level PROXY trust contract.
 
 ### 2. Use one neutral structural interface
 

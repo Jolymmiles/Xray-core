@@ -32,6 +32,7 @@
 - [x] 3.9 RED: add authenticated VLESS/Trojan/VMess/inbound-worker tests proving the provider snapshots user plus trusted peer after authentication and before frame source rewriting.
 - [x] 3.10 GREEN: wire provider snapshots into built-in authenticated inbound owners and expose the optional provider source without changing stable dispatcher interfaces.
 - [x] 3.11 Run the full transport/auth package unit, race, checkptr, vet, VLESS/REALITY, spoofed-PROXY/XFF, and process compatibility gates; fix every failure before mux work.
+- [x] 3.12 RED/GREEN: prove explicit `acceptProxyProtocol` trusts only a successfully rewritten canonical PROXY source for authenticated presence, while disabled, missing, malformed, `LOCAL`, unchanged, Unix, and non-IP cases remain raw or untracked as specified.
 
 ## 4. SMUX and H2MUX structural stream owners
 

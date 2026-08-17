@@ -2,14 +2,17 @@ package inbound
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
 
+	"github.com/pires/go-proxyproto"
 	corenet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/features/routing"
+	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
@@ -61,7 +64,7 @@ func TestPhysicalPeerFromConnUsesOnlyCapturedProvenance(t *testing.T) {
 		Conn:   server,
 		remote: &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345},
 	}
-	if got := physicalPeerFromConn(effective); got.IsValid() {
+	if got := physicalPeerFromConn(effective, false); got.IsValid() {
 		t.Fatalf("effective RemoteAddr became trusted peer: %s", got)
 	}
 
@@ -70,9 +73,87 @@ func TestPhysicalPeerFromConnUsesOnlyCapturedProvenance(t *testing.T) {
 		remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
 	})
 	wrapped := corenet.PreservePhysicalPeer(raw, effective)
-	if got := physicalPeerFromConn(wrapped); got.String() != "192.0.2.9" {
+	if got := physicalPeerFromConn(wrapped, false); got.String() != "192.0.2.9" {
 		t.Fatalf("physicalPeerFromConn() = %s, want 192.0.2.9", got)
 	}
+}
+
+func TestPhysicalPeerFromConnTrustsAcceptedProxyRewrite(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{
+			name:   "IPv4",
+			header: "PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\n",
+			want:   "198.51.100.7",
+		},
+		{
+			name:   "mapped IPv4",
+			header: "PROXY TCP6 ::ffff:198.51.100.7 2001:db8::1 12345 443\r\n",
+			want:   "198.51.100.7",
+		},
+		{
+			name:   "IPv6",
+			header: "PROXY TCP6 2001:db8::7 2001:db8::1 12345 443\r\n",
+			want:   "2001:db8::7",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn := proxyPresenceConnection(t, &net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"}, test.header)
+			if got := physicalPeerFromConn(conn, true); got.String() != test.want {
+				t.Fatalf("trusted PROXY peer = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPhysicalPeerFromConnIgnoresProxyRewriteWhenDisabled(t *testing.T) {
+	conn := proxyPresenceConnection(t,
+		&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
+		"PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\n",
+	)
+	if got := physicalPeerFromConn(conn, false); got != netip.MustParseAddr("192.0.2.9") {
+		t.Fatalf("disabled PROXY trusted peer = %s, want raw peer 192.0.2.9", got)
+	}
+}
+
+func TestPhysicalPeerFromConnRejectsUnusableProxyHeaders(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		header string
+	}{
+		{name: "missing", header: "x"},
+		{name: "malformed", header: "PROXY TCP4 invalid 203.0.113.1 12345 443\r\nx"},
+		{name: "LOCAL", header: "PROXY UNKNOWN\r\nx"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn := proxyPresenceConnection(t, &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321}, test.header)
+			if got := physicalPeerFromConn(conn, true); got.IsValid() {
+				t.Fatalf("unusable PROXY header trusted peer = %s", got)
+			}
+		})
+	}
+}
+
+func proxyPresenceConnection(t *testing.T, rawPeer net.Addr, payload string) net.Conn {
+	t.Helper()
+	server, client := net.Pipe()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = client.Close()
+	})
+	raw := corenet.CapturePhysicalPeer(&presenceWorkerConn{
+		Conn:   server,
+		remote: rawPeer,
+		local:  &net.TCPAddr{IP: net.ParseIP("203.0.113.1"), Port: 443},
+	})
+	proxied := proxyproto.NewConn(raw, proxyproto.WithPolicy(proxyproto.REQUIRE))
+	go func() {
+		_, _ = io.WriteString(client, payload)
+	}()
+	return corenet.PreservePhysicalPeer(raw, proxied)
 }
 
 type authenticatedPresenceProxy struct {
@@ -127,6 +208,52 @@ func TestTCPWorkerPreservesPhysicalPeerForAuthenticatedSnapshot(t *testing.T) {
 	}
 }
 
+func TestTCPWorkerUsesAcceptedProxyPeerForAuthenticatedSnapshot(t *testing.T) {
+	provider := new(capturingPresenceProvider)
+	proxy := &authenticatedPresenceProxy{provider: provider, scope: make(chan session.PresenceScope, 1)}
+	worker := &tcpWorker{
+		address: corenet.AnyIP,
+		ctx:     context.Background(),
+		proxy:   proxy,
+		stream: &internet.MemoryStreamConfig{SocketSettings: &internet.SocketConfig{
+			AcceptProxyProtocol: true,
+		}},
+	}
+	worker.callback(proxyPresenceConnection(t,
+		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+		"PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx",
+	))
+
+	<-proxy.scope
+	subject := provider.subject
+	if subject.Email != "alice@example.com" || subject.Level != 7 || subject.IP != netip.MustParseAddr("198.51.100.7") {
+		t.Fatalf("authenticated PROXY worker snapshot = %+v", subject)
+	}
+}
+
+func TestDomainSocketWorkerUsesAcceptedProxyPeerForAuthenticatedSnapshot(t *testing.T) {
+	provider := new(capturingPresenceProvider)
+	proxy := &authenticatedPresenceProxy{provider: provider, scope: make(chan session.PresenceScope, 1)}
+	worker := &dsWorker{
+		address: corenet.DomainAddress("/run/xray/raw.sock"),
+		ctx:     context.Background(),
+		proxy:   proxy,
+		stream: &internet.MemoryStreamConfig{SocketSettings: &internet.SocketConfig{
+			AcceptProxyProtocol: true,
+		}},
+	}
+	worker.callback(proxyPresenceConnection(t,
+		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+		"PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx",
+	))
+
+	<-proxy.scope
+	subject := provider.subject
+	if subject.Email != "alice@example.com" || subject.Level != 7 || subject.IP != netip.MustParseAddr("198.51.100.7") {
+		t.Fatalf("authenticated PROXY domain-socket snapshot = %+v", subject)
+	}
+}
+
 func TestPhysicalPeerFromConnRejectsUnix(t *testing.T) {
 	server, client := net.Pipe()
 	t.Cleanup(func() {
@@ -134,7 +261,7 @@ func TestPhysicalPeerFromConnRejectsUnix(t *testing.T) {
 		_ = client.Close()
 	})
 	unix := &presenceWorkerConn{Conn: server, remote: &net.UnixAddr{Name: "/tmp/xray.sock", Net: "unix"}}
-	if got := physicalPeerFromConn(corenet.CapturePhysicalPeer(unix)); got.IsValid() {
+	if got := physicalPeerFromConn(corenet.CapturePhysicalPeer(unix), false); got.IsValid() {
 		t.Fatalf("Unix peer became physical presence: %s", got)
 	}
 }

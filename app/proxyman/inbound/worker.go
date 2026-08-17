@@ -61,13 +61,28 @@ func getTProxyType(s *internet.MemoryStreamConfig) internet.SocketConfig_TProxyM
 	return s.SocketSettings.Tproxy
 }
 
-func physicalPeerFromConn(conn net.Conn) netip.Addr {
+func acceptsProxyProtocol(s *internet.MemoryStreamConfig) bool {
+	return s != nil && s.SocketSettings != nil && s.SocketSettings.AcceptProxyProtocol
+}
+
+func physicalPeerFromConn(conn net.Conn, acceptProxyProtocol bool) netip.Addr {
 	peer, ok := net.PhysicalPeer(conn)
-	if !ok {
+	physicalPeer := netip.Addr{}
+	if ok {
+		physicalPeer, _ = net.CanonicalPhysicalPeer(peer)
+	}
+	if !acceptProxyProtocol {
+		return physicalPeer
+	}
+
+	proxyPeer, ok := net.CanonicalPhysicalPeer(conn.RemoteAddr())
+	// go-proxyproto falls back to the underlying remote address for missing,
+	// malformed, and LOCAL headers. An unchanged peer is therefore ambiguous;
+	// fail closed instead of treating it as presence identity.
+	if !ok || proxyPeer == physicalPeer {
 		return netip.Addr{}
 	}
-	peerIP, _ := net.CanonicalPhysicalPeer(peer)
-	return peerIP
+	return proxyPeer
 }
 
 func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
@@ -84,7 +99,7 @@ func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
-	physicalPeer := physicalPeerFromConn(conn)
+	physicalPeer := physicalPeerFromConn(conn, acceptsProxyProtocol(w.stream))
 
 	outbound := session.Outbound{}
 	if w.recvOrigDest {
@@ -526,6 +541,7 @@ func (w *dsWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
 	ctx = c.ContextWithID(ctx, sid)
+	physicalPeer := physicalPeerFromConn(conn, acceptsProxyProtocol(w.stream))
 
 	if w.uplinkCounter != nil || w.downlinkCounter != nil {
 		conn = &stat.CounterConnection{
@@ -535,11 +551,12 @@ func (w *dsWorker) callback(conn stat.Connection) {
 		}
 	}
 	ctx = session.ContextWithInbound(ctx, &session.Inbound{
-		Source:  net.DestinationFromAddr(conn.RemoteAddr()),
-		Local:   net.DestinationFromAddr(conn.LocalAddr()),
-		Gateway: net.UnixDestination(w.address),
-		Tag:     w.tag,
-		Conn:    conn,
+		Source:       net.DestinationFromAddr(conn.RemoteAddr()),
+		PhysicalPeer: physicalPeer,
+		Local:        net.DestinationFromAddr(conn.LocalAddr()),
+		Gateway:      net.UnixDestination(w.address),
+		Tag:          w.tag,
+		Conn:         conn,
 	})
 
 	content := new(session.Content)
