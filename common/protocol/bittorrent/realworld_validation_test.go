@@ -349,6 +349,36 @@ func TestSniffUTPIgnoresTimestampClockBase(t *testing.T) {
 	}
 }
 
+// TestSniffUTPIgnoresDNSQueries is a production regression test. A DNS query
+// whose transaction id starts with 0x01/0x11/0x21/0x31/0x41 and ends with
+// 0x00 collides with the uTP header shape: the type and version nibbles
+// match, the low transaction byte reads as "no extension", and the query
+// flags 0x0100 read as a non-zero connection id. A v26.8.21 deployment
+// observed dozens of such flows per half hour routed to the bittorrent
+// block outbound, breaking name resolution for unlucky queries.
+func TestSniffUTPIgnoresDNSQueries(t *testing.T) {
+	names := []string{"tracker.example.com", "ya.ru", "roblox.com", "a.very.long.domain.name.with.many.labels.example.org"}
+	for i, txn := range []uint16{0x0100, 0x1100, 0x2100, 0x3100, 0x4100} {
+		for _, name := range names {
+			query := dnsQueryFor(name, txn, 0x0100)
+			if header, err := SniffUTP(query); err == nil && header != nil {
+				t.Fatalf("DNS query with txn %#04x for %s classified as bittorrent", txn, name)
+			}
+		}
+		_ = i
+	}
+
+	t.Run("edns variant", func(t *testing.T) {
+		query := dnsQueryFor("tracker.example.com", 0x3100, 0x0100)
+		// add EDNS0 OPT record: ARCOUNT=1 and a trailing record
+		query[11] = 1
+		query = append(query, 0x00, 0x00, 0x29, 0x10, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00)
+		if header, err := SniffUTP(query); err == nil && header != nil {
+			t.Fatalf("EDNS query classified as bittorrent")
+		}
+	})
+}
+
 // TestSniffUTPRejectsNonUTPTraffic proves the uTP sniffer claims no other
 // UDP protocol, including torrent traffic that belongs to the DHT and
 // tracker sniffers rather than to uTP.
