@@ -1,6 +1,7 @@
 package bittorrent
 
 import (
+	"encoding/binary"
 	"errors"
 
 	"github.com/xtls/xray-core/common"
@@ -56,6 +57,16 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 		return nil, errNotBittorrent
 	}
 
+	// A DNS query whose transaction id starts with 0x01/0x11/0x21/0x31/0x41
+	// and ends with 0x00 passes the checks above: the id reads as a valid
+	// type/version pair, the flags 0x0100 read as a non-zero connection id,
+	// and there is no extension chain to validate. DNS is orders of
+	// magnitude more common than uTP on proxies, so pass over well-formed
+	// queries explicitly.
+	if isDNSQuery(b) {
+		return nil, errNotBittorrent
+	}
+
 	extension := b[1]
 	if extension != 0 && extension != 1 && extension != 3 {
 		return nil, errNotBittorrent
@@ -88,4 +99,50 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 	}
 
 	return &SniffHeader{}, nil
+}
+
+// isDNSQuery reports whether b is a well-formed DNS query: standard opcode,
+// exactly one question, no answers or authority records, at most one
+// EDNS0 additional record, and a valid label sequence terminated by the
+// question type and class. A real uTP packet matching all of this would
+// need its timestamp fields to read as those exact count values.
+func isDNSQuery(b []byte) bool {
+	if len(b) < 17 { // header + one-label question + QTYPE + QCLASS
+		return false
+	}
+	if b[2]&0x80 != 0 || b[2]&0x78 != 0 { // response bit or non-standard opcode
+		return false
+	}
+	if binary.BigEndian.Uint16(b[4:6]) != 1 {
+		return false
+	}
+	if binary.BigEndian.Uint16(b[6:8]) != 0 || binary.BigEndian.Uint16(b[8:10]) != 0 {
+		return false
+	}
+	additional := binary.BigEndian.Uint16(b[10:12])
+	if additional > 1 {
+		return false
+	}
+
+	pos := 12
+	for {
+		if pos >= len(b) {
+			return false
+		}
+		length := int(b[pos])
+		if length == 0 {
+			pos++
+			break
+		}
+		if length > 63 || pos+1+length > len(b) {
+			return false
+		}
+		pos += 1 + length
+	}
+	if pos+4 > len(b) {
+		return false
+	}
+	// Without EDNS the question must end the datagram; padding after a
+	// query is not something stub resolvers emit.
+	return additional == 1 || pos+4 == len(b)
 }
