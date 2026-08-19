@@ -377,6 +377,49 @@ func TestSniffUTPIgnoresDNSQueries(t *testing.T) {
 			t.Fatalf("EDNS query classified as bittorrent")
 		}
 	})
+
+	// Shapes below were verified live against Cloudflare, Google, Quad9,
+	// OpenDNS, AdGuard, Yandex, AliDNS and DNSPod on 2026-08-19: every
+	// resolver answered each query. All of them slipped past the first
+	// revision of the DNS exclusion and were reported as bittorrent by a
+	// v26.8.22 deployment (8.8.8.8:53, auto-banned user).
+	for name, query := range map[string][]byte{
+		"edns with two additional records": ednsTwoExtraQuery(),
+		"two questions":                    twoQuestionQuery(),
+		"trailing garbage":                 append(dnsQueryFor("tracker.example.com", 0x3100, 0x0100), 0xDE, 0xAD, 0xBE, 0xEF),
+		"dynamic update opcode":            dnsQueryFor("office.example.com", 0x3100, 0x2800),
+		"query with answer section":        answerCarryingQuery(),
+	} {
+		if header, err := SniffUTP(query); err == nil && header != nil {
+			t.Fatalf("%s classified as bittorrent", name)
+		}
+	}
+}
+
+func ednsTwoExtraQuery() []byte {
+	query := dnsQueryFor("tracker.example.com", 0x3100, 0x0100)
+	query[11] = 2 // ARCOUNT=2
+	// OPT record plus one A record
+	query = append(query, 0x00, 0x00, 0x29, 0x10, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00)
+	query = append(query, 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00)
+	query = append(query, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 8, 8, 8, 8)
+	return query
+}
+
+func twoQuestionQuery() []byte {
+	query := dnsQueryFor("a.tracker.example.com", 0x3100, 0x0100)
+	query[5] = 2 // QDCOUNT=2
+	second := dnsQueryFor("b.tracker.example.com", 0, 0x0100)
+	query = append(query, second[12:]...)
+	return query
+}
+
+func answerCarryingQuery() []byte {
+	query := dnsQueryFor("tracker.example.com", 0x3100, 0x0100)
+	query[7] = 1 // ANCOUNT=1
+	query = append(query, 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00)
+	query = append(query, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 1, 2, 3, 4)
+	return query
 }
 
 // TestSniffUTPRejectsNonUTPTraffic proves the uTP sniffer claims no other
