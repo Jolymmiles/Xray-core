@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:latest
-FROM --platform=$BUILDPLATFORM golang:latest AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.0 AS build
 
 # Build xray-core
 WORKDIR /src
