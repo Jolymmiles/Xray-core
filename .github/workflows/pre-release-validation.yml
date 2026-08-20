@@ -60,6 +60,8 @@ jobs:
     env:
       XRAY_E2E_YT_INTERFACE: yt
       XRAY_E2E_YT_IPV6: fd00:7872:6179::1
+      XRAY_STRUCTURAL_SOAK_SECONDS: 1800
+      XRAY_NATIVE_LINUX_RELEASE: 1
     steps:
       - name: Checkout codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -123,10 +125,5 @@ jobs:
           sudo ip link set yt up
           sudo ip -6 address add "${XRAY_E2E_YT_IPV6}/128" dev yt
 
-      - name: Run focused Linux SMUX reconnect gate
-        env:
-          XRAY_SMUX_STRESS_CYCLES: 50
-        run: |
-          go test -timeout=15m -tags 'integration stress' ./common/singmux \
-            -run '^TestSMUXProcessStressAndReconnect/mihomo/(xray-client|xray-server)/vless$' \
-            -count=1 -v
+      - name: Run structural presence Linux release gate
+        run: testing/release/structural_presence.sh linux
