@@ -42,6 +42,7 @@ func (*handlerLifecycleResponseWriter) WriteHeader(int)       {}
 func (*handlerLifecycleResponseWriter) Write(payload []byte) (int, error) {
 	return len(payload), nil
 }
+
 func (w *handlerLifecycleResponseWriter) FlushError() error {
 	if w.flushStarted != nil {
 		close(w.flushStarted)
