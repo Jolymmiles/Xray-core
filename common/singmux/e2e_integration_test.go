@@ -619,8 +619,20 @@ func waitTCP(t testing.TB, process *e2eProcess, port int) {
 	for time.Now().Before(deadline) {
 		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
 		if err == nil {
+			_ = connection.SetDeadline(time.Now().Add(time.Second))
+			if tcpConnection, ok := connection.(*net.TCPConn); ok {
+				err = tcpConnection.CloseWrite()
+				if err == nil {
+					_, readErr := io.Copy(io.Discard, tcpConnection)
+					if networkErr, ok := readErr.(net.Error); ok && networkErr.Timeout() {
+						err = readErr
+					}
+				}
+			}
 			_ = connection.Close()
-			return
+			if err == nil {
+				return
+			}
 		}
 		select {
 		case processErr := <-process.done:
@@ -630,6 +642,32 @@ func waitTCP(t testing.TB, process *e2eProcess, port int) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("process did not listen on %s\n%s", address, process.logs.String())
+}
+
+func TestWaitTCPDrainsProbe(t *testing.T) {
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	drained := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.AcceptTCP()
+		if acceptErr != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, connection)
+		time.Sleep(100 * time.Millisecond)
+		close(drained)
+		_ = connection.Close()
+	}()
+
+	waitTCP(t, &e2eProcess{done: make(chan error)}, listener.Addr().(*net.TCPAddr).Port)
+	select {
+	case <-drained:
+	default:
+		t.Fatal("TCP readiness probe returned before the server drained it")
+	}
 }
 
 func waitProcessLog(t *testing.T, process *e2eProcess, marker string) {
