@@ -43,6 +43,7 @@ func TestSniffRealWorldDHT(t *testing.T) {
 		{"find_node query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"6:target20:"+string(target[:])+"e", "1:q9:find_node", "1:t4:abcd", "1:y1:q")},
 		{"get_peers query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"9:info_hash20:"+string(bigBuckBunnyInfoHash[:])+"e", "1:q9:get_peers", "1:t2:zy", "1:v4:LT2H", "1:y1:q")},
 		{"announce_peer query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"9:info_hash20:"+string(bigBuckBunnyInfoHash[:])+"4:porti6881e5:token8:"+tok+"e", "1:q13:announce_peer", "1:t2:cd", "1:y1:q")},
+		{"announce_peer query with implied port", dhtDict("1:ad2:id20:"+string(nodeID[:])+"12:implied_porti1e9:info_hash20:"+string(bigBuckBunnyInfoHash[:])+"4:porti0e5:token8:"+tok+"e", "1:q13:announce_peer", "1:t2:ce", "1:y1:q")},
 		{"sample_infohashes query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"6:target20:"+string(target[:])+"e", "1:q17:sample_infohashes", "1:t2:ef", "1:y1:q")},
 		{"bep44 get query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"6:target20:"+string(target[:])+"e", "1:q3:get", "1:t2:gh", "1:y1:q")},
 		{"bep44 put query with nested mutable value", dhtDict(
@@ -94,6 +95,14 @@ func TestSniffDHTRejectsNonDHTBencode(t *testing.T) {
 		{"y unknown value", dhtDict("1:y1:x1:t2:aae")},
 		{"y longer than one char", dhtDict("1:y2:qq1:t2:aae")},
 		{"unknown query name", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q3:foo", "1:t2:aa", "1:y1:q")},
+		{"ping without node id", dhtDict("1:ade", "1:q4:ping", "1:t2:aa", "1:y1:q")},
+		{"ping with short node id", dhtDict("1:ad2:id4:shrte", "1:q4:ping", "1:t2:aa", "1:y1:q")},
+		{"find_node without target", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q9:find_node", "1:t2:aa", "1:y1:q")},
+		{"get_peers without info hash", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q9:get_peers", "1:t2:aa", "1:y1:q")},
+		{"announce_peer without token", dhtDict("1:ad2:id20:"+string(nodeID[:])+"9:info_hash20:"+string(nodeID[:])+"4:porti6881ee", "1:q13:announce_peer", "1:t2:aa", "1:y1:q")},
+		{"bep44 get without target", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q3:get", "1:t2:aa", "1:y1:q")},
+		{"bep44 put without token", dhtDict("1:ad2:id20:"+string(nodeID[:])+"1:v4:spame", "1:q3:put", "1:t2:aa", "1:y1:q")},
+		{"sample_infohashes without target", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q17:sample_infohashes", "1:t2:aa", "1:y1:q")},
 		{"query without transaction id", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q4:ping", "1:y1:q")},
 		{"query without query name", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:t2:aa", "1:y1:q")},
 		{"query without argument dict", dhtDict("1:q4:ping", "1:t2:aa", "1:y1:q")},
@@ -170,10 +179,24 @@ func TestSniffUDPTracker(t *testing.T) {
 		}
 	})
 
+	t.Run("connect request with extension bytes", func(t *testing.T) {
+		payload := append(udpTrackerConnect(0xDEADBEEF), 1, 2, 3, 4)
+		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
+			t.Fatalf("extended connect not detected: err=%v", err)
+		}
+	})
+
 	t.Run("announce with cached connection id", func(t *testing.T) {
 		payload := udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash)
 		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
 			t.Fatalf("announce not detected: err=%v", err)
+		}
+	})
+
+	t.Run("announce with extension bytes", func(t *testing.T) {
+		payload := append(udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash), 1, 2, 3, 4)
+		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
+			t.Fatalf("extended announce not detected: err=%v", err)
 		}
 	})
 
@@ -213,6 +236,11 @@ func TestSniffUDPTrackerRejectsForeignDatagrams(t *testing.T) {
 		{"announce with zero port", func() []byte {
 			b := udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash)
 			b[96], b[97] = 0, 0
+			return b
+		}()},
+		{"scrape with invalid info hash framing", func() []byte {
+			b := make([]byte, 20)
+			binaryPutUint32(b[8:12], 2)
 			return b
 		}()},
 		{"random datagram", blockPayload(r, 96)},

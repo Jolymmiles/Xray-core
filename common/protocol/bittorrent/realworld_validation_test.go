@@ -209,6 +209,43 @@ func dnsQueryFor(name string, txn, flags uint16) []byte {
 	return b
 }
 
+// rakNetUnconnectedPing builds the leading shape used by RakNet-style game
+// discovery: message id 0x01, an eight-byte timestamp, the offline magic and a
+// client GUID. Its first four bytes collide with the permissive uTP DATA
+// heuristic even though the datagram is not uTP.
+func rakNetUnconnectedPing() []byte {
+	b := []byte{0x01, 0x00, 0x01, 0x9A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F}
+	b = append(b, 0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34, 0x56, 0x78)
+	return b
+}
+
+// stunBindingSuccessWithMappedAddress is a standard STUN success response
+// carrying the legacy MAPPED-ADDRESS attribute. The STUN message type and
+// first attribute bytes also form a syntactically valid uTP extension chain.
+func stunBindingSuccessWithMappedAddress() []byte {
+	b := make([]byte, 32)
+	b[0], b[1] = 0x01, 0x01 // Binding success response
+	binary.BigEndian.PutUint16(b[2:4], 12)
+	binary.BigEndian.PutUint32(b[4:8], 0x2112A442)
+	copy(b[8:20], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+	binary.BigEndian.PutUint16(b[20:22], 0x0001) // MAPPED-ADDRESS
+	binary.BigEndian.PutUint16(b[22:24], 8)
+	b[25] = 0x01
+	binary.BigEndian.PutUint16(b[26:28], 3478)
+	copy(b[28:32], []byte{192, 0, 2, 1})
+	return b
+}
+
+// turnChannelData builds a valid TURN ChannelData frame. Channel 0x4100 makes
+// the first byte look like a uTP ST_SYN while the payload is real-time media.
+func turnChannelData() []byte {
+	payload := []byte{0x80, 0x60, 0x12, 0x34, 0x00, 0x00, 0x00, 0x01, 0xCA, 0xFE, 0xBA, 0xBE, 1, 2, 3, 4, 5, 6, 7, 8}
+	b := make([]byte, 4, 4+len(payload))
+	binary.BigEndian.PutUint16(b[0:2], 0x4100)
+	binary.BigEndian.PutUint16(b[2:4], uint16(len(payload)))
+	return append(b, payload...)
+}
+
 // TestSniffRealWorldTorrentTCP feeds full 68-byte handshakes of six real
 // client families through SniffBittorrent. All must be detected.
 func TestSniffRealWorldTorrentTCP(t *testing.T) {
@@ -286,28 +323,18 @@ func TestSniffTorrentTCPFailureModes(t *testing.T) {
 	})
 }
 
-// TestSniffRealWorldUTP feeds wire-format-accurate uTP packets of every
-// message type through SniffUTP. These are the datagram shapes qBittorrent,
-// Transmission and libtorrent clients put on the wire for the majority of
-// peer traffic, so every case must be detected.
+// TestSniffRealWorldUTP feeds the connection-opening ST_SYN shape through
+// SniffUTP. The dispatcher invokes the sniffer at the start of a UDP flow, so
+// the SYN is both sufficient for detection and substantially stronger evidence
+// than an isolated established-state header.
 func TestSniffRealWorldUTP(t *testing.T) {
-	r := newMockRand(3)
-	ts := someTimestamp()
-
 	cases := []struct {
 		name    string
 		payload []byte
 	}{
-		{"ST_SYN connection setup", utpPacket(4, 0xC0A8, ts, 0, 0x1FC000, 1, 0, nil, nil)},
-		{"ST_STATE ack", utpPacket(2, 0xC0A8, ts, 1250, 0x1FC000, 57, 56, nil, nil)},
-		{"ST_DATA 1400 byte block", utpPacket(0, 0x07E1, ts, 900, 0x100000, 101, 100, nil, blockPayload(r, 1400))},
-		{"ST_DATA with SACK after loss", utpPacket(0, 0x07E1, ts, 900, 0x100000, 101, 100, []utpExt{sackExtension}, blockPayload(r, 1200))},
-		{"ST_STATE with SACK", utpPacket(2, 0x1F90, ts, 640, 0x200000, 88, 87, []utpExt{sackExtension}, nil)},
-		{"ST_STATE with close reason", utpPacket(2, 0x07E1, ts, 900, 0x1FC000, 55, 54, []utpExt{closeReasonExtension}, nil)},
-		{"ST_DATA with SACK then close reason", utpPacket(0, 0x07E1, ts, 900, 0x100000, 101, 100, []utpExt{sackExtension, closeReasonExtension}, blockPayload(r, 400))},
-		{"ST_FIN graceful close", utpPacket(1, 0x07E1, ts, 200, 0x1FC000, 250, 249, nil, nil)},
-		{"ST_RESET abort", utpPacket(3, 0x07E1, ts, 200, 0, 250, 249, nil, nil)},
-		{"ST_DATA with zero timestamp", utpPacket(0, 0x07E1, 0, 900, 0x100000, 5, 4, nil, blockPayload(r, 500))},
+		{"libutp-style timestamp", utpPacket(4, 0xC0A8, someTimestamp(), 0, 0x1FC000, 1, 0, nil, nil)},
+		{"zero timestamp", utpPacket(4, 0x07E1, 0, 0, 0x100000, 1, 0, nil, nil)},
+		{"wrapped timestamp", utpPacket(4, 0x1F90, math.MaxUint32, 0, 0x200000, 1, 0, nil, nil)},
 	}
 
 	for _, tc := range cases {
@@ -318,6 +345,29 @@ func TestSniffRealWorldUTP(t *testing.T) {
 			}
 			if got := header.Protocol(); got != "bittorrent" {
 				t.Fatalf("protocol = %q, want bittorrent", got)
+			}
+		})
+	}
+}
+
+func TestSniffUTPRejectsEstablishedPacketsAtFlowStart(t *testing.T) {
+	r := newMockRand(3)
+	ts := someTimestamp()
+	cases := []struct {
+		name    string
+		payload []byte
+	}{
+		{"ST_STATE ack", utpPacket(2, 0xC0A8, ts, 1250, 0x1FC000, 57, 56, nil, nil)},
+		{"ST_DATA block", utpPacket(0, 0x07E1, ts, 900, 0x100000, 101, 100, nil, blockPayload(r, 1400))},
+		{"ST_DATA with SACK", utpPacket(0, 0x07E1, ts, 900, 0x100000, 101, 100, []utpExt{sackExtension}, blockPayload(r, 1200))},
+		{"ST_STATE with close reason", utpPacket(2, 0x07E1, ts, 900, 0x1FC000, 55, 54, []utpExt{closeReasonExtension}, nil)},
+		{"ST_FIN", utpPacket(1, 0x07E1, ts, 200, 0x1FC000, 250, 249, nil, nil)},
+		{"ST_RESET", utpPacket(3, 0x07E1, ts, 200, 0, 250, 249, nil, nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if header, err := SniffUTP(tc.payload); err == nil && header != nil {
+				t.Fatal("established-state packet classified at flow start")
 			}
 		})
 	}
@@ -341,7 +391,7 @@ func TestSniffUTPIgnoresTimestampClockBase(t *testing.T) {
 		uint32(time.Now().UnixNano()),
 	}
 	for _, ts := range timestamps {
-		packet := utpPacket(0, 0x07E1, ts, 900, 0x100000, 101, 100, nil, blockPayload(newMockRand(5), 16))
+		packet := utpPacket(4, 0x07E1, ts, 0, 0x100000, 1, 0, nil, nil)
 		header, err := SniffUTP(packet)
 		if err != nil || header == nil {
 			t.Fatalf("timestamp %d (%#x) rejected: %v", ts, ts, err)
@@ -445,6 +495,9 @@ func TestSniffUTPRejectsNonUTPTraffic(t *testing.T) {
 		{"wireguard handshake initiation", append([]byte{0x01, 0, 0, 0}, wgTail...)},
 		{"wireguard transport data", append([]byte{0x04, 0, 0, 0}, blockPayload(r, 60)...)},
 		{"wireguard-like all-zero header", append([]byte{0x01, 0x00, 0x00, 0x00}, make([]byte, 24)...)},
+		{"RakNet-style unconnected ping", rakNetUnconnectedPing()},
+		{"STUN binding success", stunBindingSuccessWithMappedAddress()},
+		{"TURN channel data", turnChannelData()},
 		{"utp-shaped junk with unknown extension id", append([]byte{0x01, 0x05}, blockPayload(r, 30)...)},
 		{"utp-shaped junk with type 5", append([]byte{0x51, 0x00, 0x12, 0x34}, blockPayload(r, 30)...)},
 		{"quic v1 initial header", append([]byte{0xC3, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x20, 0x00}, blockPayload(r, 1190)...)},

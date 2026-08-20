@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -59,6 +60,22 @@ func TestBitTorrentBlockProcessE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("game discovery collision through proxy is echoed", func(t *testing.T) {
+		payload := btRakNetUnconnectedPing()
+		response := btRoundTripUDP(t, socksPort, udpEcho.addr, payload, 5*time.Second)
+		if !bytes.Equal(response, payload) {
+			t.Fatalf("echo mismatch: got % x", response)
+		}
+	})
+
+	t.Run("stun collision through proxy is echoed", func(t *testing.T) {
+		payload := btSTUNBindingSuccess()
+		response := btRoundTripUDP(t, socksPort, udpEcho.addr, payload, 5*time.Second)
+		if !bytes.Equal(response, payload) {
+			t.Fatalf("echo mismatch: got % x", response)
+		}
+	})
+
 	t.Run("plain tcp exchange through proxy is echoed", func(t *testing.T) {
 		payload := []byte("plain-tcp-control")
 		response := btRoundTripTCP(t, socksPort, tcpEcho.addr.Port, payload, 5*time.Second)
@@ -69,8 +86,8 @@ func TestBitTorrentBlockProcessE2E(t *testing.T) {
 
 	// Torrent traffic must be dropped by the protocol rule. Each probe is
 	// answered only if it leaks: the responder echoes everything it gets.
-	t.Run("utp data packet is blocked", func(t *testing.T) {
-		payload := btUTPDataPacket()
+	t.Run("utp syn is blocked", func(t *testing.T) {
+		payload := btUTPSYN()
 		btAssertBlockedUDP(t, socksPort, udpEcho, payload, "uTP")
 	})
 
@@ -183,6 +200,9 @@ func btBuildXray(t *testing.T, workDir string) string {
 		t.Fatal(err)
 	}
 	output := filepath.Join(workDir, "xray")
+	if runtime.GOOS == "windows" {
+		output += ".exe"
+	}
 	command := exec.Command("go", "build", "-o", output, "./main")
 	command.Dir = root
 	if combined, err := command.CombinedOutput(); err != nil {
@@ -296,7 +316,8 @@ func btNewUDPResponder(t *testing.T) *btUDPResponder {
 			responder.received = append(responder.received, payload)
 			responder.mu.Unlock()
 			var reply []byte
-			if n >= 12 && payload[2]&0xFE == 0 { // standard query flags (at most RD set)
+			if n >= 12 && payload[2]&0xFE == 0 && binary.BigEndian.Uint16(payload[4:6]) == 1 {
+				// Standard query flags (at most RD set) with one question.
 				reply = btDNSResponse(payload)
 			} else {
 				reply = payload
@@ -485,19 +506,34 @@ func ioReadFull(conn net.Conn, buffer []byte) (int, error) {
 
 // --- torrent payloads (same wire shapes as the corpus tests) ---
 
-func btUTPDataPacket() []byte {
-	packet := make([]byte, 20, 520)
-	packet[0] = 0x01 // ST_DATA, version 1
+func btUTPSYN() []byte {
+	packet := make([]byte, 20)
+	packet[0] = 0x41 // ST_SYN, version 1
 	packet[1] = 0
 	binary.BigEndian.PutUint16(packet[2:4], 0x07E1)
 	binary.BigEndian.PutUint32(packet[4:8], 0xD5396E1C)
-	binary.BigEndian.PutUint32(packet[8:12], 900)
+	binary.BigEndian.PutUint32(packet[8:12], 0)
 	binary.BigEndian.PutUint32(packet[12:16], 0x100000)
-	binary.BigEndian.PutUint16(packet[16:18], 101)
-	binary.BigEndian.PutUint16(packet[18:20], 100)
-	for i := len(packet); i < 520; i++ {
-		packet = append(packet, byte(i%251))
-	}
+	binary.BigEndian.PutUint16(packet[16:18], 1)
+	return packet
+}
+
+func btRakNetUnconnectedPing() []byte {
+	packet := []byte{0x01, 0x00, 0x01, 0x9A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F}
+	return append(packet, 0x00, 0xFF, 0xFF, 0x00, 0xFE, 0xFE, 0xFE, 0xFE, 0xFD, 0xFD, 0xFD, 0xFD, 0x12, 0x34, 0x56, 0x78)
+}
+
+func btSTUNBindingSuccess() []byte {
+	packet := make([]byte, 32)
+	packet[0], packet[1] = 0x01, 0x01
+	binary.BigEndian.PutUint16(packet[2:4], 12)
+	binary.BigEndian.PutUint32(packet[4:8], 0x2112A442)
+	copy(packet[8:20], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+	binary.BigEndian.PutUint16(packet[20:22], 0x0001)
+	binary.BigEndian.PutUint16(packet[22:24], 8)
+	packet[25] = 0x01
+	binary.BigEndian.PutUint16(packet[26:28], 3478)
+	copy(packet[28:32], []byte{192, 0, 2, 1})
 	return packet
 }
 
