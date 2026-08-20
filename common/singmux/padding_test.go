@@ -41,6 +41,15 @@ func TestPaddingFrameGolden(t *testing.T) {
 	}
 }
 
+func TestRandomPaddingLengthMatchesSingMuxRange(t *testing.T) {
+	for range 1024 {
+		length := randomPaddingLength()
+		if length < 256 || length >= 768 {
+			t.Fatalf("padding length = %d, want 256..767", length)
+		}
+	}
+}
+
 func TestPaddingReaderAcceptsFragmentedReads(t *testing.T) {
 	underlying := &memoryConn{}
 	underlying.Write([]byte{0, 5, 0, 2})

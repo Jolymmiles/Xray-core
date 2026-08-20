@@ -22,10 +22,11 @@ The writer emits canonical frames; the reader accepts valid non-canonical frame
 sizes subject to the same 65535-byte limits.
 
 The padding bytes themselves carry no meaning and the reader discards
-`padding_length` of them whatever they contain. The writer fills them from
-`crypto/rand`: the header already announces the length, so a constant filler
-would contribute a recognisable pattern rather than hide one. A peer that emits
-constant padding stays interoperable.
+`padding_length` of them whatever they contain. The canonical writer selects a
+padding length from 256 through 767 and fills the bytes from `crypto/rand`: the
+header already announces the length, so a constant filler would contribute a
+recognisable pattern rather than hide one. A peer that emits another valid
+length or constant padding stays interoperable.
 
 After the carrier request, protocol 0 starts the embedded SMUX v1 engine.
 Protocol 2 starts HTTP/2 prior knowledge directly on the authenticated carrier,

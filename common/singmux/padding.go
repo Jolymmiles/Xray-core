@@ -39,9 +39,9 @@ func newPaddingConnWithGenerator(connection net.Conn, generator func() int) *pad
 // panics rather than returning an error, so neither padding length nor padding
 // content has a degraded fallback to pick.
 func randomPaddingLength() int {
-	var value [1]byte
+	var value [2]byte
 	rand.Read(value[:])
-	return int(value[0])
+	return 256 + int(binary.BigEndian.Uint16(value[:])%512)
 }
 
 func (c *paddingConn) Write(payload []byte) (int, error) {
