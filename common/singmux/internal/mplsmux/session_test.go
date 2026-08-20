@@ -338,6 +338,72 @@ func TestSessionConcurrentFullDuplexStreams(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigSlowStreamDoesNotBlockNextStream(t *testing.T) {
+	client, server := testSessionPair(t, nil)
+	slowClient, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowServer, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte{0x5a}, 3*DefaultConfig().MaxFrameSize)
+	if _, err := slowClient.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		healthyClient, err := client.OpenStream()
+		if err != nil {
+			result <- err
+			return
+		}
+		defer healthyClient.Close()
+		healthyServer, err := server.AcceptStream()
+		if err != nil {
+			result <- err
+			return
+		}
+		defer healthyServer.Close()
+		if _, err := healthyClient.Write([]byte("healthy")); err != nil {
+			result <- err
+			return
+		}
+		response := make([]byte, len("healthy"))
+		_, err = io.ReadFull(healthyServer, response)
+		if err == nil && string(response) != "healthy" {
+			err = fmt.Errorf("healthy stream payload = %q", response)
+		}
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		if _, err := io.ReadFull(slowServer, make([]byte, len(payload))); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-result:
+		case <-time.After(time.Second):
+			t.Fatal("healthy stream stayed blocked after draining the slow stream")
+		}
+		t.Fatal("slow stream blocked an independent stream")
+	}
+}
+
+func TestDefaultConfigLeavesFrameHeadroomForStallAbort(t *testing.T) {
+	config := DefaultConfig()
+	if config.MaxStreamBuffer+maxFramePayload > config.MaxReceiveBuffer {
+		t.Fatalf("stream buffer %d leaves less than one %d-byte wire frame in the %d-byte receive window", config.MaxStreamBuffer, maxFramePayload, config.MaxReceiveBuffer)
+	}
+}
+
 func TestReadAndAcceptDeadlines(t *testing.T) {
 	client, server := testSessionPair(t, nil)
 	deadline := time.Now().Add(30 * time.Millisecond)

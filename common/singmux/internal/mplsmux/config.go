@@ -33,7 +33,7 @@ func DefaultConfig() *Config {
 		KeepAliveTimeout:   30 * time.Second,
 		MaxFrameSize:       32 * 1024,
 		MaxReceiveBuffer:   4 * 1024 * 1024,
-		MaxStreamBuffer:    64 * 1024,
+		MaxStreamBuffer:    4*1024*1024 - maxFramePayload,
 		StreamStallTimeout: 30 * time.Second,
 	}
 }
