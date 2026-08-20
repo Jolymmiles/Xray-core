@@ -5,6 +5,7 @@ package singmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xtls/xray-core/common/buf"
 	X "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/transport"
 	"golang.org/x/net/http2"
 )
 
@@ -24,6 +27,55 @@ type deadlineResponseWriter struct {
 	mu               sync.Mutex
 	writeDeadline    time.Time
 	flushHadDeadline bool
+}
+
+type handlerLifecycleResponseWriter struct {
+	header       http.Header
+	mu           sync.Mutex
+	finished     bool
+	flushStarted chan struct{}
+	flushRelease chan struct{}
+}
+
+func (w *handlerLifecycleResponseWriter) Header() http.Header { return w.header }
+func (*handlerLifecycleResponseWriter) WriteHeader(int)       {}
+func (*handlerLifecycleResponseWriter) Write(payload []byte) (int, error) {
+	return len(payload), nil
+}
+func (w *handlerLifecycleResponseWriter) FlushError() error {
+	if w.flushStarted != nil {
+		close(w.flushStarted)
+		<-w.flushRelease
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.finished {
+		panic("Header called after Handler finished")
+	}
+	return nil
+}
+func (*handlerLifecycleResponseWriter) SetReadDeadline(time.Time) error  { return nil }
+func (*handlerLifecycleResponseWriter) SetWriteDeadline(time.Time) error { return nil }
+func (w *handlerLifecycleResponseWriter) finish() {
+	w.mu.Lock()
+	w.finished = true
+	w.mu.Unlock()
+}
+
+type captureLinkWriterDispatcher struct {
+	*echoDispatcher
+	writer chan buf.Writer
+}
+
+func (d *captureLinkWriterDispatcher) DispatchLink(_ context.Context, _ X.Destination, link *transport.Link) error {
+	d.writer <- link.Writer
+	return nil
+}
+
+func writeCaptured(writer buf.Writer, payload []byte) (err error, panicValue any) {
+	defer func() { panicValue = recover() }()
+	err = writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes(payload)})
+	return
 }
 
 func (w *deadlineResponseWriter) Header() http.Header { return w.header }
@@ -292,6 +344,74 @@ func TestServiceH2MuxBoundsInitialResponseFlush(t *testing.T) {
 	}
 	if !deadlineAfterHandshake.IsZero() {
 		t.Fatalf("write deadline remained set after handshake: %v", deadlineAfterHandshake)
+	}
+}
+
+func TestServiceH2MuxRejectsWriteAfterHandlerReturns(t *testing.T) {
+	var requestBody bytes.Buffer
+	if err := writeStreamRequest(&requestBody, 0, X.TCPDestination(X.DomainAddress("example.com"), 443)); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := &captureLinkWriterDispatcher{
+		echoDispatcher: &echoDispatcher{target: make(chan X.Destination, 1)},
+		writer:         make(chan buf.Writer, 1),
+	}
+	service := NewService(dispatcher)
+	response := &handlerLifecycleResponseWriter{header: make(http.Header)}
+	request := (&http.Request{Method: http.MethodConnect, Body: io.NopCloser(&requestBody)}).WithContext(context.Background())
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	service.handleH2MuxStream(response, request, server, newServerBrutalController(request.Context(), service.setBrutalOptions), session.PresenceScope{})
+	response.finish()
+	err, panicValue := writeCaptured(<-dispatcher.writer, []byte("late tail"))
+	if panicValue != nil {
+		t.Fatalf("late H2MUX write panicked: %v", panicValue)
+	}
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("late H2MUX write error = %v, want net.ErrClosed", err)
+	}
+}
+
+func TestH2MuxServerStreamCloseWaitsForActiveFlush(t *testing.T) {
+	response := &handlerLifecycleResponseWriter{
+		header:       make(http.Header),
+		flushStarted: make(chan struct{}),
+		flushRelease: make(chan struct{}),
+	}
+	stream := &h2MuxServerStream{
+		body:       io.NopCloser(bytes.NewReader(nil)),
+		writer:     response,
+		controller: http.NewResponseController(response),
+		ctx:        context.Background(),
+	}
+	writeResult := make(chan error, 1)
+	go func() {
+		_, err := stream.Write([]byte("tail"))
+		writeResult <- err
+	}()
+	waitSignal(t, response.flushStarted, "H2MUX write did not reach Flush")
+	closeResult := make(chan error, 1)
+	closeStarted := make(chan struct{})
+	go func() {
+		close(closeStarted)
+		closeResult <- stream.Close()
+	}()
+	waitSignal(t, closeStarted, "stream Close did not start")
+	select {
+	case err := <-closeResult:
+		close(response.flushRelease)
+		waitResult(t, writeResult, "active H2MUX write did not finish")
+		t.Fatalf("stream Close returned before active Flush completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(response.flushRelease)
+	if err := waitResult(t, writeResult, "active H2MUX write did not finish"); err != nil {
+		t.Fatalf("active H2MUX write error = %v", err)
+	}
+	if err := waitResult(t, closeResult, "stream Close did not finish"); err != nil {
+		t.Fatalf("stream Close error = %v", err)
 	}
 }
 

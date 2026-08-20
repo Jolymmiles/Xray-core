@@ -85,6 +85,7 @@ type h2MuxServerStream struct {
 	remoteAddr net.Addr
 	writeMu    sync.Mutex
 	closeOnce  sync.Once
+	closed     bool
 }
 
 func (s *h2MuxServerStream) Read(payload []byte) (int, error) {
@@ -99,6 +100,9 @@ func (s *h2MuxServerStream) Read(payload []byte) (int, error) {
 func (s *h2MuxServerStream) Write(payload []byte) (int, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.closed {
+		return 0, net.ErrClosed
+	}
 	select {
 	case <-s.ctx.Done():
 		return 0, s.ctx.Err()
@@ -113,7 +117,12 @@ func (s *h2MuxServerStream) Write(payload []byte) (int, error) {
 
 func (s *h2MuxServerStream) Close() error {
 	var err error
-	s.closeOnce.Do(func() { err = s.body.Close() })
+	s.closeOnce.Do(func() {
+		s.writeMu.Lock()
+		s.closed = true
+		s.writeMu.Unlock()
+		err = s.body.Close()
+	})
 	return err
 }
 
