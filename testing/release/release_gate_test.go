@@ -14,7 +14,8 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		t.Fatal("source path unavailable")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
-	assertFileContains(t, filepath.Join(root, "testing", "release", "structural_presence.sh"), []string{
+	structuralGate := filepath.Join(root, "testing", "release", "structural_presence.sh")
+	assertFileContains(t, structuralGate, []string{
 		"GOFUMPT_VERSION=v0.11.0",
 		"go run ./infra/vformat/main.go -mode check -pwd ./",
 		"go vet ./...",
@@ -25,6 +26,7 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"TestDirectVersionSkew|TestLegacyMuxVersionSkew|TestXUDPVersionSkew|TestReverseVersionSkew|TestWireGuardVersionSkew",
 		"TestSevenThousandExactOwnersEndAtZero",
 		"XRAY_SMUX_STRESS_CYCLES=50",
+		"XRAY_SMUX_STRESS_TCP_STREAMS=32",
 		"TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstV26815",
 		"TestRemnaNodeLinuxReleaseEnvironment",
 		"XRAY_STRUCTURAL_SOAK_SECONDS",
@@ -35,6 +37,20 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"GOAMD64=v1",
 		"go version -m",
 	})
+	gateSource, err := os.ReadFile(structuralGate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(gateSource), "-run '^TestSMUXProcessStressAndReconnect$'"); count != 2 {
+		t.Fatalf("release gate stress profiles = %d, want peak and cumulative profiles", count)
+	}
+	peakCommand := "XRAY_SMUX_STRESS_CYCLES= XRAY_SMUX_STRESS_TCP_STREAMS= go test"
+	cumulativeCommand := "XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=32 go test"
+	peakIndex := strings.Index(string(gateSource), peakCommand)
+	cumulativeIndex := strings.Index(string(gateSource), cumulativeCommand)
+	if peakIndex < 0 || cumulativeIndex < 0 || peakIndex >= cumulativeIndex {
+		t.Fatalf("release gate must run hermetic peak stress before cumulative stress")
+	}
 	releaseWorkflow := filepath.Join(root, ".github", "workflows", "release.yml")
 	assertFileContains(t, releaseWorkflow, []string{
 		"name: Build and Release",
