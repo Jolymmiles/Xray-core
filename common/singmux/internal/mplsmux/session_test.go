@@ -404,6 +404,12 @@ func TestDefaultConfigLeavesFrameHeadroomForStallAbort(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigBoundsPerStreamReceiveShare(t *testing.T) {
+	if got := DefaultConfig().MaxStreamBuffer; got > 256*1024 {
+		t.Fatalf("default stream buffer = %d, want at most 256 KiB", got)
+	}
+}
+
 func TestReadAndAcceptDeadlines(t *testing.T) {
 	client, server := testSessionPair(t, nil)
 	deadline := time.Now().Add(30 * time.Millisecond)
