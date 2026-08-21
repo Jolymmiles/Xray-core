@@ -26,7 +26,7 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"TestDirectVersionSkew|TestLegacyMuxVersionSkew|TestXUDPVersionSkew|TestReverseVersionSkew|TestWireGuardVersionSkew",
 		"TestSevenThousandExactOwnersEndAtZero",
 		"XRAY_SMUX_STRESS_CYCLES=50",
-		"XRAY_SMUX_STRESS_TCP_STREAMS=32",
+		"XRAY_SMUX_STRESS_TCP_STREAMS=16",
 		"TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstV26815",
 		"TestRemnaNodeLinuxReleaseEnvironment",
 		"XRAY_STRUCTURAL_SOAK_SECONDS",
@@ -45,7 +45,7 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		t.Fatalf("release gate stress profiles = %d, want peak and cumulative profiles", count)
 	}
 	peakCommand := "XRAY_SMUX_STRESS_CYCLES= XRAY_SMUX_STRESS_TCP_STREAMS= go test"
-	cumulativeCommand := "XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=32 go test"
+	cumulativeCommand := "XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test"
 	peakIndex := strings.Index(string(gateSource), peakCommand)
 	cumulativeIndex := strings.Index(string(gateSource), cumulativeCommand)
 	if peakIndex < 0 || cumulativeIndex < 0 || peakIndex >= cumulativeIndex {

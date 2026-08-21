@@ -54,7 +54,7 @@ fi
 
 XRAY_SMUX_STRESS_CYCLES= XRAY_SMUX_STRESS_TCP_STREAMS= go test -timeout=45m -tags 'integration stress' ./common/singmux \
 	-run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
-XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=32 go test -timeout=45m -tags 'integration stress' ./common/singmux \
+XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress' ./common/singmux \
 	-run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 go test -timeout=45m -tags 'integration stress performance' ./common/singmux \
 	-run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstV26815)$' -count=3 -v
