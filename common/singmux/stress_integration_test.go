@@ -56,6 +56,29 @@ func TestQuietStressConfigDisablesXrayAccessLog(t *testing.T) {
 	}
 }
 
+func TestMihomoStressSpreadsOnlyStressClientConnections(t *testing.T) {
+	xrayConfig := xrayConfig(t, false, "vless", 443, 1080, "smux", true, "", "")
+	if !bytes.Contains(xrayConfig, []byte(`"maxConnections": 1`)) {
+		t.Fatalf("ordinary Xray matrix config lost its single-carrier limit: %s", xrayConfig)
+	}
+	if spread := spreadMihomoStressConnections(t, "xray-client", xrayConfig); !bytes.Contains(spread, []byte(`"maxConnections": 4`)) {
+		t.Fatalf("Mihomo-server stress Xray config = %s", spread)
+	}
+
+	mihomoConfig := mihomoClientConfig("vless", 443, 1080, "smux", true)
+	if !bytes.Contains(mihomoConfig, []byte("max-connections: 1")) {
+		t.Fatalf("ordinary Mihomo matrix config lost its single-carrier limit: %s", mihomoConfig)
+	}
+	if spread := spreadMihomoStressConnections(t, "xray-server", mihomoConfig); !bytes.Contains(spread, []byte("max-connections: 4")) {
+		t.Fatalf("Mihomo-client stress config = %s", spread)
+	}
+
+	singBoxConfig := singBoxConfig(t, false, "vless", 443, 1080, "smux", true, "", "")
+	if !bytes.Contains(singBoxConfig, []byte(`"max_connections": 1`)) {
+		t.Fatalf("sing-box stress config lost its single-carrier limit: %s", singBoxConfig)
+	}
+}
+
 func assertNoLinearResourceGrowth(t *testing.T, samples []processResourceSnapshot, cycles int) {
 	t.Helper()
 	if len(samples) != cycles {
@@ -182,6 +205,9 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))
 	serverConfig = quietStressConfig(serverConfig)
 	clientConfig = quietStressConfig(clientConfig)
+	if peer == "mihomo" {
+		clientConfig = spreadMihomoStressConnections(t, direction, clientConfig)
+	}
 	serverArgs = replaceConfigPath(serverArgs, serverPath)
 	clientArgs = replaceConfigPath(clientArgs, clientPath)
 	writeConfig(t, serverPath, serverConfig)
@@ -213,6 +239,20 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 		server:            server,
 		socksPort:         socksPort,
 	}
+}
+
+func spreadMihomoStressConnections(t *testing.T, direction string, config []byte) []byte {
+	t.Helper()
+	oldValue := []byte(`"maxConnections": 1`)
+	newValue := []byte(`"maxConnections": 4`)
+	if direction == "xray-server" {
+		oldValue = []byte("max-connections: 1")
+		newValue = []byte("max-connections: 4")
+	}
+	if bytes.Count(config, oldValue) != 1 {
+		t.Fatalf("Mihomo stress config has %d occurrences of %q, want 1", bytes.Count(config, oldValue), oldValue)
+	}
+	return bytes.Replace(config, oldValue, newValue, 1)
 }
 
 func quietStressConfig(config []byte) []byte {

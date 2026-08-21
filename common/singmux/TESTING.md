@@ -194,6 +194,11 @@ each start, the harness waits for an available process-ready marker and requires
 a complete SOCKS-to-server-to-echo exchange before beginning the measured load;
 an open TCP or SOCKS port alone is not readiness evidence.
 
+Sing-box stress keeps all 128 streams on one carrier. Mihomo stress allows up to
+four carriers to avoid turning the peer's single-carrier capacity into the
+bottleneck; the aggregate stream, byte, datagram, and restart load is unchanged.
+The ordinary SMUX/H2MUX matrices retain cold single-carrier Mihomo coverage.
+
 ```sh
 go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 ```
