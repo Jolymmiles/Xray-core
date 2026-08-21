@@ -336,7 +336,16 @@ func (c *Client) createSession(ctx context.Context) (clientSession, error) {
 	_ = connection.SetDeadline(time.Time{})
 	var session clientSession
 	if c.protocol == "h2mux" {
-		session, err = newH2ClientSession(connection)
+		var h2Session *h2ClientSession
+		h2Session, err = newH2ClientSession(connection)
+		if err == nil {
+			pingContext, cancelPing := context.WithDeadline(ctx, handshakeDeadline(ctx))
+			err = h2Session.client.Ping(pingContext)
+			cancelPing()
+			if err == nil {
+				session = h2Session
+			}
+		}
 	} else {
 		config := mplsmux.DefaultConfig()
 		config.KeepAliveDisabled = true
