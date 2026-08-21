@@ -502,7 +502,9 @@ func (s *Session) reserveReceive(size int) bool {
 	}
 	for {
 		s.receiveMu.Lock()
-		if s.receiveUsed+size <= s.config.MaxReceiveBuffer {
+		// The frame header is already consumed. Finish this valid frame before
+		// applying backpressure, matching SMUX v1's bounded one-frame overshoot.
+		if s.receiveUsed <= s.config.MaxReceiveBuffer {
 			s.receiveUsed += size
 			s.receiveMu.Unlock()
 			return true
