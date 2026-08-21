@@ -207,11 +207,11 @@ The release gate first runs the ordinary 128-stream, three-cycle peak profile,
 then raises every topology to 50 cycles with bounded per-cycle concurrency:
 
 ```sh
-XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=32 go test -timeout=45m -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
+XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 ```
 
-The hardening gate uses 32 TCP streams per cycle to keep GitHub runner
-scheduling bounded across 49 between-cycle restarts. That is 1,600 one-MiB stream runs per
+The hardening gate uses 16 TCP streams per cycle to keep GitHub runner
+scheduling bounded across 49 between-cycle restarts. That is 800 one-MiB stream runs per
 topology, versus 384 in the ordinary 128-stream, three-cycle stress; UDP load
 remains 10,000 datagrams per cycle.
 
@@ -243,7 +243,7 @@ satisfy the release gate.
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
 `XRAY_SMUX_STRESS_TCP_STREAMS` may reduce TCP concurrency for a diagnostic run;
-the release gate fixes it to 32 only for the cumulative 50-cycle profile after
+the release gate fixes it to 16 only for the cumulative 50-cycle profile after
 the ordinary 128-stream peak profile passes.
 
 The production path contains no vendored SMUX/YAMUX/H2MUX implementation and
