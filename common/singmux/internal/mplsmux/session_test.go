@@ -410,6 +410,30 @@ func TestDefaultConfigBoundsPerStreamReceiveShare(t *testing.T) {
 	}
 }
 
+func TestReceiveReservationFinishesFrameAfterHeader(t *testing.T) {
+	session := &Session{
+		config:         *DefaultConfig(),
+		done:           make(chan struct{}),
+		receiveChanged: make(chan struct{}, 1),
+		receiveUsed:    DefaultConfig().MaxReceiveBuffer,
+	}
+	reserved := make(chan bool, 1)
+	go func() { reserved <- session.reserveReceive(maxFramePayload) }()
+	select {
+	case ok := <-reserved:
+		if !ok {
+			t.Fatal("valid wire frame reservation was rejected")
+		}
+	case <-time.After(100 * time.Millisecond):
+		session.releaseReceive(session.receiveUsed)
+		<-reserved
+		t.Fatal("frame reservation blocked after its header was consumed")
+	}
+	if want := session.config.MaxReceiveBuffer + maxFramePayload; session.receiveUsed != want {
+		t.Fatalf("receive reservation = %d, want bounded frame overshoot %d", session.receiveUsed, want)
+	}
+}
+
 func TestReadAndAcceptDeadlines(t *testing.T) {
 	client, server := testSessionPair(t, nil)
 	deadline := time.Now().Add(30 * time.Millisecond)
