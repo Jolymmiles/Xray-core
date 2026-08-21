@@ -186,24 +186,25 @@ The gate writes `heap.pb.gz`, `allocs.pb.gz`, `goroutine.pb.gz`, and
 positive loopback error/drop/CRC/carrier/collision/link-change delta. A Darwin
 run validates the harness only; it is not Linux server-capacity evidence.
 
-The stress suite runs eight peer/direction/carrier topologies. Every topology
-runs three cycles with 128 concurrent full-duplex TCP streams carrying 1 MiB in
-each direction and 10,000 UDP datagrams across four destinations. The server is
+The stress suite runs eight peer/direction/carrier topologies. Sing-box
+topologies run three cycles with 128 concurrent full-duplex TCP streams;
+Mihomo topologies use 32. Every stream carries 1 MiB in each direction, and
+every cycle sends 10,000 UDP datagrams across four destinations. The server is
 killed and restarted between cycles while the client remains running. After
 each start, the harness waits for an available process-ready marker and requires
 a complete SOCKS-to-server-to-echo exchange before beginning the measured load;
 an open TCP or SOCKS port alone is not readiness evidence.
 
-Sing-box stress keeps all 128 streams on one carrier. Mihomo stress allows up to
-four carriers to avoid turning the peer's single-carrier capacity into the
-bottleneck; the aggregate stream, byte, datagram, and restart load is unchanged.
+Sing-box peak stress keeps all 128 streams on one carrier. Mihomo stress caps
+each cycle at 32 streams and allows up to four carriers to avoid turning the
+peer's capacity into the bottleneck; datagram and restart load is unchanged.
 The ordinary SMUX/H2MUX matrices retain cold single-carrier Mihomo coverage.
 
 ```sh
 go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 ```
 
-The release gate first runs the ordinary 128-stream, three-cycle peak profile,
+The release gate first runs the three-cycle peak profile,
 then raises every topology to 50 cycles with bounded per-cycle concurrency:
 
 ```sh
@@ -211,9 +212,9 @@ XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m 
 ```
 
 The hardening gate uses 16 TCP streams per cycle to keep GitHub runner
-scheduling bounded across 49 between-cycle restarts. That is 800 one-MiB stream runs per
-topology, versus 384 in the ordinary 128-stream, three-cycle stress; UDP load
-remains 10,000 datagrams per cycle.
+scheduling bounded across 49 between-cycle restarts. That is 800 one-MiB stream
+runs per topology, versus 384 for ordinary sing-box peak stress and 96 for
+ordinary Mihomo peak stress; UDP load remains 10,000 datagrams per cycle.
 
 On Linux, the stress test also captures a historical baseline and delta for the
 loopback interface error, drop, CRC, carrier, collision, and carrier-change

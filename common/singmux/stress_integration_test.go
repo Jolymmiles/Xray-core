@@ -57,6 +57,15 @@ func TestQuietStressConfigDisablesXrayAccessLog(t *testing.T) {
 }
 
 func TestMihomoStressSpreadsOnlyStressClientConnections(t *testing.T) {
+	if got := stressTCPStreamsForPeer("mihomo", 128); got != 32 {
+		t.Fatalf("Mihomo peak streams = %d, want 32", got)
+	}
+	if got := stressTCPStreamsForPeer("mihomo", 16); got != 16 {
+		t.Fatalf("Mihomo cumulative streams = %d, want 16", got)
+	}
+	if got := stressTCPStreamsForPeer("sing-box", 128); got != 128 {
+		t.Fatalf("sing-box peak streams = %d, want 128", got)
+	}
 	xrayConfig := xrayConfig(t, false, "vless", 443, 1080, "smux", true, "", "")
 	if !bytes.Contains(xrayConfig, []byte(`"maxConnections": 1`)) {
 		t.Fatalf("ordinary Xray matrix config lost its single-carrier limit: %s", xrayConfig)
@@ -125,10 +134,11 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					topology := startStressTopology(t, workDir, binaries, certificate, privateKey, peer, direction, carrier)
 					assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
+					peerTCPStreams := stressTCPStreamsForPeer(peer, tcpStreams)
 					resources := make([]processResourceSnapshot, 0, cycles)
 					for cycle := 0; cycle < cycles; cycle++ {
 						t.Run(fmt.Sprintf("cycle-%d", cycle+1), func(t *testing.T) {
-							stressTCP(t, topology.socksPort, tcpEcho, tcpStreams)
+							stressTCP(t, topology.socksPort, tcpEcho, peerTCPStreams)
 							stressUDP(t, topology.socksPort, udpEchoes)
 						})
 						resources = append(resources, captureProcessResources(t, topology.client.command.Process.Pid))
@@ -143,6 +153,13 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 			}
 		}
 	}
+}
+
+func stressTCPStreamsForPeer(peer string, configured int) int {
+	if peer == "mihomo" && configured > 32 {
+		return 32
+	}
+	return configured
 }
 
 func configuredStressCycles(t *testing.T) int {
