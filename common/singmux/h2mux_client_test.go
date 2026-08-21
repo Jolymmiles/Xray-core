@@ -2,11 +2,13 @@ package singmux
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,6 +25,16 @@ type h2EchoDialer struct {
 	header               chan [2]byte
 	request              chan *http.Request
 	err                  chan error
+	ping                 chan struct{}
+	pingOnce             sync.Once
+}
+
+type h2PingObserverConn struct {
+	net.Conn
+	mu      sync.Mutex
+	buffer  []byte
+	preface bool
+	onPing  func()
 }
 
 type blockedH2ConnectDialer struct {
@@ -44,6 +56,39 @@ func newH2EchoDialer() *h2EchoDialer {
 		header:               make(chan [2]byte, 4),
 		request:              make(chan *http.Request, 2),
 		err:                  make(chan error, 1),
+		ping:                 make(chan struct{}),
+	}
+}
+
+func (c *h2PingObserverConn) Read(payload []byte) (int, error) {
+	count, err := c.Conn.Read(payload)
+	if count > 0 {
+		c.observe(payload[:count])
+	}
+	return count, err
+}
+
+func (c *h2PingObserverConn) observe(payload []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.buffer = append(c.buffer, payload...)
+	if !c.preface {
+		if len(c.buffer) < len(http2.ClientPreface) {
+			return
+		}
+		c.buffer = c.buffer[len(http2.ClientPreface):]
+		c.preface = true
+	}
+	for len(c.buffer) >= 9 {
+		length := int(c.buffer[0])<<16 | int(c.buffer[1])<<8 | int(c.buffer[2])
+		frameSize := 9 + length
+		if len(c.buffer) < frameSize {
+			return
+		}
+		if c.buffer[3] == 0x6 && c.buffer[4]&0x1 == 0 && binary.BigEndian.Uint32(c.buffer[5:9]) == 0 {
+			c.onPing()
+		}
+		c.buffer = c.buffer[frameSize:]
 	}
 }
 
@@ -58,8 +103,9 @@ func (d *h2EchoDialer) DialContext(context.Context, X.Destination) (net.Conn, er
 			return
 		}
 		d.header <- header
+		observedConn := &h2PingObserverConn{Conn: serverConn, onPing: func() { d.pingOnce.Do(func() { close(d.ping) }) }}
 		server := &http2.Server{MaxConcurrentStreams: d.maxConcurrentStreams}
-		server.ServeConn(serverConn, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		server.ServeConn(observedConn, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			d.request <- request
 			writer.WriteHeader(d.responseStatus)
 			flusher, ok := writer.(http.Flusher)
@@ -91,6 +137,27 @@ func (d *h2EchoDialer) DialContext(context.Context, X.Destination) (net.Conn, er
 		})})
 	}()
 	return clientConn, nil
+}
+
+func TestClientH2MUXSessionPingsBeforePublication(t *testing.T) {
+	dialer := newH2EchoDialer()
+	client, err := NewClient(Options{Dialer: dialer, Protocol: "h2mux", MaxConnections: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	session, err := client.createSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case <-dialer.ping:
+	default:
+		t.Fatal("H2MUX session was published before peer PING acknowledgement")
+	}
 }
 
 func (d *h2EchoDialer) report(err error) {

@@ -25,13 +25,13 @@ const (
 )
 
 type stressTopology struct {
-	serverBinary   string
-	serverArgs     []string
-	serverPort     int
-	serverReadyLog string
-	client         *e2eProcess
-	server         *e2eProcess
-	socksPort      int
+	serverBinary      string
+	serverArgs        []string
+	serverPort        int
+	serverReadyMarker string
+	client            *e2eProcess
+	server            *e2eProcess
+	socksPort         int
 }
 
 func TestConfiguredStressCycles(t *testing.T) {
@@ -47,26 +47,6 @@ func TestConfiguredStressCycles(t *testing.T) {
 			t.Fatalf("configuredStressCycles() = %d, want 50", cycles)
 		}
 	})
-}
-
-func TestStressServerReadyLog(t *testing.T) {
-	tests := []struct {
-		peer      string
-		direction string
-		want      string
-	}{
-		{peer: "sing-box", direction: "xray-client"},
-		{peer: "mihomo", direction: "xray-client", want: "Initial configuration complete"},
-		{peer: "sing-box", direction: "xray-server"},
-		{peer: "mihomo", direction: "xray-server"},
-	}
-	for _, test := range tests {
-		t.Run(test.peer+"/"+test.direction, func(t *testing.T) {
-			if got := stressServerReadyLog(test.peer, test.direction); got != test.want {
-				t.Fatalf("stressServerReadyLog(%q, %q) = %q, want %q", test.peer, test.direction, got, test.want)
-			}
-		})
-	}
 }
 
 func TestQuietStressConfigDisablesXrayAccessLog(t *testing.T) {
@@ -131,11 +111,7 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 						resources = append(resources, captureProcessResources(t, topology.client.command.Process.Pid))
 						if cycle+1 < cycles {
 							stopE2EProcess(t, topology.server)
-							topology.server = startE2EProcess(t, topology.serverBinary, topology.serverArgs...)
-							waitTCP(t, topology.server, topology.serverPort)
-							if topology.serverReadyLog != "" {
-								waitProcessLog(t, topology.server, topology.serverReadyLog)
-							}
+							topology.server = startReadyE2EServer(t, topology.serverBinary, topology.serverArgs, topology.serverPort, topology.serverReadyMarker)
 							assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
 						}
 					}
@@ -144,13 +120,6 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 			}
 		}
 	}
-}
-
-func stressServerReadyLog(peer, direction string) string {
-	if peer == "mihomo" && direction == "xray-client" {
-		return "Initial configuration complete"
-	}
-	return ""
 }
 
 func configuredStressCycles(t *testing.T) int {
@@ -218,12 +187,12 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 	writeConfig(t, serverPath, serverConfig)
 	writeConfig(t, clientPath, clientConfig)
 
-	serverReadyLog := stressServerReadyLog(peer, direction)
-	server := startE2EProcess(t, serverBinary, serverArgs...)
-	waitTCP(t, server, serverPort)
-	if serverReadyLog != "" {
-		waitProcessLog(t, server, serverReadyLog)
+	serverReadyMarker := ""
+	if peer == "mihomo" && direction == "xray-client" {
+		serverReadyMarker = filepath.Join(scenarioDir, "server-ready")
+		serverArgs = withMihomoPostUp(serverArgs, serverReadyMarker)
 	}
+	server := startReadyE2EServer(t, serverBinary, serverArgs, serverPort, serverReadyMarker)
 	client := startE2EProcess(t, clientBinary, clientArgs...)
 	waitSOCKS(t, client, socksPort)
 	if peer == "mihomo" && direction == "xray-server" {
@@ -236,13 +205,13 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 		}
 	})
 	return &stressTopology{
-		serverBinary:   serverBinary,
-		serverArgs:     serverArgs,
-		serverPort:     serverPort,
-		serverReadyLog: serverReadyLog,
-		client:         client,
-		server:         server,
-		socksPort:      socksPort,
+		serverBinary:      serverBinary,
+		serverArgs:        serverArgs,
+		serverPort:        serverPort,
+		serverReadyMarker: serverReadyMarker,
+		client:            client,
+		server:            server,
+		socksPort:         socksPort,
 	}
 }
 

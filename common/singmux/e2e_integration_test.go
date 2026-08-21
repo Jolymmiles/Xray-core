@@ -242,6 +242,11 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 
 	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
 	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))
+	serverReadyMarker := ""
+	if peer == "mihomo" && direction == "xray-client" {
+		serverReadyMarker = filepath.Join(scenarioDir, "server-ready")
+		serverArgs = withMihomoPostUp(serverArgs, serverReadyMarker)
+	}
 	if direction == "xray-client" {
 		serverArgs = replaceConfigPath(serverArgs, serverPath)
 		clientArgs = replaceConfigPath(clientArgs, clientPath)
@@ -252,11 +257,7 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 	writeConfig(t, serverPath, serverConfig)
 	writeConfig(t, clientPath, clientConfig)
 
-	server := startE2EProcess(t, serverBinary, serverArgs...)
-	waitTCP(t, server, serverPort)
-	if peer == "mihomo" && direction == "xray-client" {
-		waitProcessLog(t, server, "Initial configuration complete")
-	}
+	server := startReadyE2EServer(t, serverBinary, serverArgs, serverPort, serverReadyMarker)
 	client := startE2EProcess(t, clientBinary, clientArgs...)
 	waitSOCKS(t, client, socksPort)
 	if peer == "mihomo" && direction == "xray-server" {
@@ -308,6 +309,21 @@ func replaceConfigPath(arguments []string, path string) []string {
 	if len(result) >= 2 && result[0] == "-d" {
 		result[1] = filepath.Dir(path)
 	}
+	return result
+}
+
+func TestMihomoPostUpKeepsConfigFlagPair(t *testing.T) {
+	arguments := withMihomoPostUp([]string{"-d", ".", "-f", "server.yaml"}, "/tmp/ready")
+	if got, want := strings.Join(arguments, "\x00"), strings.Join([]string{"-d", ".", "-post-up", `echo ready > "/tmp/ready"`, "-f", "server.yaml"}, "\x00"); got != want {
+		t.Fatalf("Mihomo arguments = %q, want %q", arguments, want)
+	}
+}
+
+func withMihomoPostUp(arguments []string, marker string) []string {
+	configFlag := len(arguments) - 2
+	result := append([]string(nil), arguments[:configFlag]...)
+	result = append(result, "-post-up", fmt.Sprintf("echo ready > %q", filepath.ToSlash(marker)))
+	result = append(result, arguments[configFlag:]...)
 	return result
 }
 
@@ -582,6 +598,21 @@ func startE2EProcess(t testing.TB, binary string, arguments ...string) *e2eProce
 	return process
 }
 
+func startReadyE2EServer(t testing.TB, binary string, arguments []string, port int, readyMarker string) *e2eProcess {
+	t.Helper()
+	if readyMarker != "" {
+		if err := os.Remove(readyMarker); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	process := startE2EProcess(t, binary, arguments...)
+	if readyMarker != "" {
+		waitProcessFile(t, process, readyMarker)
+	}
+	waitTCP(t, process, port)
+	return process
+}
+
 func stopE2EProcess(t testing.TB, process *e2eProcess) {
 	t.Helper()
 	if process.stopped.Load() || process.command.ProcessState != nil && process.command.ProcessState.Exited() {
@@ -685,6 +716,25 @@ func waitProcessLog(t *testing.T, process *e2eProcess, marker string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("process did not log %q\n%s", marker, process.logs.String())
+}
+
+func waitProcessFile(t testing.TB, process *e2eProcess, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case processErr := <-process.done:
+			t.Fatalf("process exited before creating readiness marker %s: %v\n%s", path, processErr, process.logs.String())
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process did not create readiness marker %s\n%s", path, process.logs.String())
 }
 
 func waitSOCKS(t testing.TB, process *e2eProcess, port int) {
