@@ -17,7 +17,6 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
-	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/session"
@@ -132,18 +131,11 @@ func (i *RelayInbound) NewConnection(ctx context.Context, conn net.Conn, metadat
 		Email: user.Email,
 		Level: uint32(user.Level),
 	}
-	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-		From:   metadata.Source,
-		To:     metadata.Destination,
-		Status: log.AccessAccepted,
-		Email:  user.Email,
-	})
-	errors.LogInfo(ctx, "tunnelling request to tcp:", metadata.Destination)
-	dispatcher := session.DispatcherFromContext(ctx)
-	destination, err := singbridge.ToDestination(metadata.Destination, net.Network_TCP)
+	ctx, destination, err := accessContext(ctx, metadata, net.Network_TCP, user.Email)
 	if err != nil {
 		return err
 	}
+	dispatcher := session.DispatcherFromContext(ctx)
 	link, err := dispatcher.Dispatch(ctx, destination)
 	if err != nil {
 		return err
@@ -163,18 +155,11 @@ func (i *RelayInbound) NewPacketConnection(ctx context.Context, conn N.PacketCon
 		Email: user.Email,
 		Level: uint32(user.Level),
 	}
-	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-		From:   metadata.Source,
-		To:     metadata.Destination,
-		Status: log.AccessAccepted,
-		Email:  user.Email,
-	})
-	errors.LogInfo(ctx, "tunnelling request to udp:", metadata.Destination)
-	dispatcher := session.DispatcherFromContext(ctx)
-	destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)
+	ctx, destination, err := accessContext(ctx, metadata, net.Network_UDP, user.Email)
 	if err != nil {
 		return err
 	}
+	dispatcher := session.DispatcherFromContext(ctx)
 	link, err := dispatcher.Dispatch(ctx, destination)
 	if err != nil {
 		return err
