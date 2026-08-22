@@ -128,7 +128,11 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 	return singbridge.CopyConn(ctx, nil, link, conn)
 }
 
-func (i *Inbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) error {
+func (i *Inbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) (err error) {
+	// Runs on the goroutine sing/common/udpnat spawns per NAT entry, which no
+	// recover in app/proxyman/inbound reaches. TCP's NewConnection is called
+	// synchronously under recoverProcess and needs nothing.
+	defer singbridge.RecoverTo(&err, "Inbound.NewPacketConnection")
 	inbound := session.InboundFromContext(ctx)
 	inbound.User = &protocol.MemoryUser{
 		Email: i.email,

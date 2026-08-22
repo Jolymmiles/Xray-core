@@ -53,7 +53,7 @@ func (w *PipeConnWrapper) Read(b []byte) (n int, err error) {
 	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
-			n, err = 0, recovered("PipeConnWrapper.Read", r)
+			n, err = 0, panicError("PipeConnWrapper.Read", r)
 		}
 		if err != nil {
 			// uplinkonly
@@ -66,15 +66,21 @@ func (w *PipeConnWrapper) Read(b []byte) (n int, err error) {
 
 func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 	w.T.Update()
+	var mb buf.MultiBuffer
 	defer func() {
 		if r := recover(); r != nil {
-			n, err = 0, recovered("PipeConnWrapper.Write", r)
+			err = panicError("PipeConnWrapper.Write", r)
+		}
+		if err != nil {
+			// Release is a no-op on a buffer the writer already released, so
+			// this is safe whichever side the failure came from.
+			n = 0
+			buf.ReleaseMulti(mb)
 			// downlinkonly
 			w.T.SetTimeout(5 * time.Second)
 		}
 	}()
 	n = len(p)
-	var mb buf.MultiBuffer
 	pLen := len(p)
 	for pLen > 0 {
 		buffer := buf.New()
@@ -88,11 +94,5 @@ func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 		mb = append(mb, buffer)
 	}
 	err = w.W.WriteMultiBuffer(mb)
-	if err != nil {
-		n = 0
-		buf.ReleaseMulti(mb)
-		// downlinkonly
-		w.T.SetTimeout(5 * time.Second)
-	}
 	return
 }

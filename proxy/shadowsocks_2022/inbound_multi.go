@@ -250,7 +250,11 @@ func (i *MultiUserInbound) NewConnection(ctx context.Context, conn net.Conn, met
 	return singbridge.CopyConn(ctx, conn, link, conn)
 }
 
-func (i *MultiUserInbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) error {
+func (i *MultiUserInbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) (err error) {
+	// Runs on the goroutine sing/common/udpnat spawns per NAT entry, which no
+	// recover in app/proxyman/inbound reaches. TCP's NewConnection is called
+	// synchronously under recoverProcess and needs nothing.
+	defer singbridge.RecoverTo(&err, "MultiUserInbound.NewPacketConnection")
 	inbound := session.InboundFromContext(ctx)
 	userInt, _ := A.UserFromContext[int](ctx)
 	user := i.users[userInt]

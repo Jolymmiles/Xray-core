@@ -3,7 +3,6 @@ package singbridge
 import (
 	"bytes"
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -43,11 +42,11 @@ func (r *multiDatagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 // which happens on every cancelled session and every fast-failed upload.
 //
 // Before the fix the two shared cached with no synchronisation, so Close
-// released the buffer ReadPacket was copying out of. Buffer.Release stores
-// v = nil before Clear() resets start/end, so the racing Bytes() could slice a
-// nil array to the old length and hand memmove a source address near zero: the
-// SIGSEGV in the report, which killed the process rather than the session
-// because these goroutines belong to sing and no recover() covers them.
+// released the buffer ReadPacket was copying out of: Buffer.Release stores
+// v = nil before Clear() resets start/end, so the racing Bytes() read a torn
+// header. That was the SIGSEGV in the report, and it killed the process rather
+// than the session because these goroutines belong to sing and no recover()
+// covered them.
 //
 // Run under -race. The crash needs an unlucky interleaving; the data race
 // underneath it does not, and that is what this asserts on.
@@ -56,8 +55,6 @@ func TestPacketConnWrapperCloseRacesReadPacket(t *testing.T) {
 		rounds = 50
 		reads  = 64
 	)
-	// 1122 bytes is the datagram length from the production crash, and a length
-	// is exactly what the torn read gets wrong.
 	payload := bytes.Repeat([]byte{'x'}, 1122)
 
 	for round := 0; round < rounds; round++ {
@@ -137,8 +134,8 @@ type panickingReader struct{}
 
 func (panickingReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	var b *buf.Buffer
-	// Dereferencing through a nil *Buffer, the shape of the production crash.
-	return buf.MultiBuffer{buf.New()}, errors.New(string(b.Bytes()))
+	_ = b.Bytes() // nil *Buffer dereference, the shape of the production crash
+	return nil, nil
 }
 
 type panickingWriter struct{}
@@ -186,5 +183,18 @@ func TestPacketConnWrapperRecoversPanic(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "panic in singbridge.PacketConnWrapper.WritePacket") {
 		t.Fatalf("WritePacket error does not name the panic: %v", err)
+	}
+}
+
+// TestRecoverTo pins the one thing about RecoverTo that is easy to break: it
+// must be the deferred function itself. Wrapped in another closure, recover()
+// returns nil and the panic goes straight through.
+func TestRecoverTo(t *testing.T) {
+	err := func() (err error) {
+		defer RecoverTo(&err, "Test")
+		panic("boom")
+	}()
+	if err == nil || !strings.Contains(err.Error(), "panic in singbridge.Test: boom") {
+		t.Fatalf("RecoverTo did not convert the panic: %v", err)
 	}
 }

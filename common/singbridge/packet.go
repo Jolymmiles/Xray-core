@@ -17,29 +17,33 @@ import (
 	"github.com/xtls/xray-core/transport"
 )
 
-// recovered turns a panic on one of sing's own goroutines into an error.
+// panicError turns a recovered panic into the error a sing copy task returns.
 //
-// These methods do not run on a goroutine this repository started. sing's
-// bufio.CopyPacketConn hands each direction to common/task.Group, and the
-// Shadowsocks-2022 UDP path reaches NewPacketConnection from a goroutine
-// sing/common/udpnat spawns per NAT entry. The recover() that
-// app/proxyman/inbound wraps around proxy.Process (recoverProcess) sits on the
-// worker goroutine and therefore cannot see either of them: a panic here
-// unwinds a stack we never entered, and Go takes the whole process down with
-// it. That is what happened on pl-warsaw on 2026-08-22 -- one nil dereference
-// on one UDP session killed every connection on the node, and the dead process
-// left its unix sockets behind so the supervisor could not restart it either.
+// The wrappers in this package do not run on goroutines this repository
+// started: bufio.CopyPacketConn and bufio.CopyConn hand each direction to
+// sing's task.Group, and the Shadowsocks-2022 UDP path enters
+// NewPacketConnection from a goroutine sing/common/udpnat spawns per NAT
+// entry. The recover() app/proxyman/inbound wraps around proxy.Process sits on
+// the worker goroutine and sees none of them, so a panic here ends the process
+// rather than the session. Returning an error instead fails one task, which
+// fast-fails its group and tears down that one session.
 //
-// Returning an error instead fails one copy task, which fast-fails its group
-// and tears down that single UDP session.
-//
-// The stack rides inside the error rather than being logged here. The error
-// reaches the caller's logger -- Inbound.NewError for an inbound, the outbound
-// handler for an outbound -- which has the context, and therefore the
-// connection id and user, that these methods do not hold. Logging on the spot
-// would emit the stack with no way to tell which session produced it.
-func recovered(method string, r any) error {
+// The stack rides inside the error rather than being logged here: the error
+// reaches a logger that holds the context -- Inbound.NewError, the outbound
+// handler -- and therefore the connection id and user these methods lack.
+func panicError(method string, r interface{}) error {
 	return errors.New("panic in singbridge.", method, ": ", r, "\n", string(debug.Stack()))
+}
+
+// RecoverTo is the deferred form of panicError for entry points that have no
+// closure of their own: `defer singbridge.RecoverTo(&err, "Inbound.NewPacketConnection")`.
+// It must be the deferred function itself -- recover only works when called
+// directly by one -- which is why the wrappers above inline the same two lines
+// into their existing defers instead of calling this.
+func RecoverTo(err *error, method string) {
+	if r := recover(); r != nil {
+		*err = panicError(method, r)
+	}
 }
 
 func CopyPacketConn(ctx context.Context, inboundConn net.Conn, link *transport.Link, destination net.Destination, serverConn net.PacketConn) error {
@@ -69,15 +73,13 @@ type PacketConnWrapper struct {
 	// sing's task.Group runs its cleanup -- common.Close on both ends, so this
 	// type's Close -- as soon as the group's context is done, and only THEN
 	// waits for the tasks to return (task.go:115 before task.go:119). So Close
-	// runs while the download task is still inside ReadPacket, every time a
-	// session is cancelled or the upload direction fast-fails. Without this
-	// lock, Close releases the very buffer ReadPacket is copying out of:
-	// Buffer.Release stores v = nil before Clear() resets start/end, so the
-	// racing Bytes() can slice a nil array to the old length and hand memmove
-	// a source address of about zero. That is the pl-warsaw SIGSEGV, and the
-	// interleavings that do not crash are worse -- they copy out of a 2 KiB
-	// array already handed back to the pool and being refilled by another
-	// session.
+	// runs while the download task is still inside ReadPacket, on every
+	// cancelled session and every fast-failed upload. Without this lock, Close
+	// releases the very buffer ReadPacket is copying out of: Buffer.Release
+	// stores v = nil before Clear() resets start/end and nils UDP last, so the
+	// racing Bytes() and *bb.UDP read a torn header -- a nil base, a stale
+	// length, or an array already back in the pool and being refilled by
+	// another session. One such interleaving took down a node (SIGSEGV, 2026-08-22).
 	cachedMu sync.Mutex
 	cached   buf.MultiBuffer
 	closed   bool
@@ -129,7 +131,7 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err 
 	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
-			err = recovered("PacketConnWrapper.ReadPacket", r)
+			err = panicError("PacketConnWrapper.ReadPacket", r)
 		}
 		if err != nil {
 			// uplinkonly
@@ -160,7 +162,7 @@ func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksadd
 	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
-			err = recovered("PacketConnWrapper.WritePacket", r)
+			err = panicError("PacketConnWrapper.WritePacket", r)
 		}
 		if err != nil {
 			// downlinkonly
