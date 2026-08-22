@@ -31,6 +31,11 @@ func CopyConn(ctx context.Context, inboundConn net.Conn, link *transport.Link, s
 	return ReturnError(bufio.CopyConn(ctx, conn, serverConn))
 }
 
+// PipeConnWrapper is the TCP half of the same arrangement as
+// PacketConnWrapper: sing's bufio.CopyConn hands each direction to
+// common/task.Group, so Read and Write run on goroutines this repository never
+// started and app/proxyman/inbound's recoverProcess cannot reach. See
+// recovered() in packet.go for what a panic escaping one of them costs.
 type PipeConnWrapper struct {
 	R io.Reader
 	W buf.Writer
@@ -46,16 +51,28 @@ func (w *PipeConnWrapper) Close() error {
 
 func (w *PipeConnWrapper) Read(b []byte) (n int, err error) {
 	w.T.Update()
+	defer func() {
+		if r := recover(); r != nil {
+			n, err = 0, recovered("PipeConnWrapper.Read", r)
+		}
+		if err != nil {
+			// uplinkonly
+			w.T.SetTimeout(2 * time.Second)
+		}
+	}()
 	n, err = w.R.Read(b)
-	if err != nil {
-		// uplinkonly
-		w.T.SetTimeout(2 * time.Second)
-	}
 	return
 }
 
 func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 	w.T.Update()
+	defer func() {
+		if r := recover(); r != nil {
+			n, err = 0, recovered("PipeConnWrapper.Write", r)
+			// downlinkonly
+			w.T.SetTimeout(5 * time.Second)
+		}
+	}()
 	n = len(p)
 	var mb buf.MultiBuffer
 	pLen := len(p)

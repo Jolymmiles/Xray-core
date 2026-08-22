@@ -2,6 +2,7 @@ package singbridge
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -10,10 +11,36 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal"
 	"github.com/xtls/xray-core/transport"
 )
+
+// recovered turns a panic on one of sing's own goroutines into an error.
+//
+// These methods do not run on a goroutine this repository started. sing's
+// bufio.CopyPacketConn hands each direction to common/task.Group, and the
+// Shadowsocks-2022 UDP path reaches NewPacketConnection from a goroutine
+// sing/common/udpnat spawns per NAT entry. The recover() that
+// app/proxyman/inbound wraps around proxy.Process (recoverProcess) sits on the
+// worker goroutine and therefore cannot see either of them: a panic here
+// unwinds a stack we never entered, and Go takes the whole process down with
+// it. That is what happened on pl-warsaw on 2026-08-22 -- one nil dereference
+// on one UDP session killed every connection on the node, and the dead process
+// left its unix sockets behind so the supervisor could not restart it either.
+//
+// Returning an error instead fails one copy task, which fast-fails its group
+// and tears down that single UDP session.
+//
+// The stack rides inside the error rather than being logged here. The error
+// reaches the caller's logger -- Inbound.NewError for an inbound, the outbound
+// handler for an outbound -- which has the context, and therefore the
+// connection id and user, that these methods do not hold. Logging on the spot
+// would emit the stack with no way to tell which session produced it.
+func recovered(method string, r any) error {
+	return errors.New("panic in singbridge.", method, ": ", r, "\n", string(debug.Stack()))
+}
 
 func CopyPacketConn(ctx context.Context, inboundConn net.Conn, link *transport.Link, destination net.Destination, serverConn net.PacketConn) error {
 	cancel := func() {
@@ -101,6 +128,9 @@ func (w *PacketConnWrapper) stashCached(mb buf.MultiBuffer) {
 func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err error) {
 	w.T.Update()
 	defer func() {
+		if r := recover(); r != nil {
+			err = recovered("PacketConnWrapper.ReadPacket", r)
+		}
 		if err != nil {
 			// uplinkonly
 			w.T.SetTimeout(2 * time.Second)
@@ -129,6 +159,9 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err 
 func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksaddr) (err error) {
 	w.T.Update()
 	defer func() {
+		if r := recover(); r != nil {
+			err = recovered("PacketConnWrapper.WritePacket", r)
+		}
 		if err != nil {
 			// downlinkonly
 			w.T.SetTimeout(5 * time.Second)

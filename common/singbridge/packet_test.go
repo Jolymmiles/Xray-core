@@ -3,6 +3,8 @@ package singbridge
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -125,5 +127,64 @@ func TestPacketConnWrapperReadPacketAfterClose(t *testing.T) {
 	w.cachedMu.Unlock()
 	if cached != nil {
 		t.Fatalf("ReadPacket stashed %d buffers after Close; they would never be released", len(cached))
+	}
+}
+
+// panickingReader stands in for whatever nil-derefs next. The point of the
+// guard is that it holds for a panic this repository has never seen, since the
+// one it was written for is fixed above.
+type panickingReader struct{}
+
+func (panickingReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	var b *buf.Buffer
+	// Dereferencing through a nil *Buffer, the shape of the production crash.
+	return buf.MultiBuffer{buf.New()}, errors.New(string(b.Bytes()))
+}
+
+type panickingWriter struct{}
+
+func (panickingWriter) WriteMultiBuffer(buf.MultiBuffer) error {
+	panic("write side exploded")
+}
+
+// TestPacketConnWrapperRecoversPanic asserts the containment the report asked
+// for: sing runs these methods on goroutines from task.Group and udpnat, which
+// app/proxyman/inbound's recoverProcess cannot reach, so a panic that escapes
+// here ends the process rather than the session.
+func TestPacketConnWrapperRecoversPanic(t *testing.T) {
+	timer := signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour)
+	defer timer.SetTimeout(0)
+
+	w := &PacketConnWrapper{
+		Reader: panickingReader{},
+		Writer: panickingWriter{},
+		Dest:   net.UDPDestination(net.LocalHostIP, 443),
+		T:      timer,
+	}
+
+	b := B.NewSize(2048)
+	defer b.Release()
+	_, err := w.ReadPacket(b)
+	if err == nil {
+		t.Fatal("ReadPacket returned no error for a panicking reader")
+	}
+	if !strings.Contains(err.Error(), "panic in singbridge.PacketConnWrapper.ReadPacket") {
+		t.Fatalf("ReadPacket error does not name the panic: %v", err)
+	}
+	// The stack is what an operator needs to find the next one; it has to ride
+	// inside the error, because these methods hold no context to log it with.
+	if !strings.Contains(err.Error(), "singbridge.(*PacketConnWrapper).ReadPacket") {
+		t.Fatalf("ReadPacket error carries no stack: %v", err)
+	}
+
+	wb := B.NewSize(2048)
+	defer wb.Release()
+	wb.Write([]byte("payload"))
+	err = w.WritePacket(wb, ToSocksaddr(net.UDPDestination(net.LocalHostIP, 443)))
+	if err == nil {
+		t.Fatal("WritePacket returned no error for a panicking writer")
+	}
+	if !strings.Contains(err.Error(), "panic in singbridge.PacketConnWrapper.WritePacket") {
+		t.Fatalf("WritePacket error does not name the panic: %v", err)
 	}
 }
