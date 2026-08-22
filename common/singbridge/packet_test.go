@@ -1,0 +1,129 @@
+package singbridge
+
+import (
+	"bytes"
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	B "github.com/sagernet/sing/common/buf"
+	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/signal"
+)
+
+// multiDatagramReader returns several datagrams per read, which is what leaves
+// anything in PacketConnWrapper.cached. A reader handing back one buffer at a
+// time would drain cached on every call and exercise nothing.
+type multiDatagramReader struct {
+	perRead int
+	payload []byte
+}
+
+func (r *multiDatagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	mb := make(buf.MultiBuffer, 0, r.perRead)
+	for i := 0; i < r.perRead; i++ {
+		b := buf.New()
+		b.Write(r.payload)
+		mb = append(mb, b)
+	}
+	return mb, nil
+}
+
+// TestPacketConnWrapperCloseRacesReadPacket is the regression test for the
+// crash on pl-warsaw, 2026-08-22.
+//
+// sing's task.Group runs its cleanup -- common.Close on both ends of the copy,
+// so this type's Close -- as soon as the group context is done, and only waits
+// for the tasks afterwards (task.go:115 before task.go:119). Close therefore
+// lands on this wrapper while the download task is still inside ReadPacket,
+// which happens on every cancelled session and every fast-failed upload.
+//
+// Before the fix the two shared cached with no synchronisation, so Close
+// released the buffer ReadPacket was copying out of. Buffer.Release stores
+// v = nil before Clear() resets start/end, so the racing Bytes() could slice a
+// nil array to the old length and hand memmove a source address near zero: the
+// SIGSEGV in the report, which killed the process rather than the session
+// because these goroutines belong to sing and no recover() covers them.
+//
+// Run under -race. The crash needs an unlucky interleaving; the data race
+// underneath it does not, and that is what this asserts on.
+func TestPacketConnWrapperCloseRacesReadPacket(t *testing.T) {
+	const (
+		rounds = 50
+		reads  = 64
+	)
+	// 1122 bytes is the datagram length from the production crash, and a length
+	// is exactly what the torn read gets wrong.
+	payload := bytes.Repeat([]byte{'x'}, 1122)
+
+	for round := 0; round < rounds; round++ {
+		timer := signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour)
+		w := &PacketConnWrapper{
+			Reader: &multiDatagramReader{perRead: 16, payload: payload},
+			Dest:   net.UDPDestination(net.LocalHostIP, 443),
+			T:      timer,
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < reads; i++ {
+				b := B.NewSize(2048)
+				if _, err := w.ReadPacket(b); err != nil {
+					b.Release()
+					return
+				}
+				b.Release()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := w.Close(); err != nil {
+				t.Error("Close: ", err)
+			}
+		}()
+		wg.Wait()
+
+		// Idempotence: sing closes both ends of a group and a caller may close
+		// again. A second pass over the same slice would put the same arrays
+		// into the pool twice.
+		if err := w.Close(); err != nil {
+			t.Fatal("second Close: ", err)
+		}
+		timer.SetTimeout(0)
+	}
+}
+
+// TestPacketConnWrapperReadPacketAfterClose covers the other side of the same
+// window: ReadPacket blocked in ReadMultiBuffer when Close runs, returning with
+// a tail to stash into a slice Close has already walked. Stashing it there
+// would strand every buffer in it -- the pool never sees them again.
+func TestPacketConnWrapperReadPacketAfterClose(t *testing.T) {
+	timer := signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour)
+	defer timer.SetTimeout(0)
+
+	w := &PacketConnWrapper{
+		Reader: &multiDatagramReader{perRead: 8, payload: []byte("payload")},
+		Dest:   net.UDPDestination(net.LocalHostIP, 443),
+		T:      timer,
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal("Close: ", err)
+	}
+
+	b := B.NewSize(2048)
+	defer b.Release()
+	if _, err := w.ReadPacket(b); err != nil {
+		t.Fatal("ReadPacket after Close: ", err)
+	}
+
+	w.cachedMu.Lock()
+	cached := w.cached
+	w.cachedMu.Unlock()
+	if cached != nil {
+		t.Fatalf("ReadPacket stashed %d buffers after Close; they would never be released", len(cached))
+	}
+}
