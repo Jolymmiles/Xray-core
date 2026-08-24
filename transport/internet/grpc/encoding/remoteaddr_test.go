@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"testing"
 
 	corenet "github.com/xtls/xray-core/common/net"
@@ -108,5 +109,31 @@ func TestGRPCContextSeparatesPhysicalPeerFromEffectiveRemote(t *testing.T) {
 	got, ok := physicalPeerFromContext(ctx)
 	if !ok || got.String() != physical.String() {
 		t.Fatalf("physical peer = %v, ok=%v, want %s", got, ok, physical)
+	}
+}
+
+func TestGRPCVirtualConnectionsKeepAcceptedProxyPeerAfterXFFRewrite(t *testing.T) {
+	physical := &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321}
+	proxyEffective := &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345}
+	accepted := netip.MustParseAddr("198.51.100.7")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("X-Forwarded-For", "203.0.113.99"))
+	ctx = peer.NewContext(ctx, &peer.Peer{
+		Addr: corenet.WithPeerProvenanceAddress(proxyEffective, physical, accepted),
+	})
+
+	connections := []net.Conn{
+		NewHunkConn(physicalPeerHunkConn{ctx: ctx}, nil, []string{"X-Forwarded-For"}),
+		NewMultiHunkConn(physicalPeerMultiHunkConn{ctx: ctx}, nil, []string{"X-Forwarded-For"}),
+	}
+	for _, conn := range connections {
+		if got := conn.RemoteAddr().String(); got != "203.0.113.99:0" {
+			t.Fatalf("%T effective remote = %s, want trusted XFF", conn, got)
+		}
+		if got, ok := corenet.AcceptedProxyPeer(conn); !ok || got != accepted {
+			t.Fatalf("%T accepted PROXY peer = %s, ok=%v, want %s", conn, got, ok, accepted)
+		}
+		if got, ok := corenet.PhysicalPeer(conn); !ok || got.String() != physical.String() {
+			t.Fatalf("%T physical peer = %v, ok=%v, want %s", conn, got, ok, physical)
+		}
 	}
 }

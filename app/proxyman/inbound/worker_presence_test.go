@@ -2,12 +2,10 @@ package inbound
 
 import (
 	"context"
-	"io"
 	"net"
 	"net/netip"
 	"testing"
 
-	"github.com/pires/go-proxyproto"
 	corenet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/session"
@@ -80,28 +78,29 @@ func TestPhysicalPeerFromConnUsesOnlyCapturedProvenance(t *testing.T) {
 
 func TestPhysicalPeerFromConnTrustsAcceptedProxyRewrite(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		header string
-		want   string
+		name string
+		want string
 	}{
 		{
-			name:   "IPv4",
-			header: "PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\n",
-			want:   "198.51.100.7",
+			name: "IPv4",
+			want: "198.51.100.7",
 		},
 		{
-			name:   "mapped IPv4",
-			header: "PROXY TCP6 ::ffff:198.51.100.7 2001:db8::1 12345 443\r\n",
-			want:   "198.51.100.7",
+			name: "mapped IPv4",
+			want: "198.51.100.7",
 		},
 		{
-			name:   "IPv6",
-			header: "PROXY TCP6 2001:db8::7 2001:db8::1 12345 443\r\n",
-			want:   "2001:db8::7",
+			name: "IPv6",
+			want: "2001:db8::7",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			conn := proxyPresenceConnection(t, &net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"}, test.header)
+			accepted := netip.MustParseAddr(test.want)
+			conn := presenceConnection(t,
+				&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+				accepted,
+				&net.TCPAddr{IP: net.ParseIP(test.want), Port: 12345},
+			)
 			if got := physicalPeerFromConn(conn, true); got.String() != test.want {
 				t.Fatalf("trusted PROXY peer = %s, want %s", got, test.want)
 			}
@@ -109,10 +108,23 @@ func TestPhysicalPeerFromConnTrustsAcceptedProxyRewrite(t *testing.T) {
 	}
 }
 
+func TestPhysicalPeerFromConnKeepsAcceptedProxyPeerAfterEffectiveRewrite(t *testing.T) {
+	rewritten := presenceConnection(t,
+		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.ParseIP("203.0.113.99"), Port: 0},
+	)
+
+	if got := physicalPeerFromConn(rewritten, true); got != netip.MustParseAddr("198.51.100.7") {
+		t.Fatalf("presence peer = %s, want accepted PROXY source 198.51.100.7", got)
+	}
+}
+
 func TestPhysicalPeerFromConnIgnoresProxyRewriteWhenDisabled(t *testing.T) {
-	conn := proxyPresenceConnection(t,
+	conn := presenceConnection(t,
 		&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
-		"PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\n",
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345},
 	)
 	if got := physicalPeerFromConn(conn, false); got != netip.MustParseAddr("192.0.2.9") {
 		t.Fatalf("disabled PROXY trusted peer = %s, want raw peer 192.0.2.9", got)
@@ -120,16 +132,18 @@ func TestPhysicalPeerFromConnIgnoresProxyRewriteWhenDisabled(t *testing.T) {
 }
 
 func TestPhysicalPeerFromConnRejectsUnusableProxyHeaders(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		header string
-	}{
-		{name: "missing", header: "x"},
-		{name: "malformed", header: "PROXY TCP4 invalid 203.0.113.1 12345 443\r\nx"},
-		{name: "LOCAL", header: "PROXY UNKNOWN\r\nx"},
+	for _, test := range []struct{ name string }{
+		{name: "missing"},
+		{name: "malformed"},
+		{name: "LOCAL"},
+		{name: "Unix source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			conn := proxyPresenceConnection(t, &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321}, test.header)
+			conn := presenceConnection(t,
+				&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
+				netip.Addr{},
+				&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
+			)
 			if got := physicalPeerFromConn(conn, true); got.IsValid() {
 				t.Fatalf("unusable PROXY header trusted peer = %s", got)
 			}
@@ -137,23 +151,19 @@ func TestPhysicalPeerFromConnRejectsUnusableProxyHeaders(t *testing.T) {
 	}
 }
 
-func proxyPresenceConnection(t *testing.T, rawPeer net.Addr, payload string) net.Conn {
+func presenceConnection(t *testing.T, rawPeer net.Addr, acceptedProxyPeer netip.Addr, effectivePeer net.Addr) net.Conn {
 	t.Helper()
 	server, client := net.Pipe()
 	t.Cleanup(func() {
 		_ = server.Close()
 		_ = client.Close()
 	})
-	raw := corenet.CapturePhysicalPeer(&presenceWorkerConn{
+	conn := &presenceWorkerConn{
 		Conn:   server,
-		remote: rawPeer,
+		remote: effectivePeer,
 		local:  &net.TCPAddr{IP: net.ParseIP("203.0.113.1"), Port: 443},
-	})
-	proxied := proxyproto.NewConn(raw, proxyproto.WithPolicy(proxyproto.REQUIRE))
-	go func() {
-		_, _ = io.WriteString(client, payload)
-	}()
-	return corenet.PreservePhysicalPeer(raw, proxied)
+	}
+	return corenet.WithPeerProvenance(rawPeer, acceptedProxyPeer, conn)
 }
 
 type authenticatedPresenceProxy struct {
@@ -219,9 +229,10 @@ func TestTCPWorkerUsesAcceptedProxyPeerForAuthenticatedSnapshot(t *testing.T) {
 			AcceptProxyProtocol: true,
 		}},
 	}
-	worker.callback(proxyPresenceConnection(t,
+	worker.callback(presenceConnection(t,
 		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
-		"PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx",
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345},
 	))
 
 	<-proxy.scope
@@ -242,9 +253,10 @@ func TestDomainSocketWorkerUsesAcceptedProxyPeerForAuthenticatedSnapshot(t *test
 			AcceptProxyProtocol: true,
 		}},
 	}
-	worker.callback(proxyPresenceConnection(t,
+	worker.callback(presenceConnection(t,
 		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
-		"PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx",
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345},
 	))
 
 	<-proxy.scope
