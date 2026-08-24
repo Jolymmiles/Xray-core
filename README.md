@@ -4,6 +4,22 @@
 
 [README](https://github.com/XTLS/Xray-core#readme) is open, so feel free to submit your project [here](https://github.com/XTLS/Xray-core/pulls).
 
+## Fork features
+
+This repository tracks upstream Xray-core and maintains additional server-focused features and hardening:
+
+- **In-tree sing-mux stack:** sing-mux-compatible `smux` and `h2mux` clients and servers with TCP/UDP streams, optional padding, bounded connection pools, and no runtime dependency on an external mux library. H2MUX is selected outbound with `smux.protocol` and auto-detected inbound. See the [wire protocol specification](common/singmux/SPEC.md).
+- **Brutal congestion control:** opt-in Brutal bandwidth negotiation for outbound SMUX/H2MUX clients and per-inbound servers through `smux.brutal-opts` (`enabled`, `up`, and `down`). Linux servers need the `brutal` congestion-control module.
+- **Structured logging:** multiple independent console, JSONL file, and Unix-socket outputs with event filtering, batching, bounded queues, and configurable backpressure. Legacy logging remains supported. See the [configuration guide](common/log/CONFIGURATION.md).
+- **Exact online presence:** when `statsUserOnline` is enabled, `user>>><email>>>online`, `GetStatsOnlineIpList`, and `GetAllOnlineUsers` follow authenticated logical traffic rather than long-lived carriers. This covers direct traffic, SMUX/H2MUX, legacy Mux/XUDP, reverse connections, and WireGuard flows.
+- **Operator-controlled REALITY client versions:** server-side `minClientVer` and `maxClientVer` are optional and have no built-in default. An omitted bound rejects no client on that side of the range.
+- **Expanded protocol sniffing:** QUIC v2 Initial packets and BitTorrent UDP traffic (uTP, DHT, and UDP trackers) can be identified for routing or blocking.
+- **Hysteria/Realm extensions:** Realm supports `ipMode` selection and optional UPnP/NAT-PMP port mapping; finalmask QUIC settings expose loss-compensation, Chrome-parrot, and GSO controls synchronized with Hysteria 2.12.1 behavior.
+- **uTLS fingerprint fidelity:** session resumption falls back to a full handshake when adding ticket or PSK extensions would change the selected fingerprint's original ClientHello shape.
+- **Server-path hardening:** the fork carries additional VLESS/REALITY/Vision, mux lifecycle, buffering, half-close, and UDP correctness fixes. Exact changes and validation results are documented in the [fork releases](https://github.com/Jolymmiles/Xray-core/releases).
+
+Official fork release artifacts currently target Linux. Other platforms can be built from source with the commands below. New configuration surfaces are opt-in, and existing upstream configurations remain supported.
+
 ## Sponsors
 
 [![Remnawave](https://github.com/user-attachments/assets/a22d34ae-01ee-441c-843a-85356748ed1e)](https://docs.rw)
