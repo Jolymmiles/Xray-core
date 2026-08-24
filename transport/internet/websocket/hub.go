@@ -73,8 +73,10 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	remoteAddr = http_proto.ApplyTrustedXForwardedFor(request.Header, trustedXFF, remoteAddr)
 
 	virtualConn := net.Conn(NewConnection(conn, remoteAddr, extraReader, h.ln.config.HeartbeatPeriod))
-	if peer, ok := internet.PhysicalPeerFromContext(request.Context()); ok {
-		virtualConn = net.WithPhysicalPeer(peer, virtualConn)
+	physicalPeer, hasPhysicalPeer := internet.PhysicalPeerFromContext(request.Context())
+	acceptedProxyPeer, hasAcceptedProxyPeer := internet.AcceptedProxyPeerFromContext(request.Context())
+	if hasPhysicalPeer || hasAcceptedProxyPeer {
+		virtualConn = net.WithPeerProvenance(physicalPeer, acceptedProxyPeer, virtualConn)
 	}
 	h.ln.addConn(virtualConn)
 }

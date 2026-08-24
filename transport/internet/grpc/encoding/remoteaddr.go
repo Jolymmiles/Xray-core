@@ -2,6 +2,7 @@ package encoding
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -41,6 +42,14 @@ func physicalPeerFromContext(ctx context.Context) (net.Addr, bool) {
 		return nil, false
 	}
 	return net.PhysicalPeerFromAddress(pr.Addr)
+}
+
+func acceptedProxyPeerFromContext(ctx context.Context) (netip.Addr, bool) {
+	pr, ok := peer.FromContext(ctx)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return net.AcceptedProxyPeerFromAddress(pr.Addr)
 }
 
 func parseTrustedXForwardedFor(md metadata.MD, trusted []string, remoteAddr net.Addr) net.Address {

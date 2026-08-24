@@ -7,7 +7,7 @@ This change makes online state follow the committed logical data owner exactly w
 ## What Changes
 
 - Introduce immutable authenticated presence scopes and one-shot reservation/lease ownership for direct requests, SMUX/H2MUX streams, legacy Mux sessions, XUDP attachments, reverse RVS data slots, and WireGuard logical flows.
-- Capture a canonical server-observed physical peer before XFF, mux-frame, or virtual-source rewriting. Preserve the raw socket peer by default, and treat a successfully rewritten PROXY source as trusted only when the existing `acceptProxyProtocol` option explicitly enables that trust boundary; missing trustworthy provenance is untracked rather than inferred.
+- Capture a canonical server-observed physical peer before XFF, mux-frame, or virtual-source rewriting. Preserve the raw socket peer by default, and when the existing `acceptProxyProtocol` option explicitly enables that trust boundary, preserve the successfully parsed PROXY source in a separate immutable carrier before any later effective-address rewrite; missing trustworthy provenance is untracked rather than inferred.
 - Replace string-based online-map mutation with generation-qualified leases and atomic single/batch handoff.
 - Replace carrier-global session/XUDP state with token-checked per-owner registries, two-phase publication, explicit shutdown barriers, and per-runtime XUDP attachment generations.
 - Make carriers, controls, heartbeats, keepalives, cached XUDP backends, and synthetic/unknown-provenance paths untracked.

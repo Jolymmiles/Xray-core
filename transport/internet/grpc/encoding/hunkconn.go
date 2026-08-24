@@ -47,8 +47,10 @@ func NewHunkConn(hc HunkConn, cancel context.CancelFunc, trustedXForwardedFor []
 		cnc.ConnectionRemoteAddr(rAddr),
 		cnc.ConnectionLocalAddr(lAddr),
 	)
-	if peer, ok := physicalPeerFromContext(hc.Context()); ok {
-		return net.WithPhysicalPeer(peer, conn)
+	physicalPeer, hasPhysicalPeer := physicalPeerFromContext(hc.Context())
+	acceptedProxyPeer, hasAcceptedProxyPeer := acceptedProxyPeerFromContext(hc.Context())
+	if hasPhysicalPeer || hasAcceptedProxyPeer {
+		return net.WithPeerProvenance(physicalPeer, acceptedProxyPeer, conn)
 	}
 	return conn
 }

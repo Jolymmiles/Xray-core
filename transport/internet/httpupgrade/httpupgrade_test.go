@@ -1,7 +1,11 @@
 package httpupgrade_test
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	stdnet "net"
+	"net/http"
 	"runtime"
 	"strings"
 	"testing"
@@ -185,6 +189,70 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	}
 
 	common.Must(listen.Close())
+}
+
+func TestAcceptedProxyPeerSurvivesTrustedXFFRewrite(t *testing.T) {
+	listenPort := tcp.PickPort()
+	type result struct {
+		physical  string
+		accepted  string
+		effective string
+	}
+	results := make(chan result, 1)
+	listen, err := ListenHTTPUpgrade(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
+		ProtocolName:     "httpupgrade",
+		ProtocolSettings: &Config{Path: "httpupgrade"},
+		SocketSettings: &internet.SocketConfig{
+			AcceptProxyProtocol:  true,
+			TrustedXForwardedFor: []string{"X-Forwarded-For"},
+		},
+	}, func(conn stat.Connection) {
+		var got result
+		if peer, ok := net.PhysicalPeer(conn); ok {
+			got.physical = peer.String()
+		}
+		if peer, ok := net.AcceptedProxyPeer(conn); ok {
+			got.accepted = peer.String()
+		}
+		got.effective = conn.RemoteAddr().String()
+		results <- got
+		_ = conn.Close()
+	})
+	common.Must(err)
+	t.Cleanup(func() { _ = listen.Close() })
+
+	conn, err := stdnet.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, err = fmt.Fprintf(conn, "PROXY TCP4 198.51.100.7 127.0.0.1 12345 %d\r\nGET /httpupgrade HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Forwarded-For: 203.0.113.99\r\n\r\n", listenPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/httpupgrade", listenPort), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %s", response.Status)
+	}
+
+	got := <-results
+	if got.accepted != "198.51.100.7" {
+		t.Fatalf("accepted PROXY peer = %q, want 198.51.100.7", got.accepted)
+	}
+	if got.effective != "203.0.113.99:0" {
+		t.Fatalf("effective remote = %q, want trusted XFF", got.effective)
+	}
+	if !strings.HasPrefix(got.physical, "127.0.0.1:") {
+		t.Fatalf("physical peer = %q, want raw loopback socket peer", got.physical)
+	}
 }
 
 func Test_listenHTTPUpgradeAndDial_TLS(t *testing.T) {

@@ -2,6 +2,7 @@ package net
 
 import (
 	"net"
+	"net/netip"
 	"syscall"
 	"testing"
 	"time"
@@ -37,6 +38,13 @@ func (c *physicalPeerCloseWriteTestConn) CloseWrite() error {
 type physicalPeerNetConnWrapper struct {
 	Conn
 }
+
+type acceptedProxyPeerTestConn struct {
+	*physicalPeerTestConn
+	accepted netip.Addr
+}
+
+func (c *acceptedProxyPeerTestConn) AcceptedProxyPeer() netip.Addr { return c.accepted }
 
 func (c *physicalPeerNetConnWrapper) NetConn() Conn { return c.Conn }
 
@@ -87,5 +95,40 @@ func TestPhysicalPeerSurvivesTLSAndRealityStyleNetConnWrappers(t *testing.T) {
 	peer, ok := PhysicalPeer(wrapper)
 	if !ok || peer.String() != "192.0.2.9:443" {
 		t.Fatalf("physical peer through NetConn wrappers = %v, ok=%v", peer, ok)
+	}
+}
+
+func TestAcceptedProxyPeerSurvivesConnectionWrappers(t *testing.T) {
+	accepted := netip.MustParseAddr("198.51.100.7")
+	source := CapturePhysicalPeer(&acceptedProxyPeerTestConn{
+		physicalPeerTestConn: &physicalPeerTestConn{remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 443}},
+		accepted:             accepted,
+	})
+	wrapper := &physicalPeerTestConn{remote: &net.TCPAddr{IP: net.ParseIP("203.0.113.99"), Port: 0}}
+	preserved := PreservePhysicalPeer(source, wrapper)
+
+	got, ok := AcceptedProxyPeer(preserved)
+	if !ok || got != accepted {
+		t.Fatalf("accepted PROXY peer = %s, ok=%v, want %s", got, ok, accepted)
+	}
+	if got := preserved.RemoteAddr().String(); got != "203.0.113.99:0" {
+		t.Fatalf("effective remote = %s, want rewritten address", got)
+	}
+}
+
+func TestPeerProvenanceAddressSeparatesAcceptedProxyFromEffectiveRemote(t *testing.T) {
+	effective := &net.TCPAddr{IP: net.ParseIP("203.0.113.99"), Port: 0}
+	physical := &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321}
+	accepted := netip.MustParseAddr("198.51.100.7")
+	address := WithPeerProvenanceAddress(effective, physical, accepted)
+
+	if got := EffectiveAddress(address).String(); got != effective.String() {
+		t.Fatalf("effective address = %s, want %s", got, effective)
+	}
+	if got, ok := PhysicalPeerFromAddress(address); !ok || got.String() != physical.String() {
+		t.Fatalf("physical peer = %v, ok=%v", got, ok)
+	}
+	if got, ok := AcceptedProxyPeerFromAddress(address); !ok || got != accepted {
+		t.Fatalf("accepted PROXY peer = %s, ok=%v, want %s", got, ok, accepted)
 	}
 }

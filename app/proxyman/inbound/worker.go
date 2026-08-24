@@ -66,23 +66,17 @@ func acceptsProxyProtocol(s *internet.MemoryStreamConfig) bool {
 }
 
 func physicalPeerFromConn(conn net.Conn, acceptProxyProtocol bool) netip.Addr {
-	peer, ok := net.PhysicalPeer(conn)
-	physicalPeer := netip.Addr{}
-	if ok {
-		physicalPeer, _ = net.CanonicalPhysicalPeer(peer)
-	}
-	if !acceptProxyProtocol {
-		return physicalPeer
+	if acceptProxyProtocol {
+		peer, _ := net.AcceptedProxyPeer(conn)
+		return peer
 	}
 
-	proxyPeer, ok := net.CanonicalPhysicalPeer(conn.RemoteAddr())
-	// go-proxyproto falls back to the underlying remote address for missing,
-	// malformed, and LOCAL headers. An unchanged peer is therefore ambiguous;
-	// fail closed instead of treating it as presence identity.
-	if !ok || proxyPeer == physicalPeer {
+	peer, ok := net.PhysicalPeer(conn)
+	if !ok {
 		return netip.Addr{}
 	}
-	return proxyPeer
+	physicalPeer, _ := net.CanonicalPhysicalPeer(peer)
+	return physicalPeer
 }
 
 func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {

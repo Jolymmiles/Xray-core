@@ -4,9 +4,11 @@ import (
 	"context"
 	"io"
 	stdnet "net"
+	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/pires/go-proxyproto"
 	"github.com/xtls/reality"
 	corenet "github.com/xtls/xray-core/common/net"
 )
@@ -87,6 +89,113 @@ func TestPhysicalPeerListenerFreezesPeerBeforeProxyRewrite(t *testing.T) {
 	if !ok || peer.String() != "192.0.2.9:54321" {
 		t.Fatalf("physical peer after PROXY read = %v, ok=%v", peer, ok)
 	}
+	accepted, ok := corenet.AcceptedProxyPeer(conn)
+	if !ok || accepted != netip.MustParseAddr("198.51.100.7") {
+		t.Fatalf("accepted PROXY peer = %s, ok=%v", accepted, ok)
+	}
+}
+
+func TestPhysicalPeerListenerCapturesAcceptedProxySourceExplicitly(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    stdnet.Addr
+		header []byte
+		want   netip.Addr
+	}{
+		{
+			name:   "IPv4",
+			raw:    &stdnet.TCPAddr{IP: stdnet.ParseIP("192.0.2.9"), Port: 54321},
+			header: []byte("PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx"),
+			want:   netip.MustParseAddr("198.51.100.7"),
+		},
+		{
+			name:   "mapped IPv4",
+			raw:    &stdnet.TCPAddr{IP: stdnet.ParseIP("192.0.2.9"), Port: 54321},
+			header: []byte("PROXY TCP6 ::ffff:198.51.100.7 2001:db8::1 12345 443\r\nx"),
+			want:   netip.MustParseAddr("198.51.100.7"),
+		},
+		{
+			name:   "IPv6",
+			raw:    &stdnet.TCPAddr{IP: stdnet.ParseIP("2001:db8::9"), Port: 54321},
+			header: []byte("PROXY TCP6 2001:db8::7 2001:db8::1 12345 443\r\nx"),
+			want:   netip.MustParseAddr("2001:db8::7"),
+		},
+		{
+			name:   "source equals raw peer",
+			raw:    &stdnet.TCPAddr{IP: stdnet.ParseIP("192.0.2.9"), Port: 54321},
+			header: []byte("PROXY TCP4 192.0.2.9 203.0.113.1 54321 443\r\nx"),
+			want:   netip.MustParseAddr("192.0.2.9"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			conn := proxyListenerConnection(t, test.raw, test.header)
+			got, ok := corenet.AcceptedProxyPeer(conn)
+			if !ok || got != test.want {
+				t.Fatalf("accepted PROXY peer = %s, ok=%v, want %s", got, ok, test.want)
+			}
+		})
+	}
+}
+
+func TestPhysicalPeerListenerRejectsUnusableProxySource(t *testing.T) {
+	unixHeader, err := (&proxyproto.Header{
+		Version:           2,
+		Command:           proxyproto.PROXY,
+		TransportProtocol: proxyproto.UnixStream,
+		SourceAddr:        &stdnet.UnixAddr{Name: "/run/client.sock", Net: "unix"},
+		DestinationAddr:   &stdnet.UnixAddr{Name: "/run/xray.sock", Net: "unix"},
+	}).Format()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		header []byte
+	}{
+		{name: "missing", header: []byte("x")},
+		{name: "malformed", header: []byte("PROXY TCP4 invalid 203.0.113.1 12345 443\r\nx")},
+		{name: "LOCAL or UNKNOWN", header: []byte("PROXY UNKNOWN\r\nx")},
+		{name: "Unix source", header: append(unixHeader, 'x')},
+		{name: "unspecified source", header: []byte("PROXY TCP4 0.0.0.0 203.0.113.1 12345 443\r\nx")},
+		{name: "loopback source", header: []byte("PROXY TCP4 127.0.0.1 203.0.113.1 12345 443\r\nx")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			conn := proxyListenerConnection(t,
+				&stdnet.TCPAddr{IP: stdnet.ParseIP("192.0.2.9"), Port: 54321},
+				test.header,
+			)
+			if got, ok := corenet.AcceptedProxyPeer(conn); ok || got.IsValid() {
+				t.Fatalf("unusable PROXY source became trusted: %s, ok=%v", got, ok)
+			}
+		})
+	}
+}
+
+func proxyListenerConnection(t *testing.T, rawPeer stdnet.Addr, payload []byte) stdnet.Conn {
+	t.Helper()
+	server, client := stdnet.Pipe()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = client.Close()
+	})
+	listener := &physicalPeerListener{
+		Listener: &peerTestListener{conn: &peerTestConn{
+			Conn:   server,
+			local:  &stdnet.TCPAddr{IP: stdnet.ParseIP("203.0.113.1"), Port: 443},
+			remote: rawPeer,
+		}},
+		proxyProtocol: true,
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_, _ = client.Write(payload)
+	}()
+	return conn
 }
 
 func TestPhysicalPeerListenerPreservesRealityCloseWriteAcrossProxyProtocol(t *testing.T) {

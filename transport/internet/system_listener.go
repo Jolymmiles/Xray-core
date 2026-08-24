@@ -2,6 +2,7 @@ package internet
 
 import (
 	"context"
+	"net/netip"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,6 +26,38 @@ type physicalPeerListener struct {
 	proxyProtocol bool
 }
 
+type acceptedProxyProtocolConn struct {
+	*proxyproto.Conn
+	acceptedPeer netip.Addr
+}
+
+func newAcceptedProxyProtocolConn(conn net.Conn) *acceptedProxyProtocolConn {
+	accepted := new(acceptedProxyProtocolConn)
+	accepted.Conn = proxyproto.NewConn(
+		conn,
+		proxyproto.WithPolicy(proxyproto.REQUIRE),
+		proxyproto.ValidateHeader(func(header *proxyproto.Header) error {
+			if header == nil || !header.Command.IsProxy() {
+				return nil
+			}
+			peer, ok := net.CanonicalPhysicalPeer(header.SourceAddr)
+			if ok {
+				accepted.acceptedPeer = peer
+			}
+			return nil
+		}),
+	)
+	return accepted
+}
+
+func (c *acceptedProxyProtocolConn) AcceptedProxyPeer() netip.Addr {
+	if c == nil || c.Conn == nil {
+		return netip.Addr{}
+	}
+	_ = c.ProxyHeader()
+	return c.acceptedPeer
+}
+
 func (l *physicalPeerListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
@@ -34,7 +67,7 @@ func (l *physicalPeerListener) Accept() (net.Conn, error) {
 	if !l.proxyProtocol {
 		return conn, nil
 	}
-	return net.PreservePhysicalPeer(conn, proxyproto.NewConn(conn, proxyproto.WithPolicy(proxyproto.REQUIRE))), nil
+	return net.PreservePhysicalPeer(conn, newAcceptedProxyProtocolConn(conn)), nil
 }
 
 // CapturePhysicalPeerListener freezes accepted peers before transport wrappers.

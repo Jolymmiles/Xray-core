@@ -2,6 +2,7 @@ package internet
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/xtls/xray-core/common/net"
 )
@@ -26,6 +27,11 @@ func PhysicalPeerContextListener(listener net.Listener) net.Listener {
 
 type physicalPeerContextKey struct{}
 
+type physicalPeerContextValue struct {
+	peer net.Addr
+	conn net.Conn
+}
+
 // ContextWithPhysicalPeer freezes a connection peer before HTTP metadata can
 // replace the virtual remote address.
 func ContextWithPhysicalPeer(ctx context.Context, conn net.Conn) context.Context {
@@ -34,14 +40,24 @@ func ContextWithPhysicalPeer(ctx context.Context, conn net.Conn) context.Context
 	if !ok {
 		return ctx
 	}
-	return context.WithValue(ctx, physicalPeerContextKey{}, peer)
+	return context.WithValue(ctx, physicalPeerContextKey{}, physicalPeerContextValue{peer: peer, conn: conn})
 }
 
 // PhysicalPeerFromContext returns a value copy of captured HTTP provenance.
 func PhysicalPeerFromContext(ctx context.Context) (net.Addr, bool) {
-	peer, ok := ctx.Value(physicalPeerContextKey{}).(net.Addr)
+	value, ok := ctx.Value(physicalPeerContextKey{}).(physicalPeerContextValue)
 	if !ok {
 		return nil, false
 	}
-	return net.CopyPhysicalPeer(peer)
+	return net.CopyPhysicalPeer(value.peer)
+}
+
+// AcceptedProxyPeerFromContext returns parser-captured PROXY provenance after
+// HTTP or another connection-context protocol has consumed the header.
+func AcceptedProxyPeerFromContext(ctx context.Context) (netip.Addr, bool) {
+	value, ok := ctx.Value(physicalPeerContextKey{}).(physicalPeerContextValue)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return net.AcceptedProxyPeer(value.conn)
 }
