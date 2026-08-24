@@ -2,6 +2,12 @@
 
 This repository is a server-focused fork of [XTLS/Xray-core](https://github.com/XTLS/Xray-core), part of [Project X](https://github.com/XTLS) and the XTLS ecosystem.
 
+## DeepWiki
+
+Explore the fork's architecture, code, and features or ask questions directly in [DeepWiki](https://deepwiki.com/Jolymmiles/Xray-core).
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Jolymmiles/Xray-core)
+
 ## Fork features
 
 This repository tracks upstream Xray-core and maintains additional server-focused features and hardening:
@@ -29,8 +35,6 @@ Official fork release artifacts currently target Linux. Other platforms can be b
 ## Contributing
 
 Contributions are welcome through this repository's [issues](https://github.com/Jolymmiles/Xray-core/issues) and [pull requests](https://github.com/Jolymmiles/Xray-core/pulls). By participating, you agree to follow the [Code of Conduct](https://github.com/Jolymmiles/Xray-core/blob/main/CODE_OF_CONDUCT.md).
-
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Jolymmiles/Xray-core)
 
 ## Credits
 
