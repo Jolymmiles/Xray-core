@@ -66,6 +66,13 @@ func (c *fragmentConn) mergeTlsHelloSegments() bool {
 	return len(c.config.DelaysMax) == 1 && c.config.DelaysMax[0] == 0
 }
 
+func (c *fragmentConn) CloseWrite() error {
+	if closeWriter, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return nil
+}
+
 func (c *fragmentConn) Write(p []byte) (n int, err error) {
 	c.count++
 

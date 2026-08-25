@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -135,8 +136,9 @@ type OutboundState struct {
 	RemainingPadding         int32
 	CurrentCommand           int
 	// write link state
-	IsPadding              bool
-	UplinkWriterDirectCopy bool
+	IsPadding                    bool
+	UplinkWriterDirectCopy       bool
+	UplinkWriterDirectCopyActive atomic.Bool
 }
 
 func NewTrafficState(userUUID []byte) *TrafficState {
@@ -343,6 +345,9 @@ func (w *VisionWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		rawConn, _, writerCounter := UnwrapRawConn(w.conn)
 		w.Writer = buf.NewWriter(rawConn)
 		w.directWriteCounter = writerCounter
+		if w.isUplink {
+			w.trafficState.Outbound.UplinkWriterDirectCopyActive.Store(true)
+		}
 		*switchToDirectCopy = false
 	}
 	if !mb.IsEmpty() && w.directWriteCounter != nil {

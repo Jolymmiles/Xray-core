@@ -154,8 +154,11 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		ctx = newCtx
 	}
 
+	postRequestAndCloseWrite := task.OnSuccess(postRequest, func() error {
+		return stat.TryCloseWrite(conn)
+	})
 	responseDoneAndCloseWriter := task.OnSuccessClose(getResponse, link.Writer)
-	if err := task.Run(ctx, postRequest, responseDoneAndCloseWriter); err != nil {
+	if err := task.Run(ctx, postRequestAndCloseWrite, responseDoneAndCloseWriter); err != nil {
 		return errors.New("connection ends").Base(err)
 	}
 

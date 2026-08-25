@@ -215,6 +215,18 @@ func (c *Conn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 
+func (c *Conn) CloseWrite() error {
+	if c.oneTimeWriter != nil {
+		if _, err := c.Write(nil); err != nil {
+			return err
+		}
+	}
+	if closeWriter, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return nil
+}
+
 // Close implements net.Conn.Close().
 func (c *Conn) Close() error {
 	if c.oneTimeWriter != nil && c.errorWriter != nil {

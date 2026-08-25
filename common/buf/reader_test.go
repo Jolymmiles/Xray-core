@@ -17,6 +17,81 @@ func (emptyMultiBufferReader) ReadMultiBuffer() (MultiBuffer, error) {
 	return nil, nil
 }
 
+type payloadEOFReader struct {
+	payload []byte
+	done    bool
+}
+
+func (r *payloadEOFReader) ReadMultiBuffer() (MultiBuffer, error) {
+	if r.done {
+		return nil, io.EOF
+	}
+	r.done = true
+	buffer := New()
+	_, _ = buffer.Write(r.payload)
+	return MultiBuffer{buffer}, io.EOF
+}
+
+func TestBufferedReaderPreservesPayloadReturnedWithEOF(t *testing.T) {
+	reader := &BufferedReader{Reader: &payloadEOFReader{payload: []byte("final")}}
+	var got bytes.Buffer
+	chunk := make([]byte, 2)
+	for {
+		count, err := reader.Read(chunk)
+		got.Write(chunk[:count])
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got.String() != "final" {
+		t.Fatalf("payload = %q, want final", got.String())
+	}
+}
+
+func TestBufferedReaderReadByteDefersEOFUntilPayloadDrained(t *testing.T) {
+	reader := &BufferedReader{Reader: &payloadEOFReader{payload: []byte("ab")}}
+	for index, want := range []byte("ab") {
+		got, err := reader.ReadByte()
+		if err != nil || got != want {
+			t.Fatalf("byte %d = (%q, %v), want (%q, nil)", index, got, err, want)
+		}
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		t.Fatalf("terminal error = %v, want EOF", err)
+	}
+}
+
+func TestBufferedReaderSplitterDefersEOFUntilByteDelivered(t *testing.T) {
+	reader := &BufferedReader{Reader: &payloadEOFReader{payload: []byte("x")}, Splitter: SplitFirstBytes}
+	value, err := reader.ReadByte()
+	if err != nil || value != 'x' {
+		t.Fatalf("first byte = (%q, %v), want (x, nil)", value, err)
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		t.Fatalf("terminal error = %v, want EOF", err)
+	}
+}
+
+func TestBufferedReaderReadAtMostDefersEOFUntilPayloadDrained(t *testing.T) {
+	reader := &BufferedReader{Reader: &payloadEOFReader{payload: []byte("final")}}
+	first, err := reader.ReadAtMost(2)
+	if err != nil || first.String() != "fi" {
+		t.Fatalf("first read = (%q, %v), want (fi, nil)", first.String(), err)
+	}
+	ReleaseMulti(first)
+	second, err := reader.ReadAtMost(8)
+	if err != nil || second.String() != "nal" {
+		t.Fatalf("second read = (%q, %v), want (nal, nil)", second.String(), err)
+	}
+	ReleaseMulti(second)
+	if _, err := reader.ReadAtMost(8); err != io.EOF {
+		t.Fatalf("terminal error = %v, want EOF", err)
+	}
+}
+
 func TestBytesReaderWriteTo(t *testing.T) {
 	pReader, pWriter := pipe.New(pipe.WithSizeLimit(1024))
 	reader := &BufferedReader{Reader: pReader}

@@ -155,8 +155,11 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		ctx = newCtx
 	}
 
+	requestDoneAndCloseWrite := task.OnSuccess(requestFunc, func() error {
+		return stat.TryCloseWrite(conn)
+	})
 	responseDonePost := task.OnSuccessClose(responseFunc, link.Writer)
-	if err := task.Run(ctx, requestFunc, responseDonePost); err != nil {
+	if err := task.Run(ctx, requestDoneAndCloseWrite, responseDonePost); err != nil {
 		return errors.New("connection ends").Base(err)
 	}
 
@@ -365,6 +368,10 @@ func (h *http2Conn) Read(p []byte) (n int, err error) {
 
 func (h *http2Conn) Write(p []byte) (n int, err error) {
 	return h.in.Write(p)
+}
+
+func (h *http2Conn) CloseWrite() error {
+	return h.in.Close()
 }
 
 func (h *http2Conn) Close() error {
