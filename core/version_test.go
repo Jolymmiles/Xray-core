@@ -9,7 +9,7 @@ import (
 
 func TestVersionFollowsYearMonthDayHHMM(t *testing.T) {
 	got := core.Version()
-	want := fmt.Sprintf("%d.%d.%d-1531", core.Version_x, core.Version_y, core.Version_z)
+	want := fmt.Sprintf("%d.%d.%d-1648", core.Version_x, core.Version_y, core.Version_z)
 	if got != want {
 		t.Fatalf("Version() = %q, want %q (year.month.day-HHMM UTC)", got, want)
 	}
