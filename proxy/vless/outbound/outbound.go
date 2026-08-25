@@ -413,7 +413,14 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		ctx = newCtx
 	}
 
-	if err := task.Run(ctx, postRequest, task.OnSuccessClose(getResponse, clientWriter)); err != nil {
+	postRequestAndCloseWrite := task.OnSuccess(postRequest, func() error {
+		if trafficState != nil && trafficState.Outbound.UplinkWriterDirectCopyActive.Load() {
+			rawConn, _, _ := proxy.UnwrapRawConn(conn)
+			return stat.TryCloseWrite(rawConn)
+		}
+		return stat.TryCloseWrite(conn)
+	})
+	if err := task.Run(ctx, postRequestAndCloseWrite, task.OnSuccessClose(getResponse, clientWriter)); err != nil {
 		return errors.New("connection ends").Base(err).AtInfo()
 	}
 

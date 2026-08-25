@@ -14,6 +14,7 @@ import (
 
 	"github.com/xtls/xray-core/common/crypto"
 	"github.com/xtls/xray-core/common/errors"
+	transportstat "github.com/xtls/xray-core/transport/internet/stat"
 	"golang.org/x/crypto/chacha20poly1305"
 	"lukechampine.com/blake3"
 )
@@ -42,6 +43,10 @@ func NewCommonConn(conn net.Conn, useAES bool) *CommonConn {
 		Conn:   conn,
 		UseAES: useAES,
 	}
+}
+
+func (c *CommonConn) CloseWrite() error {
+	return transportstat.TryCloseWrite(c.Conn)
 }
 
 func (c *CommonConn) Write(b []byte) (int, error) {

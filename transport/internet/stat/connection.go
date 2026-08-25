@@ -43,3 +43,16 @@ func TryUnwrapStatsConn(conn net.Conn) net.Conn {
 	}
 	return corenet.UnwrapPhysicalPeer(conn)
 }
+
+// TryCloseWrite propagates a TCP-style half-close through statistics and
+// physical-peer wrappers. Connections without half-close support are left open.
+func TryCloseWrite(conn net.Conn) error {
+	if closeWriter, ok := conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	unwrapped := TryUnwrapStatsConn(conn)
+	if closeWriter, ok := unwrapped.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return nil
+}

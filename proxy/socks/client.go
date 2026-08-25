@@ -166,8 +166,14 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		ctx = newCtx
 	}
 
+	requestDone := requestFunc
+	if request.Command == protocol.RequestCommandTCP {
+		requestDone = task.OnSuccess(requestFunc, func() error {
+			return stat.TryCloseWrite(conn)
+		})
+	}
 	responseDonePost := task.OnSuccessClose(responseFunc, link.Writer)
-	if err := task.Run(ctx, requestFunc, responseDonePost); err != nil {
+	if err := task.Run(ctx, requestDone, responseDonePost); err != nil {
 		return errors.New("connection ends").Base(err)
 	}
 

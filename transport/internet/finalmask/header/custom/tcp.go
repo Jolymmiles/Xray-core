@@ -41,6 +41,16 @@ func NewConnClientTCP(c *TCPConfig, raw net.Conn) (net.Conn, error) {
 	return conn, nil
 }
 
+func (c *tcpCustomClientConn) CloseWrite() error {
+	if _, err := c.Write(nil); err != nil {
+		return err
+	}
+	if closeWriter, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return nil
+}
+
 func (c *tcpCustomClientConn) TcpMaskConn() {}
 
 func (c *tcpCustomClientConn) RawConn() net.Conn {
@@ -138,6 +148,14 @@ func NewConnServerTCP(c *TCPConfig, raw net.Conn) (net.Conn, error) {
 	conn.wg.Add(1)
 
 	return conn, nil
+}
+
+func (c *tcpCustomServerConn) CloseWrite() error {
+	c.wg.Wait()
+	if closeWriter, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return nil
 }
 
 func (c *tcpCustomServerConn) TcpMaskConn() {}

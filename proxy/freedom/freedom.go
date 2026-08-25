@@ -460,7 +460,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		ctx = newCtx
 	}
 
-	if err := task.Run(ctx, requestDone, task.OnSuccessClose(responseDone, output)); err != nil {
+	requestDoneAndCloseWrite := task.OnSuccess(requestDone, func() error {
+		return stat.TryCloseWrite(conn)
+	})
+	if err := task.Run(ctx, requestDoneAndCloseWrite, task.OnSuccessClose(responseDone, output)); err != nil {
 		return errors.New("connection ends").Base(err)
 	}
 

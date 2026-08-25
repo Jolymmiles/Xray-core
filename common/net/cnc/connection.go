@@ -2,6 +2,7 @@ package cnc
 
 import (
 	"io"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -27,12 +28,14 @@ func ConnectionRemoteAddr(a net.Addr) ConnectionOption {
 func ConnectionInput(writer io.Writer) ConnectionOption {
 	return func(c *Connection) {
 		c.writer = buf.NewWriter(writer)
+		c.writeCloser, _ = writer.(io.Closer)
 	}
 }
 
 func ConnectionInputMulti(writer buf.Writer) ConnectionOption {
 	return func(c *Connection) {
 		c.writer = writer
+		c.writeCloser, _ = writer.(io.Closer)
 	}
 }
 
@@ -84,12 +87,15 @@ func NewConnection(opts ...ConnectionOption) net.Conn {
 }
 
 type Connection struct {
-	reader  *buf.BufferedReader
-	writer  buf.Writer
-	done    *done.Instance
-	onClose io.Closer
-	local   net.Addr
-	remote  net.Addr
+	reader         *buf.BufferedReader
+	writer         buf.Writer
+	writeCloser    io.Closer
+	writeCloseOnce sync.Once
+	writeCloseErr  error
+	done           *done.Instance
+	onClose        io.Closer
+	local          net.Addr
+	remote         net.Addr
 }
 
 func (c *Connection) Read(b []byte) (int, error) {
@@ -122,11 +128,22 @@ func (c *Connection) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	return c.writer.WriteMultiBuffer(mb)
 }
 
+func (c *Connection) CloseWrite() error {
+	c.writeCloseOnce.Do(func() {
+		if c.writeCloser != nil {
+			c.writeCloseErr = c.writeCloser.Close()
+		} else {
+			c.writeCloseErr = common.Close(c.writer)
+		}
+	})
+	return c.writeCloseErr
+}
+
 // Close implements net.Conn.Close().
 func (c *Connection) Close() error {
 	common.Must(c.done.Close())
 	common.Interrupt(c.reader)
-	common.Close(c.writer)
+	_ = c.CloseWrite()
 	if c.onClose != nil {
 		return c.onClose.Close()
 	}

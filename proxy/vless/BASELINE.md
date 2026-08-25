@@ -46,6 +46,27 @@ The characterization suite also fixes these stream semantics:
 - the inbound buffers the response header and flushes it with the first
   response payload.
 
+## TCP half-close lifecycle
+
+A successful upload EOF on a TCP request is propagated as a write-half close
+when the outbound connection supports `CloseWrite`. The download direction
+remains open until the peer response and EOF have been delivered. This applies
+to plain TCP, TLS, and REALITY VLESS carriers and does not add protocol bytes.
+Transports without half-close support retain their existing lifecycle. This
+baseline covers one VLESS connection per TCP/TLS/REALITY carrier; it does not
+establish SMUX logical-stream half-close support.
+
+The Linux process regression covers TLS and REALITY, with and without Vision,
+plus SOCKS/Freedom and Dokodemo/Freedom controls:
+
+```sh
+GOTOOLCHAIN=auto go test -tags integration ./common/singmux \
+  -run '^(TestShortOriginHalfCloseControl|TestShortSOCKSHalfCloseControl|TestDokodemoHalfCloseControl|TestVLESSShortConnectionStability)$' \
+  -count=1 -v
+GOTOOLCHAIN=auto go test -tags integration ./common/singmux \
+  -run '^TestVLESSShortConnectionBurstStress$' -count=5 -v
+```
+
 ## Header baseline
 
 Medians of five runs:
