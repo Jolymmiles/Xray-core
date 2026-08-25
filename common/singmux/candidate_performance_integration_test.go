@@ -12,9 +12,12 @@ import (
 	"time"
 )
 
-const candidatePerformanceRevision = "816ae65180cc8e8ac6bac76ffcdbc561e93ebb7d" // v26.8.15
+const (
+	candidatePerformanceRevision = "b7bdfb03fa582cd691197593cc853f6ea209d04f" // v26.8.25-1457
+	candidatePerformanceLabel    = "v26.8.25-1457"
+)
 
-func TestCandidatePerformanceAgainstV26815(t *testing.T) {
+func TestCandidatePerformanceAgainstPreviousRelease(t *testing.T) {
 	if testing.Short() {
 		t.Skip("candidate performance comparison")
 	}
@@ -63,9 +66,9 @@ func TestCandidatePerformanceAgainstV26815(t *testing.T) {
 			baselineMedian := medianDuration(baselineSamples)
 			candidateMedian := medianDuration(candidateSamples)
 			ratio := float64(candidateMedian) / float64(baselineMedian)
-			t.Logf("v26.8.15 samples=%v candidate samples=%v", baselineSamples, candidateSamples)
-			t.Logf("median v26.8.15=%s candidate=%s ratio=%.3f", baselineMedian, candidateMedian, ratio)
-			t.Logf("resources v26.8.15 start=%+v end=%+v quiescent=%+v candidate start=%+v end=%+v quiescent=%+v", baselineStart, baselineEnd, baselineQuiescent, candidateStart, candidateEnd, candidateQuiescent)
+			t.Logf("%s samples=%v candidate samples=%v", candidatePerformanceLabel, baselineSamples, candidateSamples)
+			t.Logf("median %s=%s candidate=%s ratio=%.3f", candidatePerformanceLabel, baselineMedian, candidateMedian, ratio)
+			t.Logf("resources %s start=%+v end=%+v quiescent=%+v candidate start=%+v end=%+v quiescent=%+v", candidatePerformanceLabel, baselineStart, baselineEnd, baselineQuiescent, candidateStart, candidateEnd, candidateQuiescent)
 			if runtime.GOOS == "linux" && os.Getenv("XRAY_NATIVE_LINUX_RELEASE") != "1" {
 				t.Log("Linux Docker/emulation validates the harness only; set XRAY_NATIVE_LINUX_RELEASE=1 on the pinned native host to enforce release budgets")
 				return
@@ -78,16 +81,16 @@ func TestCandidatePerformanceAgainstV26815(t *testing.T) {
 				t.Errorf("candidate median regression %.1f%% exceeds 10%%", (ratio-1)*100)
 			}
 			if candidateQuiescent.rssKiB > baselineQuiescent.rssKiB+64*1024 {
-				t.Errorf("candidate RSS=%d KiB exceeds v26.8.15=%d KiB by more than 64 MiB", candidateQuiescent.rssKiB, baselineQuiescent.rssKiB)
+				t.Errorf("candidate RSS=%d KiB exceeds %s=%d KiB by more than 64 MiB", candidateQuiescent.rssKiB, candidatePerformanceLabel, baselineQuiescent.rssKiB)
 			}
 			if candidateQuiescent.threads > baselineQuiescent.threads+16 {
-				t.Errorf("candidate threads=%d exceed v26.8.15=%d by more than 16", candidateQuiescent.threads, baselineQuiescent.threads)
+				t.Errorf("candidate threads=%d exceed %s=%d by more than 16", candidateQuiescent.threads, candidatePerformanceLabel, baselineQuiescent.threads)
 			}
 			if candidateQuiescent.fds > baselineQuiescent.fds+8 {
-				t.Errorf("candidate fds=%d exceed v26.8.15=%d by more than 8", candidateQuiescent.fds, baselineQuiescent.fds)
+				t.Errorf("candidate fds=%d exceed %s=%d by more than 8", candidateQuiescent.fds, candidatePerformanceLabel, baselineQuiescent.fds)
 			}
 			if baselineEnd.fds > baselineStart.fds+8 || candidateEnd.fds > candidateStart.fds+8 {
-				t.Errorf("server FD growth exceeded 8 under load: v26.8.15 %d->%d candidate %d->%d", baselineStart.fds, baselineEnd.fds, candidateStart.fds, candidateEnd.fds)
+				t.Errorf("server FD growth exceeded 8 under load: %s %d->%d candidate %d->%d", candidatePerformanceLabel, baselineStart.fds, baselineEnd.fds, candidateStart.fds, candidateEnd.fds)
 			}
 		})
 	}
@@ -113,8 +116,8 @@ func waitProcessResourcesDrained(t *testing.T, pid int, baseline processResource
 
 func buildCandidatePerformanceBaseline(t *testing.T, workDir string) string {
 	t.Helper()
-	source := filepath.Join(workDir, "v26.8.15-source")
-	binary := filepath.Join(workDir, "xray-v26.8.15")
+	source := filepath.Join(workDir, candidatePerformanceLabel+"-source")
+	binary := filepath.Join(workDir, "xray-"+candidatePerformanceLabel)
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +140,7 @@ func buildCandidatePerformanceBaseline(t *testing.T, workDir string) string {
 	build := exec.Command("go", "build", "-trimpath", "-o", binary, "./main")
 	build.Dir = source
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build v26.8.15: %v\n%s", err, output)
+		t.Fatalf("build %s: %v\n%s", candidatePerformanceLabel, err, output)
 	}
 	return binary
 }

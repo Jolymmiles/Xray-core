@@ -251,24 +251,29 @@ counters. It never clears counters and fails if any checked counter increases.
 Process RSS and thread counts are sampled after each cycle to detect linear
 growth.
 
-The performance suite compares the same Xray SMUX client against an Xray server
-and the current local sing-box/sing-mux server. It uses a full-load warm-up and
-nine alternating rounds with access logging disabled. The Linux VLESS result
-enforces the 10% median full-duplex regression limit. The Trojan result is diagnostic
-because it also compares the two projects' TLS and Trojan implementations.
+The performance suite still records the same Xray SMUX client against the
+current local sing-box/sing-mux server. That comparison is diagnostic: the
+external sing-mux oracle is historically unstable even on previously published
+fork releases. The Trojan result is also diagnostic because it compares the two
+projects' TLS and Trojan implementations.
+
+The hard Linux release budget is the previous published fork release. It uses a
+full-load warm-up and nine alternating rounds with access logging disabled, and
+fails above a 10% median full-duplex regression.
 
 ```sh
 go test -tags 'integration stress performance' ./common/singmux \
-  -run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstV26815)$' \
+  -run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstPreviousRelease)$' \
   -count=3 -v
 ```
 
-`TestCandidatePerformanceAgainstV26815` builds the immutable `v26.8.15`
-revision and the candidate, keeps an identical candidate Xray SMUX client on
-both sides, warms both servers, and measures nine alternating full-duplex
-rounds. On Linux it fails above 10% median duration regression, 64 MiB RSS, 16
-threads, or 8 file descriptors. Other hosts record diagnostics only and cannot
-satisfy the release gate.
+`TestCandidatePerformanceAgainstPreviousRelease` builds immutable
+`v26.8.25-1457` (`b7bdfb03fa582cd691197593cc853f6ea209d04f`) and the
+candidate, keeps an identical candidate Xray SMUX client on both sides, warms
+both servers, and measures nine alternating full-duplex rounds. On Linux it
+fails above 10% median duration regression, 64 MiB RSS, 16 threads, or 8 file
+descriptors. Other hosts record diagnostics only and cannot satisfy the release
+gate.
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
