@@ -48,6 +48,31 @@ func (l *peerTestListener) Accept() (stdnet.Conn, error) {
 func (*peerTestListener) Close() error      { return nil }
 func (*peerTestListener) Addr() stdnet.Addr { return &stdnet.TCPAddr{} }
 
+func startPeerTestWrite(conn stdnet.Conn, payload []byte) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		n, err := conn.Write(payload)
+		if err == nil && n != len(payload) {
+			err = io.ErrShortWrite
+		}
+		result <- err
+		close(result)
+	}()
+	return result
+}
+
+func waitPeerTestWrite(t *testing.T, result <-chan error) {
+	t.Helper()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for PROXY test writer")
+	}
+}
+
 func TestPhysicalPeerListenerFreezesPeerBeforeProxyRewrite(t *testing.T) {
 	server, client := stdnet.Pipe()
 	t.Cleanup(func() {
@@ -74,14 +99,15 @@ func TestPhysicalPeerListenerFreezesPeerBeforeProxyRewrite(t *testing.T) {
 		t.Fatalf("physical peer before PROXY read = %v, ok=%v", peer, ok)
 	}
 
-	go func() {
-		_, _ = client.Write([]byte("PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx"))
-	}()
-	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	writeResult := startPeerTestWrite(client, []byte("PROXY TCP4 198.51.100.7 203.0.113.1 12345 443\r\nx"))
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	buffer := make([]byte, 1)
 	if _, err := io.ReadFull(conn, buffer); err != nil {
 		t.Fatal(err)
 	}
+	waitPeerTestWrite(t, writeResult)
 	if got := conn.RemoteAddr().String(); got != "198.51.100.7:12345" {
 		t.Fatalf("effective remote after PROXY = %s", got)
 	}
@@ -129,8 +155,9 @@ func TestPhysicalPeerListenerCapturesAcceptedProxySourceExplicitly(t *testing.T)
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			conn := proxyListenerConnection(t, test.raw, test.header)
+			conn, writeResult := proxyListenerConnection(t, test.raw, test.header)
 			got, ok := corenet.AcceptedProxyPeer(conn)
+			waitPeerTestWrite(t, writeResult)
 			if !ok || got != test.want {
 				t.Fatalf("accepted PROXY peer = %s, ok=%v, want %s", got, ok, test.want)
 			}
@@ -149,6 +176,26 @@ func TestPhysicalPeerListenerRejectsUnusableProxySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	udp4Header, err := (&proxyproto.Header{
+		Version:           2,
+		Command:           proxyproto.PROXY,
+		TransportProtocol: proxyproto.UDPv4,
+		SourceAddr:        &stdnet.UDPAddr{IP: stdnet.ParseIP("198.51.100.7"), Port: 12345},
+		DestinationAddr:   &stdnet.UDPAddr{IP: stdnet.ParseIP("203.0.113.1"), Port: 443},
+	}).Format()
+	if err != nil {
+		t.Fatal(err)
+	}
+	udp6Header, err := (&proxyproto.Header{
+		Version:           2,
+		Command:           proxyproto.PROXY,
+		TransportProtocol: proxyproto.UDPv6,
+		SourceAddr:        &stdnet.UDPAddr{IP: stdnet.ParseIP("2001:db8::7"), Port: 12345},
+		DestinationAddr:   &stdnet.UDPAddr{IP: stdnet.ParseIP("2001:db8::1"), Port: 443},
+	}).Format()
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name   string
 		header []byte
@@ -157,23 +204,27 @@ func TestPhysicalPeerListenerRejectsUnusableProxySource(t *testing.T) {
 		{name: "malformed", header: []byte("PROXY TCP4 invalid 203.0.113.1 12345 443\r\nx")},
 		{name: "LOCAL or UNKNOWN", header: []byte("PROXY UNKNOWN\r\nx")},
 		{name: "Unix source", header: append(unixHeader, 'x')},
+		{name: "UDPv4 source on stream listener", header: append(udp4Header, 'x')},
+		{name: "UDPv6 source on stream listener", header: append(udp6Header, 'x')},
 		{name: "unspecified source", header: []byte("PROXY TCP4 0.0.0.0 203.0.113.1 12345 443\r\nx")},
 		{name: "loopback source", header: []byte("PROXY TCP4 127.0.0.1 203.0.113.1 12345 443\r\nx")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			conn := proxyListenerConnection(t,
+			conn, writeResult := proxyListenerConnection(t,
 				&stdnet.TCPAddr{IP: stdnet.ParseIP("192.0.2.9"), Port: 54321},
 				test.header,
 			)
-			if got, ok := corenet.AcceptedProxyPeer(conn); ok || got.IsValid() {
+			got, ok := corenet.AcceptedProxyPeer(conn)
+			waitPeerTestWrite(t, writeResult)
+			if ok || got.IsValid() {
 				t.Fatalf("unusable PROXY source became trusted: %s, ok=%v", got, ok)
 			}
 		})
 	}
 }
 
-func proxyListenerConnection(t *testing.T, rawPeer stdnet.Addr, payload []byte) stdnet.Conn {
+func proxyListenerConnection(t *testing.T, rawPeer stdnet.Addr, payload []byte) (stdnet.Conn, <-chan error) {
 	t.Helper()
 	server, client := stdnet.Pipe()
 	t.Cleanup(func() {
@@ -192,10 +243,7 @@ func proxyListenerConnection(t *testing.T, rawPeer stdnet.Addr, payload []byte) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		_, _ = client.Write(payload)
-	}()
-	return conn
+	return conn, startPeerTestWrite(client, payload)
 }
 
 func TestPhysicalPeerListenerPreservesRealityCloseWriteAcrossProxyProtocol(t *testing.T) {
