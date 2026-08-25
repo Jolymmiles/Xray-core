@@ -485,7 +485,9 @@ func (r *Runtime) newResponseSink(output buf.Writer) *xudpResponseSink {
 	r.mu.Lock()
 	if r.closing {
 		r.mu.Unlock()
-		close(sink.stop)
+		// run() is not started on this path. markClosed() sets closed so a
+		// later close() from ServerWorker.finish does not close stop twice.
+		sink.markClosed()
 		close(sink.done)
 		return sink
 	}

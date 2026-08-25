@@ -68,6 +68,24 @@ func TestRuntimeFreezesCompleteXUDPDestination(t *testing.T) {
 	}
 }
 
+func TestResponseSinkCloseAfterRuntimeClosingDoesNotPanic(t *testing.T) {
+	runtime := newRuntime()
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sink := runtime.newResponseSink(buf.Discard)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		sink.close()
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("response sink close blocked after runtime already closed")
+	}
+}
+
 func TestRuntimeCloseUnblocksRegisteredResponseSink(t *testing.T) {
 	runtime := newRuntime()
 	writer := &blockingRuntimeWriter{started: make(chan struct{}), closed: make(chan struct{})}
