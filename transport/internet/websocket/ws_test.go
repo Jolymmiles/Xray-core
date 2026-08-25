@@ -2,11 +2,15 @@ package websocket_test
 
 import (
 	"context"
+	"fmt"
+	stdnet "net"
+	"net/http"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	gorillaws "github.com/gorilla/websocket"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
@@ -126,6 +130,71 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	}
 
 	common.Must(listen.Close())
+}
+
+func TestAcceptedProxyPeerSurvivesTrustedXFFRewrite(t *testing.T) {
+	listenPort := tcp.PickPort()
+	type result struct {
+		physical  string
+		accepted  string
+		effective string
+	}
+	results := make(chan result, 1)
+	listen, err := ListenWS(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
+		ProtocolName:     "websocket",
+		ProtocolSettings: &Config{Path: "ws"},
+		SocketSettings: &internet.SocketConfig{
+			AcceptProxyProtocol:  true,
+			TrustedXForwardedFor: []string{"X-Forwarded-For"},
+		},
+	}, func(conn stat.Connection) {
+		var got result
+		if peer, ok := net.PhysicalPeer(conn); ok {
+			got.physical = peer.String()
+		}
+		if peer, ok := net.AcceptedProxyPeer(conn); ok {
+			got.accepted = peer.String()
+		}
+		got.effective = conn.RemoteAddr().String()
+		results <- got
+		_ = conn.Close()
+	})
+	common.Must(err)
+	t.Cleanup(func() { _ = listen.Close() })
+
+	dialer := gorillaws.Dialer{
+		NetDialContext: func(ctx context.Context, network, address string) (stdnet.Conn, error) {
+			conn, err := (&stdnet.Dialer{}).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := fmt.Fprintf(conn, "PROXY TCP4 198.51.100.7 127.0.0.1 12345 %d\r\n", listenPort); err != nil {
+				_ = conn.Close()
+				return nil, err
+			}
+			return conn, nil
+		},
+	}
+	header := http.Header{"X-Forwarded-For": []string{"203.0.113.99"}}
+	conn, response, err := dialer.DialContext(context.Background(), fmt.Sprintf("ws://127.0.0.1:%d/ws", listenPort), header)
+	if response != nil {
+		defer response.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	got := <-results
+	if got.accepted != "198.51.100.7" {
+		t.Fatalf("accepted PROXY peer = %q, want 198.51.100.7", got.accepted)
+	}
+	if got.effective != "203.0.113.99:0" {
+		t.Fatalf("effective remote = %q, want trusted XFF", got.effective)
+	}
+	if !strings.HasPrefix(got.physical, "127.0.0.1:") {
+		t.Fatalf("physical peer = %q, want raw loopback socket peer", got.physical)
+	}
 }
 
 func Test_listenWSAndDial_TLS(t *testing.T) {

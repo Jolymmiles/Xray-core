@@ -61,13 +61,22 @@ func getTProxyType(s *internet.MemoryStreamConfig) internet.SocketConfig_TProxyM
 	return s.SocketSettings.Tproxy
 }
 
-func physicalPeerFromConn(conn net.Conn) netip.Addr {
+func acceptsProxyProtocol(s *internet.MemoryStreamConfig) bool {
+	return s != nil && s.SocketSettings != nil && s.SocketSettings.AcceptProxyProtocol
+}
+
+func physicalPeerFromConn(conn net.Conn, acceptProxyProtocol bool) netip.Addr {
+	if acceptProxyProtocol {
+		peer, _ := net.AcceptedProxyPeer(conn)
+		return peer
+	}
+
 	peer, ok := net.PhysicalPeer(conn)
 	if !ok {
 		return netip.Addr{}
 	}
-	peerIP, _ := net.CanonicalPhysicalPeer(peer)
-	return peerIP
+	physicalPeer, _ := net.CanonicalPhysicalPeer(peer)
+	return physicalPeer
 }
 
 func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
@@ -84,7 +93,7 @@ func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
-	physicalPeer := physicalPeerFromConn(conn)
+	physicalPeer := physicalPeerFromConn(conn, acceptsProxyProtocol(w.stream))
 
 	outbound := session.Outbound{}
 	if w.recvOrigDest {
@@ -526,6 +535,7 @@ func (w *dsWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
 	ctx = c.ContextWithID(ctx, sid)
+	physicalPeer := physicalPeerFromConn(conn, acceptsProxyProtocol(w.stream))
 
 	if w.uplinkCounter != nil || w.downlinkCounter != nil {
 		conn = &stat.CounterConnection{
@@ -535,11 +545,12 @@ func (w *dsWorker) callback(conn stat.Connection) {
 		}
 	}
 	ctx = session.ContextWithInbound(ctx, &session.Inbound{
-		Source:  net.DestinationFromAddr(conn.RemoteAddr()),
-		Local:   net.DestinationFromAddr(conn.LocalAddr()),
-		Gateway: net.UnixDestination(w.address),
-		Tag:     w.tag,
-		Conn:    conn,
+		Source:       net.DestinationFromAddr(conn.RemoteAddr()),
+		PhysicalPeer: physicalPeer,
+		Local:        net.DestinationFromAddr(conn.LocalAddr()),
+		Gateway:      net.UnixDestination(w.address),
+		Tag:          w.tag,
+		Conn:         conn,
 	})
 
 	content := new(session.Content)
