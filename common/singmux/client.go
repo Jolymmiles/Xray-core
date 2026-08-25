@@ -303,6 +303,16 @@ func (c *Client) openStreamWithOwner(ctx context.Context) (net.Conn, clientSessi
 	}
 }
 
+func (c *Client) recoveryAttempts() int {
+	if c.maxConnections > 1 {
+		return c.maxConnections
+	}
+	if c.maxConnections == 0 {
+		return 4
+	}
+	return 1
+}
+
 func (c *Client) retireSession(failed clientSession) {
 	if failed == nil {
 		return
@@ -567,10 +577,21 @@ func (c *Client) Dispatch(ctx context.Context, link *transport.Link, destination
 	if err != nil {
 		return err
 	}
-	connection := newRetryConn(ctx, initial, func(openCtx context.Context) (net.Conn, error) {
-		c.retireSession(owner)
-		return c.openTargetStream(openCtx, destination)
-	})
+	var ownerMu sync.Mutex
+	connection := newBoundedRetryConn(ctx, initial, func(openCtx context.Context) (net.Conn, error) {
+		ownerMu.Lock()
+		failed := owner
+		ownerMu.Unlock()
+		c.retireSession(failed)
+		stream, next, openErr := c.openTargetStreamWithOwner(openCtx, destination)
+		if openErr != nil {
+			return nil, openErr
+		}
+		ownerMu.Lock()
+		owner = next
+		ownerMu.Unlock()
+		return stream, nil
+	}, c.recoveryAttempts())
 	defer connection.Close()
 
 	var remoteReader buf.Reader = buf.NewReader(connection)
