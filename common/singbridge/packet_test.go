@@ -37,9 +37,10 @@ func (r *multiDatagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 //
 // sing's task.Group runs its cleanup -- common.Close on both ends of the copy,
 // so this type's Close -- as soon as the group context is done, and only waits
-// for the tasks afterwards (task.go:115 before task.go:119). Close therefore
-// lands on this wrapper while the download task is still inside ReadPacket,
-// which happens on every cancelled session and every fast-failed upload.
+// for the tasks afterwards (sing v0.5.1: task.go:115 before task.go:119). Close
+// therefore lands on this wrapper while the download task is still inside
+// ReadPacket, which happens on every cancelled session and every fast-failed
+// upload.
 //
 // Before the fix the two shared cached with no synchronisation, so Close
 // released the buffer ReadPacket was copying out of: Buffer.Release stores
@@ -186,15 +187,16 @@ func TestPacketConnWrapperRecoversPanic(t *testing.T) {
 	}
 }
 
-// TestRecoverTo pins the one thing about RecoverTo that is easy to break: it
-// must be the deferred function itself. Wrapped in another closure, recover()
-// returns nil and the panic goes straight through.
+// TestRecoverTo pins the two things about RecoverTo that are easy to break: it
+// must be the deferred function itself -- wrapped in another closure, recover()
+// returns nil and the panic goes straight through -- and the package in the
+// message must be the caller's, not this one's.
 func TestRecoverTo(t *testing.T) {
 	err := func() (err error) {
-		defer RecoverTo(&err, "Test")
+		defer RecoverTo(&err, "caller.Method")
 		panic("boom")
 	}()
-	if err == nil || !strings.Contains(err.Error(), "panic in singbridge.Test: boom") {
+	if err == nil || !strings.Contains(err.Error(), "panic in caller.Method: boom") {
 		t.Fatalf("RecoverTo did not convert the panic: %v", err)
 	}
 }

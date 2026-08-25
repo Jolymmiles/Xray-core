@@ -8,8 +8,10 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-// TestEntryPointsRecoverPanics covers every method sing calls into this package
-// with. None of them has a recover above it in this tree: app/proxyman/inbound
+// TestEntryPointsRecoverPanics covers the six methods sing enters this package
+// through. It is not every call sing makes -- it also drives NewError and the
+// PacketConnWrapper methods, which carry their own recover -- but these six are
+// the ones that run a proxy body with nothing above them: app/proxyman/inbound
 // invokes proxy.Process bare, and the three packet ones do not even run on the
 // caller's goroutine -- sing/common/udpnat spawns one per NAT entry. So a panic
 // in any of the six ends the process, which is how one Shadowsocks-2022 UDP
@@ -53,7 +55,7 @@ func TestEntryPointsRecoverPanics(t *testing.T) {
 			if err == nil {
 				t.Fatal("panic was not converted into an error")
 			}
-			if want := "panic in singbridge." + entry.name; !strings.Contains(err.Error(), want) {
+			if want := "panic in shadowsocks_2022." + entry.name; !strings.Contains(err.Error(), want) {
 				t.Fatalf("error does not name %s: %v", want, err)
 			}
 		})

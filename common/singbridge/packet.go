@@ -28,18 +28,34 @@ import (
 // than the session. Returning an error instead fails one task, which
 // fast-fails its group and tears down that one session.
 //
+// method carries its own package -- "singbridge.PacketConnWrapper.ReadPacket",
+// "shadowsocks_2022.Inbound.NewPacketConnection" -- because RecoverTo below is
+// deferred from other packages too. A prefix hardcoded to this one would file
+// their panics under singbridge and send whoever greps the label at 3am into
+// the wrong package.
+//
 // The stack rides inside the error rather than being logged here: the error
 // reaches a logger that holds the context -- Inbound.NewError, the outbound
 // handler -- and therefore the connection id and user these methods lack.
 func panicError(method string, r interface{}) error {
-	return errors.New("panic in singbridge.", method, ": ", r, "\n", string(debug.Stack()))
+	return errors.New("panic in ", method, ": ", r, "\n", string(debug.Stack()))
 }
 
 // RecoverTo is the deferred form of panicError for entry points that have no
-// closure of their own: `defer singbridge.RecoverTo(&err, "Inbound.NewPacketConnection")`.
+// closure of their own:
+//
+//	defer singbridge.RecoverTo(&err, "shadowsocks_2022.Inbound.NewPacketConnection")
+//
 // It must be the deferred function itself -- recover only works when called
-// directly by one -- which is why the wrappers above inline the same two lines
-// into their existing defers instead of calling this.
+// directly by one -- which is why the wrappers in this package inline the same
+// two lines into their existing defers instead of calling this.
+//
+// What needs it: the methods sing calls a proxy with. Their bodies reach the
+// inbound session, ToDestination and Dispatch -- routing, sniffing and DNS --
+// so there is plenty to panic on, and the packet ones do not even share a
+// stack with the goroutine that entered the proxy, since udpnat spawns one per
+// NAT entry. Call sites carry a one-line note and point here rather than
+// repeating this.
 func RecoverTo(err *error, method string) {
 	if r := recover(); r != nil {
 		*err = panicError(method, r)
@@ -72,14 +88,15 @@ type PacketConnWrapper struct {
 	//
 	// sing's task.Group runs its cleanup -- common.Close on both ends, so this
 	// type's Close -- as soon as the group's context is done, and only THEN
-	// waits for the tasks to return (task.go:115 before task.go:119). So Close
-	// runs while the download task is still inside ReadPacket, on every
-	// cancelled session and every fast-failed upload. Without this lock, Close
-	// releases the very buffer ReadPacket is copying out of: Buffer.Release
-	// stores v = nil before Clear() resets start/end and nils UDP last, so the
-	// racing Bytes() and *bb.UDP read a torn header -- a nil base, a stale
-	// length, or an array already back in the pool and being refilled by
-	// another session. One such interleaving took down a node (SIGSEGV, 2026-08-22).
+	// waits for the tasks to return (sing v0.5.1: task.go:115 before
+	// task.go:119). So Close runs while the download task is still inside
+	// ReadPacket, on every cancelled session and every fast-failed upload.
+	// Without this lock, Close releases the very buffer ReadPacket is copying
+	// out of: Buffer.Release stores v = nil before Clear() resets start/end and
+	// nils UDP last, so the racing Bytes() and *bb.UDP read a torn header -- a
+	// nil base, a stale length, or an array already back in the pool and being
+	// refilled by another session. One such interleaving took down a node
+	// (SIGSEGV, 2026-08-22).
 	cachedMu sync.Mutex
 	cached   buf.MultiBuffer
 	closed   bool
@@ -131,7 +148,7 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err 
 	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
-			err = panicError("PacketConnWrapper.ReadPacket", r)
+			err = panicError("singbridge.PacketConnWrapper.ReadPacket", r)
 		}
 		if err != nil {
 			// uplinkonly
@@ -162,7 +179,7 @@ func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksadd
 	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
-			err = panicError("PacketConnWrapper.WritePacket", r)
+			err = panicError("singbridge.PacketConnWrapper.WritePacket", r)
 		}
 		if err != nil {
 			// downlinkonly

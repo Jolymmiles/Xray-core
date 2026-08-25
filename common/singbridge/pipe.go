@@ -53,7 +53,7 @@ func (w *PipeConnWrapper) Read(b []byte) (n int, err error) {
 	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
-			n, err = 0, panicError("PipeConnWrapper.Read", r)
+			n, err = 0, panicError("singbridge.PipeConnWrapper.Read", r)
 		}
 		if err != nil {
 			// uplinkonly
@@ -69,7 +69,7 @@ func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 	var mb buf.MultiBuffer
 	defer func() {
 		if r := recover(); r != nil {
-			err = panicError("PipeConnWrapper.Write", r)
+			err = panicError("singbridge.PipeConnWrapper.Write", r)
 		}
 		if err != nil {
 			// Release is a no-op on a buffer the writer already released, so
