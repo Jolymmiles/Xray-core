@@ -237,7 +237,10 @@ XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m 
 ```
 
 The hardening gate uses 16 TCP streams per cycle to keep GitHub runner
-scheduling bounded across 49 between-cycle restarts. That is 800 one-MiB stream
+scheduling bounded across 49 between-cycle restarts.
+`TestClientRetryUsesFreshCarrierAfterUnconfirmedReset` pins that a pre-response
+reset recovers on a fresh one-shot carrier rather than consuming the single
+replay attempt on another stale pooled session. That is 800 one-MiB stream
 runs per topology, versus 384 for ordinary sing-box peak stress and 96 for
 ordinary Mihomo peak stress; UDP load remains 10,000 datagrams per cycle.
 

@@ -486,11 +486,29 @@ func handshakeDeadline(ctx context.Context) time.Time {
 	return deadline
 }
 
-func (c *Client) openTargetStream(ctx context.Context, destination X.Destination) (net.Conn, error) {
-	stream, err := c.openStream(ctx)
-	if err != nil {
-		return nil, err
+type sessionOwnedConn struct {
+	net.Conn
+	session   clientSession
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (c *sessionOwnedConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeErr = errors.Join(c.Conn.Close(), c.session.Close())
+	})
+	return c.closeErr
+}
+
+func (c *sessionOwnedConn) CloseWrite() error {
+	closeWriter, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return io.ErrClosedPipe
 	}
+	return closeWriter.CloseWrite()
+}
+
+func prepareTargetStream(ctx context.Context, stream net.Conn, destination X.Destination) (net.Conn, error) {
 	_ = stream.SetWriteDeadline(handshakeDeadline(ctx))
 	flags := uint16(0)
 	if destination.Network == X.Network_UDP {
@@ -505,6 +523,44 @@ func (c *Client) openTargetStream(ctx context.Context, destination X.Destination
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
 	return stream, nil
+}
+
+func (c *Client) openTargetStream(ctx context.Context, destination X.Destination) (net.Conn, error) {
+	stream, err := c.openStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return prepareTargetStream(ctx, stream, destination)
+}
+
+func (c *Client) openFreshTargetStream(ctx context.Context, destination X.Destination) (net.Conn, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	session, err := c.createSession(ctx)
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	stream, err := session.OpenStream(ctx, func() {})
+	if err == nil {
+		stream, err = prepareTargetStream(ctx, stream, destination)
+	}
+	if err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		_ = stream.Close()
+		_ = session.Close()
+		return nil, net.ErrClosed
+	}
+	return &sessionOwnedConn{Conn: stream, session: session}, nil
 }
 
 func closeClientLinkWriter(writer buf.Writer) error {
@@ -523,7 +579,7 @@ func (c *Client) Dispatch(ctx context.Context, link *transport.Link, destination
 		return err
 	}
 	connection := newRetryConn(ctx, initial, func(openCtx context.Context) (net.Conn, error) {
-		return c.openTargetStream(openCtx, destination)
+		return c.openFreshTargetStream(openCtx, destination)
 	})
 	defer connection.Close()
 
