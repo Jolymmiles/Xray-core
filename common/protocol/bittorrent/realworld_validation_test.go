@@ -335,6 +335,7 @@ func TestSniffRealWorldUTP(t *testing.T) {
 		{"libutp-style timestamp", utpPacket(4, 0xC0A8, someTimestamp(), 0, 0x1FC000, 1, 0, nil, nil)},
 		{"zero timestamp", utpPacket(4, 0x07E1, 0, 0, 0x100000, 1, 0, nil, nil)},
 		{"wrapped timestamp", utpPacket(4, 0x1F90, math.MaxUint32, 0, 0x200000, 1, 0, nil, nil)},
+		{"DNS-shaped fixed header", utpPacket(4, 0x0100, 0x00010000, 0, 0x00000100, 1, 0, nil, nil)},
 	}
 
 	for _, tc := range cases {
@@ -498,6 +499,7 @@ func TestSniffUTPRejectsNonUTPTraffic(t *testing.T) {
 		{"RakNet-style unconnected ping", rakNetUnconnectedPing()},
 		{"STUN binding success", stunBindingSuccessWithMappedAddress()},
 		{"TURN channel data", turnChannelData()},
+		{"TURN channel data matching ST_SYN fields", []byte{0x41, 0x00, 0x00, 0x10, 0x80, 0x60, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01, 0x07, 0x08}},
 		{"utp-shaped junk with unknown extension id", append([]byte{0x01, 0x05}, blockPayload(r, 30)...)},
 		{"utp-shaped junk with type 5", append([]byte{0x51, 0x00, 0x12, 0x34}, blockPayload(r, 30)...)},
 		{"quic v1 initial header", append([]byte{0xC3, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x20, 0x00}, blockPayload(r, 1190)...)},
