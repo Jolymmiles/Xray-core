@@ -18,6 +18,7 @@ const (
 type Config struct {
 	Version            int
 	KeepAliveDisabled  bool
+	LogicalHalfClose   bool
 	KeepAliveInterval  time.Duration
 	KeepAliveTimeout   time.Duration
 	MaxFrameSize       int

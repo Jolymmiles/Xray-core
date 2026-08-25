@@ -12,10 +12,17 @@ import (
 )
 
 const (
-	carrierVersionPlain  byte = 0
-	carrierVersionPadded byte = 1
-	protocolSMUX         byte = 0
-	protocolH2MUX        byte = 2
+	carrierVersionPlain      byte = 0
+	carrierVersionPadded     byte = 1
+	carrierVersionNegotiated byte = 2
+	protocolSMUX             byte = 0
+	protocolH2MUX            byte = 2
+
+	carrierFlagPadding             byte   = 1 << 0
+	carrierFeatureLogicalHalfClose uint32 = 1 << 0
+	carrierFeaturesKnown                  = carrierFeatureLogicalHalfClose
+	carrierNegotiationAccepted     byte   = 0
+	carrierNegotiationNoFeatures   byte   = 1
 
 	streamFlagUDP        uint16 = 1 << 0
 	streamFlagPacketAddr uint16 = 1 << 1
@@ -35,7 +42,14 @@ const (
 type carrierRequest struct {
 	Version  byte
 	Protocol byte
+	Features uint32
+	Nonce    [16]byte
 	Padding  []byte
+}
+
+type carrierNegotiationResponse struct {
+	Status   byte
+	Features uint32
 }
 
 func writeFull(writer io.Writer, payload []byte) error {
@@ -75,6 +89,67 @@ func writeCarrierRequest(writer io.Writer, protocol byte, padding []byte) error 
 	return writeFull(writer, padding)
 }
 
+func writeCarrierNegotiationRequest(writer io.Writer, protocol byte, padding []byte, features uint32, nonce [16]byte) error {
+	if protocol != protocolSMUX {
+		return errors.New("carrier negotiation is only supported for SMUX")
+	}
+	if features == 0 || features&^carrierFeaturesKnown != 0 {
+		return errors.New("invalid carrier feature offer")
+	}
+	if len(padding) > maxWirePayload {
+		return errors.New("carrier padding is too large")
+	}
+	header := make([]byte, 26)
+	header[0] = carrierVersionNegotiated
+	header[1] = protocol
+	if len(padding) != 0 {
+		header[2] = carrierFlagPadding
+	}
+	binary.BigEndian.PutUint32(header[4:8], features)
+	copy(header[8:24], nonce[:])
+	binary.BigEndian.PutUint16(header[24:26], uint16(len(padding)))
+	if err := writeFull(writer, header); err != nil {
+		return err
+	}
+	return writeFull(writer, padding)
+}
+
+func writeCarrierNegotiationResponse(writer io.Writer, status byte, features uint32, nonce [16]byte) error {
+	if status != carrierNegotiationAccepted && status != carrierNegotiationNoFeatures {
+		return errors.New("invalid carrier negotiation status")
+	}
+	if features&^carrierFeaturesKnown != 0 || status == carrierNegotiationAccepted && features == 0 || status == carrierNegotiationNoFeatures && features != 0 {
+		return errors.New("invalid selected carrier features")
+	}
+	response := make([]byte, 24)
+	response[0] = carrierVersionNegotiated
+	response[1] = status
+	binary.BigEndian.PutUint32(response[4:8], features)
+	copy(response[8:24], nonce[:])
+	return writeFull(writer, response)
+}
+
+func readCarrierNegotiationResponse(reader io.Reader, offered uint32, nonce [16]byte) (carrierNegotiationResponse, error) {
+	var encoded [24]byte
+	if _, err := io.ReadFull(reader, encoded[:]); err != nil {
+		return carrierNegotiationResponse{}, err
+	}
+	if encoded[0] != carrierVersionNegotiated || encoded[2] != 0 || encoded[3] != 0 {
+		return carrierNegotiationResponse{}, errors.New("invalid carrier negotiation response")
+	}
+	status := encoded[1]
+	features := binary.BigEndian.Uint32(encoded[4:8])
+	var echoedNonce [16]byte
+	copy(echoedNonce[:], encoded[8:24])
+	if echoedNonce != nonce || features&^offered != 0 || features&^carrierFeaturesKnown != 0 {
+		return carrierNegotiationResponse{}, errors.New("invalid carrier negotiation response")
+	}
+	if status == carrierNegotiationAccepted && features == 0 || status == carrierNegotiationNoFeatures && features != 0 || status != carrierNegotiationAccepted && status != carrierNegotiationNoFeatures {
+		return carrierNegotiationResponse{}, errors.New("invalid carrier negotiation response")
+	}
+	return carrierNegotiationResponse{Status: status, Features: features}, nil
+}
+
 func readCarrierRequest(reader io.Reader) (carrierRequest, error) {
 	var initial [2]byte
 	if _, err := io.ReadFull(reader, initial[:]); err != nil {
@@ -108,6 +183,28 @@ func readCarrierRequest(reader io.Reader) (carrierRequest, error) {
 		default:
 			return carrierRequest{}, fmt.Errorf("unsupported padding option %d", option[0])
 		}
+	case carrierVersionNegotiated:
+		if request.Protocol != protocolSMUX {
+			return carrierRequest{}, errors.New("carrier negotiation is only supported for SMUX")
+		}
+		var encoded [24]byte
+		if _, err := io.ReadFull(reader, encoded[:]); err != nil {
+			return carrierRequest{}, err
+		}
+		flags, reserved := encoded[0], encoded[1]
+		request.Features = binary.BigEndian.Uint32(encoded[2:6])
+		copy(request.Nonce[:], encoded[6:22])
+		paddingLength := int(binary.BigEndian.Uint16(encoded[22:24]))
+		if flags&^carrierFlagPadding != 0 || reserved != 0 || request.Features == 0 || flags&carrierFlagPadding == 0 && paddingLength != 0 || flags&carrierFlagPadding != 0 && paddingLength == 0 {
+			return carrierRequest{}, errors.New("invalid negotiated carrier request")
+		}
+		if paddingLength > 0 {
+			request.Padding = make([]byte, paddingLength)
+			if _, err := io.ReadFull(reader, request.Padding); err != nil {
+				return carrierRequest{}, err
+			}
+		}
+		return request, nil
 	default:
 		return carrierRequest{}, fmt.Errorf("unsupported carrier version %d", request.Version)
 	}

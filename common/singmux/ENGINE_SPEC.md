@@ -6,11 +6,11 @@ The carrier is an ordered full-duplex byte stream. Every frame starts with an
 | Offset | Size | Field | Encoding |
 | --- | ---: | --- | --- |
 | 0 | 1 | version | `1` |
-| 1 | 1 | command | `0` open, `1` close, `2` data, `3` keepalive |
+| 1 | 1 | command | `0` open, `1` close, `2` data, `3` keepalive, negotiated `4` half-close |
 | 2 | 2 | payload length | unsigned little endian |
 | 4 | 4 | stream ID | unsigned little endian |
 
-Open, close, and keepalive frames have no payload. Data frames may carry up to
+Open, close, keepalive, and negotiated half-close frames have no payload. Data frames may carry up to
 65535 bytes. The implementation emits frames of at most the configured frame
 size and treats an invalid version, command, control-frame length, or zero
 stream ID as a carrier protocol error.
@@ -20,13 +20,22 @@ even and begin at 2. Parity is validated when a peer opens a stream; subsequent
 data and close frames retain the opener's ID in either direction. Duplicate
 open frames are ignored for compatibility.
 
-Each stream is a full-duplex `net.Conn`. A close frame marks the peer's write
-side as finished: already-buffered data is delivered before EOF. A carrier
-write already queued before a concurrent close reports its actual write result,
-not a synthetic EOF. A local close
-discards unread data, sends one close frame, and removes the stream from its
-session. Carrier failure wakes all pending stream and accept operations. A
-remote stream still owned by the session's accept backlog is removed and its
+Each stream is a full-duplex `net.Conn` until either endpoint sends a close
+frame. SMUX v1 has no separate logical half-close command: command 1 terminates
+the peer stream, delivers already-buffered data before EOF, and makes later
+writes return EOF. A carrier write already queued before a concurrent close
+reports its actual write result, not a synthetic EOF. A local close discards
+unread data, sends one close frame, and removes the stream from its session.
+Carrier failure wakes all pending stream and accept operations.
+
+When `Config.LogicalHalfClose` is negotiated, command 4 is a directional
+write-close with zero payload. Local `CloseWrite` is ordered after accepted data,
+rejects later writes, and preserves reads. A received command 4 drains buffered
+data before read EOF while keeping writes open. Command 1 retains legacy full
+close semantics. Command 4 without negotiated capability is a carrier protocol
+error.
+
+A remote stream still owned by the session's accept backlog is removed and its
 buffered receive data is released; it is never exposed by a later accept. Once
 an accept transfers ownership to the application, buffered data remains
 readable before the terminal carrier error.

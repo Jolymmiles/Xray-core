@@ -108,14 +108,15 @@ type MuxConfig struct {
 }
 
 type SMuxConfig struct {
-	Enabled        bool            `json:"enabled"`
-	Protocol       string          `json:"protocol"`
-	MaxConnections int32           `json:"maxConnections"`
-	MinStreams     int32           `json:"minStreams"`
-	MaxStreams     int32           `json:"maxStreams"`
-	Padding        bool            `json:"padding"`
-	OnlyTCP        bool            `json:"onlyTcp"`
-	BrutalOpts     *SMuxBrutalOpts `json:"brutal-opts"`
+	Enabled          bool            `json:"enabled"`
+	Protocol         string          `json:"protocol"`
+	MaxConnections   int32           `json:"maxConnections"`
+	MinStreams       int32           `json:"minStreams"`
+	MaxStreams       int32           `json:"maxStreams"`
+	Padding          bool            `json:"padding"`
+	OnlyTCP          bool            `json:"onlyTcp"`
+	LogicalHalfClose string          `json:"logicalHalfClose"`
+	BrutalOpts       *SMuxBrutalOpts `json:"brutal-opts"`
 }
 
 type SMuxBrutalOpts struct {
@@ -228,6 +229,16 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	if protocol != "smux" && protocol != "h2mux" {
 		return nil, errors.New("unsupported SMUX protocol ", m.Protocol)
 	}
+	logicalHalfClose := strings.ToLower(m.LogicalHalfClose)
+	if logicalHalfClose == "" {
+		logicalHalfClose = "off"
+	}
+	if logicalHalfClose != "off" && logicalHalfClose != "auto" && logicalHalfClose != "require" {
+		return nil, errors.New("unsupported SMUX logicalHalfClose policy ", m.LogicalHalfClose)
+	}
+	if protocol != "smux" && logicalHalfClose != "off" {
+		return nil, errors.New("logicalHalfClose is only supported by SMUX")
+	}
 	if m.MaxConnections < 0 || m.MinStreams < 0 || m.MaxStreams < 0 {
 		return nil, errors.New("SMUX pool limits must not be negative")
 	}
@@ -239,14 +250,15 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 		return nil, err
 	}
 	return &proxyman.SmuxConfig{
-		Enabled:        m.Enabled,
-		Protocol:       protocol,
-		MaxConnections: m.MaxConnections,
-		MinStreams:     m.MinStreams,
-		MaxStreams:     m.MaxStreams,
-		Padding:        m.Padding,
-		OnlyTcp:        m.OnlyTCP,
-		Brutal:         brutal,
+		Enabled:          m.Enabled,
+		Protocol:         protocol,
+		MaxConnections:   m.MaxConnections,
+		MinStreams:       m.MinStreams,
+		MaxStreams:       m.MaxStreams,
+		Padding:          m.Padding,
+		OnlyTcp:          m.OnlyTCP,
+		LogicalHalfClose: strings.ToLower(m.LogicalHalfClose),
+		Brutal:           brutal,
 	}, nil
 }
 

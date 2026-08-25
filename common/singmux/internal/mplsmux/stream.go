@@ -35,19 +35,21 @@ type Stream struct {
 	writeMu sync.Mutex
 	stateMu sync.Mutex
 
-	chunks           []receiveChunk
-	buffered         int
-	applicationOwned bool // guarded by Session.streamsMu
-	localClosed      bool
-	remoteClosed     bool
-	sessionClosed    bool
-	readChanged      chan struct{}
-	writeChanged     chan struct{}
-	bufferChanged    chan struct{}
-	bufferWaiting    bool
-	readDeadline     time.Time
-	writeDeadline    time.Time
-	writeResult      chan error
+	chunks            []receiveChunk
+	buffered          int
+	applicationOwned  bool // guarded by Session.streamsMu
+	localWriteClosed  bool
+	remoteWriteClosed bool
+	localClosed       bool
+	remoteClosed      bool
+	sessionClosed     bool
+	readChanged       chan struct{}
+	writeChanged      chan struct{}
+	bufferChanged     chan struct{}
+	bufferWaiting     bool
+	readDeadline      time.Time
+	writeDeadline     time.Time
+	writeResult       chan error
 }
 
 func newStream(session *Session, streamID uint32) *Stream {
@@ -105,7 +107,7 @@ func (s *Stream) Read(destination []byte) (int, error) {
 			s.stateMu.Unlock()
 			return 0, io.ErrClosedPipe
 		}
-		if s.remoteClosed {
+		if s.remoteClosed || s.remoteWriteClosed {
 			s.stateMu.Unlock()
 			return 0, io.EOF
 		}
@@ -161,7 +163,7 @@ func (s *Stream) ReadMultiBuffer() (buf.MultiBuffer, error) {
 			s.stateMu.Unlock()
 			return nil, io.ErrClosedPipe
 		}
-		if s.remoteClosed {
+		if s.remoteClosed || s.remoteWriteClosed {
 			s.stateMu.Unlock()
 			return nil, io.EOF
 		}
@@ -218,7 +220,7 @@ func (s *Stream) writeState() (time.Time, <-chan struct{}, error) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	switch {
-	case s.localClosed:
+	case s.localClosed || s.localWriteClosed:
 		return s.writeDeadline, s.writeChanged, io.ErrClosedPipe
 	case s.remoteClosed:
 		return s.writeDeadline, s.writeChanged, io.EOF
@@ -227,6 +229,37 @@ func (s *Stream) writeState() (time.Time, <-chan struct{}, error) {
 	default:
 		return s.writeDeadline, s.writeChanged, nil
 	}
+}
+
+func (s *Stream) CloseWrite() error {
+	if !s.session.config.LogicalHalfClose {
+		return io.ErrClosedPipe
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.stateMu.Lock()
+	if s.localClosed || s.localWriteClosed {
+		s.stateMu.Unlock()
+		return io.ErrClosedPipe
+	}
+	if s.remoteClosed {
+		s.stateMu.Unlock()
+		return io.EOF
+	}
+	deadline := s.writeDeadline
+	signalDeadline := time.Now().Add(closeTimeout)
+	if deadline.IsZero() || signalDeadline.Before(deadline) {
+		deadline = signalDeadline
+	}
+	s.stateMu.Unlock()
+	if err := s.session.submitResult(frameHalfClose, s.id, nil, deadline, s.writeResult); err != nil {
+		return err
+	}
+	s.stateMu.Lock()
+	s.localWriteClosed = true
+	notify(s.writeChanged)
+	s.stateMu.Unlock()
+	return nil
 }
 
 func (s *Stream) Close() error {
@@ -238,6 +271,7 @@ func (s *Stream) Close() error {
 		s.stateMu.Unlock()
 		return io.ErrClosedPipe
 	}
+	s.localWriteClosed = true
 	s.localClosed = true
 	queued, queuedBytes := s.drainLocked()
 	deadline := s.writeDeadline
@@ -260,6 +294,8 @@ func (s *Stream) Close() error {
 	}
 	return err
 }
+
+func (s *Stream) LogicalHalfCloseEnabled() bool { return s.session.config.LogicalHalfClose }
 
 func (s *Stream) LocalAddr() net.Addr  { return s.session.LocalAddr() }
 func (s *Stream) RemoteAddr() net.Addr { return s.session.RemoteAddr() }
@@ -290,6 +326,12 @@ func (s *Stream) SetWriteDeadline(deadline time.Time) error {
 	return nil
 }
 
+func (s *Stream) acceptsData() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return !s.remoteWriteClosed && !s.remoteClosed && !s.localClosed && !s.sessionClosed
+}
+
 func (s *Stream) enqueue(buffer receiveBuffer) bool {
 	return s.enqueueWithTimeout(buffer, 0) == streamEnqueueQueued
 }
@@ -305,7 +347,7 @@ func (s *Stream) enqueueWithTimeout(buffer receiveBuffer, timeout time.Duration)
 	}()
 	for {
 		s.stateMu.Lock()
-		if s.localClosed || s.remoteClosed || s.sessionClosed {
+		if s.localClosed || s.remoteClosed || s.remoteWriteClosed || s.sessionClosed {
 			s.stateMu.Unlock()
 			return streamEnqueueStopped
 		}
@@ -366,6 +408,15 @@ func (s *Stream) Abort() error {
 	}
 	s.session.fail(ErrControlQueueFull)
 	return ErrControlQueueFull
+}
+
+func (s *Stream) remoteWriteStopped() {
+	s.stateMu.Lock()
+	if !s.remoteWriteClosed {
+		s.remoteWriteClosed = true
+		notify(s.readChanged)
+	}
+	s.stateMu.Unlock()
 }
 
 func (s *Stream) remoteStopped() {

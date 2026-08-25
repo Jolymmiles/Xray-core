@@ -137,14 +137,15 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 				}
 			}
 			h.smux, err = singmux.NewClient(singmux.Options{
-				Dialer:         newSMUXOutboundDialer(proxyHandler, h, brutal.Enabled),
-				Protocol:       config.Protocol,
-				MaxConnections: int(config.MaxConnections),
-				MinStreams:     int(config.MinStreams),
-				MaxStreams:     int(config.MaxStreams),
-				Padding:        config.Padding,
-				OnlyTCP:        config.OnlyTcp,
-				Brutal:         brutal,
+				Dialer:           newSMUXOutboundDialer(proxyHandler, h, brutal.Enabled),
+				Protocol:         config.Protocol,
+				MaxConnections:   int(config.MaxConnections),
+				MinStreams:       int(config.MinStreams),
+				MaxStreams:       int(config.MaxStreams),
+				Padding:          config.Padding,
+				OnlyTCP:          config.OnlyTcp,
+				LogicalHalfClose: config.LogicalHalfClose,
+				Brutal:           brutal,
 			})
 			if err != nil {
 				return nil, errors.New("failed to create SMUX client").Base(err)

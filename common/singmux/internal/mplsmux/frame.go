@@ -13,6 +13,7 @@ const (
 	frameClose
 	frameData
 	frameKeepalive
+	frameHalfClose
 )
 
 type frameHeader struct {
@@ -34,7 +35,7 @@ func decodeFrameHeader(header *[frameHeaderSize]byte) (frameHeader, error) {
 		length:   binary.LittleEndian.Uint16(header[2:4]),
 		streamID: binary.LittleEndian.Uint32(header[4:8]),
 	}
-	if header[0] != protocolVersion || decoded.command > frameKeepalive {
+	if header[0] != protocolVersion || decoded.command > frameHalfClose {
 		return frameHeader{}, ErrInvalidProtocol
 	}
 	if decoded.command != frameData && decoded.length != 0 {

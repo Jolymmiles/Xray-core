@@ -15,6 +15,21 @@ The carrier is a TCP connection to `sp.mux.sing-box.arpa:444`.
   H2MUX.
 * Version 1: `version(1) protocol(1) padding(1) padding_length(2) padding(N)`.
 
+### Version 2 negotiated carrier
+
+Version 2 is Xray-specific and is sent only when `logicalHalfClose` is `auto` or
+`require`: `version(1)=2 protocol(1)=0 flags(1) reserved(1)
+offered_features(4) nonce(16) padding_length(2) padding(N)`. Flag bit 0 marks
+padding and feature bit 0 offers logical half-close. The server replies before
+padding or SMUX framing with `version(1)=2 status(1) reserved(2)
+selected_features(4) echoed_nonce(16)`. Status 0 accepts a non-empty feature
+intersection; status 1 rejects it.
+
+`auto` closes a failed probe carrier and opens one fresh legacy v0/v1 carrier;
+no application stream exists before the ACK. The first successful result is
+cached per client. `require` never downgrades. `off` remains the default and
+emits byte-identical v0/v1 requests.
+
 When padding is enabled, both sides wrap the first 16 writes. Each padded frame
 is `payload_length(2) padding_length(2) payload padding`. Payloads larger than
 65535 bytes are split. After 16 frames the byte stream is passed through raw.

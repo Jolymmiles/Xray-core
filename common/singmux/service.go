@@ -21,6 +21,13 @@ import (
 
 const defaultMaxPendingHandshakes = 512
 
+type negotiatedStreamWriter struct {
+	buf.Writer
+	stream interface{ CloseWrite() error }
+}
+
+func (w *negotiatedStreamWriter) Close() error { return w.stream.CloseWrite() }
+
 type Service struct {
 	dispatcher              routing.Dispatcher
 	presenceProvider        session.PresenceProvider
@@ -247,7 +254,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
 	}
-	_ = connection.SetReadDeadline(deadline)
+	_ = connection.SetDeadline(deadline)
 	request, err := readCarrierRequest(connection)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -255,7 +262,22 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 		}
 		return err
 	}
-	_ = connection.SetReadDeadline(time.Time{})
+	logicalHalfClose := false
+	if request.Version == carrierVersionNegotiated {
+		selected := request.Features & carrierFeaturesKnown
+		status := carrierNegotiationAccepted
+		if selected == 0 {
+			status = carrierNegotiationNoFeatures
+		}
+		if err := writeCarrierNegotiationResponse(connection, status, selected, request.Nonce); err != nil {
+			return err
+		}
+		if status != carrierNegotiationAccepted {
+			return errors.New("no common SMUX carrier features")
+		}
+		logicalHalfClose = selected&carrierFeatureLogicalHalfClose != 0
+	}
+	_ = connection.SetDeadline(time.Time{})
 	// Version 1 option 0 explicitly keeps the carrier raw.
 	if request.Padding != nil {
 		connection = newPaddingConn(connection)
@@ -271,6 +293,7 @@ func (s *Service) NewConnection(ctx context.Context, connection net.Conn) error 
 	}
 	config := mplsmux.DefaultConfig()
 	config.KeepAliveDisabled = true
+	config.LogicalHalfClose = logicalHalfClose
 	session, err := mplsmux.Server(connection, config)
 	if err != nil {
 		return err
@@ -330,6 +353,9 @@ func (s *Service) handleStream(ctx context.Context, stream net.Conn, handshakeSl
 
 	var reader buf.Reader = buf.NewReader(stream)
 	var writer buf.Writer = buf.NewWriter(stream)
+	if negotiated, ok := stream.(interface{ LogicalHalfCloseEnabled() bool }); ok && negotiated.LogicalHalfCloseEnabled() {
+		writer = &negotiatedStreamWriter{Writer: writer, stream: stream.(interface{ CloseWrite() error })}
+	}
 	if flags&streamFlagUDP != 0 {
 		reader = &packetReader{stream: stream}
 		writer = &packetWriter{stream: stream, destination: destination}
