@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/xtls/xray-core/common/net"
 )
@@ -35,20 +34,15 @@ func vPeerHandshake() []byte {
 	return h
 }
 
-func vUTPData() []byte {
-	b := make([]byte, 20, 1040)
-	b[0] = 0x01 // ST_DATA, version 1
-	b[1] = 0    // no extensions
+func vUTPSYN() []byte {
+	b := make([]byte, 20)
+	b[0] = 0x41 // ST_SYN, version 1
+	b[1] = 0    // no extension on connection setup
 	binary.BigEndian.PutUint16(b[2:4], 0x07E1)
-	binary.BigEndian.PutUint32(b[4:8], uint32(time.Now().UnixMicro()))
-	binary.BigEndian.PutUint32(b[8:12], 900)
+	binary.BigEndian.PutUint32(b[4:8], 0xD5396E1C)
+	binary.BigEndian.PutUint32(b[8:12], 0)
 	binary.BigEndian.PutUint32(b[12:16], 0x100000)
-	binary.BigEndian.PutUint16(b[16:18], 101)
-	binary.BigEndian.PutUint16(b[18:20], 100)
-	r := rand.New(rand.NewSource(2))
-	for len(b) < 1040 {
-		b = append(b, byte(r.Intn(256)))
-	}
+	binary.BigEndian.PutUint16(b[16:18], 1)
 	return b
 }
 
@@ -97,8 +91,8 @@ func TestSniffTorrentTrafficThroughFullChain(t *testing.T) {
 		}
 	})
 
-	t.Run("utp data packet is routed as bittorrent", func(t *testing.T) {
-		result, err := NewSniffer(snifferContext()).Sniff(snifferContext(), vUTPData(), net.Network_UDP)
+	t.Run("utp syn is routed as bittorrent", func(t *testing.T) {
+		result, err := NewSniffer(snifferContext()).Sniff(snifferContext(), vUTPSYN(), net.Network_UDP)
 		if err != nil {
 			t.Fatalf("Sniff returned %v, want bittorrent", err)
 		}

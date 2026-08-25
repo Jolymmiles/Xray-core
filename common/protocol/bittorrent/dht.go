@@ -31,7 +31,7 @@ func SniffDHT(b []byte) (*SniffHeader, error) {
 
 	switch m.y {
 	case 'q':
-		if !m.hasTransactionID || !m.hasQueryName || !m.hasArguments {
+		if !m.hasTransactionID || !m.hasQueryName || !m.hasArguments || !m.validQueryArguments() {
 			return nil, errNotBittorrent
 		}
 	case 'r':
@@ -60,6 +60,24 @@ type dhtMessage struct {
 	hasArguments     bool
 	hasResultWithID  bool
 	hasErrorList     bool
+	queryName        string
+	queryArguments   dhtQueryArguments
+}
+
+type dhtQueryArguments struct {
+	hasNodeID      bool
+	hasTarget      bool
+	hasInfoHash    bool
+	hasToken       bool
+	hasPort        bool
+	hasNonzeroPort bool
+	hasImpliedPort bool
+	hasCAS         bool
+	hasPublicKey   bool
+	hasSalt        bool
+	hasSequence    bool
+	hasSignature   bool
+	hasValue       bool
 }
 
 // parseDict parses the top-level dictionary, recording which KRPC fields
@@ -96,13 +114,14 @@ func (m *dhtMessage) parseDict(b []byte, pos int) bool {
 			if !ok || !isKnownDHTQuery(value) {
 				return false
 			}
+			m.queryName = string(value)
 			m.hasQueryName = true
 			pos = next
 		case "a":
 			if pos >= len(b) || b[pos] != 'd' {
 				return false
 			}
-			next, ok := parseValue(b, pos, 1)
+			next, ok := m.queryArguments.parseDict(b, pos+1)
 			if !ok {
 				return false
 			}
@@ -143,6 +162,141 @@ func (m *dhtMessage) parseDict(b []byte, pos int) bool {
 		}
 	}
 	return pos < len(b) && b[pos] == 'e'
+}
+
+func (a *dhtQueryArguments) parseDict(b []byte, pos int) (int, bool) {
+	for pos < len(b) && b[pos] != 'e' {
+		key, next, ok := parseString(b, pos)
+		if !ok {
+			return 0, false
+		}
+		pos = next
+
+		switch string(key) {
+		case "cas":
+			next, ok := parseNonNegativeInt(b, pos)
+			if !ok {
+				return 0, false
+			}
+			a.hasCAS = true
+			pos = next
+		case "id":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 20 {
+				return 0, false
+			}
+			a.hasNodeID = true
+			pos = next
+		case "target":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 20 {
+				return 0, false
+			}
+			a.hasTarget = true
+			pos = next
+		case "info_hash":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 20 {
+				return 0, false
+			}
+			a.hasInfoHash = true
+			pos = next
+		case "token":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) == 0 {
+				return 0, false
+			}
+			a.hasToken = true
+			pos = next
+		case "k":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 32 {
+				return 0, false
+			}
+			a.hasPublicKey = true
+			pos = next
+		case "port":
+			value, next, ok := parsePositiveInt(b, pos, 65535)
+			if !ok {
+				return 0, false
+			}
+			a.hasPort = true
+			a.hasNonzeroPort = value != 0
+			pos = next
+		case "implied_port":
+			value, next, ok := parsePositiveInt(b, pos, 1)
+			if !ok {
+				return 0, false
+			}
+			a.hasImpliedPort = value == 1
+			pos = next
+		case "salt":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) > 64 {
+				return 0, false
+			}
+			a.hasSalt = true
+			pos = next
+		case "seq":
+			next, ok := parseNonNegativeInt(b, pos)
+			if !ok {
+				return 0, false
+			}
+			a.hasSequence = true
+			pos = next
+		case "sig":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 64 {
+				return 0, false
+			}
+			a.hasSignature = true
+			pos = next
+		case "v":
+			next, ok := parseValue(b, pos, 2)
+			if !ok {
+				return 0, false
+			}
+			a.hasValue = true
+			pos = next
+		default:
+			next, ok := parseValue(b, pos, 2)
+			if !ok {
+				return 0, false
+			}
+			pos = next
+		}
+	}
+	if pos >= len(b) || b[pos] != 'e' {
+		return 0, false
+	}
+	return pos + 1, true
+}
+
+func (m *dhtMessage) validQueryArguments() bool {
+	if !m.queryArguments.hasNodeID {
+		return false
+	}
+
+	switch m.queryName {
+	case "ping":
+		return true
+	case "find_node", "get", "sample_infohashes":
+		return m.queryArguments.hasTarget
+	case "get_peers":
+		return m.queryArguments.hasInfoHash
+	case "announce_peer":
+		return m.queryArguments.hasInfoHash && m.queryArguments.hasToken && m.queryArguments.hasPort &&
+			(m.queryArguments.hasNonzeroPort || m.queryArguments.hasImpliedPort)
+	case "put":
+		if !m.queryArguments.hasToken || !m.queryArguments.hasValue {
+			return false
+		}
+		mutable := m.queryArguments.hasCAS || m.queryArguments.hasPublicKey ||
+			m.queryArguments.hasSalt || m.queryArguments.hasSequence || m.queryArguments.hasSignature
+		return !mutable || (m.queryArguments.hasPublicKey && m.queryArguments.hasSequence && m.queryArguments.hasSignature)
+	default:
+		return false
+	}
 }
 
 // parseResultDict checks that a response result dictionary contains the
@@ -278,6 +432,33 @@ func parseInt(b []byte, pos int) (int, bool) {
 		return 0, false
 	}
 	return pos + 1, true
+}
+
+func parsePositiveInt(b []byte, pos, maxValue int) (value int, next int, ok bool) {
+	if pos >= len(b) || b[pos] != 'i' {
+		return 0, 0, false
+	}
+	pos++
+	start := pos
+	for pos < len(b) && b[pos] >= '0' && b[pos] <= '9' {
+		value = value*10 + int(b[pos]-'0')
+		if value > maxValue {
+			return 0, 0, false
+		}
+		pos++
+	}
+	if pos == start || pos >= len(b) || b[pos] != 'e' {
+		return 0, 0, false
+	}
+	return value, pos + 1, true
+}
+
+func parseNonNegativeInt(b []byte, pos int) (int, bool) {
+	next, ok := parseInt(b, pos)
+	if !ok || b[pos+1] == '-' {
+		return 0, false
+	}
+	return next, true
 }
 
 // parseString validates a length-prefixed byte string and returns the value
