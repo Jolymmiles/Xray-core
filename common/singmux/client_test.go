@@ -499,7 +499,7 @@ func TestClientRetriesStaleCarrierWithBufferedTCPPayload(t *testing.T) {
 	}
 }
 
-func TestClientRetryUsesFreshCarrierAfterUnconfirmedReset(t *testing.T) {
+func TestClientRetrySkipsResetCarrierForHealthyPooledSibling(t *testing.T) {
 	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
 	dialer := &countingServiceDialer{service: NewService(dispatcher)}
 	client := &Client{
@@ -508,8 +508,12 @@ func TestClientRetryUsesFreshCarrierAfterUnconfirmedReset(t *testing.T) {
 		logicalHalfClose: "off",
 		maxConnections:   4,
 		streamLimit:      defaultMinStreams,
-		sessions:         []clientSession{new(resetAfterHandshakeSession)},
 	}
+	healthy, err := client.createSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.sessions = []clientSession{new(resetAfterHandshakeSession), healthy}
 	defer client.Close()
 
 	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
@@ -541,12 +545,12 @@ func TestClientRetryUsesFreshCarrierAfterUnconfirmedReset(t *testing.T) {
 			t.Fatalf("response = %q, want hello", got)
 		}
 	case err := <-dispatchResult:
-		t.Fatalf("dispatch failed instead of opening a fresh recovery carrier: %v", err)
+		t.Fatalf("dispatch failed instead of reusing the healthy pooled carrier: %v", err)
 	case <-ctx.Done():
-		t.Fatal("fresh recovery carrier timed out")
+		t.Fatal("healthy pooled carrier recovery timed out")
 	}
 	if got := dialer.dials.Load(); got != 1 {
-		t.Fatalf("fresh recovery carrier dials = %d, want 1", got)
+		t.Fatalf("carrier dials = %d, want the one preloaded healthy carrier", got)
 	}
 	cancel()
 	select {

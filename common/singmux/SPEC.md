@@ -68,10 +68,11 @@ Compatible servers may emit the response lazily with the first bytes written
 by the destination. The client therefore consumes the status on its first read,
 not before forwarding the request. Until that status arrives, it retains at
 most 2 MiB of outbound stream bytes. A pre-response carrier failure closes the
-failed session, opens one replacement stream on a fresh one-shot carrier, and
-replays those bytes. Recovery never selects another pooled session that may be
-stale from the same peer restart; closing the replacement stream also closes
-its one-shot carrier. A protocol status error is never retried, and payload beyond the bounded replay
+failed session, removes that session from the selectable pool, opens one
+replacement stream, and replays those bytes. Recovery may reuse a different
+healthy pooled session and dials a new carrier only when the remaining pool
+cannot serve the stream. A protocol status error is never retried, and payload
+beyond the bounded replay
 window disables replay rather than allocating without limit.
 
 ## Brutal bandwidth exchange
