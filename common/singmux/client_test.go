@@ -560,6 +560,63 @@ func TestClientRetrySkipsResetCarrierForHealthyPooledSibling(t *testing.T) {
 	}
 }
 
+func TestClientRetryEvictsEveryDeadSiblingThenDials(t *testing.T) {
+	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
+	dialer := &countingServiceDialer{service: NewService(dispatcher)}
+	client := &Client{
+		dialer:           dialer,
+		protocol:         "smux",
+		logicalHalfClose: "off",
+		maxConnections:   4,
+		streamLimit:      defaultMinStreams,
+	}
+	client.sessions = []clientSession{new(resetAfterHandshakeSession), new(resetAfterHandshakeSession)}
+	defer client.Close()
+
+	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
+	clientLink, peerLink := linkPair()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dispatchResult := make(chan error, 1)
+	go func() { dispatchResult <- client.Dispatch(ctx, clientLink, destination) }()
+
+	if err := peerLink.Writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("hello"))}); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		buffers buf.MultiBuffer
+		err     error
+	}
+	response := make(chan readResult, 1)
+	go func() {
+		buffers, err := peerLink.Reader.ReadMultiBuffer()
+		response <- readResult{buffers: buffers, err: err}
+	}()
+	select {
+	case result := <-response:
+		if result.err != nil {
+			t.Fatalf("read after evicting every dead sibling: %v", result.err)
+		}
+		defer buf.ReleaseMulti(result.buffers)
+		if got := result.buffers.String(); got != "hello" {
+			t.Fatalf("response = %q, want hello", got)
+		}
+	case err := <-dispatchResult:
+		t.Fatalf("dispatch failed instead of dialing after dead siblings: %v", err)
+	case <-ctx.Done():
+		t.Fatal("dead-sibling recovery timed out")
+	}
+	if got := dialer.dials.Load(); got != 1 {
+		t.Fatalf("carrier dials = %d, want 1 new carrier after both siblings reset", got)
+	}
+	cancel()
+	select {
+	case <-dispatchResult:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch did not stop after cancellation")
+	}
+}
+
 func TestClientStreamHandshakeHonorsContextCancellation(t *testing.T) {
 	client, err := NewClient(Options{Dialer: &blockedHandshakeDialer{}, Protocol: "smux", MaxConnections: 1})
 	if err != nil {
