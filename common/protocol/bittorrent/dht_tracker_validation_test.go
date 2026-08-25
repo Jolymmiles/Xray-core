@@ -176,8 +176,9 @@ func udpTrackerScrape(connID uint64, txn uint32, hashes [][20]byte) []byte {
 	return b
 }
 
-// TestSniffUDPTracker covers the three request types that can be the first
-// datagram of a tracker flow.
+// TestSniffUDPTracker accepts only the connect request: it is the sole
+// tracker message anchored by the fixed 64-bit protocol id, so it is the
+// only shape safe to classify on the first datagram of a flow.
 func TestSniffUDPTracker(t *testing.T) {
 	t.Run("connect request", func(t *testing.T) {
 		payload := udpTrackerConnect(0xDEADBEEF)
@@ -190,28 +191,6 @@ func TestSniffUDPTracker(t *testing.T) {
 		payload := append(udpTrackerConnect(0xDEADBEEF), 1, 2, 3, 4)
 		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
 			t.Fatalf("extended connect not detected: err=%v", err)
-		}
-	})
-
-	t.Run("announce with cached connection id", func(t *testing.T) {
-		payload := udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash)
-		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
-			t.Fatalf("announce not detected: err=%v", err)
-		}
-	})
-
-	t.Run("announce with extension bytes", func(t *testing.T) {
-		payload := append(udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash), 1, 2, 3, 4)
-		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
-			t.Fatalf("extended announce not detected: err=%v", err)
-		}
-	})
-
-	t.Run("scrape with cached connection id", func(t *testing.T) {
-		r := newMockRand(16)
-		payload := udpTrackerScrape(0x1234567890ABCDEF, 8, [][20]byte{bigBuckBunnyInfoHash, randomInfoHash(r)})
-		if header, err := SniffUDPTracker(payload); err != nil || header == nil {
-			t.Fatalf("scrape not detected: err=%v", err)
 		}
 	})
 }
@@ -228,6 +207,25 @@ func TestSniffUDPTrackerRejectsForeignDatagrams(t *testing.T) {
 		{"connect with announce action", func() []byte {
 			b := udpTrackerConnect(1)
 			binaryPutUint32(b[8:12], 1)
+			return b
+		}()},
+		// A cached-connection-id announce or scrape carries no protocol id:
+		// its only anchors are small counter values at offset 8, a shape
+		// ordinary game and media datagrams reproduce constantly. These
+		// genuine tracker messages are deliberately not classified.
+		{"announce without connect magic", udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash)},
+		{"announce with extension bytes", append(udpTrackerAnnounce(0x1234567890ABCDEF, 7, bigBuckBunnyInfoHash), 1, 2, 3, 4)},
+		{"scrape without connect magic", udpTrackerScrape(0x1234567890ABCDEF, 8, [][20]byte{bigBuckBunnyInfoHash, randomInfoHash(newMockRand(16))})},
+		{"game datagram with sequence counter one", func() []byte {
+			b := blockPayload(newMockRand(18), 100)
+			binaryPutUint32(b[8:12], 1) // packet counter
+			binaryPutUint32(b[80:84], 0)
+			b[96], b[97] = 0x1F, 0x90
+			return b
+		}()},
+		{"media datagram with message type two", func() []byte {
+			b := blockPayload(newMockRand(19), 36)
+			binaryPutUint32(b[8:12], 2) // message kind
 			return b
 		}()},
 		{"98 bytes with unknown action", func() []byte {
