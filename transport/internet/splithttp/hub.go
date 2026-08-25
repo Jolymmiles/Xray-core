@@ -175,6 +175,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	if !hasPhysicalPeer && request.ProtoMajor == 3 {
 		physicalPeer, hasPhysicalPeer = net.CopyPhysicalPeer(remoteAddr)
 	}
+	acceptedProxyPeer, hasAcceptedProxyPeer := internet.AcceptedProxyPeerFromContext(request.Context())
 	var trustedXFF []string
 	if h.socketSettings != nil {
 		trustedXFF = h.socketSettings.TrustedXForwardedFor
@@ -392,8 +393,8 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		}
 
 		virtualConn := net.Conn(&conn)
-		if hasPhysicalPeer {
-			virtualConn = net.WithPhysicalPeer(physicalPeer, virtualConn)
+		if hasPhysicalPeer || hasAcceptedProxyPeer {
+			virtualConn = net.WithPeerProvenance(physicalPeer, acceptedProxyPeer, virtualConn)
 		}
 		h.ln.addConn(stat.Connection(virtualConn))
 

@@ -708,7 +708,10 @@ func UnwrapRawConn(conn net.Conn) (net.Conn, stats.Counter, stats.Counter) {
 
 		conn = finalmask.UnwrapTcpMask(conn)
 
-		if pc, ok := conn.(*proxyproto.Conn); ok {
+		if pc, ok := conn.(interface {
+			ProxyHeader() *proxyproto.Header
+			Raw() net.Conn
+		}); ok {
 			conn = pc.Raw()
 			// 8192 > 4096, there is no need to process pc's bufReader
 		}

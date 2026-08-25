@@ -18,12 +18,20 @@ The system SHALL implement structural online presence without changing mux/XUDP/
 
 ### Requirement: Trusted physical peer identity
 
-The system MUST derive presence IP only from a value-owned server-observed stream or packet peer captured before PROXY, XFF, protocol, mux-frame, routing, or virtual-source rewriting. It MUST canonicalize the peer as an unmapped `netip.Addr`, remove port and zone, and reject invalid, unspecified, loopback, Unix, domain, or unknown addresses without using an effective-source fallback.
+The system MUST derive presence IP from value-owned stream or packet provenance captured before XFF, protocol, mux-frame, routing, or virtual-source rewriting. By default this MUST be the raw server-observed socket or packet peer. When and only when the existing `acceptProxyProtocol` option is enabled, the parser/listener seam MUST preserve a successfully parsed PROXY `Header.SourceAddr` separately from the raw peer and effective `RemoteAddr`, and that accepted source MUST replace the raw stream peer as the trusted presence identity. The system MUST canonicalize the selected peer as an unmapped `netip.Addr`, remove port and zone, and reject invalid, unspecified, loopback, Unix, domain, unknown, missing, malformed, `LOCAL`, or datagram PROXY results on stream listeners without using another effective-source fallback. A successfully parsed PROXY source that equals the raw peer MUST remain valid.
 
-#### Scenario: Rewritten metadata cannot spoof presence
+#### Scenario: Untrusted rewritten metadata cannot spoof presence
 
-- **WHEN** a valid raw TCP or UDP peer is followed by a different PROXY source, XFF value, or mux `Inbound.Source`
+- **WHEN** a valid raw TCP or UDP peer is followed by a different PROXY source without `acceptProxyProtocol`, XFF value, or mux `Inbound.Source`
 - **THEN** the authenticated presence scope contains only the canonical raw peer IP
+
+#### Scenario: Accepted PROXY source is trusted explicitly
+
+- **WHEN** `acceptProxyProtocol` is enabled and a trusted upstream supplies a valid rewritten TCP source
+- **THEN** the authenticated presence scope contains the canonical PROXY source IP
+- **AND** a later trusted XFF or virtual-source rewrite cannot replace that presence IP
+- **AND** missing, malformed, `LOCAL`, non-IP, or datagram-on-stream results publish no presence
+- **AND** a successfully parsed source equal to the raw peer remains tracked
 
 #### Scenario: Missing provenance is untracked
 
