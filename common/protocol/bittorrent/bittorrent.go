@@ -31,117 +31,61 @@ func SniffBittorrent(b []byte) (*SniffHeader, error) {
 	return nil, errNotBittorrent
 }
 
-// The uTP header layout per BEP 29:
+// The uTP ST_SYN header layout per BEP 29:
 //
-//	0        type (4 bits, ST_DATA..ST_RESET) and version (4 bits, always 1)
-//	1        extension id of the first extension header, 0 when there is none
+//	0        type (4 bits, ST_SYN=4) and version (4 bits, always 1)
+//	1        extension id (0 for a connection-opening SYN)
 //	2-3      connection id
-//	4-19     timestamps, window size, sequence number, ack number
-//	20+      extension headers: next id (1 byte), length (1 byte), data
+//	4-7      sender timestamp
+//	8-11     timestamp difference (0 before the first response)
+//	12-15    receive window
+//	16-17    sequence number (1 for ST_SYN)
+//	18-19    ack number
 //
-// Deployed stacks send no extension (id 0), the selective-ack extension
-// (id 1, both libutp and libtorrent), or libtorrent's close reason
-// (id 3, utp_close_reason). libutp's parser also knows an extension-bits
-// id 2, but no maintained stack sends it, so 2 and anything above 3 mean
-// the payload is not uTP. The timestamp fields carry monotonic clock
-// microseconds (libutp: CLOCK_MONOTONIC, libtorrent: steady_clock or
-// system_clock depending on the standard library, truncated to 32 bits),
-// not a common Unix-epoch base, so they cannot be validated against the
-// local clock and are not checked.
+// The dispatcher sniffs the opening payload of a new UDP flow. Accepting
+// established DATA, STATE, FIN or RESET headers here is unsafe because their
+// unconstrained fields collide with ordinary game discovery and real-time
+// media datagrams. A genuine new uTP flow starts with ST_SYN, whose fixed
+// initial state provides enough evidence to classify it without probabilistic
+// header matching.
 func SniffUTP(b []byte) (*SniffHeader, error) {
 	if len(b) < 20 {
 		return nil, common.ErrNoClue
 	}
 
-	if b[0]>>4 > 4 || b[0]&0xF != 1 {
+	if b[0] != 0x41 || b[1] != 0 {
 		return nil, errNotBittorrent
 	}
 
-	// A DNS query whose transaction id starts with 0x01/0x11/0x21/0x31/0x41
-	// and ends with 0x00 passes the checks above: the id reads as a valid
-	// type/version pair, the flags 0x0100 read as a non-zero connection id,
-	// and there is no extension chain to validate. DNS is orders of
-	// magnitude more common than uTP on proxies, so pass over well-formed
-	// queries explicitly.
-	if isDNSQuery(b) {
+	// TURN ChannelData channel 0x4100 shares the same leading bytes as a
+	// version-1 uTP ST_SYN. Prefer a complete TURN frame over interpreting its
+	// length and payload bytes as uTP connection state.
+	if isTURNChannelData(b) {
 		return nil, errNotBittorrent
 	}
 
-	extension := b[1]
-	if extension != 0 && extension != 1 && extension != 3 {
+	if b[2] == 0 && b[3] == 0 {
 		return nil, errNotBittorrent
 	}
 
-	// Deployed stacks never emit version-1 uTP with no extension and a
-	// zero connection id: connection ids are random and echoed for the
-	// whole session. A WireGuard handshake initiation starts with exactly
-	// 0x01 0x00 0x00 0x00 (type, reserved), and its key material would
-	// otherwise pass every structural check, so reject the shape here.
-	if extension == 0 && b[2] == 0 && b[3] == 0 {
+	if binary.BigEndian.Uint32(b[8:12]) != 0 {
 		return nil, errNotBittorrent
 	}
 
-	// Extension headers follow the fixed 20-byte header: each one is the
-	// next extension id, the data length, then that many bytes of data.
-	for offset := 20; extension != 0; {
-		if extension != 1 && extension != 3 {
-			return nil, errNotBittorrent
-		}
-		if offset+2 > len(b) {
-			return nil, common.ErrNoClue
-		}
-		next := b[offset]
-		offset += 2 + int(b[offset+1])
-		if offset > len(b) {
-			return nil, common.ErrNoClue
-		}
-		extension = next
+	if binary.BigEndian.Uint16(b[16:18]) != 1 {
+		return nil, errNotBittorrent
 	}
 
 	return &SniffHeader{}, nil
 }
 
-// isDNSQuery reports whether b is shaped like a DNS query a real stub
-// resolver or tool sends: a request (QR clear) with a deployed opcode
-// (query, iquery, status, notify, update), one or two questions, and a
-// first question whose labels are valid and whose type and class fit.
-// Answer, authority and additional record counts are unconstrained, and
-// trailing bytes are allowed: verified live against Cloudflare, Google,
-// Quad9, OpenDNS, AdGuard, Yandex, AliDNS and DNSPod with plain, EDNS0,
-// EDNS-cookie, padded, multi-record, two-question, trailing-garbage and
-// dynamic-update shapes. A real uTP packet matching this would need its
-// connection id to clear the response bit and opcode nibble and its
-// timestamp to read as a question count of one or two.
-func isDNSQuery(b []byte) bool {
-	if len(b) < 17 { // header + one-label question + QTYPE + QCLASS
+func isTURNChannelData(b []byte) bool {
+	if len(b) < 4 {
 		return false
 	}
-	if b[2]&0x80 != 0 { // response, not a query from a client
+	channel := binary.BigEndian.Uint16(b[:2])
+	if channel < 0x4000 || channel > 0x7FFF {
 		return false
 	}
-	if b[2]&0x78 > 0x28 { // opcode above the deployed set
-		return false
-	}
-	switch binary.BigEndian.Uint16(b[4:6]) {
-	case 1, 2:
-	default:
-		return false
-	}
-
-	pos := 12
-	for {
-		if pos >= len(b) {
-			return false
-		}
-		length := int(b[pos])
-		if length == 0 {
-			pos++
-			break
-		}
-		if length > 63 || pos+1+length > len(b) {
-			return false
-		}
-		pos += 1 + length
-	}
-	return pos+4 <= len(b)
+	return int(binary.BigEndian.Uint16(b[2:4])) == len(b)-4
 }
