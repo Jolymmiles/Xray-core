@@ -24,7 +24,7 @@ var (
 )
 
 // versionHHMM is the UTC hour and minute baked into Version().
-const versionHHMM = 1451
+const versionHHMM = 1457
 
 var (
 	build    = "Custom"
@@ -60,10 +60,10 @@ func init() {
 	}
 }
 
-// Version returns year.month.day.HHMM in UTC for panel display.
+// Version returns year.month.day-HHMM in UTC so the panel string is semver-compatible.
 // Numeric Version_x/y/z remain the protocol identity (REALITY session id).
 func Version() string {
-	return fmt.Sprintf("%v.%v.%v.%04d", Version_x, Version_y, Version_z, versionHHMM)
+	return fmt.Sprintf("%v.%v.%v-%04d", Version_x, Version_y, Version_z, versionHHMM)
 }
 
 // VersionStatement returns a list of strings representing the full version info.
