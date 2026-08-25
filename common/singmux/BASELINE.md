@@ -560,3 +560,45 @@ All 400/400 cycles passed across the eight Xray, sing-box, and Mihomo
 direction/carrier topologies in 2569.47 seconds. This proves the local reconnect
 harness and payload path; Darwin is not native Linux runtime evidence. The
 manual pinned-Linux pre-release workflow remains the authoritative release gate.
+
+### Logical-stream half-close compatibility (2026-08-25)
+
+SMUX v1 does not provide TCP-style logical-stream half-close. Its command 1 is
+the only stream-close frame. Xray's embedded engine and the mandatory sing-box
+and Mihomo peers terminate both logical directions after receiving it, while
+still delivering data buffered before the frame. The upstream sing-mux
+`cmdFIN` receive path closes `chFinEvent`, which unblocks both readers and
+writers with EOF; its local `Close` also removes the stream after sending FIN.
+
+A temporary Xray-only prototype added `CloseWrite` and passed an isolated
+VLESS/TLS and VLESS/REALITY response-after-upload-EOF scenario. It was rejected
+because a real external matrix failed all eight tested cells: sing-box and
+Mihomo, Xray-client and Xray-server directions, with padding disabled and
+enabled, each returned EOF before the complete response. The prototype also
+regressed the ordinary 40-cell SMUX interoperability matrix. All incompatible
+production changes were removed.
+
+The retained characterization test locks the interoperable behavior: buffered
+data precedes EOF, a write after peer close returns EOF, and a sibling stream
+on the same session remains usable. The ordinary Xray/sing-box/Mihomo matrix
+then passed all 40/40 cells with both padding modes. Tests ran through a service
+guard; the working NetBird PID 1382 and Mihomo PID 1931 remained active and
+unchanged. Supporting true half-close would require an explicitly negotiated
+protocol extension and matching sing-box/Mihomo implementations; reusing
+command 1 would break interoperability.
+
+
+### Negotiated logical half-close extension (2026-08-25)
+
+The compatibility finding above remains true for unextended SMUX v1. Xray now
+offers an opt-in carrier version 2 handshake and negotiated command 4 for
+directional write-close. `logicalHalfClose` defaults to `off`; `auto` probes on
+one carrier and reconnects with byte-identical v0/v1 framing for legacy peers;
+`require` fails closed. Command 1 remains full logical close.
+
+The guarded process gate ran five repetitions of Xray/Xray TLS and REALITY with
+padding disabled/enabled, plus automatic fallback to real sing-box and Mihomo.
+All negotiated and fallback cells passed in 21.087 seconds package time. The
+ordinary 40-cell Xray/sing-box/Mihomo SMUX matrix remained green. Unit, race,
+H2MUX, and legacy full-close characterization gates also passed. This is
+correctness evidence only; no throughput improvement is claimed.

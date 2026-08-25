@@ -74,6 +74,41 @@ func (c *retryReplacementConn) writtenBytes() []byte {
 	return bytes.Clone(c.written.Bytes())
 }
 
+type halfClosedReadFailConn struct{ closedWrite atomic.Bool }
+
+func (*halfClosedReadFailConn) Read([]byte) (int, error)          { return 0, io.EOF }
+func (*halfClosedReadFailConn) Write(payload []byte) (int, error) { return len(payload), nil }
+func (c *halfClosedReadFailConn) CloseWrite() error               { c.closedWrite.Store(true); return nil }
+func (*halfClosedReadFailConn) Close() error                      { return nil }
+func (*halfClosedReadFailConn) LocalAddr() net.Addr               { return nil }
+func (*halfClosedReadFailConn) RemoteAddr() net.Addr              { return nil }
+func (*halfClosedReadFailConn) SetDeadline(time.Time) error       { return nil }
+func (*halfClosedReadFailConn) SetReadDeadline(time.Time) error   { return nil }
+func (*halfClosedReadFailConn) SetWriteDeadline(time.Time) error  { return nil }
+
+func TestRetryConnDoesNotReplayAfterCloseWrite(t *testing.T) {
+	initial := &halfClosedReadFailConn{}
+	var opens atomic.Int32
+	connection := newRetryConn(context.Background(), initial, func(context.Context) (net.Conn, error) { opens.Add(1); return nil, io.ErrClosedPipe })
+	defer connection.Close()
+	if _, err := connection.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	var response [1]byte
+	if _, err := connection.Read(response[:]); err != io.EOF {
+		t.Fatalf("read error = %v, want EOF", err)
+	}
+	if !initial.closedWrite.Load() {
+		t.Fatal("CloseWrite was not delegated")
+	}
+	if got := opens.Load(); got != 0 {
+		t.Fatalf("replacement opens = %d, want 0", got)
+	}
+}
+
 func TestRetryConnReplacesStaleStreamAfterConcurrentSuccessfulWrite(t *testing.T) {
 	previousMaxProcs := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(previousMaxProcs)

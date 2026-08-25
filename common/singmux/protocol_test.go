@@ -42,6 +42,53 @@ func TestCarrierRequestGolden(t *testing.T) {
 	}
 }
 
+func TestCarrierNegotiationV2Golden(t *testing.T) {
+	nonce := [16]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	var encoded bytes.Buffer
+	if err := writeCarrierNegotiationRequest(&encoded, protocolSMUX, []byte{0xaa, 0xbb}, carrierFeatureLogicalHalfClose, nonce); err != nil {
+		t.Fatal(err)
+	}
+	const wantRequest = "0200010000000001000102030405060708090a0b0c0d0e0f0002aabb"
+	if got := hex.EncodeToString(encoded.Bytes()); got != wantRequest {
+		t.Fatalf("v2 request = %s, want %s", got, wantRequest)
+	}
+	request, err := readCarrierRequest(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Version != carrierVersionNegotiated || request.Protocol != protocolSMUX || request.Features != carrierFeatureLogicalHalfClose || request.Nonce != nonce || !bytes.Equal(request.Padding, []byte{0xaa, 0xbb}) {
+		t.Fatalf("decoded v2 request = %#v", request)
+	}
+
+	encoded.Reset()
+	if err := writeCarrierNegotiationResponse(&encoded, carrierNegotiationAccepted, carrierFeatureLogicalHalfClose, nonce); err != nil {
+		t.Fatal(err)
+	}
+	const wantResponse = "0200000000000001000102030405060708090a0b0c0d0e0f"
+	if got := hex.EncodeToString(encoded.Bytes()); got != wantResponse {
+		t.Fatalf("v2 response = %s, want %s", got, wantResponse)
+	}
+	response, err := readCarrierNegotiationResponse(&encoded, carrierFeatureLogicalHalfClose, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != carrierNegotiationAccepted || response.Features != carrierFeatureLogicalHalfClose {
+		t.Fatalf("decoded v2 response = %#v", response)
+	}
+}
+
+func TestCarrierNegotiationV2RejectsMalformedResponse(t *testing.T) {
+	nonce := [16]byte{1}
+	wrongNonce := [16]byte{2}
+	var encoded bytes.Buffer
+	if err := writeCarrierNegotiationResponse(&encoded, carrierNegotiationAccepted, carrierFeatureLogicalHalfClose, wrongNonce); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCarrierNegotiationResponse(&encoded, carrierFeatureLogicalHalfClose, nonce); err == nil {
+		t.Fatal("mismatched negotiation nonce must fail")
+	}
+}
+
 func TestCarrierVersionOneWithoutPadding(t *testing.T) {
 	for _, protocol := range []byte{protocolSMUX, protocolH2MUX} {
 		request, err := readCarrierRequest(bytes.NewReader([]byte{carrierVersionPadded, protocol, 0}))

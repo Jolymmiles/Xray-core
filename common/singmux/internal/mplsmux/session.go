@@ -412,6 +412,10 @@ func (s *Session) readLoop() {
 			if stream := s.lookupStream(header.streamID); stream != nil {
 				stream.remoteStopped()
 			}
+		case frameHalfClose:
+			if stream := s.lookupStream(header.streamID); stream != nil {
+				stream.remoteWriteStopped()
+			}
 		case frameData:
 			if header.length == 0 {
 				continue
@@ -431,6 +435,12 @@ func (s *Session) readLoop() {
 			if stream == nil {
 				releaseReceiveBuffer(payload)
 				s.releaseReceive(length)
+				continue
+			}
+			if !stream.acceptsData() {
+				releaseReceiveBuffer(payload)
+				s.releaseReceive(length)
+				_ = stream.Abort()
 				continue
 			}
 			enqueueResult := stream.enqueueWithTimeout(payload, s.config.StreamStallTimeout)
@@ -472,6 +482,9 @@ func (s *Session) acceptRemoteStream(streamID uint32) {
 func (s *Session) validInboundFrame(header frameHeader) bool {
 	if header.command == frameKeepalive {
 		return header.streamID == 0
+	}
+	if header.command == frameHalfClose {
+		return s.config.LogicalHalfClose && header.streamID != 0 && header.length == 0
 	}
 	if header.streamID == 0 {
 		return false

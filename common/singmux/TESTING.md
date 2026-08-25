@@ -1,5 +1,30 @@
 # Sing-mux release gates
 
+## Negotiated logical half-close
+
+The default remains legacy full-close. The negotiated gate covers Xray/Xray over
+TLS and REALITY with padding off/on, plus `auto` fallback against real sing-box
+and Mihomo servers. Every command is wrapped by the NetBird/Mihomo service guard.
+
+```sh
+GOTOOLCHAIN=auto go test ./common/singmux/internal/mplsmux \
+  -run 'Test(NegotiatedHalfClose|CloseFrameTerminatesLogicalStream)' -count=100
+GOTOOLCHAIN=auto go test -tags integration ./common/singmux \
+  -run 'TestSMUX(NegotiatedHalfCloseProcessMatrix|AutoFallbackExternalPeers)' -count=5 -v
+```
+
+## Logical-stream close semantics
+
+SMUX v1 command 1 is a full logical-stream close in Xray, sing-box, and Mihomo;
+it is not a TCP-style half-close. A peer close drains buffered data before EOF,
+rejects writes in the opposite direction, and leaves sibling streams on the
+carrier usable. Keep this compatibility gate when changing stream lifecycle:
+
+```sh
+GOTOOLCHAIN=auto go test ./common/singmux/internal/mplsmux \
+  -run '^TestCloseFrameTerminatesLogicalStream$' -count=100 -v
+```
+
 The recorded reference point is in [`BASELINE.md`](BASELINE.md). These gates
 cover the in-tree SMUX v1 and H2MUX stacks. YAMUX remains outside the scope.
 

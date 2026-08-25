@@ -85,6 +85,8 @@ message SmuxConfig {
   bool padding = 6;
   bool only_tcp = 7;
   BrutalConfig brutal = 8;
+  // "off" (default), "auto", or "require". SMUX only.
+  string logical_half_close = 9;
 }
 
 message BrutalConfig {

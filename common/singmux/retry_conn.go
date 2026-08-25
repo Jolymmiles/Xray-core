@@ -31,10 +31,19 @@ type retryConn struct {
 	confirmed     bool
 	replayAllowed bool
 	retried       bool
+	halfClose     bool
+	writeClosed   bool
 	closed        bool
 }
 
 func newRetryConn(ctx context.Context, initial net.Conn, opener func(context.Context) (net.Conn, error)) *retryConn {
+	halfClose := false
+	if _, ok := initial.(interface{ CloseWrite() error }); ok {
+		halfClose = true
+		if negotiated, ok := initial.(interface{ LogicalHalfCloseEnabled() bool }); ok {
+			halfClose = negotiated.LogicalHalfCloseEnabled()
+		}
+	}
 	connection := &retryConn{
 		ctx:           ctx,
 		opener:        opener,
@@ -42,6 +51,7 @@ func newRetryConn(ctx context.Context, initial net.Conn, opener func(context.Con
 		conn:          initial,
 		replaced:      make(chan struct{}, 1),
 		replayAllowed: true,
+		halfClose:     halfClose,
 	}
 	connection.releaseWrite()
 	return connection
@@ -120,6 +130,12 @@ func (c *retryConn) Write(payload []byte) (int, error) {
 	}
 	c.acquireWrite()
 	defer c.releaseWrite()
+	c.stateMu.Lock()
+	writeClosed := c.writeClosed
+	c.stateMu.Unlock()
+	if writeClosed {
+		return 0, io.ErrClosedPipe
+	}
 
 	total := 0
 	for total < len(payload) {
@@ -232,6 +248,40 @@ func (c *retryConn) awaitResponse(connection net.Conn) error {
 	return nil
 }
 
+func (c *retryConn) SupportsHalfClose() bool { return c.halfClose }
+
+func (c *retryConn) CloseWrite() error {
+	if !c.halfClose {
+		return io.ErrClosedPipe
+	}
+	c.acquireWrite()
+	defer c.releaseWrite()
+	c.stateMu.Lock()
+	if c.closed || c.conn == nil {
+		c.stateMu.Unlock()
+		return net.ErrClosed
+	}
+	if c.writeClosed {
+		c.stateMu.Unlock()
+		return io.ErrClosedPipe
+	}
+	connection := c.conn
+	c.stateMu.Unlock()
+	closeWriter, ok := connection.(interface{ CloseWrite() error })
+	if !ok {
+		return io.ErrClosedPipe
+	}
+	if err := closeWriter.CloseWrite(); err != nil {
+		return err
+	}
+	c.stateMu.Lock()
+	c.writeClosed = true
+	c.replayAllowed = false
+	c.replay = nil
+	c.stateMu.Unlock()
+	return nil
+}
+
 func (c *retryConn) Close() error {
 	c.stateMu.Lock()
 	if c.closed {
@@ -239,6 +289,7 @@ func (c *retryConn) Close() error {
 		return nil
 	}
 	c.closed = true
+	c.writeClosed = true
 	connection := c.conn
 	c.conn = nil
 	c.replay = nil

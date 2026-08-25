@@ -537,6 +537,94 @@ func TestRemoteCloseDeliversBufferedDataThenEOF(t *testing.T) {
 	}
 }
 
+func TestNegotiatedHalfClosePreservesReverseDirection(t *testing.T) {
+	client, server := testSessionPair(t, func(config *Config) { config.LogicalHalfClose = true })
+	clientStream, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientStream.Close()
+	serverStream, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStream.Close()
+	if _, err := clientStream.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientStream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := io.ReadAll(serverStream)
+	if err != nil || string(request) != "request" {
+		t.Fatalf("request = (%q, %v), want (request, nil)", request, err)
+	}
+	if _, err := serverStream.Write([]byte("response")); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverStream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	response, err := io.ReadAll(clientStream)
+	if err != nil || string(response) != "response" {
+		t.Fatalf("response = (%q, %v), want (response, nil)", response, err)
+	}
+	t.Log("SMUX_NEGOTIATED_ENGINE_HALF_CLOSE_OK")
+}
+
+func TestCloseFrameTerminatesLogicalStream(t *testing.T) {
+	client, server := testSessionPair(t, nil)
+	clientStream, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientStream.Close()
+	serverStream, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	siblingClient, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer siblingClient.Close()
+	siblingServer, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer siblingServer.Close()
+
+	if _, err := serverStream.Write([]byte("final")); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverStream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := io.ReadAll(clientStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "final" {
+		t.Fatalf("payload = %q, want final", payload)
+	}
+	if _, err := clientStream.Write([]byte("response")); !errors.Is(err, io.EOF) {
+		t.Fatalf("write after peer close error = %v, want %v", err, io.EOF)
+	}
+
+	if _, err := siblingClient.Write([]byte("sibling")); err != nil {
+		t.Fatal(err)
+	}
+	siblingPayload := make([]byte, len("sibling"))
+	if _, err := io.ReadFull(siblingServer, siblingPayload); err != nil {
+		t.Fatal(err)
+	}
+	if string(siblingPayload) != "sibling" {
+		t.Fatalf("sibling payload = %q, want sibling", siblingPayload)
+	}
+	t.Log("SMUX_FULL_CLOSE_COMPAT_OK")
+}
+
 func TestCarrierFailureUnblocksStream(t *testing.T) {
 	client, server := testSessionPair(t, nil)
 	clientStream, err := client.OpenStream()

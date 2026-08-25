@@ -267,6 +267,28 @@ func TestMuxConfig_Build(t *testing.T) {
 	}
 }
 
+func TestSMuxLogicalHalfCloseConfig(t *testing.T) {
+	var config SMuxConfig
+	if err := json.Unmarshal([]byte("{\"enabled\":true,\"protocol\":\"smux\",\"logicalHalfClose\":\"require\"}"), &config); err != nil {
+		t.Fatal(err)
+	}
+	built, err := config.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.LogicalHalfClose != "require" {
+		t.Fatalf("logical half-close = %q, want require", built.LogicalHalfClose)
+	}
+	for _, invalid := range []SMuxConfig{
+		{Enabled: true, Protocol: "smux", LogicalHalfClose: "invalid"},
+		{Enabled: true, Protocol: "h2mux", LogicalHalfClose: "auto"},
+	} {
+		if _, err := invalid.Build(); err == nil {
+			t.Fatalf("invalid config %#v was accepted", invalid)
+		}
+	}
+}
+
 func TestSMuxConfigBuild(t *testing.T) {
 	tests := []struct {
 		name    string

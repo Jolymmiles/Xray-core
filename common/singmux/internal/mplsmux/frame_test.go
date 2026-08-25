@@ -23,10 +23,20 @@ func TestFrameHeaderWireEncoding(t *testing.T) {
 	}
 }
 
+func TestDecodeHalfCloseFrameHeader(t *testing.T) {
+	encoded := [frameHeaderSize]byte{protocolVersion, byte(frameHalfClose), 0, 0, 3, 0, 0, 0}
+	header, err := decodeFrameHeader(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.command != frameHalfClose || header.streamID != 3 || header.length != 0 {
+		t.Fatalf("decoded half-close header = %#v", header)
+	}
+}
+
 func TestFrameHeaderRejectsInvalidControlFrames(t *testing.T) {
 	tests := map[string][frameHeaderSize]byte{
 		"version":         {2, 0, 0, 0, 3, 0, 0, 0},
-		"command":         {1, 4, 0, 0, 3, 0, 0, 0},
 		"control payload": {1, 0, 1, 0, 3, 0, 0, 0},
 	}
 	for name, encoded := range tests {

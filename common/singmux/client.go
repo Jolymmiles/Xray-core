@@ -31,24 +31,27 @@ type Dialer interface {
 }
 
 type Options struct {
-	Dialer         Dialer
-	Protocol       string
-	MaxConnections int
-	MinStreams     int
-	MaxStreams     int
-	Padding        bool
-	OnlyTCP        bool
-	Brutal         BrutalOptions
+	Dialer           Dialer
+	Protocol         string
+	MaxConnections   int
+	MinStreams       int
+	MaxStreams       int
+	Padding          bool
+	OnlyTCP          bool
+	LogicalHalfClose string
+	Brutal           BrutalOptions
 }
 
 type Client struct {
-	dialer         Dialer
-	protocol       string
-	maxConnections int
-	streamLimit    int
-	padding        bool
-	onlyTCP        bool
-	brutal         BrutalOptions
+	dialer           Dialer
+	protocol         string
+	maxConnections   int
+	streamLimit      int
+	padding          bool
+	onlyTCP          bool
+	logicalHalfClose string
+	negotiationState byte
+	brutal           BrutalOptions
 
 	mu       sync.Mutex
 	sessions []clientSession
@@ -97,6 +100,16 @@ func NewClient(options Options) (*Client, error) {
 	if options.Protocol != "smux" && options.Protocol != "h2mux" {
 		return nil, fmt.Errorf("unsupported mux protocol %q", options.Protocol)
 	}
+	policy := options.LogicalHalfClose
+	if policy == "" {
+		policy = "off"
+	}
+	if policy != "off" && policy != "auto" && policy != "require" {
+		return nil, fmt.Errorf("unsupported logical half-close policy %q", policy)
+	}
+	if options.Protocol != "smux" && policy != "off" {
+		return nil, errors.New("logical half-close is only supported by SMUX")
+	}
 	if options.MaxConnections < 0 || options.MinStreams < 0 || options.MaxStreams < 0 {
 		return nil, errors.New("SMUX pool limits cannot be negative")
 	}
@@ -122,13 +135,14 @@ func NewClient(options Options) (*Client, error) {
 		limit = defaultMinStreams
 	}
 	return &Client{
-		dialer:         options.Dialer,
-		protocol:       options.Protocol,
-		maxConnections: options.MaxConnections,
-		streamLimit:    limit,
-		padding:        options.Padding,
-		onlyTCP:        options.OnlyTCP,
-		brutal:         options.Brutal,
+		dialer:           options.Dialer,
+		protocol:         options.Protocol,
+		maxConnections:   options.MaxConnections,
+		streamLimit:      limit,
+		padding:          options.Padding,
+		onlyTCP:          options.OnlyTCP,
+		logicalHalfClose: policy,
+		brutal:           options.Brutal,
 	}, nil
 }
 
@@ -284,7 +298,50 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 	}
 }
 
+type carrierNegotiationError struct{ err error }
+
+func (e *carrierNegotiationError) Error() string { return "SMUX carrier negotiation: " + e.err.Error() }
+func (e *carrierNegotiationError) Unwrap() error { return e.err }
+
 func (c *Client) createSession(ctx context.Context) (clientSession, error) {
+	const (
+		negotiationUnknown byte = iota
+		negotiationLegacy
+		negotiationEnhanced
+	)
+	negotiated := c.protocol == "smux" && c.logicalHalfClose != "off"
+	if c.logicalHalfClose == "auto" {
+		switch c.negotiationState {
+		case negotiationLegacy:
+			negotiated = false
+		case negotiationEnhanced:
+			negotiated = true
+		}
+	}
+	session, err := c.createSessionAttempt(ctx, negotiated)
+	if err == nil {
+		if c.logicalHalfClose == "auto" {
+			if negotiated {
+				c.negotiationState = negotiationEnhanced
+			} else {
+				c.negotiationState = negotiationLegacy
+			}
+		}
+		return session, nil
+	}
+	var negotiationErr *carrierNegotiationError
+	if !negotiated || c.logicalHalfClose != "auto" || c.negotiationState == negotiationEnhanced || ctx.Err() != nil || !errors.As(err, &negotiationErr) {
+		return nil, err
+	}
+	legacy, legacyErr := c.createSessionAttempt(ctx, false)
+	if legacyErr != nil {
+		return nil, errors.Join(err, legacyErr)
+	}
+	c.negotiationState = negotiationLegacy
+	return legacy, nil
+}
+
+func (c *Client) createSessionAttempt(ctx context.Context, negotiated bool) (clientSession, error) {
 	connection, err := c.dialer.DialContext(ctx, X.TCPDestination(X.DomainAddress(magicDomain), magicPort))
 	if err != nil {
 		return nil, err
@@ -319,7 +376,25 @@ func (c *Client) createSession(ctx context.Context) (clientSession, error) {
 	if c.protocol == "h2mux" {
 		protocol = protocolH2MUX
 	}
-	if err := writeCarrierRequest(connection, protocol, carrierPadding); err != nil {
+	if negotiated {
+		var nonce [16]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			_ = connection.Close()
+			return nil, err
+		}
+		if err := writeCarrierNegotiationRequest(connection, protocol, carrierPadding, carrierFeatureLogicalHalfClose, nonce); err != nil {
+			_ = connection.Close()
+			return nil, &carrierNegotiationError{err: err}
+		}
+		response, err := readCarrierNegotiationResponse(connection, carrierFeatureLogicalHalfClose, nonce)
+		if err != nil || response.Status != carrierNegotiationAccepted || response.Features&carrierFeatureLogicalHalfClose == 0 {
+			_ = connection.Close()
+			if err == nil {
+				err = errors.New("peer rejected logical half-close")
+			}
+			return nil, &carrierNegotiationError{err: err}
+		}
+	} else if err := writeCarrierRequest(connection, protocol, carrierPadding); err != nil {
 		_ = connection.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -349,6 +424,7 @@ func (c *Client) createSession(ctx context.Context) (clientSession, error) {
 	} else {
 		config := mplsmux.DefaultConfig()
 		config.KeepAliveDisabled = true
+		config.LogicalHalfClose = negotiated
 		mplSession, sessionErr := mplsmux.Client(connection, config)
 		err = sessionErr
 		if err == nil {
@@ -431,6 +507,13 @@ func (c *Client) openTargetStream(ctx context.Context, destination X.Destination
 	return stream, nil
 }
 
+func closeClientLinkWriter(writer buf.Writer) error {
+	if bytesWriter, ok := writer.(*buf.BufferToBytesWriter); ok {
+		return common.Close(bytesWriter.Writer)
+	}
+	return common.Close(writer)
+}
+
 func (c *Client) Dispatch(ctx context.Context, link *transport.Link, destination X.Destination) error {
 	if !c.ShouldHandle(destination.Network) {
 		return errors.New("SMUX client does not handle this network")
@@ -450,26 +533,54 @@ func (c *Client) Dispatch(ctx context.Context, link *transport.Link, destination
 		remoteWriter = &packetWriter{stream: connection, destination: destination}
 		remoteReader = &packetReader{stream: connection}
 	}
-	results := make(chan error, 2)
-	go func() { results <- buf.Copy(link.Reader, remoteWriter) }()
-	go func() { results <- buf.Copy(remoteReader, link.Writer) }()
-
-	select {
-	case <-ctx.Done():
-		_ = connection.Close()
-		common.Interrupt(link.Reader)
-		common.Interrupt(link.Writer)
-		return ctx.Err()
-	case copyErr := <-results:
-		_ = connection.Close()
-		common.Interrupt(link.Reader)
-		common.Interrupt(link.Writer)
-		if ctx.Err() != nil {
+	if destination.Network != X.Network_TCP || !connection.SupportsHalfClose() {
+		results := make(chan error, 2)
+		go func() { results <- buf.Copy(link.Reader, remoteWriter) }()
+		go func() { results <- buf.Copy(remoteReader, link.Writer) }()
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+			common.Interrupt(link.Reader)
+			common.Interrupt(link.Writer)
 			return ctx.Err()
+		case copyErr := <-results:
+			_ = connection.Close()
+			common.Interrupt(link.Reader)
+			common.Interrupt(link.Writer)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(copyErr, io.EOF) {
+				return nil
+			}
+			return copyErr
 		}
-		if errors.Is(copyErr, io.EOF) {
-			return nil
-		}
-		return copyErr
 	}
+	defer common.Interrupt(link.Reader)
+	defer common.Interrupt(link.Writer)
+	type copyResult struct {
+		upload bool
+		err    error
+	}
+	results := make(chan copyResult, 2)
+	go func() { results <- copyResult{upload: true, err: buf.Copy(link.Reader, remoteWriter)} }()
+	go func() { results <- copyResult{err: buf.Copy(remoteReader, link.Writer)} }()
+	for completed := 0; completed < 2; completed++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case result := <-results:
+			if result.err != nil && !errors.Is(result.err, io.EOF) {
+				return result.err
+			}
+			if result.upload {
+				if err := connection.CloseWrite(); err != nil {
+					return err
+				}
+			} else if err := closeClientLinkWriter(link.Writer); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+				return err
+			}
+		}
+	}
+	return nil
 }
