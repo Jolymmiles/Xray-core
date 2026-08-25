@@ -20,8 +20,11 @@ import (
 var (
 	Version_x byte = 26
 	Version_y byte = 8
-	Version_z byte = 26
+	Version_z byte = 25
 )
+
+// versionHHMM is the UTC hour and minute baked into Version().
+const versionHHMM = 1448
 
 var (
 	build    = "Custom"
@@ -57,10 +60,10 @@ func init() {
 	}
 }
 
-// Version returns Xray's version as a string, in the form of "x.y.z.utc1442".
+// Version returns year.month.day.HHMM in UTC for panel display.
 // Numeric Version_x/y/z remain the protocol identity (REALITY session id).
 func Version() string {
-	return fmt.Sprintf("%v.%v.%v.utc1442", Version_x, Version_y, Version_z)
+	return fmt.Sprintf("%v.%v.%v.%04d", Version_x, Version_y, Version_z, versionHHMM)
 }
 
 // VersionStatement returns a list of strings representing the full version info.

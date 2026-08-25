@@ -2,19 +2,18 @@ package core_test
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/xtls/xray-core/core"
 )
 
-func TestVersionHasUTCPanelSuffix(t *testing.T) {
+func TestVersionFollowsYearMonthDayHHMM(t *testing.T) {
 	got := core.Version()
-	if !strings.HasSuffix(got, ".utc1442") {
-		t.Fatalf("Version() = %q, want .utc1442 suffix for panel display", got)
-	}
-	want := fmt.Sprintf("%d.%d.%d.utc1442", core.Version_x, core.Version_y, core.Version_z)
+	want := fmt.Sprintf("%d.%d.%d.1448", core.Version_x, core.Version_y, core.Version_z)
 	if got != want {
-		t.Fatalf("Version() = %q, want %q", got, want)
+		t.Fatalf("Version() = %q, want %q (year.month.day.HHMM UTC)", got, want)
+	}
+	if core.Version_x != 26 || core.Version_y != 8 || core.Version_z != 25 {
+		t.Fatalf("numeric version = %d.%d.%d, want 26.8.25", core.Version_x, core.Version_y, core.Version_z)
 	}
 }
