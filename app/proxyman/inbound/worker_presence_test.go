@@ -131,23 +131,14 @@ func TestPhysicalPeerFromConnIgnoresProxyRewriteWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestPhysicalPeerFromConnRejectsUnusableProxyHeaders(t *testing.T) {
-	for _, test := range []struct{ name string }{
-		{name: "missing"},
-		{name: "malformed"},
-		{name: "LOCAL"},
-		{name: "Unix source"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			conn := presenceConnection(t,
-				&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
-				netip.Addr{},
-				&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
-			)
-			if got := physicalPeerFromConn(conn, true); got.IsValid() {
-				t.Fatalf("unusable PROXY header trusted peer = %s", got)
-			}
-		})
+func TestPhysicalPeerFromConnRejectsMissingAcceptedProxyPeer(t *testing.T) {
+	conn := presenceConnection(t,
+		&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
+		netip.Addr{},
+		&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
+	)
+	if got := physicalPeerFromConn(conn, true); got.IsValid() {
+		t.Fatalf("missing accepted PROXY peer trusted raw/effective fallback: %s", got)
 	}
 }
 

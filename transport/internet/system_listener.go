@@ -37,7 +37,7 @@ func newAcceptedProxyProtocolConn(conn net.Conn) *acceptedProxyProtocolConn {
 		conn,
 		proxyproto.WithPolicy(proxyproto.REQUIRE),
 		proxyproto.ValidateHeader(func(header *proxyproto.Header) error {
-			if header == nil || !header.Command.IsProxy() {
+			if header == nil || !header.Command.IsProxy() || !header.TransportProtocol.IsStream() {
 				return nil
 			}
 			peer, ok := net.CanonicalPhysicalPeer(header.SourceAddr)
