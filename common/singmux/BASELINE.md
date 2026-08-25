@@ -616,4 +616,8 @@ relaxation.
 Three native Linux `XRAY_NATIVE_LINUX_RELEASE=1` samples of the previous-release
 gate produced VLESS ratios 1.001, 1.001, and 1.025. The same host's comparison
 against immutable `v26.8.15` mixed 1.07-1.09 and is no longer the release
-budget. Resource ceilings stay 64 MiB RSS, 16 threads, and 8 file descriptors.
+budget. Resource ceilings stay 64 MiB RSS, 16 threads, and 8 quiescent file
+descriptors versus the previous release. Loaded server FDs may include pooled
+carriers; the hard loaded ceiling is 128, one per concurrent stream. A
+start-to-end self-delta is not used because warmup teardown made that check
+flake (CI count 3 saw 21->44 then drained to 9).

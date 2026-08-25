@@ -271,9 +271,11 @@ go test -tags 'integration stress performance' ./common/singmux \
 `v26.8.25-1457` (`b7bdfb03fa582cd691197593cc853f6ea209d04f`) and the
 candidate, keeps an identical candidate Xray SMUX client on both sides, warms
 both servers, and measures nine alternating full-duplex rounds. On Linux it
-fails above 10% median duration regression, 64 MiB RSS, 16 threads, or 8 file
-descriptors. Other hosts record diagnostics only and cannot satisfy the release
-gate.
+fails above 10% median duration regression, 64 MiB RSS, 16 threads, or 8
+quiescent file descriptors versus the previous release. Under load it also
+fails if either server holds more file descriptors than the 128 concurrent
+streams, which would mean the mux is no longer sharing carriers. Other hosts
+record diagnostics only and cannot satisfy the release gate.
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
