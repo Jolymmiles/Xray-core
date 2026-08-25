@@ -23,9 +23,9 @@ import (
 // started: bufio.CopyPacketConn and bufio.CopyConn hand each direction to
 // sing's task.Group, and the Shadowsocks-2022 UDP path enters
 // NewPacketConnection from a goroutine sing/common/udpnat spawns per NAT
-// entry. The recover() app/proxyman/inbound wraps around proxy.Process sits on
-// the worker goroutine and sees none of them, so a panic here ends the process
-// rather than the session. Returning an error instead fails one task, which
+// entry. Nothing on the way in recovers either -- app/proxyman/inbound calls
+// proxy.Process bare in this tree -- so a panic here ends the process rather
+// than the session. Returning an error instead fails one task, which
 // fast-fails its group and tears down that one session.
 //
 // The stack rides inside the error rather than being logged here: the error

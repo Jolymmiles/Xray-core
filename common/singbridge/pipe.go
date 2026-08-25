@@ -34,8 +34,8 @@ func CopyConn(ctx context.Context, inboundConn net.Conn, link *transport.Link, s
 // PipeConnWrapper is the TCP half of the same arrangement as
 // PacketConnWrapper: sing's bufio.CopyConn hands each direction to
 // common/task.Group, so Read and Write run on goroutines this repository never
-// started and app/proxyman/inbound's recoverProcess cannot reach. See
-// recovered() in packet.go for what a panic escaping one of them costs.
+// started and nothing on the way in recovers. See panicError() in packet.go
+// for what a panic escaping one of them costs.
 type PipeConnWrapper struct {
 	R io.Reader
 	W buf.Writer

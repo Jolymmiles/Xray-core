@@ -146,8 +146,8 @@ func (panickingWriter) WriteMultiBuffer(buf.MultiBuffer) error {
 
 // TestPacketConnWrapperRecoversPanic asserts the containment the report asked
 // for: sing runs these methods on goroutines from task.Group and udpnat, which
-// app/proxyman/inbound's recoverProcess cannot reach, so a panic that escapes
-// here ends the process rather than the session.
+// no caller's recover reaches, so a panic that escapes here ends the process
+// rather than the session.
 func TestPacketConnWrapperRecoversPanic(t *testing.T) {
 	timer := signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour)
 	defer timer.SetTimeout(0)

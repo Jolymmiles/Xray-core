@@ -124,7 +124,12 @@ func accessContext(ctx context.Context, metadata M.Metadata, network net.Network
 	return ctx, destination, nil
 }
 
-func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) (err error) {
+	// sing calls this synchronously from Process, but that is not cover: this
+	// tree invokes proxy.Process bare (app/proxyman/inbound/worker.go), so a
+	// panic anywhere below -- a nil inbound session, a routing or sniffing bug
+	// inside Dispatch -- takes the node down rather than this one connection.
+	defer singbridge.RecoverTo(&err, "Inbound.NewConnection")
 	inbound := session.InboundFromContext(ctx)
 	inbound.User = &protocol.MemoryUser{
 		Email: i.email,
@@ -143,9 +148,8 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 }
 
 func (i *Inbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) (err error) {
-	// Runs on the goroutine sing/common/udpnat spawns per NAT entry, which no
-	// recover in app/proxyman/inbound reaches. TCP's NewConnection is called
-	// synchronously under recoverProcess and needs nothing.
+	// Same, one goroutine further out: sing/common/udpnat spawns this one per
+	// NAT entry, so not even the caller of Process shares its stack.
 	defer singbridge.RecoverTo(&err, "Inbound.NewPacketConnection")
 	inbound := session.InboundFromContext(ctx)
 	inbound.User = &protocol.MemoryUser{
