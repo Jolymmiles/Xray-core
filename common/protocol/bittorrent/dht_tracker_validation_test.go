@@ -46,9 +46,12 @@ func TestSniffRealWorldDHT(t *testing.T) {
 		{"announce_peer query with implied port", dhtDict("1:ad2:id20:"+string(nodeID[:])+"12:implied_porti1e9:info_hash20:"+string(bigBuckBunnyInfoHash[:])+"4:porti0e5:token8:"+tok+"e", "1:q13:announce_peer", "1:t2:ce", "1:y1:q")},
 		{"sample_infohashes query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"6:target20:"+string(target[:])+"e", "1:q17:sample_infohashes", "1:t2:ef", "1:y1:q")},
 		{"bep44 get query", dhtDict("1:ad2:id20:"+string(nodeID[:])+"6:target20:"+string(target[:])+"e", "1:q3:get", "1:t2:gh", "1:y1:q")},
-		{"bep44 put query with nested mutable value", dhtDict(
-			"1:ad1:vd3:bari42ee2:id20:"+string(nodeID[:])+"3:seqi7e5:token8:"+tok+"e",
+		{"bep44 immutable put query with nested value", dhtDict(
+			"1:ad2:id20:"+string(nodeID[:])+"5:token8:"+tok+"1:vd3:bari42eee",
 			"1:q3:put", "1:t2:ij", "1:y1:q")},
+		{"bep44 mutable put query", dhtDict(
+			"1:ad3:casi6e2:id20:"+string(nodeID[:])+"1:k32:"+strings.Repeat("k", 32)+"4:salt64:"+strings.Repeat("a", 64)+"3:seqi7e3:sig64:"+strings.Repeat("s", 64)+"5:token8:"+tok+"1:v4:spame",
+			"1:q3:put", "1:t2:ik", "1:y1:q")},
 		{"ping response", dhtDict("1:rd2:id20:"+string(nodeID[:])+"e", "1:t2:ab", "1:y1:r")},
 		{"find_node response with compact nodes", dhtDict(
 			"1:rd2:id20:"+string(nodeID[:])+"5:nodes52:"+string(nodeID[:])+compact1+string(target[:])+compact2+"e",
@@ -100,8 +103,12 @@ func TestSniffDHTRejectsNonDHTBencode(t *testing.T) {
 		{"find_node without target", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q9:find_node", "1:t2:aa", "1:y1:q")},
 		{"get_peers without info hash", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q9:get_peers", "1:t2:aa", "1:y1:q")},
 		{"announce_peer without token", dhtDict("1:ad2:id20:"+string(nodeID[:])+"9:info_hash20:"+string(nodeID[:])+"4:porti6881ee", "1:q13:announce_peer", "1:t2:aa", "1:y1:q")},
+		{"announce_peer implied port without port field", dhtDict("1:ad2:id20:"+string(nodeID[:])+"12:implied_porti1e9:info_hash20:"+string(nodeID[:])+"5:token8:abcdefgh"+"e", "1:q13:announce_peer", "1:t2:aa", "1:y1:q")},
 		{"bep44 get without target", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q3:get", "1:t2:aa", "1:y1:q")},
+		{"bep44 get with non-integer seq", dhtDict("1:ad2:id20:"+string(nodeID[:])+"3:seq1:x6:target20:"+string(nodeID[:])+"e", "1:q3:get", "1:t2:aa", "1:y1:q")},
 		{"bep44 put without token", dhtDict("1:ad2:id20:"+string(nodeID[:])+"1:v4:spame", "1:q3:put", "1:t2:aa", "1:y1:q")},
+		{"bep44 mutable put without signature", dhtDict("1:ad2:id20:"+string(nodeID[:])+"1:k32:"+strings.Repeat("k", 32)+"3:seqi7e5:token8:abcdefgh1:v4:spame", "1:q3:put", "1:t2:aa", "1:y1:q")},
+		{"bep44 mutable put with oversized salt", dhtDict("1:ad2:id20:"+string(nodeID[:])+"1:k32:"+strings.Repeat("k", 32)+"4:salt65:"+strings.Repeat("a", 65)+"3:seqi7e3:sig64:"+strings.Repeat("s", 64)+"5:token8:abcdefgh1:v4:spame", "1:q3:put", "1:t2:aa", "1:y1:q")},
 		{"sample_infohashes without target", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q17:sample_infohashes", "1:t2:aa", "1:y1:q")},
 		{"query without transaction id", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:q4:ping", "1:y1:q")},
 		{"query without query name", dhtDict("1:ad2:id20:"+string(nodeID[:])+"e", "1:t2:aa", "1:y1:q")},

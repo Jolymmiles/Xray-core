@@ -57,13 +57,10 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 		return nil, errNotBittorrent
 	}
 
-	// A DNS query whose transaction id starts with 0x01/0x11/0x21/0x31/0x41
-	// and ends with 0x00 passes the checks above: the id reads as a valid
-	// type/version pair, the flags 0x0100 read as a non-zero connection id,
-	// and there is no extension chain to validate. DNS is orders of
-	// magnitude more common than uTP on proxies, so pass over well-formed
-	// queries explicitly.
-	if isDNSQuery(b) {
+	// TURN ChannelData channel 0x4100 shares the same leading bytes as a
+	// version-1 uTP ST_SYN. Prefer a complete TURN frame over interpreting its
+	// length and payload bytes as uTP connection state.
+	if isTURNChannelData(b) {
 		return nil, errNotBittorrent
 	}
 
@@ -82,47 +79,13 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 	return &SniffHeader{}, nil
 }
 
-// isDNSQuery reports whether b is shaped like a DNS query a real stub
-// resolver or tool sends: a request (QR clear) with a deployed opcode
-// (query, iquery, status, notify, update), one or two questions, and a
-// first question whose labels are valid and whose type and class fit.
-// Answer, authority and additional record counts are unconstrained, and
-// trailing bytes are allowed: verified live against Cloudflare, Google,
-// Quad9, OpenDNS, AdGuard, Yandex, AliDNS and DNSPod with plain, EDNS0,
-// EDNS-cookie, padded, multi-record, two-question, trailing-garbage and
-// dynamic-update shapes. A real uTP packet matching this would need its
-// connection id to clear the response bit and opcode nibble and its
-// timestamp to read as a question count of one or two.
-func isDNSQuery(b []byte) bool {
-	if len(b) < 17 { // header + one-label question + QTYPE + QCLASS
+func isTURNChannelData(b []byte) bool {
+	if len(b) < 4 {
 		return false
 	}
-	if b[2]&0x80 != 0 { // response, not a query from a client
+	channel := binary.BigEndian.Uint16(b[:2])
+	if channel < 0x4000 || channel > 0x7FFF {
 		return false
 	}
-	if b[2]&0x78 > 0x28 { // opcode above the deployed set
-		return false
-	}
-	switch binary.BigEndian.Uint16(b[4:6]) {
-	case 1, 2:
-	default:
-		return false
-	}
-
-	pos := 12
-	for {
-		if pos >= len(b) {
-			return false
-		}
-		length := int(b[pos])
-		if length == 0 {
-			pos++
-			break
-		}
-		if length > 63 || pos+1+length > len(b) {
-			return false
-		}
-		pos += 1 + length
-	}
-	return pos+4 <= len(b)
+	return int(binary.BigEndian.Uint16(b[2:4])) == len(b)-4
 }

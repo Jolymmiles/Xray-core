@@ -70,7 +70,13 @@ type dhtQueryArguments struct {
 	hasInfoHash    bool
 	hasToken       bool
 	hasPort        bool
+	hasNonzeroPort bool
 	hasImpliedPort bool
+	hasCAS         bool
+	hasPublicKey   bool
+	hasSalt        bool
+	hasSequence    bool
+	hasSignature   bool
 	hasValue       bool
 }
 
@@ -167,6 +173,13 @@ func (a *dhtQueryArguments) parseDict(b []byte, pos int) (int, bool) {
 		pos = next
 
 		switch string(key) {
+		case "cas":
+			next, ok := parseNonNegativeInt(b, pos)
+			if !ok {
+				return 0, false
+			}
+			a.hasCAS = true
+			pos = next
 		case "id":
 			value, next, ok := parseString(b, pos)
 			if !ok || len(value) != 20 {
@@ -195,12 +208,20 @@ func (a *dhtQueryArguments) parseDict(b []byte, pos int) (int, bool) {
 			}
 			a.hasToken = true
 			pos = next
+		case "k":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 32 {
+				return 0, false
+			}
+			a.hasPublicKey = true
+			pos = next
 		case "port":
 			value, next, ok := parsePositiveInt(b, pos, 65535)
 			if !ok {
 				return 0, false
 			}
-			a.hasPort = value != 0
+			a.hasPort = true
+			a.hasNonzeroPort = value != 0
 			pos = next
 		case "implied_port":
 			value, next, ok := parsePositiveInt(b, pos, 1)
@@ -208,6 +229,27 @@ func (a *dhtQueryArguments) parseDict(b []byte, pos int) (int, bool) {
 				return 0, false
 			}
 			a.hasImpliedPort = value == 1
+			pos = next
+		case "salt":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) > 64 {
+				return 0, false
+			}
+			a.hasSalt = true
+			pos = next
+		case "seq":
+			next, ok := parseNonNegativeInt(b, pos)
+			if !ok {
+				return 0, false
+			}
+			a.hasSequence = true
+			pos = next
+		case "sig":
+			value, next, ok := parseString(b, pos)
+			if !ok || len(value) != 64 {
+				return 0, false
+			}
+			a.hasSignature = true
 			pos = next
 		case "v":
 			next, ok := parseValue(b, pos, 2)
@@ -243,10 +285,15 @@ func (m *dhtMessage) validQueryArguments() bool {
 	case "get_peers":
 		return m.queryArguments.hasInfoHash
 	case "announce_peer":
-		return m.queryArguments.hasInfoHash && m.queryArguments.hasToken &&
-			(m.queryArguments.hasPort || m.queryArguments.hasImpliedPort)
+		return m.queryArguments.hasInfoHash && m.queryArguments.hasToken && m.queryArguments.hasPort &&
+			(m.queryArguments.hasNonzeroPort || m.queryArguments.hasImpliedPort)
 	case "put":
-		return m.queryArguments.hasToken && m.queryArguments.hasValue
+		if !m.queryArguments.hasToken || !m.queryArguments.hasValue {
+			return false
+		}
+		mutable := m.queryArguments.hasCAS || m.queryArguments.hasPublicKey ||
+			m.queryArguments.hasSalt || m.queryArguments.hasSequence || m.queryArguments.hasSignature
+		return !mutable || (m.queryArguments.hasPublicKey && m.queryArguments.hasSequence && m.queryArguments.hasSignature)
 	default:
 		return false
 	}
@@ -404,6 +451,14 @@ func parsePositiveInt(b []byte, pos, maxValue int) (value int, next int, ok bool
 		return 0, 0, false
 	}
 	return value, pos + 1, true
+}
+
+func parseNonNegativeInt(b []byte, pos int) (int, bool) {
+	next, ok := parseInt(b, pos)
+	if !ok || b[pos+1] == '-' {
+		return 0, false
+	}
+	return next, true
 }
 
 // parseString validates a length-prefixed byte string and returns the value
