@@ -62,7 +62,7 @@ func TestPhysicalPeerFromConnUsesOnlyCapturedProvenance(t *testing.T) {
 		Conn:   server,
 		remote: &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345},
 	}
-	if got := physicalPeerFromConn(effective, false); got.IsValid() {
+	if got := physicalPeerFromConn(effective, presenceStream(false)); got.IsValid() {
 		t.Fatalf("effective RemoteAddr became trusted peer: %s", got)
 	}
 
@@ -71,7 +71,7 @@ func TestPhysicalPeerFromConnUsesOnlyCapturedProvenance(t *testing.T) {
 		remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
 	})
 	wrapped := corenet.PreservePhysicalPeer(raw, effective)
-	if got := physicalPeerFromConn(wrapped, false); got.String() != "192.0.2.9" {
+	if got := physicalPeerFromConn(wrapped, presenceStream(false)); got.String() != "192.0.2.9" {
 		t.Fatalf("physicalPeerFromConn() = %s, want 192.0.2.9", got)
 	}
 }
@@ -101,7 +101,7 @@ func TestPhysicalPeerFromConnTrustsAcceptedProxyRewrite(t *testing.T) {
 				accepted,
 				&net.TCPAddr{IP: net.ParseIP(test.want), Port: 12345},
 			)
-			if got := physicalPeerFromConn(conn, true); got.String() != test.want {
+			if got := physicalPeerFromConn(conn, presenceStream(true)); got.String() != test.want {
 				t.Fatalf("trusted PROXY peer = %s, want %s", got, test.want)
 			}
 		})
@@ -115,7 +115,7 @@ func TestPhysicalPeerFromConnKeepsAcceptedProxyPeerAfterEffectiveRewrite(t *test
 		&net.TCPAddr{IP: net.ParseIP("203.0.113.99"), Port: 0},
 	)
 
-	if got := physicalPeerFromConn(rewritten, true); got != netip.MustParseAddr("198.51.100.7") {
+	if got := physicalPeerFromConn(rewritten, presenceStream(true)); got != netip.MustParseAddr("198.51.100.7") {
 		t.Fatalf("presence peer = %s, want accepted PROXY source 198.51.100.7", got)
 	}
 }
@@ -126,7 +126,7 @@ func TestPhysicalPeerFromConnIgnoresProxyRewriteWhenDisabled(t *testing.T) {
 		netip.MustParseAddr("198.51.100.7"),
 		&net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 12345},
 	)
-	if got := physicalPeerFromConn(conn, false); got != netip.MustParseAddr("192.0.2.9") {
+	if got := physicalPeerFromConn(conn, presenceStream(false)); got != netip.MustParseAddr("192.0.2.9") {
 		t.Fatalf("disabled PROXY trusted peer = %s, want raw peer 192.0.2.9", got)
 	}
 }
@@ -137,7 +137,7 @@ func TestPhysicalPeerFromConnRejectsMissingAcceptedProxyPeer(t *testing.T) {
 		netip.Addr{},
 		&net.TCPAddr{IP: net.ParseIP("192.0.2.9"), Port: 54321},
 	)
-	if got := physicalPeerFromConn(conn, true); got.IsValid() {
+	if got := physicalPeerFromConn(conn, presenceStream(true)); got.IsValid() {
 		t.Fatalf("missing accepted PROXY peer trusted raw/effective fallback: %s", got)
 	}
 }
@@ -264,7 +264,60 @@ func TestPhysicalPeerFromConnRejectsUnix(t *testing.T) {
 		_ = client.Close()
 	})
 	unix := &presenceWorkerConn{Conn: server, remote: &net.UnixAddr{Name: "/tmp/xray.sock", Net: "unix"}}
-	if got := physicalPeerFromConn(corenet.CapturePhysicalPeer(unix), false); got.IsValid() {
+	if got := physicalPeerFromConn(corenet.CapturePhysicalPeer(unix), presenceStream(false)); got.IsValid() {
 		t.Fatalf("Unix peer became physical presence: %s", got)
+	}
+}
+
+func presenceStream(acceptProxyProtocol bool, trustedXForwardedFor ...string) *internet.MemoryStreamConfig {
+	return &internet.MemoryStreamConfig{SocketSettings: &internet.SocketConfig{
+		AcceptProxyProtocol:  acceptProxyProtocol,
+		TrustedXForwardedFor: trustedXForwardedFor,
+	}}
+}
+
+func TestPhysicalPeerFromConnPrefersTrustedXForwardedFor(t *testing.T) {
+	rewritten := presenceConnection(t,
+		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.ParseIP("203.0.113.99"), Port: 0},
+	)
+
+	if got := physicalPeerFromConn(rewritten, presenceStream(true, "CF-Connecting-IP")); got != netip.MustParseAddr("203.0.113.99") {
+		t.Fatalf("presence peer = %s, want trusted X-Forwarded-For source 203.0.113.99", got)
+	}
+}
+
+func TestPhysicalPeerFromConnFallsBackWhenTrustedSourceIsUnusable(t *testing.T) {
+	conn := presenceConnection(t,
+		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 19441},
+	)
+
+	if got := physicalPeerFromConn(conn, presenceStream(true, "CF-Connecting-IP")); got != netip.MustParseAddr("198.51.100.7") {
+		t.Fatalf("unusable effective source = %s, want accepted PROXY source 198.51.100.7", got)
+	}
+}
+
+func TestTCPWorkerUsesTrustedXForwardedForForAuthenticatedSnapshot(t *testing.T) {
+	provider := new(capturingPresenceProvider)
+	proxy := &authenticatedPresenceProxy{provider: provider, scope: make(chan session.PresenceScope, 1)}
+	worker := &tcpWorker{
+		address: corenet.AnyIP,
+		ctx:     context.Background(),
+		proxy:   proxy,
+		stream:  presenceStream(true, "CF-Connecting-IP"),
+	}
+	worker.callback(presenceConnection(t,
+		&net.UnixAddr{Name: "/run/xray/raw.sock", Net: "unix"},
+		netip.MustParseAddr("198.51.100.7"),
+		&net.TCPAddr{IP: net.ParseIP("203.0.113.99"), Port: 0},
+	))
+
+	<-proxy.scope
+	subject := provider.subject
+	if subject.Email != "alice@example.com" || subject.IP != netip.MustParseAddr("203.0.113.99") {
+		t.Fatalf("authenticated trusted-XFF worker snapshot = %+v", subject)
 	}
 }
