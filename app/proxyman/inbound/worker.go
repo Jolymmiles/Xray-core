@@ -65,8 +65,8 @@ func acceptsProxyProtocol(s *internet.MemoryStreamConfig) bool {
 	return s != nil && s.SocketSettings != nil && s.SocketSettings.AcceptProxyProtocol
 }
 
-func trustsXForwardedFor(s *internet.MemoryStreamConfig) bool {
-	return s != nil && s.SocketSettings != nil && len(s.SocketSettings.TrustedXForwardedFor) > 0
+func trustsXForwardedFor(stream *internet.MemoryStreamConfig) bool {
+	return stream != nil && stream.SocketSettings != nil && len(stream.SocketSettings.TrustedXForwardedFor) > 0
 }
 
 // physicalPeerFromConn resolves the presence identity of a stream. When the
