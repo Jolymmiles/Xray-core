@@ -172,10 +172,6 @@ func decodeIPAnswerPayload(answers []RR, rrType uint16) []byte {
 	return payload.Bytes()
 }
 
-func computeMaxEncodedPayload(limit int) int {
-	return computeMaxEncodedPayloadForType(limit, RRTypeTXT)
-}
-
 func computeMaxEncodedPayloadForType(limit int, rrType uint16) int {
 	maxLengthName, err := NewName([][]byte{
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
