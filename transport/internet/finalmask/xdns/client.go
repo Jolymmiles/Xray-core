@@ -140,6 +140,7 @@ func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 func (c *xdnsConnClient) recvLoop() {
 	var buf [finalmask.UDPSize]byte
 
+	consecFails := 0
 	for {
 		if c.closed.Load() {
 			break
@@ -150,8 +151,11 @@ func (c *xdnsConnClient) recvLoop() {
 			if go_errors.Is(err, net.ErrClosed) {
 				break
 			}
+			consecFails++
+			time.Sleep(recvErrorBackoff(consecFails))
 			continue
 		}
+		consecFails = 0
 
 		if addr == nil {
 			continue
