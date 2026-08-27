@@ -710,8 +710,13 @@ func (c *Xdns) Build() (proto.Message, error) {
 	}
 
 	for _, r := range c.Resolvers {
-		if !strings.Contains(r, "+udp://") {
-			return nil, errors.New("invalid resolver ", r)
+		if err := xdns.ValidateResolver(r); err != nil {
+			return nil, errors.New("invalid resolver ", r).Base(err)
+		}
+	}
+	for _, d := range c.Domains {
+		if err := xdns.ValidateDomainSpec(d); err != nil {
+			return nil, errors.New("invalid domain ", d).Base(err)
 		}
 	}
 
