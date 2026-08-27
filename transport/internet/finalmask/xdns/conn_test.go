@@ -16,14 +16,24 @@ type fakeUDP struct {
 	closeCh chan struct{}
 	once    sync.Once
 
-	mu      sync.Mutex
-	written [][]byte
-	addrs   []net.Addr
+	preErrors int32 // transient failures served before blocking
+
+	mu        sync.Mutex
+	written   [][]byte
+	addrs     []net.Addr
+	callTimes []time.Time
 }
 
 func newFakeUDP() *fakeUDP { return &fakeUDP{closeCh: make(chan struct{})} }
 
 func (f *fakeUDP) ReadFrom(p []byte) (int, net.Addr, error) {
+	f.mu.Lock()
+	f.callTimes = append(f.callTimes, time.Now())
+	if n := atomic.AddInt32(&f.preErrors, -1); n >= 0 {
+		f.mu.Unlock()
+		return 0, nil, go_errors.New("transient udp failure")
+	}
+	f.mu.Unlock()
 	<-f.closeCh
 	return 0, nil, net.ErrClosed
 }
@@ -172,6 +182,82 @@ func TestXdnsLossObservable(t *testing.T) {
 		}
 	})
 }
+
+func TestXdnsRecvErrorBackoff(t *testing.T) {
+	saved := recvErrBackoffBase
+	recvErrBackoffBase = 15 * time.Millisecond
+	defer func() { recvErrBackoffBase = saved }()
+
+	const failures = 4
+	conn := &xdnsConnServer{
+		PacketConn:    newFakeUDP(),
+		domains:       []domainSpec{{name: testDomain}},
+		ch:            make(chan *record, 8),
+		readQueue:     make(chan *packet, 8),
+		writeQueueMap: make(map[string]*queue),
+	}
+	stub := conn.PacketConn.(*fakeUDP)
+	atomic.StoreInt32(&stub.preErrors, failures)
+
+	done := make(chan struct{})
+	go func() { defer close(done); conn.recvLoop() }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	calls := func() int {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		return len(stub.callTimes)
+	}
+	for calls() < failures+1 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	<-done
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.callTimes) < failures+1 {
+		t.Fatalf("only %d reads attempted, want > %d", len(stub.callTimes), failures)
+	}
+	for i := 1; i <= failures; i++ {
+		want := recvErrorBackoff(i)
+		got := stub.callTimes[i].Sub(stub.callTimes[i-1])
+		if got < want*3/5 {
+			t.Fatalf("gap %d after failure %d is %v, want >= %v", i, i, got, want*3/5)
+		}
+	}
+}
+
+func TestReadFailureBackoffTable(t *testing.T) {
+	savedBase := recvErrBackoffBase
+	savedMax := recvErrBackoffMax
+	recvErrBackoffBase = 5 * time.Millisecond
+	recvErrBackoffMax = 80 * time.Millisecond
+	defer func() {
+		recvErrBackoffBase = savedBase
+		recvErrBackoffMax = savedMax
+	}()
+
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, 0},
+		{1, 5 * time.Millisecond},
+		{2, 10 * time.Millisecond},
+		{4, 40 * time.Millisecond},
+		{10, 80 * time.Millisecond}, // clamped
+	}
+	for _, tc := range cases {
+		if got := recvErrorBackoff(tc.failures); got != tc.want {
+			t.Fatalf("recvErrorBackoff(%d) = %v, want %v", tc.failures, got, tc.want)
+		}
+	}
+}
+
+// noErrorResponse fakes the response shell sendLoop groups answers into.
 
 // noErrorResponse fakes the response shell sendLoop groups answers into.
 func noErrorResponse(id uint16) *Message {
