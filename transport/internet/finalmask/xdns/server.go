@@ -39,12 +39,9 @@ var (
 
 var errQueueLimitReached = go_errors.New("xdns per-client queue limit reached")
 
-var (
-	maxUDPPayload         = 1280 - 40 - 8
-	maxEncodedPayloadTXT  = computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeTXT)
-	maxEncodedPayloadA    = computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeA)
-	maxEncodedPayloadAAAA = computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeAAAA)
-)
+// maxUDPPayload bounds the on-wire response; the per-type encoded payload
+// ceilings live behind the lazily evaluated limitsOnce in record_transport.go.
+var maxUDPPayload = 1280 - 40 - 8
 
 // recvErrorBackoff spaces out consecutive transient UDP read failures on the
 // receive loops exponentially, capped, so a flapping interface cannot spin a
@@ -440,7 +437,7 @@ func (c *xdnsConnServer) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	limit := maxEncodedPayloadForType(q.rrType)
 	if q.rrType == 0 {
-		limit = maxEncodedPayloadTXT
+		limit = maxEncodedPayloadForType(RRTypeTXT)
 	}
 	if len(p)+2 > limit {
 		errors.LogDebug(context.Background(), addr, " mask write err short write ", len(p), "+2 > ", limit)

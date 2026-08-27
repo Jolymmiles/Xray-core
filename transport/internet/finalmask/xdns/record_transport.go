@@ -1,17 +1,38 @@
 package xdns
 
-import "bytes"
+import (
+	"bytes"
+	"sync"
+)
 
 const ipRecordHeaderSize = 2
 
+// rrtypeLimits caches the maximum encoded payload per RR type. The values
+// are computed lazily on first use instead of at package init so a future
+// formula regression cannot crash every process at startup.
+type rrtypeLimits struct {
+	txt, a, aaaa int
+}
+
+var limitsOnce = sync.OnceValue(func() rrtypeLimits {
+	return rrtypeLimits{
+		txt:  computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeTXT),
+		a:    computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeA),
+		aaaa: computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeAAAA),
+	}
+})
+
+// maxEncodedPayloadForType pins wire compatibility: tests freeze these
+// numbers, and peers built against older releases expect them byte-stable.
 func maxEncodedPayloadForType(rrType uint16) int {
+	limits := limitsOnce()
 	switch rrType {
 	case RRTypeA:
-		return maxEncodedPayloadA
+		return limits.a
 	case RRTypeAAAA:
-		return maxEncodedPayloadAAAA
+		return limits.aaaa
 	default:
-		return maxEncodedPayloadTXT
+		return limits.txt
 	}
 }
 
