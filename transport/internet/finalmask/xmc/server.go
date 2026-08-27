@@ -328,6 +328,16 @@ func (c *serverConn) SetWriteDeadline(t time.Time) error {
 	return c.deadlines.setWriteDeadline(t)
 }
 
+// CloseWrite forwards half-close to the underlying connection. Masked server
+// connections feed downstream REALITY handshakes, whose type assertion
+// (reality.CloseWriteConn) requires this hook to survive mask wrapping.
+func (c *serverConn) CloseWrite() error {
+	if closeWriter, ok := c.c.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return nil
+}
+
 func wrapConnServer(c net.Conn, profiles []loginProfile, password string, rsaPrivateKeyDER []byte, rsaPublicKey []byte) (*serverConn, error) {
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("empty profiles")
