@@ -4,6 +4,7 @@ import (
 	go_errors "errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -92,6 +93,84 @@ func newTestServer(t *testing.T, maxQ int) (*xdnsConnServer, *fakeUDP, func()) {
 		maxResponseDelay = savedDelay
 	}
 	return conn, conn.PacketConn.(*fakeUDP), cleanup
+}
+
+// newTestClientDirect builds an xdnsConnClient without starting its loops so
+// queue behavior is observable synchronously.
+func newTestClientDirect(queueCap int) *xdnsConnClient {
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
+	conn := &xdnsConnClient{
+		PacketConn:    newFakeUDP(),
+		resolverAddrs: []*net.UDPAddr{addr},
+		resolverTypes: []uint16{RRTypeTXT},
+		resolverSend:  map[string]*atomic.Uint32{addr.String(): {}},
+		clientID:      make([]byte, 8),
+		domains:       []Name{testDomain},
+		pollChan:      make(chan struct{}, pollLimit),
+		readQueue:     make(chan *packet, 4),
+		writeQueue:    make(chan *packet, queueCap),
+		maxPayload:    []int{maxPayloadForDomain(testDomain, make([]byte, 8))},
+	}
+	return conn
+}
+
+func TestXdnsLossObservable(t *testing.T) {
+	t.Run("oversize payload rejected", func(t *testing.T) {
+		conn := newTestClientDirect(4)
+		defer func() { _ = conn.Close() }()
+		payload := make([]byte, 300) // far beyond any encodable name
+		if n, err := conn.WriteTo(payload, clientAddr(1)); err == nil || n != 0 {
+			t.Fatalf("oversize WriteTo returned (%d, %v), want (0, error)", n, err)
+		}
+	})
+
+	t.Run("queue full surfaces", func(t *testing.T) {
+		saved := enqueueBlockWindow
+		enqueueBlockWindow = time.Millisecond
+		defer func() { enqueueBlockWindow = saved }()
+
+		conn := newTestClientDirect(2)
+		defer func() { _ = conn.Close() }()
+		ok := clientAddr(1)
+		for i := 0; i < 2; i++ {
+			if _, err := conn.WriteTo([]byte{byte(i)}, ok); err != nil {
+				t.Fatalf("warm-up write %d: %v", i, err)
+			}
+		}
+		if n, err := conn.WriteTo([]byte("third"), ok); n != 0 || err == nil {
+			t.Fatalf("over-cap WriteTo returned (%d, %v), want (0, error)", n, err)
+		}
+	})
+
+	t.Run("short read buffer reports", func(t *testing.T) {
+		conn := newTestClientDirect(4)
+		defer func() { _ = conn.Close() }()
+		conn.readQueue <- &packet{p: make([]byte, 16), addr: clientAddr(9)}
+		n, _, err := conn.ReadFrom(make([]byte, 4))
+		if n != 0 || err == nil {
+			t.Fatalf("short-buffer ReadFrom returned (%d, nil-want-err)", n)
+		}
+	})
+
+	t.Run("server oversized frame surfaces", func(t *testing.T) {
+		conn, _, cleanup := newTestServer(t, 16)
+		defer cleanup()
+		addr := clientAddr(42)
+
+		conn.mutex.Lock()
+		conn.writeQueueMap[addr.String()] = &queue{
+			last:   time.Now(),
+			rrType: RRTypeA,
+			queue:  make(chan []byte, 4),
+			stash:  make(chan []byte, 1),
+		}
+		conn.mutex.Unlock()
+
+		big := make([]byte, maxEncodedPayloadForType(RRTypeA))
+		if n, err := conn.WriteTo(big, addr); err == nil || n != 0 {
+			t.Fatalf("server oversize WriteTo returned (%d, %v), want error", n, err)
+		}
+	})
 }
 
 // noErrorResponse fakes the response shell sendLoop groups answers into.

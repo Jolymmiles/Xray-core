@@ -23,6 +23,10 @@ const (
 var (
 	idleTimeout      = 10 * time.Second
 	maxResponseDelay = 1 * time.Second
+
+	// Vars so tests can tighten them; treat as constants in production.
+	queueClientCap = 512
+	queueStashCap  = 1
 	// maxQueues bounds writeQueueMap cardinality. Keys are attacker-chosen
 	// clientIDs decoded from query labels, so the table must be capped;
 	// otherwise a unique-ID flood pins unbounded memory on a pre-auth
@@ -152,8 +156,8 @@ func (c *xdnsConnServer) lookupOrCreateQueue(addr net.Addr) (*queue, bool) {
 			return nil, true
 		}
 		q = &queue{
-			queue: make(chan []byte, 512),
-			stash: make(chan []byte, 1),
+			queue: make(chan []byte, queueClientCap),
+			stash: make(chan []byte, queueStashCap),
 		}
 		c.writeQueueMap[key] = q
 	}
@@ -391,18 +395,21 @@ func (c *xdnsConnServer) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	if len(p)+2 > limit {
 		errors.LogDebug(context.Background(), addr, " mask write err short write ", len(p), "+2 > ", limit)
-		return 0, nil
+		return 0, errPayloadTooBig
 	}
 
 	buf := make([]byte, len(p))
 	copy(buf, p)
 
+	// Bounded block mirrors the client side: never drop silently.
+	timer := time.NewTimer(enqueueBlockWindow)
+	defer timer.Stop()
 	select {
 	case q.queue <- buf:
 		return len(p), nil
-	default:
-		// errors.LogDebug(context.Background(), addr, " mask write err queue full")
-		return 0, nil
+	case <-timer.C:
+		errors.LogDebug(context.Background(), addr, " mask write err queue full")
+		return 0, errQueueFull
 	}
 }
 

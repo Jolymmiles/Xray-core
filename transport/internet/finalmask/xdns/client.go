@@ -28,6 +28,16 @@ const (
 	pollLimit           = 16
 )
 
+var (
+	// Vars so tests can tighten them; treat as constants in production.
+	queueWriteCap      = 256
+	enqueueBlockWindow = 20 * time.Millisecond
+
+	errQueueFull     = go_errors.New("xdns write queue full")
+	errShortBuffer   = go_errors.New("xdns read buffer too small")
+	errPayloadTooBig = go_errors.New("xdns payload exceeds encoder limit")
+)
+
 var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 type packet struct {
@@ -42,7 +52,9 @@ type xdnsConnClient struct {
 	resolverTypes []uint16
 	// resolverIdx selects the next outbound resolver; written only by
 	// sendLoop, read by WriteTo callers.
-	resolverIdx  atomic.Uint32
+	resolverIdx atomic.Uint32
+	// maxPayload[i] is the largest payload encodable for resolver i.
+	maxPayload   []int
 	resolverSend map[string]*atomic.Uint32
 
 	clientID []byte
@@ -100,16 +112,24 @@ func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 		resolverAddrs: resolverAddrs,
 		resolverTypes: resolverTypes,
 		resolverSend:  resolverSend,
+		maxPayload:    make([]int, len(resolverTypes)),
 
 		clientID: make([]byte, 8),
 		domains:  domains,
 
 		pollChan:   make(chan struct{}, pollLimit),
-		readQueue:  make(chan *packet, 256),
-		writeQueue: make(chan *packet, 256),
+		readQueue:  make(chan *packet, queueWriteCap),
+		writeQueue: make(chan *packet, queueWriteCap),
 	}
 
 	common.Must2(rand.Read(conn.clientID))
+
+	// Measure the largest payload the encoder accepts per resolver suffix so
+	// oversize frames are rejected up front with a typed error instead of
+	// surfacing as a generic name-length failure mid-encode.
+	for i, dom := range conn.domains {
+		conn.maxPayload[i] = maxPayloadForDomain(dom, conn.clientID)
+	}
 
 	go conn.recvLoop()
 	go conn.sendLoop()
@@ -267,7 +287,7 @@ func (c *xdnsConnClient) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	}
 	if len(p) < len(packet.p) {
 		errors.LogDebug(context.Background(), packet.addr, " mask read err short buffer ", len(p), " ", len(packet.p))
-		return 0, packet.addr, nil
+		return 0, packet.addr, errShortBuffer
 	}
 	copy(p, packet.p)
 	return len(packet.p), packet.addr, nil
@@ -282,21 +302,29 @@ func (c *xdnsConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 
 	idx := c.resolverIdx.Load() % uint32(len(c.resolverAddrs))
+	if len(p) > c.maxPayload[idx] {
+		errors.LogDebug(context.Background(), addr, " xdns payload too large ", len(p), " > ", c.maxPayload[idx])
+		return 0, errPayloadTooBig
+	}
 	encoded, err := encode(p, c.clientID, c.domains[idx], c.resolverTypes[idx])
 	if err != nil {
 		errors.LogDebug(context.Background(), addr, " xdns wireformat err ", err, " ", len(p))
-		return 0, nil
+		return 0, err
 	}
 
+	// Bounded block: give the pipeline a short window to drain instead of
+	// dropping silently, then report the loss to the caller.
+	timer := time.NewTimer(enqueueBlockWindow)
+	defer timer.Stop()
 	select {
 	case c.writeQueue <- &packet{
 		p:    encoded,
 		addr: addr,
 	}:
 		return len(p), nil
-	default:
+	case <-timer.C:
 		errors.LogDebug(context.Background(), addr, " mask write err queue full")
-		return 0, nil
+		return 0, errQueueFull
 	}
 }
 
@@ -308,9 +336,8 @@ func (c *xdnsConnClient) Close() error {
 func encode(p []byte, clientID []byte, domain Name, qtype uint16) ([]byte, error) {
 	var decoded []byte
 	{
-		if len(p) >= 224 {
-			return nil, errors.New("too long")
-		}
+		// Payload size is bounded by the measured per-resolver limit checked
+		// in WriteTo; oversized input fails inside NewName below.
 		var buf bytes.Buffer
 		buf.Write(clientID[:])
 		n := numPadding
@@ -365,6 +392,22 @@ func encode(p []byte, clientID []byte, domain Name, qtype uint16) ([]byte, error
 	}
 
 	return buf, nil
+}
+
+// maxPayloadForDomain measures the largest payload the encoder accepts for a
+// resolver suffix, so oversize frames are rejected with a typed error instead
+// of failing inside NewName.
+func maxPayloadForDomain(domain Name, clientID []byte) int {
+	lo, hi := 0, 4096
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		if _, err := encode(make([]byte, mid), clientID, domain, RRTypeTXT); err == nil {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return lo
 }
 
 func chunks(p []byte, n int) [][]byte {
