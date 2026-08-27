@@ -357,6 +357,20 @@ func readRR(r io.ReadSeeker) (RR, error) {
 	if err != nil {
 		return rr, err
 	}
+	// Validate the claimed length against the remaining input before
+	// allocating: hostile RDLENGTH values must not churn attacker-sized
+	// slices that ReadFull would reject a moment later.
+	cur, seekErr := r.Seek(0, io.SeekCurrent)
+	if seekErr == nil {
+		end, endErr := r.Seek(0, io.SeekEnd)
+		if endErr == nil {
+			remaining := int(end - cur)
+			if int(rdLength) > remaining {
+				return rr, ErrTrailingBytes
+			}
+			r.Seek(cur, io.SeekStart)
+		}
+	}
 	rr.Data = make([]byte, rdLength)
 	_, err = io.ReadFull(r, rr.Data)
 	if err != nil {

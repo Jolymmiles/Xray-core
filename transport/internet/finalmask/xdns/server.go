@@ -286,6 +286,102 @@ func (c *xdnsConnServer) recvLoop() {
 	}
 }
 
+type groupAction int
+
+const (
+	groupEmit groupAction = iota // answers prepared on rec; send it
+	groupDrop                    // skip this record without a response
+	groupStop                    // connection closing; terminate the loop
+)
+
+// payloadChunkPrefix is the two-byte little-endian length header in front of
+// every queued chunk.
+const payloadChunkPrefix = 2
+
+// groupRecord batches queued chunks for rec into a single answer set,
+// preserving the original receive ladder. The batch window is armed once and
+// left to expire naturally so stale timers cannot collapse mid-batch
+// collection.
+func (c *xdnsConnServer) groupRecord(rec *record) (pending *record, action groupAction) {
+	payload := &bytes.Buffer{}
+	limit := maxEncodedPayloadForType(rec.Resp.Question[0].Type)
+	timer := time.NewTimer(maxResponseDelay)
+	defer timer.Stop()
+
+	dropped, gotAny := false, false
+	for {
+		c.mutex.Lock()
+		q, refused := c.lookupOrCreateQueue(rec.ClientAddr)
+		if q == nil {
+			c.mutex.Unlock()
+			if refused {
+				errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns queue limit reached, dropping response")
+				return nil, groupDrop
+			}
+			return nil, groupStop
+		}
+		q.rrType = rec.Resp.Question[0].Type
+		c.mutex.Unlock()
+
+		var p []byte
+		select {
+		case p = <-q.stash:
+		default:
+			select {
+			case p = <-q.stash:
+			case p = <-q.queue:
+			default:
+				select {
+				case p = <-q.stash:
+				case p = <-q.queue:
+				case <-timer.C:
+				case pending = <-c.ch:
+				}
+			}
+		}
+
+		if q.dead.Load() {
+			// Queue was idle-pruned mid-batch; anything built from reads on
+			// closed channels would be an empty artifact answer.
+			errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns queue pruned mid-batch, dropping response")
+			dropped = true
+			break
+		}
+
+		if len(p) == 0 {
+			break
+		}
+
+		limit -= payloadChunkPrefix + len(p)
+		if limit < 0 {
+			if payload.Len() == 0 {
+				errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns payload too large for rrtype ", rec.Resp.Question[0].Type, " ", len(p))
+			} else {
+				c.stash(q, p)
+			}
+			break
+		}
+
+		_ = binary.Write(payload, binary.BigEndian, uint16(len(p)))
+		payload.Write(p)
+		gotAny = true
+	}
+
+	if dropped || !gotAny {
+		// Suppress empty-answer artifacts: pruned or drained queues must not
+		// yield NOERROR records with zero chunks.
+		return pending, groupDrop
+	}
+
+	answer, err := answersForPayload(rec.Resp.Question[0], responseTTL, payload.Bytes())
+	if err != nil {
+		errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns encode err ", err)
+		return pending, groupDrop
+	}
+	rec.Resp.Answer = answer
+	return pending, groupEmit
+}
+
 func (c *xdnsConnServer) sendLoop() {
 	var nextRec *record
 	for {
@@ -301,88 +397,13 @@ func (c *xdnsConnServer) sendLoop() {
 			}
 		}
 
-		if rec.Resp.Rcode() == RcodeNoError && len(rec.Resp.Question) == 1 { // grouping
-			var payload bytes.Buffer
-			limit := maxEncodedPayloadForType(rec.Resp.Question[0].Type)
-			timer := time.NewTimer(maxResponseDelay)
-			dropped := false
-			gotAny := false
-
-			for {
-				c.mutex.Lock()
-				q, refused := c.lookupOrCreateQueue(rec.ClientAddr)
-				if q == nil {
-					c.mutex.Unlock()
-					if refused {
-						errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns queue limit reached, dropping response")
-						continue
-					}
-					return
-				}
-				q.rrType = rec.Resp.Question[0].Type
-				c.mutex.Unlock()
-
-				var p []byte
-
-				select {
-				case p = <-q.stash:
-				default:
-					select {
-					case p = <-q.stash:
-					case p = <-q.queue:
-					default:
-						select {
-						case p = <-q.stash:
-						case p = <-q.queue:
-						case <-timer.C:
-						case nextRec = <-c.ch:
-						}
-					}
-				}
-
-				timer.Reset(0)
-
-				if q.dead.Load() {
-					// Queue was idle-pruned mid-batch; anything built from
-					// reads on closed channels would be an empty artifact
-					// answer, so drop the response for this record.
-					errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns queue pruned mid-batch, dropping response")
-					dropped = true
-					break
-				}
-
-				if len(p) == 0 {
-					break
-				}
-
-				limit -= 2 + len(p)
-				if limit < 0 {
-					if payload.Len() == 0 {
-						errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns payload too large for rrtype ", rec.Resp.Question[0].Type, " ", len(p))
-						continue
-					}
-					c.stash(q, p)
-					break
-				}
-
-				// if len(p) > 65535 {
-				// 	panic(len(p))
-				// }
-
-				_ = binary.Write(&payload, binary.BigEndian, uint16(len(p)))
-				payload.Write(p)
-				gotAny = true
-			}
-
-			timer.Stop()
-			if dropped || !gotAny {
-				// Suppress empty-answer artifacts: pruned or drained queues
-				// must not yield NOERROR records with zero chunks.
-				continue
-			}
-			rec.Resp.Answer, err = answersForPayload(rec.Resp.Question[0], responseTTL, payload.Bytes())
-			if err != nil {
-				errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns encode err ", err)
+		if rec.Resp.Rcode() == RcodeNoError && len(rec.Resp.Question) == 1 {
+			prefetched, act := c.groupRecord(rec)
+			nextRec = prefetched
+			switch act {
+			case groupStop:
+				return
+			case groupDrop:
 				continue
 			}
 		}
