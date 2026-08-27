@@ -10,8 +10,8 @@ import (
 	"github.com/xtls/reality"
 
 	"github.com/xtls/xray-core/transport/internet/finalmask"
-	custommask "github.com/xtls/xray-core/transport/internet/finalmask/header/custom"
 	"github.com/xtls/xray-core/transport/internet/finalmask/fragment"
+	custommask "github.com/xtls/xray-core/transport/internet/finalmask/header/custom"
 	"github.com/xtls/xray-core/transport/internet/finalmask/sudoku"
 )
 
