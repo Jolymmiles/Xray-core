@@ -27,6 +27,9 @@ var (
 	// Vars so tests can tighten them; treat as constants in production.
 	queueClientCap = 512
 	queueStashCap  = 1
+
+	recvErrBackoffBase = 10 * time.Millisecond
+	recvErrBackoffMax  = time.Second
 	// maxQueues bounds writeQueueMap cardinality. Keys are attacker-chosen
 	// clientIDs decoded from query labels, so the table must be capped;
 	// otherwise a unique-ID flood pins unbounded memory on a pre-auth
@@ -42,6 +45,23 @@ var (
 	maxEncodedPayloadA    = computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeA)
 	maxEncodedPayloadAAAA = computeMaxEncodedPayloadForType(maxUDPPayload, RRTypeAAAA)
 )
+
+// recvErrorBackoff spaces out consecutive transient UDP read failures on the
+// receive loops exponentially, capped, so a flapping interface cannot spin a
+// core at 100%%.
+func recvErrorBackoff(consecutive int) time.Duration {
+	if consecutive <= 0 {
+		return 0
+	}
+	d := recvErrBackoffBase
+	for ; consecutive > 1; consecutive-- {
+		d *= 2
+		if d >= recvErrBackoffMax {
+			return recvErrBackoffMax
+		}
+	}
+	return d
+}
 
 func clientIDToAddr(clientID [8]byte) *net.UDPAddr {
 	ip := make(net.IP, 16)
@@ -183,6 +203,7 @@ func (c *xdnsConnServer) stash(queue *queue, p []byte) {
 func (c *xdnsConnServer) recvLoop() {
 	var buf [finalmask.UDPSize]byte
 
+	consecFails := 0
 	for {
 		if c.closed.Load() {
 			break
@@ -193,8 +214,11 @@ func (c *xdnsConnServer) recvLoop() {
 			if go_errors.Is(err, net.ErrClosed) {
 				break
 			}
+			consecFails++
+			time.Sleep(recvErrorBackoff(consecFails))
 			continue
 		}
+		consecFails = 0
 
 		query, err := MessageFromWireFormat(buf[:n])
 		if err != nil {
