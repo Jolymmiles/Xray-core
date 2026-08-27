@@ -1,6 +1,8 @@
 package xdns
 
 import (
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -70,6 +72,16 @@ func parseResolver(s string) (Name, string, uint16, error) {
 	if server == "" {
 		return nil, "", 0, errors.New("empty resolver server")
 	}
+	host, portStr, err := net.SplitHostPort(server)
+	if err != nil {
+		return nil, "", 0, errors.New("resolver server needs host:port").Base(err)
+	}
+	if net.ParseIP(host) == nil {
+		return nil, "", 0, errors.New("resolver server host is not an IP")
+	}
+	if _, err := strconv.Atoi(portStr); err != nil {
+		return nil, "", 0, errors.New("resolver server port invalid").Base(err)
+	}
 
 	spec, err := parseDomainSpec(head, "txt")
 	if err != nil {
@@ -77,4 +89,19 @@ func parseResolver(s string) (Name, string, uint16, error) {
 	}
 
 	return spec.name, server, spec.rrType, nil
+}
+
+// ValidateResolver reports whether s is a fully formed client resolver
+// endpoint ("domain+udp://host:port"). The conf layer reuses it so invalid
+// entries fail at config-build time under the single authoritative parser.
+func ValidateResolver(s string) error {
+	_, _, _, err := parseResolver(s)
+	return err
+}
+
+// ValidateDomainSpec reports whether s parses as a server domain spec with an
+// optional method suffix ("example.com[:txt|a|aaaa]").
+func ValidateDomainSpec(s string) error {
+	_, err := parseDomainSpec(s, "")
+	return err
 }
