@@ -310,7 +310,8 @@ func TestServerPrunedQueueNoArtifact(t *testing.T) {
 	q.dead.Store(true)
 	close(q.queue)
 	close(q.stash)
-	delete(conn.writeQueueMap, addr.String())
+	// The entry stays in the map until the pruner removes it; grouping must
+	// hit the dead flag instead of silently creating a fresh queue.
 	conn.mutex.Unlock()
 	time.Sleep(50 * time.Millisecond)
 
