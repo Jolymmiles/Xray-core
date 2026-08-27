@@ -112,6 +112,79 @@ func clientAddr(n int) net.Addr {
 	return clientIDToAddr(id)
 }
 
+func newTestClient(t *testing.T) net.PacketConn {
+	t.Helper()
+
+	c := &Config{
+		Resolvers: []string{"t.example+udp://127.0.0.1:53", "a.example+udp://127.0.0.2:53"},
+	}
+	conn, err := NewConnClient(c, newFakeUDP())
+	if err != nil {
+		t.Fatalf("NewConnClient: %v", err)
+	}
+	return conn
+}
+
+// TestXdnsConcurrentLifecycleStress hammers WriteTo/ReadFrom/Close from many
+// goroutines so the race detector polices every shared-field access between
+// sendLoop, recvLoop and packet users.
+func TestXdnsConcurrentLifecycleStress(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(*testing.T) net.PacketConn
+	}{
+		{"client", newTestClient},
+		{"server", func(t *testing.T) net.PacketConn {
+			c, _, cleanup := newTestServer(t, 32)
+			t.Cleanup(cleanup)
+			return c
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := tc.build(t)
+
+			const workers = 4
+			var wg sync.WaitGroup
+			stop := make(chan struct{})
+			// Close from a timer: blocked readers only drain once the
+			// lifecycle loops tear their queues down.
+			time.AfterFunc(400*time.Millisecond, func() { _ = conn.Close() })
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func(w int) {
+					defer wg.Done()
+					buf := make([]byte, 64)
+					i := 0
+					for {
+						select {
+						case <-stop:
+							return
+						default:
+						}
+						addr := clientAddr(w*1000 + i)
+						if i%2 == 0 {
+							if _, err := conn.WriteTo(buf[:30], addr); err != nil {
+								return
+							}
+						} else {
+							if _, _, err := conn.ReadFrom(buf); err != nil {
+								return
+							}
+						}
+						i++
+					}
+				}(w)
+			}
+
+			time.Sleep(700 * time.Millisecond)
+			close(stop)
+			wg.Wait()
+			// Double close must stay safe; wrappers own their socket.
+			_ = conn.Close()
+		})
+	}
+}
+
 func TestServerWriteQueueMapBounded(t *testing.T) {
 	conn, _, cleanup := newTestServer(t, 16)
 	defer cleanup()
