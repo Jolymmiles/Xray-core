@@ -40,8 +40,10 @@ type xdnsConnClient struct {
 
 	resolverAddrs []*net.UDPAddr
 	resolverTypes []uint16
-	resolverIdx   uint32
-	resolverSend  map[string]*atomic.Uint32
+	// resolverIdx selects the next outbound resolver; written only by
+	// sendLoop, read by WriteTo callers.
+	resolverIdx  atomic.Uint32
+	resolverSend map[string]*atomic.Uint32
 
 	clientID []byte
 	domains  []Name
@@ -50,7 +52,7 @@ type xdnsConnClient struct {
 	readQueue  chan *packet
 	writeQueue chan *packet
 
-	closed bool
+	closed atomic.Bool
 	mutex  sync.Mutex
 }
 
@@ -97,7 +99,6 @@ func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 
 		resolverAddrs: resolverAddrs,
 		resolverTypes: resolverTypes,
-		resolverIdx:   0,
 		resolverSend:  resolverSend,
 
 		clientID: make([]byte, 8),
@@ -120,7 +121,7 @@ func (c *xdnsConnClient) recvLoop() {
 	var buf [finalmask.UDPSize]byte
 
 	for {
-		if c.closed {
+		if c.closed.Load() {
 			break
 		}
 
@@ -187,7 +188,7 @@ func (c *xdnsConnClient) recvLoop() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	c.closed = true
+	c.closed.Store(true)
 	close(c.writeQueue)
 }
 
@@ -215,7 +216,8 @@ func (c *xdnsConnClient) sendLoop() {
 			default:
 			}
 		} else {
-			encoded, _ := encode(nil, c.clientID, c.domains[c.resolverIdx], c.resolverTypes[c.resolverIdx])
+			idx := c.resolverIdx.Load()
+			encoded, _ := encode(nil, c.clientID, c.domains[idx], c.resolverTypes[idx])
 			p = &packet{
 				p: encoded,
 			}
@@ -234,23 +236,27 @@ func (c *xdnsConnClient) sendLoop() {
 		}
 		pollTimer.Reset(pollDelay)
 
-		if c.closed {
+		if c.closed.Load() {
 			return
 		}
 
-		cur := c.resolverIdx
+		// Single writer: cursor advances locally and is published once, so
+		// concurrent WriteTo readers always observe a consistent slot.
+		cur := c.resolverIdx.Load()
 		curSend := c.resolverSend[c.resolverAddrs[cur].String()].Add(1)
 		_, _ = c.PacketConn.WriteTo(p.p, c.resolverAddrs[cur])
+		next := cur
 		for {
-			c.resolverIdx += 1
-			c.resolverIdx %= uint32(len(c.resolverAddrs))
-			if c.resolverIdx == cur {
+			cand := (next + 1) % uint32(len(c.resolverAddrs))
+			if cand == cur {
 				break
 			}
-			if c.resolverSend[c.resolverAddrs[c.resolverIdx].String()].Load() < curSend {
+			if c.resolverSend[c.resolverAddrs[cand].String()].Load() < curSend {
+				next = cand
 				break
 			}
 		}
+		c.resolverIdx.Store(next)
 	}
 }
 
@@ -271,11 +277,11 @@ func (c *xdnsConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.closed {
+	if c.closed.Load() {
 		return 0, io.ErrClosedPipe
 	}
 
-	idx := c.resolverIdx % uint32(len(c.resolverAddrs))
+	idx := c.resolverIdx.Load() % uint32(len(c.resolverAddrs))
 	encoded, err := encode(p, c.clientID, c.domains[idx], c.resolverTypes[idx])
 	if err != nil {
 		errors.LogDebug(context.Background(), addr, " xdns wireformat err ", err, " ", len(p))
@@ -295,7 +301,7 @@ func (c *xdnsConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (c *xdnsConnClient) Close() error {
-	c.closed = true
+	c.closed.Store(true)
 	return c.PacketConn.Close()
 }
 
