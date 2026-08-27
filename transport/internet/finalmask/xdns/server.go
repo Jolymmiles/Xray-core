@@ -82,7 +82,10 @@ type record struct {
 }
 
 type queue struct {
-	last   time.Time
+	last time.Time
+	// dead is set before the channels are closed so consumers can tell a
+	// pruned queue from an expired batch timer.
+	dead   atomic.Bool
 	rrType uint16
 	queue  chan []byte
 	stash  chan []byte
@@ -144,8 +147,7 @@ func (c *xdnsConnServer) clean() {
 
 		for key, q := range c.writeQueueMap {
 			if now.Sub(q.last) >= idleTimeout {
-				close(q.queue)
-				close(q.stash)
+				closeQueueLocked(q)
 				delete(c.writeQueueMap, key)
 			}
 		}
@@ -186,11 +188,18 @@ func (c *xdnsConnServer) lookupOrCreateQueue(addr net.Addr) (*queue, bool) {
 	return q, false
 }
 
+// closeQueueLocked retires a per-client queue. Callers hold c.mutex.
+func closeQueueLocked(q *queue) {
+	q.dead.Store(true)
+	close(q.queue)
+	close(q.stash)
+}
+
 func (c *xdnsConnServer) stash(queue *queue, p []byte) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.closed.Load() {
+	if c.closed.Load() || queue.dead.Load() {
 		return
 	}
 
@@ -275,8 +284,7 @@ func (c *xdnsConnServer) recvLoop() {
 
 	c.closed.Store(true)
 	for key, q := range c.writeQueueMap {
-		close(q.queue)
-		close(q.stash)
+		closeQueueLocked(q)
 		delete(c.writeQueueMap, key)
 	}
 }
@@ -300,6 +308,8 @@ func (c *xdnsConnServer) sendLoop() {
 			var payload bytes.Buffer
 			limit := maxEncodedPayloadForType(rec.Resp.Question[0].Type)
 			timer := time.NewTimer(maxResponseDelay)
+			dropped := false
+			gotAny := false
 
 			for {
 				c.mutex.Lock()
@@ -335,6 +345,15 @@ func (c *xdnsConnServer) sendLoop() {
 
 				timer.Reset(0)
 
+				if q.dead.Load() {
+					// Queue was idle-pruned mid-batch; anything built from
+					// reads on closed channels would be an empty artifact
+					// answer, so drop the response for this record.
+					errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns queue pruned mid-batch, dropping response")
+					dropped = true
+					break
+				}
+
 				if len(p) == 0 {
 					break
 				}
@@ -355,9 +374,15 @@ func (c *xdnsConnServer) sendLoop() {
 
 				_ = binary.Write(&payload, binary.BigEndian, uint16(len(p)))
 				payload.Write(p)
+				gotAny = true
 			}
 
 			timer.Stop()
+			if dropped || !gotAny {
+				// Suppress empty-answer artifacts: pruned or drained queues
+				// must not yield NOERROR records with zero chunks.
+				continue
+			}
 			rec.Resp.Answer, err = answersForPayload(rec.Resp.Question[0], responseTTL, payload.Bytes())
 			if err != nil {
 				errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns encode err ", err)
