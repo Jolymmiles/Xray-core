@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -15,10 +16,21 @@ import (
 )
 
 const (
-	idleTimeout      = 10 * time.Second
-	responseTTL      = 60
-	maxResponseDelay = 1 * time.Second
+	responseTTL = 60
 )
+
+// Vars so tests can tighten them; treat as constants in production.
+var (
+	idleTimeout      = 10 * time.Second
+	maxResponseDelay = 1 * time.Second
+	// maxQueues bounds writeQueueMap cardinality. Keys are attacker-chosen
+	// clientIDs decoded from query labels, so the table must be capped;
+	// otherwise a unique-ID flood pins unbounded memory on a pre-auth
+	// surface. Over-limit clients are refused until entries idle out.
+	maxQueues = 256
+)
+
+var errQueueLimitReached = go_errors.New("xdns per-client queue limit reached")
 
 var (
 	maxUDPPayload         = 1280 - 40 - 8
@@ -61,7 +73,7 @@ type xdnsConnServer struct {
 	readQueue     chan *packet
 	writeQueueMap map[string]*queue
 
-	closed bool
+	closed atomic.Bool
 	mutex  sync.Mutex
 }
 
@@ -100,7 +112,7 @@ func (c *xdnsConnServer) clean() {
 		c.mutex.Lock()
 		defer c.mutex.Unlock()
 
-		if c.closed {
+		if c.closed.Load() {
 			return true
 		}
 
@@ -125,29 +137,36 @@ func (c *xdnsConnServer) clean() {
 	}
 }
 
-func (c *xdnsConnServer) ensureQueue(addr net.Addr) *queue {
-	if c.closed {
-		return nil
+// lookupOrCreateQueue returns the per-client write queue, creating it on
+// demand. When the table is full it reports refused=true; closed-shutdown is
+// reported as q==nil with refused=false, matching the historical contract.
+func (c *xdnsConnServer) lookupOrCreateQueue(addr net.Addr) (*queue, bool) {
+	if c.closed.Load() {
+		return nil, false
 	}
 
-	q, ok := c.writeQueueMap[addr.String()]
+	key := addr.String()
+	q, ok := c.writeQueueMap[key]
 	if !ok {
+		if len(c.writeQueueMap) >= maxQueues {
+			return nil, true
+		}
 		q = &queue{
 			queue: make(chan []byte, 512),
 			stash: make(chan []byte, 1),
 		}
-		c.writeQueueMap[addr.String()] = q
+		c.writeQueueMap[key] = q
 	}
 	q.last = time.Now()
 
-	return q
+	return q, false
 }
 
 func (c *xdnsConnServer) stash(queue *queue, p []byte) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.closed {
+	if c.closed.Load() {
 		return
 	}
 
@@ -161,7 +180,7 @@ func (c *xdnsConnServer) recvLoop() {
 	var buf [finalmask.UDPSize]byte
 
 	for {
-		if c.closed {
+		if c.closed.Load() {
 			break
 		}
 
@@ -226,7 +245,7 @@ func (c *xdnsConnServer) recvLoop() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	c.closed = true
+	c.closed.Store(true)
 	for key, q := range c.writeQueueMap {
 		close(q.queue)
 		close(q.stash)
@@ -249,16 +268,20 @@ func (c *xdnsConnServer) sendLoop() {
 			}
 		}
 
-		if rec.Resp.Rcode() == RcodeNoError && len(rec.Resp.Question) == 1 {
+		if rec.Resp.Rcode() == RcodeNoError && len(rec.Resp.Question) == 1 { // grouping
 			var payload bytes.Buffer
 			limit := maxEncodedPayloadForType(rec.Resp.Question[0].Type)
 			timer := time.NewTimer(maxResponseDelay)
 
 			for {
 				c.mutex.Lock()
-				q := c.ensureQueue(rec.ClientAddr)
+				q, refused := c.lookupOrCreateQueue(rec.ClientAddr)
 				if q == nil {
 					c.mutex.Unlock()
+					if refused {
+						errors.LogDebug(context.Background(), rec.Addr, " ", rec.ClientAddr, " xdns queue limit reached, dropping response")
+						continue
+					}
 					return
 				}
 				q.rrType = rec.Resp.Question[0].Type
@@ -326,13 +349,13 @@ func (c *xdnsConnServer) sendLoop() {
 			buf[2] |= 0x02
 		}
 
-		if c.closed {
+		if c.closed.Load() {
 			return
 		}
 
 		_, err = c.PacketConn.WriteTo(buf, rec.Addr)
 		if go_errors.Is(err, net.ErrClosed) {
-			c.closed = true
+			c.closed.Store(true)
 			break
 		}
 	}
@@ -355,8 +378,11 @@ func (c *xdnsConnServer) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	q := c.ensureQueue(addr)
+	q, refused := c.lookupOrCreateQueue(addr)
 	if q == nil {
+		if refused {
+			return 0, errQueueLimitReached
+		}
 		return 0, io.ErrClosedPipe
 	}
 	limit := maxEncodedPayloadForType(q.rrType)
@@ -381,7 +407,7 @@ func (c *xdnsConnServer) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (c *xdnsConnServer) Close() error {
-	c.closed = true
+	c.closed.Store(true)
 	return c.PacketConn.Close()
 }
 
