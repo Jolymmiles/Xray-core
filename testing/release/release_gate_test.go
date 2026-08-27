@@ -27,7 +27,7 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"TestSevenThousandExactOwnersEndAtZero",
 		"XRAY_SMUX_STRESS_CYCLES=50",
 		"XRAY_SMUX_STRESS_TCP_STREAMS=16",
-		"TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstV26815",
+		"TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstPreviousRelease",
 		"TestRemnaNodeLinuxReleaseEnvironment",
 		"XRAY_STRUCTURAL_SOAK_SECONDS",
 		"mixed-path soak cycle",
@@ -95,6 +95,11 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"\n  release:\n",
 		"\n  push:\n",
 		"\n  pull_request:\n",
+	})
+	assertFileContains(t, filepath.Join(root, "common", "singmux", "candidate_performance_integration_test.go"), []string{
+		"b7bdfb03fa582cd691197593cc853f6ea209d04f",
+		"v26.8.25-1457",
+		"TestCandidatePerformanceAgainstPreviousRelease",
 	})
 	assertFileContains(t, filepath.Join(root, "common", "singmux", "TESTING.md"), []string{
 		"testing/release/structural_presence.sh linux",

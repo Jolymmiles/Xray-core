@@ -65,8 +65,22 @@ func acceptsProxyProtocol(s *internet.MemoryStreamConfig) bool {
 	return s != nil && s.SocketSettings != nil && s.SocketSettings.AcceptProxyProtocol
 }
 
-func physicalPeerFromConn(conn net.Conn, acceptProxyProtocol bool) netip.Addr {
-	if acceptProxyProtocol {
+func trustsXForwardedFor(stream *internet.MemoryStreamConfig) bool {
+	return stream != nil && stream.SocketSettings != nil && len(stream.SocketSettings.TrustedXForwardedFor) > 0
+}
+
+// physicalPeerFromConn resolves the presence identity of a stream. When the
+// inbound explicitly configures trustedXForwardedFor, the operator has declared
+// the effective remote address trustworthy, so it wins over the accepted PROXY
+// source; otherwise provenance is resolved as before.
+func physicalPeerFromConn(conn net.Conn, stream *internet.MemoryStreamConfig) netip.Addr {
+	if trustsXForwardedFor(stream) {
+		if peer, ok := net.CanonicalPhysicalPeer(net.EffectiveAddress(conn.RemoteAddr())); ok {
+			return peer
+		}
+	}
+
+	if acceptsProxyProtocol(stream) {
 		peer, _ := net.AcceptedProxyPeer(conn)
 		return peer
 	}
@@ -93,7 +107,7 @@ func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
-	physicalPeer := physicalPeerFromConn(conn, acceptsProxyProtocol(w.stream))
+	physicalPeer := physicalPeerFromConn(conn, w.stream)
 
 	outbound := session.Outbound{}
 	if w.recvOrigDest {
@@ -535,7 +549,7 @@ func (w *dsWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
 	sid := session.NewID()
 	ctx = c.ContextWithID(ctx, sid)
-	physicalPeer := physicalPeerFromConn(conn, acceptsProxyProtocol(w.stream))
+	physicalPeer := physicalPeerFromConn(conn, w.stream)
 
 	if w.uplinkCounter != nil || w.downlinkCounter != nil {
 		conn = &stat.CounterConnection{

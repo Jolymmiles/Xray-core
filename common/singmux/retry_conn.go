@@ -30,13 +30,21 @@ type retryConn struct {
 
 	confirmed     bool
 	replayAllowed bool
-	retried       bool
+	retries       int
+	maxRetries    int
 	halfClose     bool
 	writeClosed   bool
 	closed        bool
 }
 
 func newRetryConn(ctx context.Context, initial net.Conn, opener func(context.Context) (net.Conn, error)) *retryConn {
+	return newBoundedRetryConn(ctx, initial, opener, 1)
+}
+
+func newBoundedRetryConn(ctx context.Context, initial net.Conn, opener func(context.Context) (net.Conn, error), maxRetries int) *retryConn {
+	if maxRetries < 1 {
+		maxRetries = 1
+	}
 	halfClose := false
 	if _, ok := initial.(interface{ CloseWrite() error }); ok {
 		halfClose = true
@@ -51,6 +59,7 @@ func newRetryConn(ctx context.Context, initial net.Conn, opener func(context.Con
 		conn:          initial,
 		replaced:      make(chan struct{}, 1),
 		replayAllowed: true,
+		maxRetries:    maxRetries,
 		halfClose:     halfClose,
 	}
 	connection.releaseWrite()
@@ -90,7 +99,7 @@ func (c *retryConn) remember(payload []byte) {
 
 func (c *retryConn) replaceLocked(failed net.Conn) (net.Conn, []byte, error) {
 	c.stateMu.Lock()
-	if c.closed || c.conn != failed || c.confirmed || c.retried || !c.replayAllowed {
+	if c.closed || c.conn != failed || c.confirmed || c.retries >= c.maxRetries || !c.replayAllowed {
 		current := c.conn
 		c.stateMu.Unlock()
 		if current == nil {
@@ -98,10 +107,14 @@ func (c *retryConn) replaceLocked(failed net.Conn) (net.Conn, []byte, error) {
 		}
 		return nil, nil, errors.New("stream replay is unavailable")
 	}
-	c.retried = true
-	c.replayAllowed = false
-	replay := c.replay
-	c.replay = nil
+	c.retries++
+	if c.retries >= c.maxRetries {
+		c.replayAllowed = false
+	}
+	replay := append([]byte(nil), c.replay...)
+	if c.retries >= c.maxRetries {
+		c.replay = nil
+	}
 	c.stateMu.Unlock()
 
 	_ = failed.Close()
@@ -160,7 +173,8 @@ func (c *retryConn) Write(payload []byte) (int, error) {
 		}
 		if replayErr := writeFull(replacement, replay); replayErr != nil {
 			_ = replacement.Close()
-			return total, replayErr
+			writeErr = replayErr
+			continue
 		}
 	}
 	return total, nil
@@ -193,8 +207,17 @@ func (c *retryConn) Read(destination []byte) (int, error) {
 }
 
 func (c *retryConn) awaitResponse(connection net.Conn) error {
-	err := readStreamResponse(connection)
-	if err != nil {
+	for {
+		err := readStreamResponse(connection)
+		if err == nil {
+			c.stateMu.Lock()
+			if c.conn == connection {
+				c.confirmed = true
+				c.replay = nil
+			}
+			c.stateMu.Unlock()
+			return nil
+		}
 		var rejected *streamResponseError
 		if errors.As(err, &rejected) {
 			return err
@@ -215,37 +238,50 @@ func (c *retryConn) awaitResponse(connection net.Conn) error {
 			return err
 		}
 		if current != connection {
-			connection = current
 			if ownsWrite {
 				c.releaseWrite()
 			}
-		} else if !ownsWrite {
-			return err
-		} else {
-			replacement, replay, retryErr := c.replaceLocked(connection)
-			if retryErr != nil {
-				c.releaseWrite()
+			connection = current
+			continue
+		}
+		if !ownsWrite {
+			select {
+			case <-c.writePermit:
+				ownsWrite = true
+			case <-c.ctx.Done():
+				return c.ctx.Err()
+			}
+			current, currentErr = c.current()
+			if currentErr != nil {
+				if ownsWrite {
+					c.releaseWrite()
+				}
 				return err
 			}
-			connection = replacement
-			go func() {
-				if replayErr := writeFull(replacement, replay); replayErr != nil {
-					_ = replacement.Close()
+			if current != connection {
+				if ownsWrite {
+					c.releaseWrite()
 				}
-				c.releaseWrite()
-			}()
+				connection = current
+				continue
+			}
 		}
-		if err := readStreamResponse(connection); err != nil {
+		if !ownsWrite {
 			return err
 		}
+		replacement, replay, retryErr := c.replaceLocked(connection)
+		if retryErr != nil {
+			c.releaseWrite()
+			return err
+		}
+		connection = replacement
+		go func() {
+			if replayErr := writeFull(replacement, replay); replayErr != nil {
+				_ = replacement.Close()
+			}
+			c.releaseWrite()
+		}()
 	}
-	c.stateMu.Lock()
-	if c.conn == connection {
-		c.confirmed = true
-		c.replay = nil
-	}
-	c.stateMu.Unlock()
-	return nil
 }
 
 func (c *retryConn) SupportsHalfClose() bool { return c.halfClose }
