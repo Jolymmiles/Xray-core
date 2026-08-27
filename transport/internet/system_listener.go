@@ -58,6 +58,34 @@ func (c *acceptedProxyProtocolConn) AcceptedProxyPeer() netip.Addr {
 	return c.acceptedPeer
 }
 
+// CloseWrite forwards half-close to the physical connection. proxyproto.Conn
+// re-exports ReadFrom/WriteTo/TCPConn/UnixConn/UDPConn but neither CloseWrite
+// nor SyscallConn, so without these hooks REALITY's server handshake type
+// assertion (reality.CloseWriteConn) panics on any composition that reaches
+// the wrapper without an outer provenance carrier. Underlying connections that
+// cannot half-close degrade to a silent no-FIN rather than crashing the accept
+// goroutine; REALITY ignores the returned error, matching that fail-soft trade.
+func (c *acceptedProxyProtocolConn) CloseWrite() error {
+	if c == nil || c.Conn == nil {
+		return errors.New("cannot CloseWrite a nil PROXY protocol connection")
+	}
+	if closer, ok := c.Conn.Raw().(interface{ CloseWrite() error }); ok {
+		return closer.CloseWrite()
+	}
+	return errors.New("underlying connection does not support CloseWrite")
+}
+
+// SyscallConn keeps tproxy and redirect consumers working behind the wrapper.
+func (c *acceptedProxyProtocolConn) SyscallConn() (syscall.RawConn, error) {
+	if c == nil || c.Conn == nil {
+		return nil, errors.New("cannot access RawConn of a nil PROXY protocol connection")
+	}
+	if sc, ok := c.Conn.Raw().(syscall.Conn); ok {
+		return sc.SyscallConn()
+	}
+	return nil, errors.New("underlying connection does not expose a RawConn")
+}
+
 func (l *physicalPeerListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
