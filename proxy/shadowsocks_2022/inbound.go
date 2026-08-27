@@ -103,27 +103,6 @@ func (i *Inbound) Process(ctx context.Context, network net.Network, connection s
 	}
 }
 
-// accessContext converts metadata.Destination once, attaches the access
-// message and logs the request. The access log derives its "network" field
-// from To.String(), and only an Xray net.Destination renders the "tcp:"/"udp:"
-// prefix it looks for; sing-box's M.Socksaddr renders a bare host:port, so
-// passing it dropped the field on every Shadowsocks-2022 connection and made
-// UDP (calls, QUIC, games) invisible in the logs fleet-wide.
-func accessContext(ctx context.Context, metadata M.Metadata, network net.Network, email string) (context.Context, net.Destination, error) {
-	destination, err := singbridge.ToDestination(metadata.Destination, network)
-	if err != nil {
-		return ctx, destination, err
-	}
-	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-		From:   metadata.Source,
-		To:     destination,
-		Status: log.AccessAccepted,
-		Email:  email,
-	})
-	errors.LogInfo(ctx, "tunnelling request to ", destination)
-	return ctx, destination, nil
-}
-
 func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) (err error) {
 	// proxy.Process is called bare in this tree -- singbridge.RecoverTo.
 	defer singbridge.RecoverTo(&err, "shadowsocks_2022.Inbound.NewConnection")
@@ -132,11 +111,18 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 		Email: i.email,
 		Level: uint32(i.level),
 	}
-	ctx, destination, err := accessContext(ctx, metadata, net.Network_TCP, i.email)
+	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
+		From:   metadata.Source,
+		To:     metadata.Destination,
+		Status: log.AccessAccepted,
+		Email:  i.email,
+	})
+	errors.LogInfo(ctx, "tunnelling request to tcp:", metadata.Destination)
+	dispatcher := session.DispatcherFromContext(ctx)
+	destination, err := singbridge.ToDestination(metadata.Destination, net.Network_TCP)
 	if err != nil {
 		return err
 	}
-	dispatcher := session.DispatcherFromContext(ctx)
 	link, err := dispatcher.Dispatch(ctx, destination)
 	if err != nil {
 		return err
@@ -152,11 +138,18 @@ func (i *Inbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 		Email: i.email,
 		Level: uint32(i.level),
 	}
-	ctx, destination, err := accessContext(ctx, metadata, net.Network_UDP, i.email)
+	ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
+		From:   metadata.Source,
+		To:     metadata.Destination,
+		Status: log.AccessAccepted,
+		Email:  i.email,
+	})
+	errors.LogInfo(ctx, "tunnelling request to udp:", metadata.Destination)
+	dispatcher := session.DispatcherFromContext(ctx)
+	destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)
 	if err != nil {
 		return err
 	}
-	dispatcher := session.DispatcherFromContext(ctx)
 	link, err := dispatcher.Dispatch(ctx, destination)
 	if err != nil {
 		return err
