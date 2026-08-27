@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -77,6 +78,33 @@ type staleHandshakeDialer struct {
 	bytesBeforeClose int64
 	dials            atomic.Int32
 }
+
+type resetAfterHandshakeSession struct{}
+
+type resetAfterHandshakeConn struct {
+	writes atomic.Int32
+}
+
+func (*resetAfterHandshakeSession) OpenStream(context.Context, func()) (net.Conn, error) {
+	return new(resetAfterHandshakeConn), nil
+}
+func (*resetAfterHandshakeSession) NumStreams() int { return 0 }
+func (*resetAfterHandshakeSession) IsClosed() bool  { return false }
+func (*resetAfterHandshakeSession) Close() error    { return nil }
+
+func (*resetAfterHandshakeConn) Read([]byte) (int, error) { return 0, syscall.ECONNRESET }
+func (c *resetAfterHandshakeConn) Write(payload []byte) (int, error) {
+	if c.writes.Add(1) <= 2 {
+		return len(payload), nil
+	}
+	return 0, syscall.ECONNRESET
+}
+func (*resetAfterHandshakeConn) Close() error                     { return nil }
+func (*resetAfterHandshakeConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (*resetAfterHandshakeConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (*resetAfterHandshakeConn) SetDeadline(time.Time) error      { return nil }
+func (*resetAfterHandshakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (*resetAfterHandshakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 type blockedHandshakeDialer struct{}
 
@@ -466,6 +494,124 @@ func TestClientRetriesStaleCarrierWithBufferedTCPPayload(t *testing.T) {
 	cancel()
 	select {
 	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch did not stop after cancellation")
+	}
+}
+
+func TestClientRetrySkipsResetCarrierForHealthyPooledSibling(t *testing.T) {
+	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
+	dialer := &countingServiceDialer{service: NewService(dispatcher)}
+	client := &Client{
+		dialer:           dialer,
+		protocol:         "smux",
+		logicalHalfClose: "off",
+		maxConnections:   4,
+		streamLimit:      defaultMinStreams,
+	}
+	healthy, err := client.createSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.sessions = []clientSession{new(resetAfterHandshakeSession), healthy}
+	defer client.Close()
+
+	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
+	clientLink, peerLink := linkPair()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dispatchResult := make(chan error, 1)
+	go func() { dispatchResult <- client.Dispatch(ctx, clientLink, destination) }()
+
+	if err := peerLink.Writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("hello"))}); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		buffers buf.MultiBuffer
+		err     error
+	}
+	response := make(chan readResult, 1)
+	go func() {
+		buffers, err := peerLink.Reader.ReadMultiBuffer()
+		response <- readResult{buffers: buffers, err: err}
+	}()
+	select {
+	case result := <-response:
+		if result.err != nil {
+			t.Fatalf("read after pooled stale carrier reset: %v", result.err)
+		}
+		defer buf.ReleaseMulti(result.buffers)
+		if got := result.buffers.String(); got != "hello" {
+			t.Fatalf("response = %q, want hello", got)
+		}
+	case err := <-dispatchResult:
+		t.Fatalf("dispatch failed instead of reusing the healthy pooled carrier: %v", err)
+	case <-ctx.Done():
+		t.Fatal("healthy pooled carrier recovery timed out")
+	}
+	if got := dialer.dials.Load(); got != 1 {
+		t.Fatalf("carrier dials = %d, want the one preloaded healthy carrier", got)
+	}
+	cancel()
+	select {
+	case <-dispatchResult:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch did not stop after cancellation")
+	}
+}
+
+func TestClientRetryEvictsEveryDeadSiblingThenDials(t *testing.T) {
+	dispatcher := &echoDispatcher{target: make(chan X.Destination, 1)}
+	dialer := &countingServiceDialer{service: NewService(dispatcher)}
+	client := &Client{
+		dialer:           dialer,
+		protocol:         "smux",
+		logicalHalfClose: "off",
+		maxConnections:   4,
+		streamLimit:      defaultMinStreams,
+	}
+	client.sessions = []clientSession{new(resetAfterHandshakeSession), new(resetAfterHandshakeSession)}
+	defer client.Close()
+
+	destination := X.TCPDestination(X.DomainAddress("example.com"), 443)
+	clientLink, peerLink := linkPair()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dispatchResult := make(chan error, 1)
+	go func() { dispatchResult <- client.Dispatch(ctx, clientLink, destination) }()
+
+	if err := peerLink.Writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("hello"))}); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		buffers buf.MultiBuffer
+		err     error
+	}
+	response := make(chan readResult, 1)
+	go func() {
+		buffers, err := peerLink.Reader.ReadMultiBuffer()
+		response <- readResult{buffers: buffers, err: err}
+	}()
+	select {
+	case result := <-response:
+		if result.err != nil {
+			t.Fatalf("read after evicting every dead sibling: %v", result.err)
+		}
+		defer buf.ReleaseMulti(result.buffers)
+		if got := result.buffers.String(); got != "hello" {
+			t.Fatalf("response = %q, want hello", got)
+		}
+	case err := <-dispatchResult:
+		t.Fatalf("dispatch failed instead of dialing after dead siblings: %v", err)
+	case <-ctx.Done():
+		t.Fatal("dead-sibling recovery timed out")
+	}
+	if got := dialer.dials.Load(); got != 1 {
+		t.Fatalf("carrier dials = %d, want 1 new carrier after both siblings reset", got)
+	}
+	cancel()
+	select {
+	case <-dispatchResult:
 	case <-time.After(time.Second):
 		t.Fatal("dispatch did not stop after cancellation")
 	}

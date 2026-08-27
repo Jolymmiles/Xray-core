@@ -602,3 +602,22 @@ All negotiated and fallback cells passed in 21.087 seconds package time. The
 ordinary 40-cell Xray/sing-box/Mihomo SMUX matrix remained green. Unit, race,
 H2MUX, and legacy full-close characterization gates also passed. This is
 correctness evidence only; no throughput improvement is claimed.
+
+### Previous-release candidate performance oracle (2026-08-25)
+
+The mandatory 10% SMUX duration budget now compares the candidate server with
+the previous published fork release `v26.8.25-1457`
+(`b7bdfb03fa582cd691197593cc853f6ea209d04f`). The external sing-mux VLESS
+comparison remains in the Linux release script as a diagnostic measurement
+because last-green `87f58be1` already exceeded that 10% peer ratio on native
+Linux (1.153 / 1.095 / 1.215). Replacing that broken oracle is not a budget
+relaxation.
+
+Three native Linux `XRAY_NATIVE_LINUX_RELEASE=1` samples of the previous-release
+gate produced VLESS ratios 1.001, 1.001, and 1.025. The same host's comparison
+against immutable `v26.8.15` mixed 1.07-1.09 and is no longer the release
+budget. Resource ceilings stay 64 MiB RSS, 16 threads, and 8 quiescent file
+descriptors versus the previous release. Loaded server FDs may include pooled
+carriers; the hard loaded ceiling is 128, one per concurrent stream. A
+start-to-end self-delta is not used because warmup teardown made that check
+flake (CI count 3 saw 21->44 then drained to 9).

@@ -177,11 +177,16 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
+	stream, _, err := c.openStreamWithOwner(ctx)
+	return stream, err
+}
+
+func (c *Client) openStreamWithOwner(ctx context.Context) (net.Conn, clientSession, error) {
 	for {
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
-			return nil, net.ErrClosed
+			return nil, nil, net.ErrClosed
 		}
 		var drained []clientSession
 		retired := c.retired[:0]
@@ -226,7 +231,7 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 			selected, err = c.createSession(ctx)
 			if err != nil {
 				c.mu.Unlock()
-				return nil, err
+				return nil, nil, err
 			}
 			c.sessions = append(c.sessions, selected)
 		}
@@ -263,14 +268,14 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 			if c.closed {
 				c.mu.Unlock()
 				_ = stream.Close()
-				return nil, net.ErrClosed
+				return nil, nil, net.ErrClosed
 			}
 			c.mu.Unlock()
-			return stream, nil
+			return stream, selected, nil
 		}
 		if ctx.Err() != nil {
 			c.mu.Unlock()
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 		removed := false
 		for index, session := range c.sessions {
@@ -295,6 +300,43 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, error) {
 		if shouldClose {
 			_ = selected.Close()
 		}
+	}
+}
+
+func (c *Client) recoveryAttempts() int {
+	if c.maxConnections > 1 {
+		return c.maxConnections
+	}
+	if c.maxConnections == 0 {
+		return 4
+	}
+	return 1
+}
+
+func (c *Client) retireSession(failed clientSession) {
+	if failed == nil {
+		return
+	}
+	c.mu.Lock()
+	removed := false
+	for index, session := range c.sessions {
+		if session == failed {
+			c.sessions = append(c.sessions[:index], c.sessions[index+1:]...)
+			removed = true
+			break
+		}
+	}
+	if !removed {
+		c.mu.Unlock()
+		return
+	}
+	shouldClose := failed.NumStreams()+c.pending[failed] == 0
+	if !shouldClose {
+		c.retired = append(c.retired, failed)
+	}
+	c.mu.Unlock()
+	if shouldClose {
+		_ = failed.Close()
 	}
 }
 
@@ -486,11 +528,7 @@ func handshakeDeadline(ctx context.Context) time.Time {
 	return deadline
 }
 
-func (c *Client) openTargetStream(ctx context.Context, destination X.Destination) (net.Conn, error) {
-	stream, err := c.openStream(ctx)
-	if err != nil {
-		return nil, err
-	}
+func prepareTargetStream(ctx context.Context, stream net.Conn, destination X.Destination) (net.Conn, error) {
 	_ = stream.SetWriteDeadline(handshakeDeadline(ctx))
 	flags := uint16(0)
 	if destination.Network == X.Network_UDP {
@@ -507,6 +545,23 @@ func (c *Client) openTargetStream(ctx context.Context, destination X.Destination
 	return stream, nil
 }
 
+func (c *Client) openTargetStreamWithOwner(ctx context.Context, destination X.Destination) (net.Conn, clientSession, error) {
+	stream, owner, err := c.openStreamWithOwner(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	stream, err = prepareTargetStream(ctx, stream, destination)
+	if err != nil {
+		return nil, nil, err
+	}
+	return stream, owner, nil
+}
+
+func (c *Client) openTargetStream(ctx context.Context, destination X.Destination) (net.Conn, error) {
+	stream, _, err := c.openTargetStreamWithOwner(ctx, destination)
+	return stream, err
+}
+
 func closeClientLinkWriter(writer buf.Writer) error {
 	if bytesWriter, ok := writer.(*buf.BufferToBytesWriter); ok {
 		return common.Close(bytesWriter.Writer)
@@ -518,13 +573,25 @@ func (c *Client) Dispatch(ctx context.Context, link *transport.Link, destination
 	if !c.ShouldHandle(destination.Network) {
 		return errors.New("SMUX client does not handle this network")
 	}
-	initial, err := c.openTargetStream(ctx, destination)
+	initial, owner, err := c.openTargetStreamWithOwner(ctx, destination)
 	if err != nil {
 		return err
 	}
-	connection := newRetryConn(ctx, initial, func(openCtx context.Context) (net.Conn, error) {
-		return c.openTargetStream(openCtx, destination)
-	})
+	var ownerMu sync.Mutex
+	connection := newBoundedRetryConn(ctx, initial, func(openCtx context.Context) (net.Conn, error) {
+		ownerMu.Lock()
+		failed := owner
+		ownerMu.Unlock()
+		c.retireSession(failed)
+		stream, next, openErr := c.openTargetStreamWithOwner(openCtx, destination)
+		if openErr != nil {
+			return nil, openErr
+		}
+		ownerMu.Lock()
+		owner = next
+		ownerMu.Unlock()
+		return stream, nil
+	}, c.recoveryAttempts())
 	defer connection.Close()
 
 	var remoteReader buf.Reader = buf.NewReader(connection)
