@@ -4,10 +4,9 @@ import (
 	"context"
 	"io"
 	stdnet "net"
+	"syscall"
 	"testing"
 	"time"
-
-	"syscall"
 
 	"github.com/xtls/reality"
 )
