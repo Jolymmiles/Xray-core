@@ -259,6 +259,84 @@ func TestReadFailureBackoffTable(t *testing.T) {
 
 // noErrorResponse fakes the response shell sendLoop groups answers into.
 
+// TestServerPrunedQueueNoArtifact proves responses routed to an
+// idle-pruned client queue are suppressed instead of emitting empty-answer
+// packets built from reads on closed channels.
+func TestServerPrunedQueueNoArtifact(t *testing.T) {
+	conn, stub, cleanup := newTestServer(t, 16)
+	defer cleanup()
+
+	addr := clientAddr(777)
+	conn.mutex.Lock()
+	q := &queue{
+		last:   time.Now(),
+		rrType: RRTypeTXT,
+		queue:  make(chan []byte, queueClientCap),
+		stash:  make(chan []byte, queueStashCap),
+	}
+	conn.writeQueueMap[addr.String()] = q
+	conn.mutex.Unlock()
+
+	local := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
+
+	select {
+	case q.queue <- []byte("healthy"):
+	default:
+		t.Fatal("prep fill failed")
+	}
+	select {
+	case conn.ch <- &record{Resp: noErrorResponse(1), Addr: local, ClientAddr: addr}:
+	case <-time.After(time.Second):
+		t.Fatal("stuck feeding healthy record")
+	}
+	waitWrites := func(n int) [][]byte {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			stub.mu.Lock()
+			w := append([][]byte(nil), stub.written...)
+			stub.mu.Unlock()
+			if len(w) >= n {
+				return w
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		return nil
+	}
+	if got := waitWrites(1); got == nil || len(got[0]) == 0 {
+		t.Fatalf("healthy record produced no write: %v", got != nil)
+	}
+
+	conn.mutex.Lock()
+	q.dead.Store(true)
+	close(q.queue)
+	close(q.stash)
+	delete(conn.writeQueueMap, addr.String())
+	conn.mutex.Unlock()
+	time.Sleep(50 * time.Millisecond)
+
+	stub.mu.Lock()
+	before := len(stub.written)
+	stub.mu.Unlock()
+
+	select {
+	case conn.ch <- &record{Resp: noErrorResponse(2), Addr: local, ClientAddr: addr}:
+	case <-time.After(time.Second):
+		t.Fatal("stuck feeding pruned record")
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		stub.mu.Lock()
+		now := len(stub.written)
+		stub.mu.Unlock()
+		if now > before {
+			cleanup()
+			t.Fatalf("pruned queue produced %d extra artifacts", now-before)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // noErrorResponse fakes the response shell sendLoop groups answers into.
 func noErrorResponse(id uint16) *Message {
 	return &Message{
