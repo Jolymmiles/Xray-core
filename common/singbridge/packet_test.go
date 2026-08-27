@@ -21,6 +21,9 @@ import (
 type multiDatagramReader struct {
 	perRead int
 	payload []byte
+	// handedOut keeps every buffer produced, so tests can require each one
+	// to be released afterwards rather than trusting a nil cached slice.
+	handedOut []*buf.Buffer
 }
 
 func (r *multiDatagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
@@ -29,6 +32,7 @@ func (r *multiDatagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		b := buf.New()
 		b.Write(r.payload)
 		mb = append(mb, b)
+		r.handedOut = append(r.handedOut, b)
 	}
 	return mb, nil
 }
@@ -106,8 +110,9 @@ func TestPacketConnWrapperReadPacketAfterClose(t *testing.T) {
 	timer := signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour)
 	defer timer.SetTimeout(0)
 
+	reader := &multiDatagramReader{perRead: 8, payload: []byte("payload")}
 	w := &PacketConnWrapper{
-		Reader: &multiDatagramReader{perRead: 8, payload: []byte("payload")},
+		Reader: reader,
 		Dest:   net.UDPDestination(net.LocalHostIP, 443),
 		T:      timer,
 	}
@@ -126,6 +131,14 @@ func TestPacketConnWrapperReadPacketAfterClose(t *testing.T) {
 	w.cachedMu.Unlock()
 	if cached != nil {
 		t.Fatalf("ReadPacket stashed %d buffers after Close; they would never be released", len(cached))
+	}
+	// A nil cached alone proves nothing: an implementation that dropped the
+	// tail on the floor would satisfy it too. Buffer.Release zeroes the
+	// struct, so every buffer the reader produced must now be empty.
+	for i, hb := range reader.handedOut {
+		if hb.Len() != 0 {
+			t.Fatalf("buffer %d of %d never reached the pool (Len=%d)", i+1, len(reader.handedOut), hb.Len())
+		}
 	}
 }
 
