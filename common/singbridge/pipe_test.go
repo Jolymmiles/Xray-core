@@ -24,7 +24,7 @@ func TestPipeConnWrapperRecoversPanic(t *testing.T) {
 
 	w := &PipeConnWrapper{
 		R: panickingIOReader{},
-		W: panickingWriter{},
+		W: &panickingWriter{},
 		T: timer,
 	}
 

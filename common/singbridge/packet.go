@@ -176,13 +176,23 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err 
 }
 
 func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksaddr) (err error) {
+	var vBuf *buf.Buffer
 	defer func() {
 		if r := recover(); r != nil {
 			err = panicError("singbridge.PacketConnWrapper.WritePacket", r)
 		}
-		if err != nil && w.T != nil {
-			// downlinkonly
-			w.T.SetTimeout(5 * time.Second)
+		if err != nil {
+			// The writer owns the buffer once WriteMultiBuffer has it: it may
+			// have released it before failing, or panicked before touching it.
+			// Release is a no-op on a buffer already back in the pool, so this
+			// covers both, exactly as PipeConnWrapper.Write does for its mb.
+			if vBuf != nil {
+				vBuf.Release()
+			}
+			if w.T != nil {
+				// downlinkonly
+				w.T.SetTimeout(5 * time.Second)
+			}
 		}
 	}()
 	w.T.Update()
@@ -190,7 +200,7 @@ func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksadd
 	if err != nil {
 		return err
 	}
-	vBuf := buf.New()
+	vBuf = buf.New()
 	vBuf.Write(buffer.Bytes())
 	vBuf.UDP = &endpoint
 	return w.WriteMultiBuffer(buf.MultiBuffer{vBuf})

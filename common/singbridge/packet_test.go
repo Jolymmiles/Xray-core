@@ -3,6 +3,7 @@ package singbridge
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -139,10 +140,26 @@ func (panickingReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	return nil, nil
 }
 
-type panickingWriter struct{}
+type panickingWriter struct {
+	// received keeps what the writer was handed, so tests can require the
+	// wrapper to be the one that returns it to the pool.
+	received buf.MultiBuffer
+}
 
-func (panickingWriter) WriteMultiBuffer(buf.MultiBuffer) error {
+func (p *panickingWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	p.received = mb
 	panic("write side exploded")
+}
+
+// failingWriter refuses the write without releasing what it was handed,
+// which the buffer-writer contract lets the caller defend against.
+type failingWriter struct {
+	received buf.MultiBuffer
+}
+
+func (f *failingWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	f.received = mb
+	return io.EOF
 }
 
 // TestPacketConnWrapperRecoversPanic asserts the containment the report asked
@@ -155,7 +172,7 @@ func TestPacketConnWrapperRecoversPanic(t *testing.T) {
 
 	w := &PacketConnWrapper{
 		Reader: panickingReader{},
-		Writer: panickingWriter{},
+		Writer: &panickingWriter{},
 		Dest:   net.UDPDestination(net.LocalHostIP, 443),
 		T:      timer,
 	}
@@ -184,6 +201,50 @@ func TestPacketConnWrapperRecoversPanic(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "panic in singbridge.PacketConnWrapper.WritePacket") {
 		t.Fatalf("WritePacket error does not name the panic: %v", err)
+	}
+}
+
+// TestPacketConnWrapperWritePacketReleasesBufferOnFailure pins the cleanup
+// the panic conversion owes the pool: the buffer WritePacket builds must be
+// released when the writer panics with it in its hands, or fails without
+// releasing it, not merely converted into an error. Buffer.Release zeroes
+// the struct, so a buffer that still carries its payload after the call is
+// one that was never returned.
+func TestPacketConnWrapperWritePacketReleasesBufferOnFailure(t *testing.T) {
+	timer := signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour)
+	defer timer.SetTimeout(0)
+
+	panicked := &panickingWriter{}
+	w := &PacketConnWrapper{
+		Reader: &multiDatagramReader{perRead: 1, payload: []byte("payload")},
+		Writer: panicked,
+		Dest:   net.UDPDestination(net.LocalHostIP, 443),
+		T:      timer,
+	}
+
+	wb := B.NewSize(2048)
+	defer wb.Release()
+	wb.Write([]byte("payload"))
+	if err := w.WritePacket(wb, ToSocksaddr(net.UDPDestination(net.LocalHostIP, 443))); err == nil {
+		t.Fatal("WritePacket returned no error for a panicking writer")
+	}
+	if len(panicked.received) != 1 {
+		t.Fatalf("panicking writer saw %d buffers; want 1", len(panicked.received))
+	}
+	if b := panicked.received[0]; b.Len() != 0 {
+		t.Fatalf("WritePacket left its buffer with the panicking writer unreleased (Len=%d)", b.Len())
+	}
+
+	refused := &failingWriter{}
+	w.Writer = refused
+	wb2 := B.NewSize(2048)
+	defer wb2.Release()
+	wb2.Write([]byte("payload"))
+	if err := w.WritePacket(wb2, ToSocksaddr(net.UDPDestination(net.LocalHostIP, 443))); err == nil {
+		t.Fatal("WritePacket returned no error for a failing writer")
+	}
+	if b := refused.received[0]; b.Len() != 0 {
+		t.Fatalf("WritePacket left its buffer with the failing writer unreleased (Len=%d)", b.Len())
 	}
 }
 
