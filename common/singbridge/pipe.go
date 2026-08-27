@@ -50,22 +50,21 @@ func (w *PipeConnWrapper) Close() error {
 }
 
 func (w *PipeConnWrapper) Read(b []byte) (n int, err error) {
-	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
 			n, err = 0, panicError("singbridge.PipeConnWrapper.Read", r)
 		}
-		if err != nil {
+		if err != nil && w.T != nil {
 			// uplinkonly
 			w.T.SetTimeout(2 * time.Second)
 		}
 	}()
+	w.T.Update()
 	n, err = w.R.Read(b)
 	return
 }
 
 func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
-	w.T.Update()
 	var mb buf.MultiBuffer
 	defer func() {
 		if r := recover(); r != nil {
@@ -76,10 +75,13 @@ func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 			// this is safe whichever side the failure came from.
 			n = 0
 			buf.ReleaseMulti(mb)
-			// downlinkonly
-			w.T.SetTimeout(5 * time.Second)
+			if w.T != nil {
+				// downlinkonly
+				w.T.SetTimeout(5 * time.Second)
+			}
 		}
 	}()
+	w.T.Update()
 	n = len(p)
 	pLen := len(p)
 	for pLen > 0 {

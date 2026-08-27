@@ -84,3 +84,21 @@ func (c *collectWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 }
 
 func (c *collectWriter) String() string { return string(c.b) }
+
+// TestPipeConnWrapperNilTimerBecomesError is the TCP counterpart of
+// TestPacketConnWrapperNilTimerBecomesError: the guard owns the method from
+// its first operation, and a nil timer fails as an error instead of ending
+// the process on sing's goroutine.
+func TestPipeConnWrapperNilTimerBecomesError(t *testing.T) {
+	w := &PipeConnWrapper{
+		R: strings.NewReader("payload"),
+		W: &collectWriter{},
+	}
+
+	if _, err := w.Read(make([]byte, 8)); err == nil {
+		t.Fatal("Read with a nil timer returned no error")
+	}
+	if _, err := w.Write([]byte("payload")); err == nil {
+		t.Fatal("Write with a nil timer returned no error")
+	}
+}

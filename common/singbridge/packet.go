@@ -145,16 +145,16 @@ func (w *PacketConnWrapper) stashCached(mb buf.MultiBuffer) {
 }
 
 func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err error) {
-	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
 			err = panicError("singbridge.PacketConnWrapper.ReadPacket", r)
 		}
-		if err != nil {
+		if err != nil && w.T != nil {
 			// uplinkonly
 			w.T.SetTimeout(2 * time.Second)
 		}
 	}()
+	w.T.Update()
 	if destination, ok := w.takeCached(buffer); ok {
 		return ToSocksaddr(destination), nil
 	}
@@ -176,16 +176,16 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err 
 }
 
 func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksaddr) (err error) {
-	w.T.Update()
 	defer func() {
 		if r := recover(); r != nil {
 			err = panicError("singbridge.PacketConnWrapper.WritePacket", r)
 		}
-		if err != nil {
+		if err != nil && w.T != nil {
 			// downlinkonly
 			w.T.SetTimeout(5 * time.Second)
 		}
 	}()
+	w.T.Update()
 	endpoint, err := ToDestination(destination, net.Network_UDP)
 	if err != nil {
 		return err

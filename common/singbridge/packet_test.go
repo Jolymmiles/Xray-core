@@ -200,3 +200,29 @@ func TestRecoverTo(t *testing.T) {
 		t.Fatalf("RecoverTo did not convert the panic: %v", err)
 	}
 }
+
+// TestPacketConnWrapperNilTimerBecomesError pins the guard to the whole
+// method: a wrapper whose T was never wired -- the shape of any future
+// constructor gap -- must fail as an error, not take the process down from a
+// sing goroutine, and the error branch must not re-panic on the same nil
+// timer when it arms the timeout.
+func TestPacketConnWrapperNilTimerBecomesError(t *testing.T) {
+	w := &PacketConnWrapper{
+		Reader: &multiDatagramReader{perRead: 2, payload: []byte("payload")},
+		Writer: &collectWriter{},
+		Dest:   net.UDPDestination(net.LocalHostIP, 443),
+	}
+
+	b := B.NewSize(2048)
+	defer b.Release()
+	if _, err := w.ReadPacket(b); err == nil {
+		t.Fatal("ReadPacket with a nil timer returned no error")
+	}
+
+	wb := B.NewSize(2048)
+	defer wb.Release()
+	wb.Write([]byte("payload"))
+	if err := w.WritePacket(wb, ToSocksaddr(net.UDPDestination(net.LocalHostIP, 443))); err == nil {
+		t.Fatal("WritePacket with a nil timer returned no error")
+	}
+}
