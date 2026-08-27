@@ -185,9 +185,13 @@ func (c *xdnsConnServer) lookupOrCreateQueue(addr net.Addr) (*queue, bool) {
 	return q, false
 }
 
-// closeQueueLocked retires a per-client queue. Callers hold c.mutex.
+// closeQueueLocked retires a per-client queue exactly once - the dead flag
+// doubles as a close guard so the idle pruner and the shutdown sweep can
+// never double-close the same channels. Callers hold c.mutex.
 func closeQueueLocked(q *queue) {
-	q.dead.Store(true)
+	if q.dead.Swap(true) {
+		return
+	}
 	close(q.queue)
 	close(q.stash)
 }
@@ -308,7 +312,7 @@ func (c *xdnsConnServer) groupRecord(rec *record) (pending *record, action group
 	timer := time.NewTimer(maxResponseDelay)
 	defer timer.Stop()
 
-	dropped, gotAny := false, false
+	dropped := false
 	for {
 		c.mutex.Lock()
 		q, refused := c.lookupOrCreateQueue(rec.ClientAddr)
@@ -364,14 +368,15 @@ func (c *xdnsConnServer) groupRecord(rec *record) (pending *record, action group
 
 		_ = binary.Write(payload, binary.BigEndian, uint16(len(p)))
 		payload.Write(p)
-		gotAny = true
 	}
 
-	if dropped || !gotAny {
-		// Suppress empty-answer artifacts: pruned or drained queues must not
-		// yield NOERROR records with zero chunks.
+	if dropped {
 		return pending, groupDrop
 	}
+	// An empty batch on a live queue is a legitimate ack/poll reply -
+	// dnstt-style peers depend on it during connection ramp-up - so it is
+	// emitted even when no chunks were queued yet. Only pruned queues are
+	// silenced.
 
 	answer, err := answersForPayload(rec.Resp.Question[0], responseTTL, payload.Bytes())
 	if err != nil {
