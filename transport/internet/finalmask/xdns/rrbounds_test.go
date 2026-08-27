@@ -15,10 +15,10 @@ func hostileRDLengthMessage(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	msg := &Message{
-		ID:     1,
-		Flags:  0x8000,
+		ID:       1,
+		Flags:    0x8000,
 		Question: []Question{{Name: name, Type: RRTypeTXT, Class: ClassIN}},
-		Answer: []RR{{Name: name, Type: RRTypeTXT, Class: ClassIN, TTL: 0, Data: []byte{}}},
+		Answer:   []RR{{Name: name, Type: RRTypeTXT, Class: ClassIN, TTL: 0, Data: []byte{}}},
 	}
 	buf, err := msg.WireFormat()
 	if err != nil {
