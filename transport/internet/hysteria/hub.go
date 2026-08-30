@@ -241,11 +241,33 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 			return nil, err
 		}
 		transport := http.DefaultTransport.(*http.Transport)
-		if config.MasqUrlInsecure {
-			transport = transport.Clone()
-			transport.TLSClientConfig = &gotls.Config{
-				InsecureSkipVerify: true,
+		switch u.Scheme {
+		case "http", "https":
+			if config.MasqUrlInsecure {
+				transport = transport.Clone()
+				if transport.TLSClientConfig == nil {
+					transport.TLSClientConfig = &gotls.Config{}
+				} else {
+					transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+				}
+				transport.TLSClientConfig.InsecureSkipVerify = true
 			}
+		case "", "unix":
+			path := u.Path
+			if path == "" {
+				return nil, errors.New("empty unix socket path")
+			}
+			u = &url.URL{Scheme: "http", Host: "localhost"}
+			dialer := &net.Dialer{Timeout: 30 * time.Second}
+			transport = transport.Clone()
+			transport.Proxy = nil
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, "unix", path)
+			}
+			transport.MaxIdleConns = masqueradeProxyMaxIdleConnections
+			transport.MaxIdleConnsPerHost = masqueradeProxyMaxIdleConnsPerHost
+		default:
+			return nil, errors.New("unknown masquerade proxy scheme")
 		}
 		masqHandler = &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
@@ -253,9 +275,14 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 				if !config.MasqUrlRewriteHost {
 					pr.Out.Host = pr.In.Host
 				}
+				if config.MasqUrlXForwarded {
+					pr.SetXForwarded()
+				}
 			},
-			Transport: transport,
+			Transport:  transport,
+			BufferPool: newMasqueradeProxyBufferPool(),
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				errors.LogErrorInner(context.Background(), err, "HTTP reverse proxy error")
 				w.WriteHeader(http.StatusBadGateway)
 			},
 		}
@@ -329,13 +356,16 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		pktConn = newConn
 	}
 
-	var statelessResetKey quic.StatelessResetKey
-	if err := readStatelessResetKey(statelessResetKey[:]); err != nil {
-		_ = pktConn.Close()
-		return nil, errors.New("failed to generate Hysteria stateless reset key").Base(err)
+	var statelessResetKey *quic.StatelessResetKey
+	if !quicParams.DisableStatelessReset {
+		statelessResetKey = &quic.StatelessResetKey{}
+		if err := readStatelessResetKey(statelessResetKey[:]); err != nil {
+			_ = pktConn.Close()
+			return nil, errors.New("failed to generate Hysteria stateless reset key").Base(err)
+		}
 	}
 	tr := internet.NewQUICTransport(pktConn, quicParams)
-	tr.StatelessResetKey = &statelessResetKey
+	tr.StatelessResetKey = statelessResetKey
 
 	listener, err := tr.Listen(tlsConfig.GetTLSConfig(tls.WithNextProto("h3")), quicConfig)
 	if err != nil {
@@ -364,4 +394,35 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 
 func init() {
 	common.Must(internet.RegisterTransportListener(protocolName, Listen))
+}
+
+const (
+	masqueradeProxyBufferSize          = 32 * 1024
+	masqueradeProxyMaxIdleConnections  = 100
+	masqueradeProxyMaxIdleConnsPerHost = 32
+)
+
+type masqueradeProxyBufferPool struct {
+	pool sync.Pool
+}
+
+func newMasqueradeProxyBufferPool() *masqueradeProxyBufferPool {
+	return &masqueradeProxyBufferPool{
+		pool: sync.Pool{
+			New: func() any {
+				return make([]byte, masqueradeProxyBufferSize)
+			},
+		},
+	}
+}
+
+func (p *masqueradeProxyBufferPool) Get() []byte {
+	return p.pool.Get().([]byte)
+}
+
+func (p *masqueradeProxyBufferPool) Put(buf []byte) {
+	if cap(buf) < masqueradeProxyBufferSize {
+		return
+	}
+	p.pool.Put(buf[:masqueradeProxyBufferSize])
 }

@@ -87,6 +87,7 @@ message QuicParams {
   bool brutal_disable_loss_compensation = 14;
   bool disable_chrome_parrot = 15;
   bool disableGSO = 16;
+  bool disable_stateless_reset = 17;
 }
 
 message ProxyConfig {

@@ -33,6 +33,7 @@ type Config struct {
 	MasqString           string                 `protobuf:"bytes,9,opt,name=masq_string,json=masqString,proto3" json:"masq_string,omitempty"`
 	MasqStringHeaders    map[string]string      `protobuf:"bytes,10,rep,name=masq_string_headers,json=masqStringHeaders,proto3" json:"masq_string_headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	MasqStringStatusCode int32                  `protobuf:"varint,11,opt,name=masq_string_status_code,json=masqStringStatusCode,proto3" json:"masq_string_status_code,omitempty"`
+	MasqUrlXForwarded    bool                   `protobuf:"varint,12,opt,name=masq_url_x_forwarded,json=masqUrlXForwarded,proto3" json:"masq_url_x_forwarded,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -137,11 +138,18 @@ func (x *Config) GetMasqStringStatusCode() int32 {
 	return 0
 }
 
+func (x *Config) GetMasqUrlXForwarded() bool {
+	if x != nil {
+		return x.MasqUrlXForwarded
+	}
+	return false
+}
+
 var File_transport_internet_hysteria_config_proto protoreflect.FileDescriptor
 
 const file_transport_internet_hysteria_config_proto_rawDesc = "" +
 	"\n" +
-	"(transport/internet/hysteria/config.proto\x12 xray.transport.internet.hysteria\"\x8f\x04\n" +
+	"(transport/internet/hysteria/config.proto\x12 xray.transport.internet.hysteria\"\xc0\x04\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04auth\x18\x02 \x01(\tR\x04auth\x12(\n" +
 	"\x10udp_idle_timeout\x18\x03 \x01(\x03R\x0eudpIdleTimeout\x12\x1b\n" +
@@ -154,7 +162,8 @@ const file_transport_internet_hysteria_config_proto_rawDesc = "" +
 	"masqString\x12o\n" +
 	"\x13masq_string_headers\x18\n" +
 	" \x03(\v2?.xray.transport.internet.hysteria.Config.MasqStringHeadersEntryR\x11masqStringHeaders\x125\n" +
-	"\x17masq_string_status_code\x18\v \x01(\x05R\x14masqStringStatusCode\x1aD\n" +
+	"\x17masq_string_status_code\x18\v \x01(\x05R\x14masqStringStatusCode\x12/\n" +
+	"\x14masq_url_x_forwarded\x18\f \x01(\bR\x11masqUrlXForwarded\x1aD\n" +
 	"\x16MasqStringHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x01\x10\x02B\x82\x01\n" +
