@@ -3,6 +3,7 @@ package splithttp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	gotls "crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -524,7 +525,17 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			DisablePathMTUDiscovery:        quicParams.DisablePathMtuDiscovery || (runtime.GOOS != "linux" && runtime.GOOS != "windows" && runtime.GOOS != "darwin"),
 		}
 
+		var statelessResetKey *quic.StatelessResetKey
+		if !quicParams.DisableStatelessReset {
+			statelessResetKey = &quic.StatelessResetKey{}
+			if _, err := rand.Read(statelessResetKey[:]); err != nil {
+				_ = Conn.Close()
+				return nil, errors.New("failed to generate XHTTP stateless reset key").Base(err)
+			}
+		}
+
 		l.h3transport = internet.NewQUICTransport(Conn, quicParams)
+		l.h3transport.StatelessResetKey = statelessResetKey
 		l.h3PacketConn = Conn
 		l.h3listener, err = listenQUICEarly(l.h3transport, tlsConfig, quicConfig)
 		if err != nil {
