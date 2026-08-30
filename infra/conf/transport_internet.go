@@ -305,6 +305,7 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 				MaxIncomingStreams:      c.FinalMask.QuicParams.MaxIncomingStreams,
 				DisableChromeParrot:     c.FinalMask.QuicParams.DisableChromeParrot,
 				DisableGSO:              c.FinalMask.QuicParams.DisableGSO,
+				DisableStatelessReset:   c.FinalMask.QuicParams.DisableStatelessReset,
 			}
 		}
 	}
