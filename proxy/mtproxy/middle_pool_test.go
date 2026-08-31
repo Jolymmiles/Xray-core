@@ -153,6 +153,46 @@ func TestMiddlePoolSelectsLeastLoadedSessionAndDefaultDC(t *testing.T) {
 	}
 }
 
+func TestMiddlePoolDeliveryByteBudgetIsReleasedOnReceive(t *testing.T) {
+	session, err := newMiddleSession(2, 8, 24, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _ := session.OpenClient(nil)
+	answer := EncodeProxyAnswer(ProxyAnswer{ConnectionID: client.ID(), Payload: []byte{1, 2, 3, 4}})
+	if err := session.HandleMessage(answer, 1024); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := client.Receive(); !ok {
+		t.Fatal("Receive() returned closed")
+	}
+	if err := session.HandleMessage(answer, 1024); err != nil {
+		t.Fatalf("budget was not released after Receive: %v", err)
+	}
+}
+
+func TestMiddlePoolDeliveryByteBudgetClosesOnlyOverflowingClient(t *testing.T) {
+	session, _ := newMiddleSession(2, 8, 20, func([]byte) error { return nil })
+	var firstClosed, secondClosed atomic.Int32
+	first, _ := session.OpenClient(func() { firstClosed.Add(1) })
+	second, _ := session.OpenClient(func() { secondClosed.Add(1) })
+	answer := func(id uint64) []byte {
+		return EncodeProxyAnswer(ProxyAnswer{ConnectionID: id, Payload: []byte{1, 2, 3, 4}})
+	}
+	if err := session.HandleMessage(answer(first.ID()), 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.HandleMessage(answer(second.ID()), 1024); !errors.Is(err, ErrMiddleBackpressure) {
+		t.Fatalf("session byte overflow error = %v", err)
+	}
+	if firstClosed.Load() != 0 || secondClosed.Load() != 1 {
+		t.Fatalf("close counts = %d / %d", firstClosed.Load(), secondClosed.Load())
+	}
+	if _, ok := first.Receive(); !ok {
+		t.Fatal("first client was closed by second client overflow")
+	}
+}
+
 func TestMiddlePoolCapacityCloseAndFailure(t *testing.T) {
 	writer := new(recordingMiddleWriter)
 	session, _ := NewMiddleSession(1, 1, writer.write)
