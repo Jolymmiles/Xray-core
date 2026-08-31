@@ -105,6 +105,212 @@ func TestMTProxyProcessPaddedRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMTProxyProcessUsesReloadedUpstream(t *testing.T) {
+	firstListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstListener.Close()
+	secondListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondListener.Close()
+	firstSecret := bytes.Repeat([]byte{0x75}, 32)
+	secondSecret := bytes.Repeat([]byte{0x76}, 32)
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	go func() { firstDone <- serveProcessMiddleOnce(firstListener, firstSecret) }()
+	go func() { secondDone <- serveProcessMiddleOnce(secondListener, secondSecret) }()
+
+	directory := t.TempDir()
+	secretPath := filepath.Join(directory, "proxy-secret")
+	configPath := filepath.Join(directory, "proxy-multi.conf")
+	if err := os.WriteFile(secretPath, firstSecret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstPort := firstListener.Addr().(*net.TCPAddr).Port
+	firstConfig := []byte(fmt.Sprintf("proxy_for 2 127.0.0.1:%d;\ndefault 2;\n", firstPort))
+	if err := os.WriteFile(configPath, firstConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientSecret := testSecret(0x72)
+	handler, err := New(context.Background(), &Config{
+		Users:      []*protocol.User{{Email: "reload@example", Account: serial.ToTypedMessage(&Account{Secret: clientSecret[:]})}},
+		Upstream:   &UpstreamConfig{Source: UpstreamSource_UPSTREAM_SOURCE_FILES, SecretFile: secretPath, ConfigFile: configPath, MaxSessionsPerDc: 2, MaxClientsPerSession: 16, DeliveryQueueDepth: 4},
+		MaxSecrets: 16, MaxPacketSize: 1 << 20, HandshakeConcurrency: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+
+	runPaddedProcessClient(t, handler, clientSecret, []byte{5, 5, 5, 5})
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	handler.middle.sessionsMu.Lock()
+	firstSession := handler.middle.sessions[0]
+	handler.middle.sessionsMu.Unlock()
+	select {
+	case <-firstSession.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old upstream session did not close")
+	}
+
+	secondPort := secondListener.Addr().(*net.TCPAddr).Port
+	secondConfig := []byte(fmt.Sprintf("proxy_for 2 127.0.0.1:%d;\ndefault 2;\n", secondPort))
+	reloaded, err := newUpstreamData(secondSecret, secondConfig, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.upstream.Store(reloaded)
+	runPaddedProcessClient(t, handler, clientSecret, []byte{6, 6, 6, 6})
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMTProxyProcessReconnectsMiddleSession(t *testing.T) {
+	middleListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer middleListener.Close()
+	upstreamSecret := bytes.Repeat([]byte{0x74}, 32)
+	middleDone := make(chan error, 1)
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := serveProcessMiddleOnce(middleListener, upstreamSecret); err != nil {
+				middleDone <- err
+				return
+			}
+		}
+		middleDone <- nil
+	}()
+
+	directory := t.TempDir()
+	secretPath := filepath.Join(directory, "proxy-secret")
+	configPath := filepath.Join(directory, "proxy-multi.conf")
+	if err := os.WriteFile(secretPath, upstreamSecret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	port := middleListener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("proxy_for 2 127.0.0.1:%d;\ndefault 2;\n", port)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientSecret := testSecret(0x62)
+	handler, err := New(context.Background(), &Config{
+		Users:      []*protocol.User{{Email: "reconnect@example", Account: serial.ToTypedMessage(&Account{Secret: clientSecret[:]})}},
+		Upstream:   &UpstreamConfig{Source: UpstreamSource_UPSTREAM_SOURCE_FILES, SecretFile: secretPath, ConfigFile: configPath, MaxSessionsPerDc: 2, MaxClientsPerSession: 16, DeliveryQueueDepth: 4},
+		MaxSecrets: 16, MaxPacketSize: 1 << 20, HandshakeConcurrency: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+
+	runPaddedProcessClient(t, handler, clientSecret, []byte{3, 3, 3, 3})
+	handler.middle.sessionsMu.Lock()
+	firstSession := handler.middle.sessions[0]
+	handler.middle.sessionsMu.Unlock()
+	select {
+	case <-firstSession.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first physical Middle-End session did not close")
+	}
+	runPaddedProcessClient(t, handler, clientSecret, []byte{4, 4, 4, 4})
+	if err := <-middleDone; err != nil {
+		t.Fatal(err)
+	}
+	handler.middle.sessionsMu.Lock()
+	activeSessions := len(handler.middle.sessions)
+	handler.middle.sessionsMu.Unlock()
+	if activeSessions != 1 {
+		t.Fatalf("tracked active Middle-End sessions = %d, want 1", activeSessions)
+	}
+}
+
+func TestMTProxyProcessMultipleClientsShareMiddleSession(t *testing.T) {
+	middleListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer middleListener.Close()
+	upstreamSecret := bytes.Repeat([]byte{0x73}, 32)
+	middleDone := make(chan error, 1)
+	go func() { middleDone <- serveProcessMiddleClients(middleListener, upstreamSecret, 2) }()
+
+	directory := t.TempDir()
+	secretPath := filepath.Join(directory, "proxy-secret")
+	configPath := filepath.Join(directory, "proxy-multi.conf")
+	if err := os.WriteFile(secretPath, upstreamSecret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	port := middleListener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("proxy_for 2 127.0.0.1:%d;\ndefault 2;\n", port)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientSecret := testSecret(0x52)
+	handler, err := New(context.Background(), &Config{
+		Users:      []*protocol.User{{Email: "shared@example", Account: serial.ToTypedMessage(&Account{Secret: clientSecret[:]})}},
+		Upstream:   &UpstreamConfig{Source: UpstreamSource_UPSTREAM_SOURCE_FILES, SecretFile: secretPath, ConfigFile: configPath, MaxSessionsPerDc: 2, MaxClientsPerSession: 16, DeliveryQueueDepth: 4},
+		MaxSecrets: 16, MaxPacketSize: 1 << 20, HandshakeConcurrency: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+
+	runPaddedProcessClient(t, handler, clientSecret, []byte{1, 1, 1, 1})
+	runPaddedProcessClient(t, handler, clientSecret, []byte{2, 2, 2, 2})
+	if err := <-middleDone; err != nil {
+		t.Fatal(err)
+	}
+	handler.middle.sessionsMu.Lock()
+	physicalSessions := len(handler.middle.sessions)
+	handler.middle.sessionsMu.Unlock()
+	if physicalSessions != 1 {
+		t.Fatalf("physical Middle-End sessions = %d, want 1", physicalSessions)
+	}
+}
+
+func runPaddedProcessClient(t *testing.T, handler *Handler, secret [16]byte, payload []byte) {
+	t.Helper()
+	clientConn, inboundConn := net.Pipe()
+	processDone := make(chan error, 1)
+	go func() { processDone <- handler.Process(context.Background(), corenet.Network_TCP, inboundConn, nil) }()
+	wireHeader, clientEncrypt, clientDecrypt := buildClientHeader(t, secret, FrameModePaddedIntermediate, 2)
+	if err := writeFull(clientConn, wireHeader[:]); err != nil {
+		t.Fatal(err)
+	}
+	frameHeader, frameHeaderLength, _ := EncodeFrameHeader(FrameModePaddedIntermediate, len(payload), 0, false)
+	request := append([]byte(nil), frameHeader[:frameHeaderLength]...)
+	request = append(request, payload...)
+	clientEncrypt.XORKeyStream(request, request)
+	if err := writeFull(clientConn, request); err != nil {
+		t.Fatal(err)
+	}
+	decrypted := &cipher.StreamReader{S: clientDecrypt, R: clientConn}
+	responseHeader, err := ReadFrameHeader(decrypted, FrameModePaddedIntermediate, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, responseHeader.WireLength)
+	if _, err := io.ReadFull(decrypted, response); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response[:responseHeader.PayloadLength], payload) {
+		t.Fatalf("response = %v, want %v", response[:responseHeader.PayloadLength], payload)
+	}
+	_ = clientConn.Close()
+	select {
+	case <-processDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shared client Process did not stop")
+	}
+}
+
 func TestMTProxyProcessFakeTLSRoundTrip(t *testing.T) {
 	middleListener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -218,6 +424,10 @@ func consumeFakeTLSServerResponse(reader io.Reader) error {
 }
 
 func serveProcessMiddleOnce(listener net.Listener, secret []byte) error {
+	return serveProcessMiddleClients(listener, secret, 1)
+}
+
+func serveProcessMiddleClients(listener net.Listener, secret []byte, clientCount int) error {
 	connection, err := listener.Accept()
 	if err != nil {
 		return err
@@ -256,28 +466,31 @@ func serveProcessMiddleOnce(listener net.Listener, secret []byte) error {
 	if err := wire.writeMessage(handshake); err != nil {
 		return err
 	}
-	requestBytes, err := wire.readMessage()
-	if err != nil {
-		return err
-	}
-	request, err := DecodeProxyRequest(requestBytes, 1<<20)
-	if err != nil {
-		return err
-	}
-	if err := wire.writeMessage(EncodeProxyAnswer(ProxyAnswer{ConnectionID: request.ConnectionID, Payload: request.Payload})); err != nil {
-		return err
-	}
-	_ = connection.SetReadDeadline(time.Now().Add(2 * time.Second))
-	closeBytes, err := wire.readMessage()
-	if err != nil {
-		return err
-	}
-	message, err := DecodeMiddleMessage(closeBytes, 1024)
-	if err != nil {
-		return err
-	}
-	if closeMessage, ok := message.(CloseConnection); !ok || closeMessage.ConnectionID != request.ConnectionID {
-		return fmt.Errorf("unexpected logical close %#v", message)
+	for clientIndex := 0; clientIndex < clientCount; clientIndex++ {
+		requestBytes, err := wire.readMessage()
+		if err != nil {
+			return err
+		}
+		request, err := DecodeProxyRequest(requestBytes, 1<<20)
+		if err != nil {
+			return err
+		}
+		if err := wire.writeMessage(EncodeProxyAnswer(ProxyAnswer{ConnectionID: request.ConnectionID, Payload: request.Payload})); err != nil {
+			return err
+		}
+		_ = connection.SetReadDeadline(time.Now().Add(2 * time.Second))
+		closeBytes, err := wire.readMessage()
+		if err != nil {
+			return err
+		}
+		_ = connection.SetReadDeadline(time.Time{})
+		message, err := DecodeMiddleMessage(closeBytes, 1024)
+		if err != nil {
+			return err
+		}
+		if closeMessage, ok := message.(CloseConnection); !ok || closeMessage.ConnectionID != request.ConnectionID {
+			return fmt.Errorf("unexpected logical close %#v", message)
+		}
 	}
 	return nil
 }
