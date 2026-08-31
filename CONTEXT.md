@@ -103,3 +103,7 @@ _Avoid_: SessionID, lease token
 **Cleanup bundle**:
 The detached cancel handle, I/O resources, and presence lease closed outside an owner lock by the single terminal session path.
 _Avoid_: Deferred cleanup, manager callback
+
+**Vision carrier**:
+The authenticated encrypted carrier whose negotiated security state is eligible for a VLESS Vision direct-copy transition. Its carrier kind and security version must be validated before that transition.
+_Avoid_: Vision session, TLS connection

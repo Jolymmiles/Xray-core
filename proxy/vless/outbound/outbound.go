@@ -3,13 +3,11 @@ package outbound
 import (
 	"bytes"
 	"context"
-	gotls "crypto/tls"
 	"encoding/base64"
 	"strings"
 	"sync"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
 	proxymanConfig "github.com/xtls/xray-core/app/proxyman"
 	proxyman "github.com/xtls/xray-core/app/proxyman/outbound"
 	"github.com/xtls/xray-core/app/reverse"
@@ -34,9 +32,7 @@ import (
 	"github.com/xtls/xray-core/proxy/vless/encryption"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
-	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
-	"github.com/xtls/xray-core/transport/internet/tls"
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
@@ -246,6 +242,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 	var input *bytes.Reader
 	var rawInput *bytes.Buffer
+	var visionCarrier proxy.VisionCarrier
 	allowUDP443 := false
 	switch requestAddons.Flow {
 	case vless.XRV + "-udp443":
@@ -254,31 +251,23 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		fallthrough
 	case vless.XRV:
 		ob.CanSpliceCopy = 2
+		if request.Command == protocol.RequestCommandUDP && !allowUDP443 && request.Port == 443 {
+			return errors.New("XTLS rejected UDP/443 traffic").AtInfo()
+		}
+		visionCarrier = proxy.ResolveOutboundVisionCarrier(conn, iConn)
 		switch request.Command {
 		case protocol.RequestCommandUDP:
-			if !allowUDP443 && request.Port == 443 {
-				return errors.New("XTLS rejected UDP/443 traffic").AtInfo()
-			}
 		case protocol.RequestCommandMux:
 			fallthrough // let server break Mux connections that contain TCP requests
 		case protocol.RequestCommandTCP, protocol.RequestCommandRvs:
-			var visionConnection any
-			if commonConn, ok := conn.(*encryption.CommonConn); ok {
-				if _, ok := commonConn.Conn.(*encryption.XorConn); ok || !proxy.IsRAWTransportWithoutSecurity(iConn) {
-					ob.CanSpliceCopy = 3 // full-random xorConn / non-RAW transport / another securityConn should not be penetrated
-				}
-				visionConnection = commonConn
-			} else if tlsConn, ok := iConn.(*tls.Conn); ok {
-				visionConnection = tlsConn.Conn
-			} else if utlsConn, ok := iConn.(*tls.UConn); ok {
-				visionConnection = utlsConn.Conn
-			} else if realityConn, ok := iConn.(*reality.UConn); ok {
-				visionConnection = realityConn.Conn
-			} else {
+			if !visionCarrier.Supported() {
 				return errors.New("XTLS only supports TLS and REALITY directly for now.").AtWarning()
 			}
+			if !visionCarrier.CanSpliceCopy() {
+				ob.CanSpliceCopy = 3
+			}
 			var ok bool
-			input, rawInput, ok = proxy.VisionBuffers(visionConnection)
+			input, rawInput, ok = visionCarrier.Buffers()
 			if !ok {
 				return errors.New("XTLS failed to access TLS input buffers").AtWarning()
 			}
@@ -352,14 +341,8 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 
 		if requestAddons.Flow == vless.XRV {
-			if tlsConn, ok := iConn.(*tls.Conn); ok {
-				if tlsConn.ConnectionState().Version != gotls.VersionTLS13 {
-					return errors.New(`failed to use `+requestAddons.Flow+`, found outer tls version `, tlsConn.ConnectionState().Version).AtWarning()
-				}
-			} else if utlsConn, ok := iConn.(*tls.UConn); ok {
-				if utlsConn.ConnectionState().Version != utls.VersionTLS13 {
-					return errors.New(`failed to use `+requestAddons.Flow+`, found outer tls version `, utlsConn.ConnectionState().Version).AtWarning()
-				}
+			if version, invalid := visionCarrier.InvalidTLSVersion(); invalid {
+				return errors.New(`failed to use `+requestAddons.Flow+`, found outer tls version `, version).AtWarning()
 			}
 		}
 		err := buf.Copy(clientReader, serverWriter, buf.UpdateActivity(timer))

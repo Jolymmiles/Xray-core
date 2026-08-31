@@ -3,7 +3,6 @@ package inbound
 import (
 	"bytes"
 	"context"
-	gotls "crypto/tls"
 	"encoding/base64"
 	"io"
 	"strconv"
@@ -631,24 +630,18 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 				inbound.CanSpliceCopy = 3
 				fallthrough // we will break Mux connections that contain TCP requests
 			case protocol.RequestCommandTCP:
-				var visionConnection any
-				if commonConn, ok := connection.(*encryption.CommonConn); ok {
-					if _, ok := commonConn.Conn.(*encryption.XorConn); ok || !proxy.IsRAWTransportWithoutSecurity(iConn) {
-						inbound.CanSpliceCopy = 3 // full-random xorConn / non-RAW transport / another securityConn should not be penetrated
-					}
-					visionConnection = commonConn
-				} else if tlsConn, ok := iConn.(*tls.Conn); ok {
-					if tlsConn.ConnectionState().Version != gotls.VersionTLS13 {
-						return invalidOuterTLSVersionError(requestAddons.Flow, tlsConn.ConnectionState().Version)
-					}
-					visionConnection = tlsConn.Conn
-				} else if realityConn, ok := iConn.(*reality.Conn); ok {
-					visionConnection = realityConn.Conn
-				} else {
+				visionCarrier := proxy.ResolveInboundVisionCarrier(connection, iConn)
+				if !visionCarrier.Supported() {
 					return errors.New("XTLS only supports TLS and REALITY directly for now.").AtWarning()
 				}
+				if !visionCarrier.CanSpliceCopy() {
+					inbound.CanSpliceCopy = 3
+				}
+				if version, invalid := visionCarrier.InvalidTLSVersion(); invalid {
+					return invalidOuterTLSVersionError(requestAddons.Flow, version)
+				}
 				var ok bool
-				input, rawInput, ok = proxy.VisionBuffers(visionConnection)
+				input, rawInput, ok = visionCarrier.Buffers()
 				if !ok {
 					return errors.New("XTLS failed to access TLS input buffers").AtWarning()
 				}
@@ -717,12 +710,12 @@ func unknownRequestFlowError(flow string) *errors.Error {
 	return errors.New("unknown request flow ", flow).AtWarning()
 }
 
-func flowDoesNotSupportUDPError(flow string) *errors.Error {
-	return errors.New(flow, " doesn't support UDP").AtWarning()
-}
-
 func invalidOuterTLSVersionError(flow string, version uint16) *errors.Error {
 	return errors.New(`failed to use `, flow, `, found outer tls version `, version).AtWarning()
+}
+
+func flowDoesNotSupportUDPError(flow string) *errors.Error {
+	return errors.New(flow, " doesn't support UDP").AtWarning()
 }
 
 func forwardProxyNotAllowedError(id *protocol.ID) *errors.Error {
