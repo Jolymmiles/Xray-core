@@ -248,7 +248,6 @@ func (h *Handler) relayMiddleToClient(connection net.Conn, client *acceptedClien
 			return err
 		}
 	}
-	return nil
 }
 
 func writeClientCiphertext(connection net.Conn, client *acceptedClient, plaintext []byte) error {
