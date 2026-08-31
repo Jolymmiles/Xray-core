@@ -58,6 +58,19 @@ func (c *MiddleClient) Send(request ProxyRequest) error {
 
 // Close removes only this logical client. The shared physical Middle-End
 // session remains available to clients authenticated by other secrets.
+
+// Revoke detaches the logical client synchronously, then sends a bounded
+// best-effort close notification without delaying the revocation barrier.
+func (c *MiddleClient) Revoke() {
+	if c == nil || c.session == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		c.session.closeClient(c.id, false)
+		go func() { _ = c.session.writeMessage(EncodeCloseConnection(CloseConnection{ConnectionID: c.id})) }()
+	})
+}
+
 func (c *MiddleClient) Close() {
 	if c == nil || c.session == nil {
 		return
@@ -159,6 +172,10 @@ func (s *MiddleSession) HandleMessage(encoded []byte, maxPayload int) error {
 	var delivery MiddleDelivery
 	closeOnly := false
 	switch value := message.(type) {
+	case Ping:
+		return s.writeMessage(EncodePong(Pong{ID: value.ID}))
+	case Pong:
+		return nil
 	case ProxyAnswer:
 		connectionID = value.ConnectionID
 		delivery = MiddleDelivery{Kind: MiddleDeliveryPayload, Flags: value.Flags, Payload: value.Payload}
@@ -307,9 +324,17 @@ func (p *MiddlePool) AddSession(dcID int16, session *MiddleSession) error {
 }
 
 func (p *MiddlePool) OpenClient(dcID int16, onClose func()) (*MiddleClient, error) {
+	return p.openClient(dcID, onClose, true)
+}
+
+func (p *MiddlePool) OpenClientExact(dcID int16, onClose func()) (*MiddleClient, error) {
+	return p.openClient(dcID, onClose, false)
+}
+
+func (p *MiddlePool) openClient(dcID int16, onClose func(), allowFallback bool) (*MiddleClient, error) {
 	p.mu.RLock()
 	candidates := append([]*MiddleSession(nil), p.sessions[dcID]...)
-	if len(candidates) == 0 {
+	if allowFallback && len(candidates) == 0 {
 		candidates = append(candidates, p.sessions[p.defaultDC]...)
 	}
 	p.mu.RUnlock()

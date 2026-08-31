@@ -3,6 +3,7 @@ package mtproxy
 import (
 	"bytes"
 	"context"
+	"hash/crc32"
 	"net"
 	"net/netip"
 	"testing"
@@ -67,6 +68,7 @@ func TestDialMiddleWireHandshakeAndRPC(t *testing.T) {
 			serverDone <- err
 			return
 		}
+		wire.crcTable = crc32.MakeTable(crc32.Castagnoli)
 		request, err := wire.readMessage()
 		if err != nil {
 			serverDone <- err

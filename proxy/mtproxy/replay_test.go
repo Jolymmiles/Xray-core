@@ -24,8 +24,11 @@ func TestReplayCacheRejectsDuplicateExpiresAndBounds(t *testing.T) {
 	if err := cache.CheckAndAdd(second, now); err != nil {
 		t.Fatalf("second CheckAndAdd() = %v", err)
 	}
-	if err := cache.CheckAndAdd(third, now); !errors.Is(err, ErrReplayCapacity) {
-		t.Fatalf("capacity error = %v, want ErrReplayCapacity", err)
+	if err := cache.CheckAndAdd(third, now); err != nil {
+		t.Fatalf("capacity insertion error = %v", err)
+	}
+	if err := cache.CheckAndAdd(second, now); !errors.Is(err, ErrFakeTLSReplay) {
+		t.Fatalf("non-evicted replay error = %v", err)
 	}
 	if err := cache.CheckAndAdd(first, now.Add(3*time.Hour)); err != nil {
 		t.Fatalf("expired CheckAndAdd() = %v", err)

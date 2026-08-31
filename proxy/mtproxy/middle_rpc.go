@@ -14,6 +14,8 @@ const (
 	rpcCloseConnection uint32 = 0x1fcf425d
 	rpcCloseExternal   uint32 = 0x5eb634a2
 	rpcSimpleAck       uint32 = 0x3bac409b
+	rpcPing            uint32 = 0x5730a2df
+	rpcPong            uint32 = 0x8430eaa7
 	tlProxyTag         uint32 = 0xdb1e26ae
 )
 
@@ -25,6 +27,10 @@ type MiddleRPCFrame struct {
 }
 
 func EncodeMiddleRPCFrame(sequence uint32, payload []byte) ([]byte, error) {
+	return encodeMiddleRPCFrame(sequence, payload, nil)
+}
+
+func encodeMiddleRPCFrame(sequence uint32, payload []byte, table *crc32.Table) ([]byte, error) {
 	if len(payload) < 4 || len(payload)&3 != 0 {
 		return nil, fmt.Errorf("%w: unaligned payload length %d", ErrInvalidMiddleRPC, len(payload))
 	}
@@ -32,11 +38,15 @@ func EncodeMiddleRPCFrame(sequence uint32, payload []byte) ([]byte, error) {
 	binary.LittleEndian.PutUint32(frame[0:4], uint32(len(frame)))
 	binary.LittleEndian.PutUint32(frame[4:8], sequence)
 	copy(frame[8:], payload)
-	binary.LittleEndian.PutUint32(frame[len(frame)-4:], crc32.ChecksumIEEE(frame[:len(frame)-4]))
+	binary.LittleEndian.PutUint32(frame[len(frame)-4:], middleChecksum(frame[:len(frame)-4], table))
 	return frame, nil
 }
 
 func ReadMiddleRPCFrame(reader io.Reader, maxPayload int) (MiddleRPCFrame, error) {
+	return readMiddleRPCFrame(reader, maxPayload, nil)
+}
+
+func readMiddleRPCFrame(reader io.Reader, maxPayload int, table *crc32.Table) (MiddleRPCFrame, error) {
 	var result MiddleRPCFrame
 	if reader == nil || maxPayload < 4 {
 		return result, fmt.Errorf("%w: invalid frame limit", ErrInvalidMiddleRPC)
@@ -55,12 +65,19 @@ func ReadMiddleRPCFrame(reader io.Reader, maxPayload int) (MiddleRPCFrame, error
 		return result, err
 	}
 	expectedCRC := binary.LittleEndian.Uint32(frame[frameLength-4:])
-	if actualCRC := crc32.ChecksumIEEE(frame[:frameLength-4]); actualCRC != expectedCRC {
+	if actualCRC := middleChecksum(frame[:frameLength-4], table); actualCRC != expectedCRC {
 		return result, fmt.Errorf("%w: CRC mismatch", ErrInvalidMiddleRPC)
 	}
 	result.Sequence = binary.LittleEndian.Uint32(frame[4:8])
 	result.Payload = append([]byte(nil), frame[8:frameLength-4]...)
 	return result, nil
+}
+
+func middleChecksum(payload []byte, table *crc32.Table) uint32 {
+	if table == nil {
+		return crc32.ChecksumIEEE(payload)
+	}
+	return crc32.Checksum(payload, table)
 }
 
 type ProxyRequest struct {
@@ -87,6 +104,8 @@ type SimpleAck struct {
 
 type CloseConnection struct{ ConnectionID uint64 }
 type CloseExternal struct{ ConnectionID uint64 }
+type Ping struct{ ID uint64 }
+type Pong struct{ ID uint64 }
 
 func EncodeProxyRequest(request ProxyRequest) ([]byte, error) {
 	if len(request.Payload) < 4 || len(request.Payload)&3 != 0 {
@@ -178,6 +197,16 @@ func EncodeSimpleAck(ack SimpleAck) []byte {
 	return appendUint32(encoded, ack.Confirm)
 }
 
+func EncodePong(pong Pong) []byte {
+	encoded := appendUint32(nil, rpcPong)
+	return appendUint64(encoded, pong.ID)
+}
+
+func EncodePing(ping Ping) []byte {
+	encoded := appendUint32(nil, rpcPing)
+	return appendUint64(encoded, ping.ID)
+}
+
 func EncodeCloseConnection(closeMessage CloseConnection) []byte {
 	encoded := appendUint32(nil, rpcCloseConnection)
 	return appendUint64(encoded, closeMessage.ConnectionID)
@@ -209,6 +238,16 @@ func DecodeMiddleMessage(encoded []byte, maxPayload int) (any, error) {
 			return nil, ErrInvalidMiddleRPC
 		}
 		return SimpleAck{ConnectionID: binary.LittleEndian.Uint64(encoded[4:12]), Confirm: binary.LittleEndian.Uint32(encoded[12:16])}, nil
+	case rpcPing:
+		if len(encoded) != 12 {
+			return nil, ErrInvalidMiddleRPC
+		}
+		return Ping{ID: binary.LittleEndian.Uint64(encoded[4:12])}, nil
+	case rpcPong:
+		if len(encoded) != 12 {
+			return nil, ErrInvalidMiddleRPC
+		}
+		return Pong{ID: binary.LittleEndian.Uint64(encoded[4:12])}, nil
 	case rpcCloseConnection:
 		if len(encoded) != 12 {
 			return nil, ErrInvalidMiddleRPC

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"sync/atomic"
+	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 	corenet "github.com/xtls/xray-core/common/net"
@@ -36,6 +37,7 @@ type acceptedClient struct {
 var mtproxySessionID atomic.Uint64
 
 func (h *Handler) processConnection(ctx context.Context, connection stat.Connection, dispatcher routing.Dispatcher) error {
+	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
 	select {
 	case h.handshakeSlots <- struct{}{}:
 	case <-ctx.Done():
@@ -52,6 +54,9 @@ func (h *Handler) processConnection(ctx context.Context, connection stat.Connect
 	accepted, err := h.acceptClient(connection)
 	if err != nil {
 		if fallback, ok := err.(*fakeTLSFallback); ok {
+			<-h.handshakeSlots
+			handshakeSlotHeld = false
+			_ = connection.SetReadDeadline(time.Time{})
 			return relayFakeTLSFallback(ctx, connection, dispatcher, fallback)
 		}
 		return err
@@ -60,9 +65,18 @@ func (h *Handler) processConnection(ctx context.Context, connection stat.Connect
 	// dialing or relaying long-lived traffic.
 	<-h.handshakeSlots
 	handshakeSlotHeld = false
+	_ = connection.SetReadDeadline(time.Time{})
 
 	sessionID := mtproxySessionID.Add(1)
-	unregister, ok := h.secrets.RegisterSession(accepted.fingerprint, sessionID, func() { _ = connection.Close() })
+	var revoked atomic.Bool
+	var middleReference atomic.Pointer[MiddleClient]
+	unregister, ok := h.secrets.RegisterSession(accepted.fingerprint, sessionID, func() {
+		revoked.Store(true)
+		_ = connection.Close()
+		if middle := middleReference.Load(); middle != nil {
+			middle.Revoke()
+		}
+	})
 	if !ok {
 		return fmt.Errorf("mtproxy: client secret was revoked during handshake")
 	}
@@ -72,16 +86,21 @@ func (h *Handler) processConnection(ctx context.Context, connection stat.Connect
 	if err != nil {
 		return err
 	}
+	middleReference.Store(middleClient)
+	if revoked.Load() {
+		middleClient.session.closeClient(middleClient.id, false)
+		return fmt.Errorf("mtproxy: client secret was revoked while opening Middle-End")
+	}
 	defer middleClient.Close()
 
 	remoteIP, remotePort := endpointFromNetAddr(connection.RemoteAddr())
 	localIP, localPort := endpointFromNetAddr(connection.LocalAddr())
 	results := make(chan error, 2)
 	go func() {
-		results <- h.relayClientToMiddle(accepted, middleClient, remoteIP, remotePort, localIP, localPort)
+		results <- h.relayClientToMiddle(ctx, connection, accepted, middleClient, remoteIP, remotePort, localIP, localPort)
 	}()
 	go func() {
-		results <- h.relayMiddleToClient(connection, accepted, middleClient)
+		results <- h.relayMiddleToClient(ctx, connection, accepted, middleClient)
 	}()
 	firstError := <-results
 	_ = connection.Close()
@@ -93,12 +112,20 @@ func (h *Handler) processConnection(ctx context.Context, connection stat.Connect
 	return secondError
 }
 
+func looksLikeFakeTLS(prefix [5]byte) bool {
+	if prefix[0] != 0x16 || prefix[1] != 0x03 || prefix[2] < 0x01 || prefix[2] > 0x03 {
+		return false
+	}
+	length := int(binary.BigEndian.Uint16(prefix[3:5]))
+	return length >= 64 && length+5 <= fakeTLSMaxClientHello
+}
+
 func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
 	var prefix [5]byte
 	if _, err := io.ReadFull(connection, prefix[:]); err != nil {
 		return nil, err
 	}
-	if prefix[0] == 0x16 && h.fakeTLS != nil {
+	if looksLikeFakeTLS(prefix) && h.fakeTLS != nil {
 		recordLength := int(binary.BigEndian.Uint16(prefix[3:5]))
 		if recordLength <= 0 || recordLength+5 > fakeTLSMaxClientHello {
 			return nil, ErrInvalidFakeTLS
@@ -184,20 +211,66 @@ func (r *decryptingReader) Read(payload []byte) (int, error) {
 	return read, err
 }
 
-func (h *Handler) relayClientToMiddle(client *acceptedClient, middle *MiddleClient, remoteIP [16]byte, remotePort uint16, localIP [16]byte, localPort uint16) error {
+func middleProxyRequestFlags(mode FrameMode, quickAck bool, payload []byte) uint32 {
+	const (
+		flagMTProtoPacket = uint32(2)
+		flagExternal      = uint32(0x1000)
+		flagExtMode2      = uint32(0x20000)
+		flagPadding       = uint32(0x08000000)
+		flagIntermediate  = uint32(0x20000000)
+		flagAbridged      = uint32(0x40000000)
+		flagQuickAck      = uint32(0x80000000)
+	)
+	flags := flagExternal | flagExtMode2
+	switch mode {
+	case FrameModeAbridged:
+		flags |= flagAbridged
+	case FrameModeIntermediate:
+		flags |= flagIntermediate
+	case FrameModePaddedIntermediate:
+		flags |= flagIntermediate | flagPadding
+	}
+	if quickAck {
+		flags |= flagQuickAck
+	}
+	if len(payload) >= 8 && binary.LittleEndian.Uint64(payload[:8]) == 0 {
+		flags |= flagMTProtoPacket
+	}
+	return flags
+}
+
+func encodeClientQuickAck(mode FrameMode, confirm uint32) []byte {
+	encoded := make([]byte, 4)
+	if mode == FrameModeAbridged {
+		binary.BigEndian.PutUint32(encoded, confirm)
+	} else {
+		binary.LittleEndian.PutUint32(encoded, confirm)
+	}
+	return encoded
+}
+
+func (h *Handler) relayClientToMiddle(ctx context.Context, connection net.Conn, client *acceptedClient, middle *MiddleClient, remoteIP [16]byte, remotePort uint16, localIP [16]byte, localPort uint16) error {
 	for {
 		header, err := ReadFrameHeader(client.reader, client.state.Mode, int(h.config.MaxPacketSize))
 		if err != nil {
 			return err
 		}
+		select {
+		case h.bodySlots <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return fmt.Errorf("mtproxy: frame body capacity reached")
+		}
 		wire := make([]byte, header.WireLength)
-		if _, err := io.ReadFull(client.reader, wire); err != nil {
-			return err
+		_ = connection.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_, readErr := io.ReadFull(client.reader, wire)
+		_ = connection.SetReadDeadline(time.Time{})
+		<-h.bodySlots
+		if readErr != nil {
+			return readErr
 		}
-		flags := uint32(0)
-		if header.QuickAck {
-			flags = 1 << 31
-		}
+		flags := middleProxyRequestFlags(client.state.Mode, header.QuickAck, wire[:header.PayloadLength])
 		request := ProxyRequest{Flags: flags, RemoteIP: remoteIP, RemotePort: remotePort, LocalIP: localIP, LocalPort: localPort, Payload: wire[:header.PayloadLength]}
 		if len(h.config.Upstream.ProxyTag) == 16 {
 			var tag [16]byte
@@ -210,15 +283,14 @@ func (h *Handler) relayClientToMiddle(client *acceptedClient, middle *MiddleClie
 	}
 }
 
-func (h *Handler) relayMiddleToClient(connection net.Conn, client *acceptedClient, middle *MiddleClient) error {
+func (h *Handler) relayMiddleToClient(ctx context.Context, connection net.Conn, client *acceptedClient, middle *MiddleClient) error {
 	for {
 		delivery, ok := middle.Receive()
 		if !ok {
 			return nil
 		}
 		if delivery.Kind == MiddleDeliveryAck {
-			ack := []byte{0xdd, 0, 0, 0, 0}
-			binary.LittleEndian.PutUint32(ack[1:], delivery.Confirm)
+			ack := encodeClientQuickAck(client.state.Mode, delivery.Confirm)
 			if err := writeClientCiphertext(connection, client, ack); err != nil {
 				return err
 			}
@@ -236,16 +308,26 @@ func (h *Handler) relayMiddleToClient(connection net.Conn, client *acceptedClien
 		if err != nil {
 			return err
 		}
+		select {
+		case h.bodySlots <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return fmt.Errorf("mtproxy: response body capacity reached")
+		}
 		frame := make([]byte, headerLength+len(delivery.Payload)+padding)
 		copy(frame, header[:headerLength])
 		copy(frame[headerLength:], delivery.Payload)
 		if padding > 0 {
 			if _, err := io.ReadFull(rand.Reader, frame[len(frame)-padding:]); err != nil {
+				<-h.bodySlots
 				return err
 			}
 		}
-		if err := writeClientCiphertext(connection, client, frame); err != nil {
-			return err
+		writeErr := writeClientCiphertext(connection, client, frame)
+		<-h.bodySlots
+		if writeErr != nil {
+			return writeErr
 		}
 	}
 }

@@ -82,7 +82,11 @@ func (s *TelegramUpstreamSource) LoadInitial(ctx context.Context) (*UpstreamData
 	if cached, err := s.loadCache(); err == nil {
 		return cached, nil
 	}
-	return s.Refresh(ctx)
+	data, err := s.Refresh(ctx)
+	if data != nil {
+		return data, nil
+	}
+	return nil, err
 }
 
 func (s *TelegramUpstreamSource) Refresh(ctx context.Context) (*UpstreamData, error) {
@@ -100,7 +104,7 @@ func (s *TelegramUpstreamSource) Refresh(ctx context.Context) (*UpstreamData, er
 		return nil, err
 	}
 	if err := s.storeCache(data); err != nil {
-		return nil, err
+		return data, fmt.Errorf("mtproxy: persist upstream cache: %w", err)
 	}
 	return data, nil
 }
@@ -122,8 +126,10 @@ func (s *TelegramUpstreamSource) Run(ctx context.Context, apply func(*UpstreamDa
 		}
 
 		data, err := s.Refresh(ctx)
-		if err == nil {
+		if data != nil {
 			apply(data)
+		}
+		if err == nil {
 			delay = s.refreshInterval
 			continue
 		}
@@ -173,6 +179,10 @@ func (s *TelegramUpstreamSource) loadCache() (*UpstreamData, error) {
 	var bundle upstreamCacheBundle
 	if err := json.Unmarshal(encoded, &bundle); err != nil || bundle.Version != 1 {
 		return nil, fmt.Errorf("mtproxy: invalid upstream cache")
+	}
+	now := time.Now().UTC()
+	if bundle.FetchedAt.IsZero() || bundle.FetchedAt.After(now.Add(5*time.Minute)) || bundle.FetchedAt.Before(now.Add(-7*24*time.Hour)) {
+		return nil, fmt.Errorf("mtproxy: upstream cache timestamp is outside the accepted window")
 	}
 	return newUpstreamData(bundle.Secret, bundle.Config, bundle.FetchedAt)
 }

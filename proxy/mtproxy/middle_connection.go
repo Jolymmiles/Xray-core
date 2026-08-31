@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/netip"
@@ -18,6 +19,7 @@ import (
 const (
 	rpcHandshakeOperation uint32 = 0x7682eef5
 	middleNonceSequence   uint32 = 0xfffffffe
+	middleRPCUseCRC32C    uint32 = 2048
 )
 
 type middleWire struct {
@@ -29,12 +31,15 @@ type middleWire struct {
 	writeSequence int32
 	readSequence  int32
 	readBuffer    []byte
+	crcTable      *crc32.Table
 }
 
 func (w *middleWire) writeMessage(payload []byte) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
-	frame, err := EncodeMiddleRPCFrame(uint32(w.writeSequence), payload)
+	_ = w.connection.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	defer w.connection.SetWriteDeadline(time.Time{})
+	frame, err := encodeMiddleRPCFrame(uint32(w.writeSequence), payload, w.crcTable)
 	if err != nil {
 		return err
 	}
@@ -71,7 +76,7 @@ func (w *middleWire) readMessage() ([]byte, error) {
 		}
 		frameBytes := append([]byte(nil), w.readBuffer[:length]...)
 		w.readBuffer = w.readBuffer[length:]
-		frame, err := ReadMiddleRPCFrame(bytes.NewReader(frameBytes), w.maxPayload)
+		frame, err := readMiddleRPCFrame(bytes.NewReader(frameBytes), w.maxPayload, w.crcTable)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +111,7 @@ type processID struct {
 func encodeHandshake(sender, peer processID) []byte {
 	payload := make([]byte, 0, 32)
 	payload = appendUint32(payload, rpcHandshakeOperation)
-	payload = appendUint32(payload, 0)
+	payload = appendUint32(payload, middleRPCUseCRC32C)
 	payload = appendProcessID(payload, sender)
 	return appendProcessID(payload, peer)
 }
@@ -119,7 +124,7 @@ func appendProcessID(destination []byte, id processID) []byte {
 }
 
 func validateHandshake(payload []byte) error {
-	if len(payload) != 32 || binary.LittleEndian.Uint32(payload[:4]) != rpcHandshakeOperation || binary.LittleEndian.Uint32(payload[4:8])&0xff != 0 {
+	if len(payload) != 32 || binary.LittleEndian.Uint32(payload[:4]) != rpcHandshakeOperation || binary.LittleEndian.Uint32(payload[4:8]) != middleRPCUseCRC32C {
 		return fmt.Errorf("%w: handshake response", ErrInvalidMiddleRPC)
 	}
 	return nil
@@ -194,6 +199,7 @@ func dialMiddleWire(ctx context.Context, endpoint MiddleEndpoint, secret []byte,
 	if err := validateHandshake(handshakeResponse); err != nil {
 		return nil, err
 	}
+	wire.crcTable = crc32.MakeTable(crc32.Castagnoli)
 	_ = connection.SetDeadline(time.Time{})
 	failed = false
 	return wire, nil
@@ -257,12 +263,14 @@ func (s *networkMiddleSession) readLoop() {
 }
 
 type middleManager struct {
-	config     *UpstreamConfig
-	upstream   *atomic.Pointer[UpstreamData]
-	maxPayload int
-	pool       *MiddlePool
+	config          *UpstreamConfig
+	upstream        *atomic.Pointer[UpstreamData]
+	maxPayload      int
+	poolMu          sync.Mutex
+	pool            *MiddlePool
+	appliedUpstream *UpstreamData
 
-	connectMu    sync.Mutex
+	connectSlot  chan struct{}
 	sessionsMu   sync.Mutex
 	sessions     []*networkMiddleSession
 	nextEndpoint map[int16]int
@@ -278,19 +286,40 @@ func newMiddleManager(config *UpstreamConfig, upstream *atomic.Pointer[UpstreamD
 	if err != nil {
 		return nil, err
 	}
-	return &middleManager{config: config, upstream: upstream, maxPayload: maxPayload, pool: pool, nextEndpoint: make(map[int16]int)}, nil
+	return &middleManager{config: config, upstream: upstream, maxPayload: maxPayload, pool: pool, appliedUpstream: data, connectSlot: make(chan struct{}, 1), nextEndpoint: make(map[int16]int)}, nil
 }
 
 func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func()) (*MiddleClient, error) {
-	if data := m.upstream.Load(); data != nil && data.Config != nil {
-		m.pool.SetDefaultDC(data.Config.DefaultDC)
+	data := m.upstream.Load()
+	targetDC, endpoints, err := resolveMiddleTarget(data, dcID)
+	if err != nil {
+		return nil, err
 	}
-	if client, err := m.pool.OpenClient(dcID, onClose); err == nil {
+	pool, err := m.poolFor(data)
+	if err != nil {
+		return nil, err
+	}
+	if client, err := pool.OpenClientExact(targetDC, onClose); err == nil {
 		return client, nil
 	}
-	m.connectMu.Lock()
-	defer m.connectMu.Unlock()
-	if client, err := m.pool.OpenClient(dcID, onClose); err == nil {
+	select {
+	case m.connectSlot <- struct{}{}:
+		defer func() { <-m.connectSlot }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return nil, ErrMiddleCapacity
+	}
+	data = m.upstream.Load()
+	targetDC, endpoints, err = resolveMiddleTarget(data, dcID)
+	if err != nil {
+		return nil, err
+	}
+	pool, err = m.poolFor(data)
+	if err != nil {
+		return nil, err
+	}
+	if client, err := pool.OpenClientExact(targetDC, onClose); err == nil {
 		return client, nil
 	}
 	m.sessionsMu.Lock()
@@ -299,26 +328,24 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 	if closed {
 		return nil, ErrMiddleClosed
 	}
-	data := m.upstream.Load()
-	if data == nil || data.Config == nil {
-		return nil, ErrMiddleClosed
-	}
-	targetDC := dcID
-	endpoints := data.Config.clusters[targetDC]
-	if len(endpoints) == 0 {
-		targetDC = data.Config.DefaultDC
-		endpoints = data.Config.clusters[targetDC]
-	}
-	if len(endpoints) == 0 {
-		return nil, fmt.Errorf("mtproxy: no Middle-End endpoint for DC %d", dcID)
-	}
-	index := m.nextEndpoint[targetDC] % len(endpoints)
+	startIndex := m.nextEndpoint[targetDC] % len(endpoints)
 	m.nextEndpoint[targetDC]++
-	networkSession, err := dialNetworkMiddleSession(ctx, endpoints[index], data.Secret, m.maxPayload, int(m.config.MaxClientsPerSession), int(m.config.DeliveryQueueDepth))
-	if err != nil {
-		return nil, err
+	var networkSession *networkMiddleSession
+	var dialErr error
+	for attempt := 0; attempt < len(endpoints); attempt++ {
+		endpoint := endpoints[(startIndex+attempt)%len(endpoints)]
+		networkSession, dialErr = dialNetworkMiddleSession(ctx, endpoint, data.Secret, m.maxPayload, int(m.config.MaxClientsPerSession), int(m.config.DeliveryQueueDepth))
+		if dialErr == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
-	if err := m.pool.AddSession(targetDC, networkSession.core); err != nil {
+	if networkSession == nil {
+		return nil, fmt.Errorf("mtproxy: all Middle-End endpoints for DC %d failed: %w", targetDC, dialErr)
+	}
+	if err := pool.AddSession(targetDC, networkSession.core); err != nil {
 		networkSession.Close(err)
 		return nil, err
 	}
@@ -337,6 +364,37 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 	m.sessions = append(activeSessions, networkSession)
 	m.sessionsMu.Unlock()
 	return networkSession.core.OpenClient(onClose)
+}
+
+func (m *middleManager) poolFor(data *UpstreamData) (*MiddlePool, error) {
+	m.poolMu.Lock()
+	defer m.poolMu.Unlock()
+	if m.appliedUpstream == data {
+		return m.pool, nil
+	}
+	pool, err := NewMiddlePool(data.Config.DefaultDC, int(m.config.MaxSessionsPerDc))
+	if err != nil {
+		return nil, err
+	}
+	m.pool = pool
+	m.appliedUpstream = data
+	return pool, nil
+}
+
+func resolveMiddleTarget(data *UpstreamData, requestedDC int16) (int16, []MiddleEndpoint, error) {
+	if data == nil || data.Config == nil {
+		return 0, nil, ErrMiddleClosed
+	}
+	targetDC := requestedDC
+	endpoints := data.Config.clusters[targetDC]
+	if len(endpoints) == 0 {
+		targetDC = data.Config.DefaultDC
+		endpoints = data.Config.clusters[targetDC]
+	}
+	if len(endpoints) == 0 {
+		return 0, nil, fmt.Errorf("mtproxy: no Middle-End endpoint for DC %d", requestedDC)
+	}
+	return targetDC, endpoints, nil
 }
 
 func (m *middleManager) Close() {
