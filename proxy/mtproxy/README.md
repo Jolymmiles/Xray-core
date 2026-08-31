@@ -80,7 +80,8 @@ limit is 16 secrets per inbound. See BASELINE.md for measurements through
 
 - Default maximum client packet: 1 MiB; absolute maximum: 4 MiB.
 - Handshakes, frame bodies, Middle-End dials, response queues and writes are
-  bounded and have deadlines.
+  bounded and have deadlines. maxPacketSize × handshakeConcurrency may not
+  exceed the 256 MiB aggregate frame-allocation budget.
 - Fake TLS fallback is restricted to configured SNI domains.
 - Middle-End key derivation binds socket addresses and ports. Deploy directly on
   the advertised public address; arbitrary NAT port/address rewriting is not
