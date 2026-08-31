@@ -222,6 +222,7 @@ func numericIPv4(address netip.Addr) uint32 {
 type networkMiddleSession struct {
 	wire      *middleWire
 	core      *MiddleSession
+	done      chan struct{}
 	closeOnce sync.Once
 }
 
@@ -230,7 +231,7 @@ func dialNetworkMiddleSession(ctx context.Context, endpoint MiddleEndpoint, secr
 	if err != nil {
 		return nil, err
 	}
-	networkSession := &networkMiddleSession{wire: wire}
+	networkSession := &networkMiddleSession{wire: wire, done: make(chan struct{})}
 	coreSession, err := NewMiddleSession(maxClients, queueDepth, wire.writeMessage)
 	if err != nil {
 		_ = wire.connection.Close()
@@ -357,5 +358,6 @@ func (s *networkMiddleSession) Close(reason error) {
 	s.closeOnce.Do(func() {
 		_ = s.wire.connection.Close()
 		s.core.Fail(reason)
+		close(s.done)
 	})
 }
