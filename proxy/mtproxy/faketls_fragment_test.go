@@ -59,6 +59,19 @@ func TestReadFragmentedFakeTLSClientHello(t *testing.T) {
 	}
 }
 
+func TestCapturingReaderPreservesMalformedFragmentBytes(t *testing.T) {
+	wire := []byte{0x16, 0x03, 0x01, 0, 3, 0x01, 0x00}
+	var prefix [5]byte
+	copy(prefix[:], wire[:5])
+	capture := newCapturingReader(bytes.NewReader(wire[5:]), prefix[:])
+	if _, err := readFakeTLSClientHello(capture, prefix); err == nil {
+		t.Fatal("truncated fragmented ClientHello accepted")
+	}
+	if !bytes.Equal(capture.wire.Bytes(), wire) {
+		t.Fatalf("captured wire = %x, want %x", capture.wire.Bytes(), wire)
+	}
+}
+
 func TestReadFragmentedFakeTLSClientHelloRejectsExcessAndTrailingData(t *testing.T) {
 	secret := testSecret(0x67)
 	canonical := buildTestClientHello(t, secret, "cover.example", time.Now().Unix())
