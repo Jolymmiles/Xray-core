@@ -227,6 +227,12 @@ func NewMiddlePool(defaultDC int16, maxSessionsPerDC int) (*MiddlePool, error) {
 	}, nil
 }
 
+func (p *MiddlePool) SetDefaultDC(dcID int16) {
+	p.mu.Lock()
+	p.defaultDC = dcID
+	p.mu.Unlock()
+}
+
 func (p *MiddlePool) AddSession(dcID int16, session *MiddleSession) error {
 	if session == nil {
 		return ErrMiddleClosed
@@ -234,6 +240,14 @@ func (p *MiddlePool) AddSession(dcID int16, session *MiddleSession) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	current := p.sessions[dcID]
+	active := current[:0]
+	for _, existing := range current {
+		if _, closed := existing.load(); !closed {
+			active = append(active, existing)
+		}
+	}
+	current = active
+	p.sessions[dcID] = current
 	if len(current) >= p.maxSessionsPerDC {
 		return ErrMiddleCapacity
 	}
