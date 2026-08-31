@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultMTProxyMaxSecrets = 16
-	hardMTProxyMaxSecrets    = 64
+	hardMTProxyMaxSecrets    = 16
 	defaultMTProxyPacketSize = 1 << 20
 )
 
