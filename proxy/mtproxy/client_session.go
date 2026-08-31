@@ -117,7 +117,7 @@ func looksLikeFakeTLS(prefix [5]byte) bool {
 		return false
 	}
 	length := int(binary.BigEndian.Uint16(prefix[3:5]))
-	return length >= 64 && length+5 <= fakeTLSMaxClientHello
+	return length > 0 && length+5 <= fakeTLSMaxClientHello
 }
 
 func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
@@ -126,19 +126,14 @@ func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
 		return nil, err
 	}
 	if looksLikeFakeTLS(prefix) && h.fakeTLS != nil {
-		recordLength := int(binary.BigEndian.Uint16(prefix[3:5]))
-		if recordLength <= 0 || recordLength+5 > fakeTLSMaxClientHello {
-			return nil, ErrInvalidFakeTLS
-		}
-		hello := make([]byte, recordLength+5)
-		copy(hello, prefix[:])
-		if _, err := io.ReadFull(connection, hello[5:]); err != nil {
+		hello, err := readFakeTLSClientHello(connection, prefix)
+		if err != nil {
 			return nil, err
 		}
-		auth, err := h.fakeTLS.Authenticate(hello)
+		auth, err := h.fakeTLS.Authenticate(hello.Canonical)
 		if err != nil {
-			if serverName, allowed := FakeTLSFallbackServerName(hello, h.config.FakeTls.Domains); allowed {
-				return nil, &fakeTLSFallback{serverName: serverName, clientHello: hello}
+			if serverName, allowed := FakeTLSFallbackServerName(hello.Canonical, h.config.FakeTls.Domains); allowed {
+				return nil, &fakeTLSFallback{serverName: serverName, clientHello: hello.Wire}
 			}
 			return nil, err
 		}
