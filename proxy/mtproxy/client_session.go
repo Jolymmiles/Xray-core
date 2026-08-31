@@ -1,6 +1,7 @@
 package mtproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -120,14 +121,37 @@ func looksLikeFakeTLS(prefix [5]byte) bool {
 	return length > 0 && length+5 <= fakeTLSMaxClientHello
 }
 
+type capturingReader struct {
+	reader io.Reader
+	wire   bytes.Buffer
+}
+
+func newCapturingReader(reader io.Reader, prefix []byte) *capturingReader {
+	capture := &capturingReader{reader: reader}
+	capture.wire.Write(prefix)
+	return capture
+}
+
+func (r *capturingReader) Read(payload []byte) (int, error) {
+	n, err := r.reader.Read(payload)
+	if n > 0 {
+		_, _ = r.wire.Write(payload[:n])
+	}
+	return n, err
+}
+
 func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
 	var prefix [5]byte
 	if _, err := io.ReadFull(connection, prefix[:]); err != nil {
 		return nil, err
 	}
 	if looksLikeFakeTLS(prefix) && h.fakeTLS != nil {
-		hello, err := readFakeTLSClientHello(connection, prefix)
+		capture := newCapturingReader(connection, prefix[:])
+		hello, err := readFakeTLSClientHello(capture, prefix)
 		if err != nil {
+			if h.config.FakeTls != nil && len(h.config.FakeTls.Domains) > 0 {
+				return nil, &fakeTLSFallback{serverName: h.config.FakeTls.Domains[0], clientHello: append([]byte(nil), capture.wire.Bytes()...)}
+			}
 			return nil, err
 		}
 		auth, err := h.fakeTLS.Authenticate(hello.Canonical)
