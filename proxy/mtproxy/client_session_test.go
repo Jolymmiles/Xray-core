@@ -2,12 +2,15 @@ package mtproxy
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
 func TestMiddleProxyRequestTransportFlags(t *testing.T) {
 	encrypted := []byte{1, 0, 0, 0, 1, 0, 0, 0}
-	unencrypted := make([]byte, 20)
+	unencrypted := make([]byte, 24)
+	binary.LittleEndian.PutUint32(unencrypted[16:20], 4)
+	binary.LittleEndian.PutUint32(unencrypted[20:24], 0x60469778)
 	tests := []struct {
 		name    string
 		mode    FrameMode
@@ -22,10 +25,23 @@ func TestMiddleProxyRequestTransportFlags(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := middleProxyRequestFlags(test.mode, test.quick, test.payload); got != test.want {
-				t.Fatalf("flags = %#x, want %#x", got, test.want)
+			got, err := middleProxyRequestFlags(test.mode, test.quick, test.payload)
+			if err != nil || got != test.want {
+				t.Fatalf("flags = %#x, %v, want %#x", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestMiddleProxyRequestRejectsMalformedPlaintextMTProto(t *testing.T) {
+	payload := make([]byte, 24)
+	binary.LittleEndian.PutUint32(payload[16:20], 4)
+	binary.LittleEndian.PutUint32(payload[20:24], 0xdeadbeef)
+	if _, err := middleProxyRequestFlags(FrameModeIntermediate, false, payload); err == nil {
+		t.Fatal("unsupported unauthenticated operation accepted")
+	}
+	if _, err := middleProxyRequestFlags(FrameModeIntermediate, false, make([]byte, 8)); err == nil {
+		t.Fatal("truncated unauthenticated packet accepted")
 	}
 }
 

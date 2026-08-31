@@ -211,7 +211,7 @@ func (r *decryptingReader) Read(payload []byte) (int, error) {
 	return read, err
 }
 
-func middleProxyRequestFlags(mode FrameMode, quickAck bool, payload []byte) uint32 {
+func middleProxyRequestFlags(mode FrameMode, quickAck bool, payload []byte) (uint32, error) {
 	const (
 		flagMTProtoPacket = uint32(2)
 		flagExternal      = uint32(0x1000)
@@ -234,9 +234,17 @@ func middleProxyRequestFlags(mode FrameMode, quickAck bool, payload []byte) uint
 		flags |= flagQuickAck
 	}
 	if len(payload) >= 8 && binary.LittleEndian.Uint64(payload[:8]) == 0 {
-		flags |= flagMTProtoPacket
+		if len(payload) < 24 || int(binary.LittleEndian.Uint32(payload[16:20])) != len(payload)-20 {
+			return 0, fmt.Errorf("mtproxy: malformed unauthenticated MTProto packet")
+		}
+		switch binary.LittleEndian.Uint32(payload[20:24]) {
+		case 0x60469778, 0xbe7e8ef1, 0xd712e4be, 0xf5045f1f:
+			flags |= flagMTProtoPacket
+		default:
+			return 0, fmt.Errorf("mtproxy: unsupported unauthenticated MTProto operation")
+		}
 	}
-	return flags
+	return flags, nil
 }
 
 func encodeClientQuickAck(mode FrameMode, confirm uint32) []byte {
@@ -251,6 +259,7 @@ func encodeClientQuickAck(mode FrameMode, confirm uint32) []byte {
 
 func (h *Handler) relayClientToMiddle(ctx context.Context, connection net.Conn, client *acceptedClient, middle *MiddleClient, remoteIP [16]byte, remotePort uint16, localIP [16]byte, localPort uint16) error {
 	for {
+		_ = connection.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		header, err := ReadFrameHeader(client.reader, client.state.Mode, int(h.config.MaxPacketSize))
 		if err != nil {
 			return err
@@ -266,19 +275,25 @@ func (h *Handler) relayClientToMiddle(ctx context.Context, connection net.Conn, 
 		_ = connection.SetReadDeadline(time.Now().Add(30 * time.Second))
 		_, readErr := io.ReadFull(client.reader, wire)
 		_ = connection.SetReadDeadline(time.Time{})
-		<-h.bodySlots
 		if readErr != nil {
+			<-h.bodySlots
 			return readErr
 		}
-		flags := middleProxyRequestFlags(client.state.Mode, header.QuickAck, wire[:header.PayloadLength])
+		flags, err := middleProxyRequestFlags(client.state.Mode, header.QuickAck, wire[:header.PayloadLength])
+		if err != nil {
+			<-h.bodySlots
+			return err
+		}
 		request := ProxyRequest{Flags: flags, RemoteIP: remoteIP, RemotePort: remotePort, LocalIP: localIP, LocalPort: localPort, Payload: wire[:header.PayloadLength]}
 		if len(h.config.Upstream.ProxyTag) == 16 {
 			var tag [16]byte
 			copy(tag[:], h.config.Upstream.ProxyTag)
 			request.ProxyTag = &tag
 		}
-		if err := middle.Send(request); err != nil {
-			return err
+		sendErr := middle.Send(request)
+		<-h.bodySlots
+		if sendErr != nil {
+			return sendErr
 		}
 	}
 }
@@ -333,6 +348,8 @@ func (h *Handler) relayMiddleToClient(ctx context.Context, connection net.Conn, 
 }
 
 func writeClientCiphertext(connection net.Conn, client *acceptedClient, plaintext []byte) error {
+	_ = connection.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	defer connection.SetWriteDeadline(time.Time{})
 	client.state.Encrypt(plaintext)
 	if client.fakeTLS {
 		return WriteFakeTLSApplicationData(connection, plaintext, fakeTLSApplicationRecordLimit)

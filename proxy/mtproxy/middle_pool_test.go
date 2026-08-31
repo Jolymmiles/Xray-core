@@ -208,6 +208,44 @@ func TestMiddlePoolDeliveryByteBudgetClosesOnlyOverflowingClient(t *testing.T) {
 	}
 }
 
+func TestMiddleClientRevokeWaitsForInFlightRequestWrite(t *testing.T) {
+	writeStarted := make(chan struct{}, 2)
+	releaseWrite := make(chan struct{})
+	var writes atomic.Int32
+	session, _ := NewMiddleSession(1, 1, func([]byte) error {
+		writes.Add(1)
+		writeStarted <- struct{}{}
+		<-releaseWrite
+		return nil
+	})
+	client, _ := session.OpenClient(nil)
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- client.Send(ProxyRequest{Payload: []byte{1, 2, 3, 4}}) }()
+	<-writeStarted
+	revokeDone := make(chan struct{})
+	go func() { client.Revoke(); close(revokeDone) }()
+	select {
+	case <-revokeDone:
+		t.Fatal("Revoke returned while request write was in flight")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseWrite)
+	if err := <-sendDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-revokeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Revoke did not finish after write completion")
+	}
+	if err := client.Send(ProxyRequest{Payload: []byte{5, 6, 7, 8}}); !errors.Is(err, ErrMiddleClosed) {
+		t.Fatalf("post-revoke Send error = %v", err)
+	}
+	if writes.Load() != 2 { // request plus logical close notification
+		t.Fatalf("writes = %d, want request plus close only", writes.Load())
+	}
+}
+
 func TestMiddlePoolCapacityCloseAndFailure(t *testing.T) {
 	writer := new(recordingMiddleWriter)
 	session, _ := NewMiddleSession(1, 1, writer.write)

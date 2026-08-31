@@ -60,15 +60,18 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		config.Upstream.MaxSessionsPerDc = 8
 	}
 	if config.Upstream.MaxClientsPerSession == 0 {
-		config.Upstream.MaxClientsPerSession = 4096
+		config.Upstream.MaxClientsPerSession = 1024
 	}
 	if config.Upstream.DeliveryQueueDepth == 0 {
-		config.Upstream.DeliveryQueueDepth = 32
+		config.Upstream.DeliveryQueueDepth = 4
+	}
+	if len(config.Upstream.ProxyTag) != 0 && len(config.Upstream.ProxyTag) != 16 {
+		return nil, fmt.Errorf("mtproxy: proxy tag must be exactly 16 bytes")
 	}
 	if config.MaxPacketSize < 4 || config.MaxPacketSize > 4<<20 || config.MaxPacketSize&3 != 0 {
 		return nil, fmt.Errorf("mtproxy: invalid max packet size %d", config.MaxPacketSize)
 	}
-	if config.HandshakeConcurrency > 4096 || config.Upstream.MaxSessionsPerDc > 64 || config.Upstream.MaxClientsPerSession > 65536 || config.Upstream.DeliveryQueueDepth > 1024 {
+	if config.HandshakeConcurrency > 4096 || config.Upstream.MaxSessionsPerDc > 64 || config.Upstream.MaxClientsPerSession > 4096 || config.Upstream.DeliveryQueueDepth > 64 {
 		return nil, fmt.Errorf("mtproxy: configured concurrency limits are too large")
 	}
 	switch config.Upstream.Source {

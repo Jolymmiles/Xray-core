@@ -59,15 +59,17 @@ func (c *MiddleClient) Send(request ProxyRequest) error {
 // Close removes only this logical client. The shared physical Middle-End
 // session remains available to clients authenticated by other secrets.
 
-// Revoke detaches the logical client synchronously, then sends a bounded
-// best-effort close notification without delaying the revocation barrier.
+// Revoke detaches the logical client and waits behind any in-flight request
+// write. After it returns, no request for this client can reach Middle-End.
 func (c *MiddleClient) Revoke() {
 	if c == nil || c.session == nil {
 		return
 	}
 	c.closeOnce.Do(func() {
 		c.session.closeClient(c.id, false)
-		go func() { _ = c.session.writeMessage(EncodeCloseConnection(CloseConnection{ConnectionID: c.id})) }()
+		c.session.writeMu.Lock()
+		c.session.writeMu.Unlock()
+		_ = c.session.writeMessage(EncodeCloseConnection(CloseConnection{ConnectionID: c.id}))
 	})
 }
 
@@ -90,7 +92,8 @@ type MiddleSession struct {
 	clients     map[uint64]*MiddleClient
 	queuedBytes int
 
-	writeMu sync.Mutex
+	writeMu      sync.Mutex
+	onWriteError func(error)
 }
 
 func NewMiddleSession(maxClients, queueDepth int, writeMessage func([]byte) error) (*MiddleSession, error) {
@@ -136,30 +139,56 @@ func (s *MiddleSession) OpenClient(onClose func()) (*MiddleClient, error) {
 }
 
 func (s *MiddleSession) sendRequest(client *MiddleClient, request ProxyRequest) error {
+	s.writeMu.Lock()
 	s.mu.Lock()
 	active := !s.closed && s.clients[client.id] == client
 	s.mu.Unlock()
 	if !active {
+		s.writeMu.Unlock()
 		return ErrMiddleClosed
 	}
 	request.ConnectionID = client.id
 	encoded, err := EncodeProxyRequest(request)
-	if err != nil {
-		return err
+	if err == nil {
+		err = s.write(encoded)
 	}
-	return s.writeMessage(encoded)
+	s.writeMu.Unlock()
+	if err != nil {
+		s.handleWriteError(err)
+	}
+	return err
 }
 
 func (s *MiddleSession) writeMessage(message []byte) error {
 	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
+		s.writeMu.Unlock()
 		return ErrMiddleClosed
 	}
-	return s.write(message)
+	err := s.write(message)
+	s.writeMu.Unlock()
+	if err != nil {
+		s.handleWriteError(err)
+	}
+	return err
+}
+
+func (s *MiddleSession) handleWriteError(err error) {
+	s.mu.Lock()
+	handler := s.onWriteError
+	s.mu.Unlock()
+	if handler != nil {
+		handler(err)
+	}
+}
+
+func (s *MiddleSession) SetWriteFailureHandler(handler func(error)) {
+	s.mu.Lock()
+	s.onWriteError = handler
+	s.mu.Unlock()
 }
 
 func (s *MiddleSession) HandleMessage(encoded []byte, maxPayload int) error {
