@@ -102,10 +102,12 @@ type SimpleAck struct {
 	Confirm      uint32
 }
 
-type CloseConnection struct{ ConnectionID uint64 }
-type CloseExternal struct{ ConnectionID uint64 }
-type Ping struct{ ID uint64 }
-type Pong struct{ ID uint64 }
+type (
+	CloseConnection struct{ ConnectionID uint64 }
+	CloseExternal   struct{ ConnectionID uint64 }
+	Ping            struct{ ID uint64 }
+	Pong            struct{ ID uint64 }
+)
 
 func EncodeProxyRequest(request ProxyRequest) ([]byte, error) {
 	if len(request.Payload) < 4 || len(request.Payload)&3 != 0 {
