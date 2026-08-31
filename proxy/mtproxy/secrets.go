@@ -19,6 +19,10 @@ func (f SecretFingerprint) String() string {
 	return hex.EncodeToString(f[:])
 }
 
+func SecretFingerprintFromSecret(secret [16]byte) SecretFingerprint {
+	return SecretFingerprint(sha256.Sum256(secret[:]))
+}
+
 type secretCandidate struct {
 	secret      [16]byte
 	fingerprint SecretFingerprint
@@ -55,7 +59,7 @@ func NewSecretRegistry(maxSecrets int) (*SecretRegistry, error) {
 // Add publishes a secret at the front of the candidate order. Duplicate adds
 // are idempotent and return added=false.
 func (r *SecretRegistry) Add(secret [16]byte) (SecretFingerprint, bool, error) {
-	fingerprint := SecretFingerprint(sha256.Sum256(secret[:]))
+	fingerprint := SecretFingerprintFromSecret(secret)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
