@@ -15,6 +15,8 @@ var (
 type MiddleDeliveryKind uint8
 
 const (
+	defaultMiddleQueuedBytes = 64 << 20
+
 	MiddleDeliveryPayload MiddleDeliveryKind = iota + 1
 	MiddleDeliveryAck
 )
@@ -27,9 +29,10 @@ type MiddleDelivery struct {
 }
 
 type MiddleClient struct {
-	session *MiddleSession
-	id      uint64
-	queue   chan MiddleDelivery
+	session     *MiddleSession
+	id          uint64
+	queue       chan MiddleDelivery
+	queuedBytes int
 
 	closeOnce sync.Once
 	onClose   func()
@@ -37,6 +40,14 @@ type MiddleClient struct {
 
 func (c *MiddleClient) ID() uint64                        { return c.id }
 func (c *MiddleClient) Deliveries() <-chan MiddleDelivery { return c.queue }
+
+func (c *MiddleClient) Receive() (MiddleDelivery, bool) {
+	delivery, ok := <-c.queue
+	if ok {
+		c.session.releaseDelivery(c, deliverySize(delivery))
+	}
+	return delivery, ok
+}
 
 func (c *MiddleClient) Send(request ProxyRequest) error {
 	if c == nil || c.session == nil {
@@ -55,27 +66,31 @@ func (c *MiddleClient) Close() {
 }
 
 type MiddleSession struct {
-	maxClients int
-	queueDepth int
-	write      func([]byte) error
+	maxClients     int
+	queueDepth     int
+	maxQueuedBytes int
+	write          func([]byte) error
 
-	mu      sync.Mutex
-	closed  bool
-	nextID  uint64
-	clients map[uint64]*MiddleClient
+	mu          sync.Mutex
+	closed      bool
+	nextID      uint64
+	clients     map[uint64]*MiddleClient
+	queuedBytes int
 
 	writeMu sync.Mutex
 }
 
 func NewMiddleSession(maxClients, queueDepth int, writeMessage func([]byte) error) (*MiddleSession, error) {
-	if maxClients <= 0 || queueDepth <= 0 || writeMessage == nil {
+	return newMiddleSession(maxClients, queueDepth, defaultMiddleQueuedBytes, writeMessage)
+}
+
+func newMiddleSession(maxClients, queueDepth, maxQueuedBytes int, writeMessage func([]byte) error) (*MiddleSession, error) {
+	if maxClients <= 0 || queueDepth <= 0 || maxQueuedBytes <= 0 || writeMessage == nil {
 		return nil, fmt.Errorf("mtproxy: invalid Middle-End session limits")
 	}
 	return &MiddleSession{
-		maxClients: maxClients,
-		queueDepth: queueDepth,
-		write:      writeMessage,
-		clients:    make(map[uint64]*MiddleClient, maxClients),
+		maxClients: maxClients, queueDepth: queueDepth, maxQueuedBytes: maxQueuedBytes,
+		write: writeMessage, clients: make(map[uint64]*MiddleClient, maxClients),
 	}, nil
 }
 
@@ -172,30 +187,61 @@ func (s *MiddleSession) HandleMessage(encoded []byte, maxPayload int) error {
 		_ = s.writeMessage(EncodeCloseConnection(CloseConnection{ConnectionID: connectionID}))
 		return nil
 	}
+	size := deliverySize(delivery)
+	if s.queuedBytes+size > s.maxQueuedBytes {
+		client = s.detachClientLocked(connectionID)
+		s.mu.Unlock()
+		if client.onClose != nil {
+			client.onClose()
+		}
+		_ = s.writeMessage(EncodeCloseConnection(CloseConnection{ConnectionID: connectionID}))
+		return ErrMiddleBackpressure
+	}
 	select {
 	case client.queue <- delivery:
+		client.queuedBytes += size
+		s.queuedBytes += size
 		s.mu.Unlock()
 		return nil
 	default:
-		delete(s.clients, connectionID)
-		close(client.queue)
-		callback := client.onClose
+		client = s.detachClientLocked(connectionID)
 		s.mu.Unlock()
-		if callback != nil {
-			callback()
+		if client.onClose != nil {
+			client.onClose()
 		}
 		_ = s.writeMessage(EncodeCloseConnection(CloseConnection{ConnectionID: connectionID}))
 		return ErrMiddleBackpressure
 	}
 }
 
+func deliverySize(delivery MiddleDelivery) int {
+	return len(delivery.Payload) + 16
+}
+
+func (s *MiddleSession) releaseDelivery(client *MiddleClient, size int) {
+	s.mu.Lock()
+	if client.queuedBytes >= size {
+		client.queuedBytes -= size
+		s.queuedBytes -= size
+	}
+	s.mu.Unlock()
+}
+
+func (s *MiddleSession) detachClientLocked(connectionID uint64) *MiddleClient {
+	client := s.clients[connectionID]
+	if client == nil {
+		return nil
+	}
+	delete(s.clients, connectionID)
+	s.queuedBytes -= client.queuedBytes
+	client.queuedBytes = 0
+	close(client.queue)
+	return client
+}
+
 func (s *MiddleSession) closeClient(connectionID uint64, notifyRemote bool) {
 	s.mu.Lock()
-	client := s.clients[connectionID]
-	if client != nil {
-		delete(s.clients, connectionID)
-		close(client.queue)
-	}
+	client := s.detachClientLocked(connectionID)
 	s.mu.Unlock()
 	if client == nil {
 		return
@@ -311,11 +357,9 @@ func (s *MiddleSession) Fail(_ error) {
 	}
 	s.closed = true
 	clients := make([]*MiddleClient, 0, len(s.clients))
-	for _, client := range s.clients {
-		clients = append(clients, client)
-		close(client.queue)
+	for connectionID := range s.clients {
+		clients = append(clients, s.detachClientLocked(connectionID))
 	}
-	clear(s.clients)
 	s.mu.Unlock()
 
 	for _, client := range clients {

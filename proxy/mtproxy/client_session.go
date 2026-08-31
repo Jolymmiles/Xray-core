@@ -211,7 +211,11 @@ func (h *Handler) relayClientToMiddle(client *acceptedClient, middle *MiddleClie
 }
 
 func (h *Handler) relayMiddleToClient(connection net.Conn, client *acceptedClient, middle *MiddleClient) error {
-	for delivery := range middle.Deliveries() {
+	for {
+		delivery, ok := middle.Receive()
+		if !ok {
+			return nil
+		}
 		if delivery.Kind == MiddleDeliveryAck {
 			ack := []byte{0xdd, 0, 0, 0, 0}
 			binary.LittleEndian.PutUint32(ack[1:], delivery.Confirm)
