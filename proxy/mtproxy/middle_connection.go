@@ -373,21 +373,24 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 }
 
 func (m *middleManager) poolFor(data *UpstreamData) (*MiddlePool, error) {
-	m.retireIdleSessions(data)
 	m.poolMu.Lock()
-	defer m.poolMu.Unlock()
-	if m.appliedUpstream == data {
-		return m.pool, nil
-	}
 	if m.appliedUpstream != nil && data.LoadedAt.Before(m.appliedUpstream.LoadedAt) {
-		return m.pool, nil
+		pool := m.pool
+		m.poolMu.Unlock()
+		return pool, nil
 	}
-	pool, err := NewMiddlePool(data.Config.DefaultDC, int(m.config.MaxSessionsPerDc))
-	if err != nil {
-		return nil, err
+	if m.appliedUpstream != data {
+		pool, err := NewMiddlePool(data.Config.DefaultDC, int(m.config.MaxSessionsPerDc))
+		if err != nil {
+			m.poolMu.Unlock()
+			return nil, err
+		}
+		m.pool = pool
+		m.appliedUpstream = data
 	}
-	m.pool = pool
-	m.appliedUpstream = data
+	pool := m.pool
+	m.poolMu.Unlock()
+	m.retireIdleSessions(data)
 	return pool, nil
 }
 
