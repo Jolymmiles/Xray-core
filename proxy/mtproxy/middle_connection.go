@@ -230,6 +230,7 @@ func numericIPv4(address netip.Addr) uint32 {
 type networkMiddleSession struct {
 	wire             *middleWire
 	clientMaxPayload int
+	upstream         *UpstreamData
 	core             *MiddleSession
 	done             chan struct{}
 	closeOnce        sync.Once
@@ -349,6 +350,7 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 	if networkSession == nil {
 		return nil, fmt.Errorf("mtproxy: all Middle-End endpoints for DC %d failed: %w", targetDC, dialErr)
 	}
+	networkSession.upstream = data
 	if err := pool.AddSession(targetDC, networkSession.core); err != nil {
 		networkSession.Close(err)
 		return nil, err
@@ -371,9 +373,13 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 }
 
 func (m *middleManager) poolFor(data *UpstreamData) (*MiddlePool, error) {
+	m.retireIdleSessions(data)
 	m.poolMu.Lock()
 	defer m.poolMu.Unlock()
 	if m.appliedUpstream == data {
+		return m.pool, nil
+	}
+	if m.appliedUpstream != nil && data.LoadedAt.Before(m.appliedUpstream.LoadedAt) {
 		return m.pool, nil
 	}
 	pool, err := NewMiddlePool(data.Config.DefaultDC, int(m.config.MaxSessionsPerDc))
@@ -383,6 +389,28 @@ func (m *middleManager) poolFor(data *UpstreamData) (*MiddlePool, error) {
 	m.pool = pool
 	m.appliedUpstream = data
 	return pool, nil
+}
+
+func (m *middleManager) retireIdleSessions(current *UpstreamData) {
+	m.sessionsMu.Lock()
+	active := m.sessions[:0]
+	retired := make([]*networkMiddleSession, 0)
+	for _, session := range m.sessions {
+		count, closed := session.core.load()
+		if closed {
+			continue
+		}
+		if session.upstream != nil && session.upstream != current && count == 0 {
+			retired = append(retired, session)
+			continue
+		}
+		active = append(active, session)
+	}
+	m.sessions = active
+	m.sessionsMu.Unlock()
+	for _, session := range retired {
+		session.Close(ErrMiddleClosed)
+	}
 }
 
 func resolveMiddleTarget(data *UpstreamData, requestedDC int16) (int16, []MiddleEndpoint, error) {

@@ -6,7 +6,9 @@ import (
 	"hash/crc32"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDialMiddleWireHandshakeAndRPC(t *testing.T) {
@@ -105,6 +107,30 @@ func TestDialMiddleWireHandshakeAndRPC(t *testing.T) {
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMiddleManagerDoesNotRollBackUpstreamGeneration(t *testing.T) {
+	oldConfig, _ := ParseProxyConfig(bytes.NewBufferString("proxy_for 1 127.0.0.1:1;\ndefault 1;\n"), 4, 4)
+	newConfig, _ := ParseProxyConfig(bytes.NewBufferString("proxy_for 2 127.0.0.1:2;\ndefault 2;\n"), 4, 4)
+	oldData := &UpstreamData{Config: oldConfig, LoadedAt: time.Unix(100, 0)}
+	newData := &UpstreamData{Config: newConfig, LoadedAt: time.Unix(200, 0)}
+	var pointer atomic.Pointer[UpstreamData]
+	pointer.Store(oldData)
+	manager, err := newMiddleManager(&UpstreamConfig{MaxSessionsPerDc: 2}, &pointer, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPool, err := manager.poolFor(newData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolledBack, err := manager.poolFor(oldData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack != newPool || manager.appliedUpstream != newData {
+		t.Fatal("older upstream generation replaced the active pool")
 	}
 }
 
