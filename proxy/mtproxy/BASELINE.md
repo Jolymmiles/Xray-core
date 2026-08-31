@@ -1,5 +1,28 @@
 # MTProxy baseline
 
+## Replay cache benchmark
+
+Command:
+
+    GOTOOLCHAIN=auto go test ./proxy/mtproxy -run '^$' \
+      -bench '^BenchmarkReplayCache' -benchtime=100000x -count=5
+
+Same Linux/amd64 host and Go 1.27.0 toolchain as the secret-probe baseline.
+Each sample performs 100,000 unique TestAndAdd operations against a configured
+capacity of 65,536.
+
+| implementation | median ns/op | reported B/op | allocs/op |
+|---|---:|---:|---:|
+| exact map/queue | 328.8 | 74 | 0 |
+| rotating Bloom | 237.3 | 0 | 0 |
+
+The rotating Bloom implementation was about 28% faster at the median in this
+bounded run and allocates a fixed 245,760-byte bitset at the default capacity.
+The exact implementation retains keys and expiry/order metadata and reports
+amortized memory growth per operation. Bloom tradeoffs are probabilistic false
+positives and window-based expiry; these results are not a throughput claim and
+must be rerun on the target Linux server.
+
 ## Secret-probe capacity baseline
 
 Command:

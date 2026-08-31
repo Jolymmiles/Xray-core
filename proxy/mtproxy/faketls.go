@@ -44,14 +44,18 @@ type FakeTLSAuth struct {
 	sessionID []byte
 }
 
+type fakeTLSReplayCache interface {
+	CheckAndAdd([16]byte, time.Time) error
+}
+
 type FakeTLSAuthenticator struct {
 	secrets *SecretRegistry
 	allowed map[string]struct{}
-	replay  *ReplayCache
+	replay  fakeTLSReplayCache
 	now     func() time.Time
 }
 
-func NewFakeTLSAuthenticator(secrets *SecretRegistry, allowedDomains []string, replay *ReplayCache, now func() time.Time) *FakeTLSAuthenticator {
+func NewFakeTLSAuthenticator(secrets *SecretRegistry, allowedDomains []string, replay fakeTLSReplayCache, now func() time.Time) *FakeTLSAuthenticator {
 	allowed := make(map[string]struct{}, len(allowedDomains))
 	for _, domain := range allowedDomains {
 		allowed[strings.ToLower(domain)] = struct{}{}

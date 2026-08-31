@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func benchmarkSecrets(count int) [][16]byte {
@@ -16,6 +17,26 @@ func benchmarkSecrets(count int) [][16]byte {
 		copy(result[i][:], sum[:16])
 	}
 	return result
+}
+
+func BenchmarkReplayCache(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0)
+	b.Run("Exact", func(b *testing.B) {
+		cache, _ := NewReplayCache(65536, 10*time.Minute)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = cache.CheckAndAdd(replayKey(uint64(i)), now)
+		}
+	})
+	b.Run("Bloom", func(b *testing.B) {
+		cache, _ := NewBloomReplayCache(65536, 10*time.Minute)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = cache.CheckAndAdd(replayKey(uint64(i)), now)
+		}
+	})
 }
 
 func BenchmarkSecretProbe(b *testing.B) {

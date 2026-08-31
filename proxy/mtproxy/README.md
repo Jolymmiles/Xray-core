@@ -82,7 +82,10 @@ limit is 16 secrets per inbound. See BASELINE.md for measurements through
 - Handshakes, frame bodies, Middle-End dials, response queues and writes are
   bounded and have deadlines. maxPacketSize × handshakeConcurrency may not
   exceed the 256 MiB aggregate frame-allocation budget.
-- Fake TLS fallback is restricted to configured SNI domains.
+- Fake TLS fallback is restricted to configured SNI domains. Replay protection
+  uses a fixed-memory rotating Bloom filter; replayCacheCapacity is the expected
+  number of authenticated handshakes per ten-minute window and has an
+  approximately 0.15% combined false-positive rate near capacity.
 - Middle-End key derivation binds socket addresses and ports. Deploy directly on
   the advertised public address; arbitrary NAT port/address rewriting is not
   currently supported.
