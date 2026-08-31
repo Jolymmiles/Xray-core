@@ -71,6 +71,9 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	if config.MaxPacketSize < 4 || config.MaxPacketSize > 4<<20 || config.MaxPacketSize&3 != 0 {
 		return nil, fmt.Errorf("mtproxy: invalid max packet size %d", config.MaxPacketSize)
 	}
+	if uint64(config.HandshakeConcurrency)*uint64(config.MaxPacketSize) > 256<<20 {
+		return nil, fmt.Errorf("mtproxy: aggregate frame allocation budget exceeds 256 MiB")
+	}
 	if config.HandshakeConcurrency > 4096 || config.Upstream.MaxSessionsPerDc > 64 || config.Upstream.MaxClientsPerSession > 4096 || config.Upstream.DeliveryQueueDepth > 64 {
 		return nil, fmt.Errorf("mtproxy: configured concurrency limits are too large")
 	}

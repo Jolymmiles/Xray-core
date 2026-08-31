@@ -70,13 +70,14 @@ func TestMTProxyHandlerUserManagerAndHardRevoke(t *testing.T) {
 
 func TestMTProxyHandlerRejectsUnsafeDirectProtoLimits(t *testing.T) {
 	tests := map[string]func(*Config){
-		"secrets":    func(config *Config) { config.MaxSecrets = 17 },
-		"packet":     func(config *Config) { config.MaxPacketSize = 8 << 20 },
-		"handshakes": func(config *Config) { config.HandshakeConcurrency = 4097 },
-		"sessions":   func(config *Config) { config.Upstream.MaxSessionsPerDc = 65 },
-		"clients":    func(config *Config) { config.Upstream.MaxClientsPerSession = 65537 },
-		"queue":      func(config *Config) { config.Upstream.DeliveryQueueDepth = 1025 },
-		"proxy tag":  func(config *Config) { config.Upstream.ProxyTag = []byte{1, 2, 3} },
+		"secrets":     func(config *Config) { config.MaxSecrets = 17 },
+		"packet":      func(config *Config) { config.MaxPacketSize = 8 << 20 },
+		"handshakes":  func(config *Config) { config.HandshakeConcurrency = 4097 },
+		"body budget": func(config *Config) { config.MaxPacketSize = 4 << 20; config.HandshakeConcurrency = 4096 },
+		"sessions":    func(config *Config) { config.Upstream.MaxSessionsPerDc = 65 },
+		"clients":     func(config *Config) { config.Upstream.MaxClientsPerSession = 65537 },
+		"queue":       func(config *Config) { config.Upstream.DeliveryQueueDepth = 1025 },
+		"proxy tag":   func(config *Config) { config.Upstream.ProxyTag = []byte{1, 2, 3} },
 		"replay": func(config *Config) {
 			config.FakeTls = &FakeTLSConfig{Enabled: true, Domains: []string{"cover.example"}, ReplayCacheCapacity: (1 << 20) + 1}
 		},

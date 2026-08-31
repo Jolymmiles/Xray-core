@@ -89,6 +89,7 @@ func TestMTProxyInboundConfigRejectsInvalidSettings(t *testing.T) {
 			config.Upstream.Source = "telegram"
 			config.Upstream.CacheDir = "/tmp/cache"
 		},
+		"body budget":             func(config *MTProxyInboundConfig) { config.MaxPacketSize = 4 << 20; config.HandshakeConcurrency = 4096 },
 		"bad proxy tag":           func(config *MTProxyInboundConfig) { config.Upstream.ProxyTag = "abcd" },
 		"fake TLS without domain": func(config *MTProxyInboundConfig) { config.FakeTLS = &MTProxyFakeTLSConfig{Only: true} },
 	}

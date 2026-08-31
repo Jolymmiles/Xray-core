@@ -16,6 +16,7 @@ const (
 	defaultMTProxyMaxSecrets = 16
 	hardMTProxyMaxSecrets    = 16
 	defaultMTProxyPacketSize = 1 << 20
+	maxMTProxyBodyBudget     = 256 << 20
 )
 
 type MTProxyClientConfig struct {
@@ -109,6 +110,9 @@ func (c *MTProxyInboundConfig) Build() (proto.Message, error) {
 	}
 	if handshakeConcurrency > 4096 {
 		return nil, fmt.Errorf("mtproxy: handshakeConcurrency is too large")
+	}
+	if uint64(handshakeConcurrency)*uint64(maxPacketSize) > maxMTProxyBodyBudget {
+		return nil, fmt.Errorf("mtproxy: aggregate frame allocation budget exceeds 256 MiB")
 	}
 
 	return &mtproxy.Config{Users: users, Upstream: upstream, FakeTls: fakeTLS, MaxSecrets: maxSecrets, MaxPacketSize: maxPacketSize, HandshakeConcurrency: handshakeConcurrency}, nil
