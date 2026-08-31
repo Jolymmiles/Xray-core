@@ -3,6 +3,7 @@ package mtproxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,6 +138,57 @@ func TestUpstreamSourceTelegramRejectsCrossOriginRedirectAndOversize(t *testing.
 	source, _ = newTelegramUpstreamSource(t.TempDir(), oversize.Client(), oversize.URL+"/secret", oversize.URL+"/config", time.Hour)
 	if _, err := source.Refresh(context.Background()); err == nil {
 		t.Fatal("oversized secret accepted")
+	}
+}
+
+func TestUpstreamSourceTelegramRejectsStaleAndFutureCache(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x55}, 32)
+	for _, fetchedAt := range []time.Time{time.Now().Add(-8 * 24 * time.Hour), time.Now().Add(10 * time.Minute)} {
+		directory := t.TempDir()
+		bundle := upstreamCacheBundle{Version: 1, Secret: secret, Config: []byte(testProxyConfig), FetchedAt: fetchedAt}
+		encoded, err := json.Marshal(bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, upstreamCacheFile), encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		source, err := newTelegramUpstreamSource(directory, http.DefaultClient, "http://example.test/secret", "http://example.test/config", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := source.loadCache(); err == nil {
+			t.Fatalf("cache timestamp %s was accepted", fetchedAt)
+		}
+	}
+}
+
+func TestUpstreamSourceTelegramUsesValidDownloadWhenCacheWriteFails(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x56}, 32)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/secret" {
+			_, _ = writer.Write(secret)
+		} else {
+			_, _ = writer.Write([]byte(testProxyConfig))
+		}
+	}))
+	defer server.Close()
+	directory := t.TempDir()
+	cachePath := filepath.Join(directory, "not-a-directory")
+	if err := os.WriteFile(cachePath, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := newTelegramUpstreamSource(cachePath, server.Client(), server.URL+"/secret", server.URL+"/config", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, refreshErr := source.Refresh(context.Background())
+	if data == nil || refreshErr == nil {
+		t.Fatalf("Refresh() = %+v, %v, want valid data plus cache error", data, refreshErr)
+	}
+	initial, err := source.LoadInitial(context.Background())
+	if err != nil || initial == nil || !bytes.Equal(initial.Secret, secret) {
+		t.Fatalf("LoadInitial() = %+v, %v", initial, err)
 	}
 }
 
