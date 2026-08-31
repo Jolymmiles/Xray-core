@@ -349,6 +349,7 @@ func TestMTProxyProcessFakeTLSRoundTrip(t *testing.T) {
 	processDone := make(chan error, 1)
 	go func() { processDone <- handler.Process(context.Background(), corenet.Network_TCP, inboundConn, nil) }()
 	hello := buildTestClientHello(t, clientSecret, "cover.example", time.Now().Unix())
+	hello = fragmentClientHello(hello, []int{3, 1, 7, 11, 23})
 	if err := writeFull(clientConn, hello); err != nil {
 		t.Fatal(err)
 	}
