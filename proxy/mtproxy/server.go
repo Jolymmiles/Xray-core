@@ -162,7 +162,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	}
 
 	if config.FakeTls != nil && config.FakeTls.Enabled {
-		replay, err := NewReplayCache(int(config.FakeTls.ReplayCacheCapacity), 11*time.Minute)
+		replay, err := NewBloomReplayCache(int(config.FakeTls.ReplayCacheCapacity), 10*time.Minute)
 		if err != nil {
 			handler.Close()
 			return nil, err
