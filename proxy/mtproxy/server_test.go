@@ -76,6 +76,7 @@ func TestMTProxyHandlerRejectsUnsafeDirectProtoLimits(t *testing.T) {
 		"sessions":   func(config *Config) { config.Upstream.MaxSessionsPerDc = 65 },
 		"clients":    func(config *Config) { config.Upstream.MaxClientsPerSession = 65537 },
 		"queue":      func(config *Config) { config.Upstream.DeliveryQueueDepth = 1025 },
+		"proxy tag":  func(config *Config) { config.Upstream.ProxyTag = []byte{1, 2, 3} },
 		"replay": func(config *Config) {
 			config.FakeTls = &FakeTLSConfig{Enabled: true, Domains: []string{"cover.example"}, ReplayCacheCapacity: (1 << 20) + 1}
 		},

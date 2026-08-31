@@ -89,6 +89,8 @@ func (w *middleWire) readMessage() ([]byte, error) {
 }
 
 func (w *middleWire) readBlock() error {
+	_ = w.connection.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	defer w.connection.SetReadDeadline(time.Time{})
 	var encrypted [16]byte
 	if _, err := io.ReadFull(w.connection, encrypted[:]); err != nil {
 		return err
@@ -226,24 +228,26 @@ func numericIPv4(address netip.Addr) uint32 {
 }
 
 type networkMiddleSession struct {
-	wire      *middleWire
-	core      *MiddleSession
-	done      chan struct{}
-	closeOnce sync.Once
+	wire             *middleWire
+	clientMaxPayload int
+	core             *MiddleSession
+	done             chan struct{}
+	closeOnce        sync.Once
 }
 
 func dialNetworkMiddleSession(ctx context.Context, endpoint MiddleEndpoint, secret []byte, maxPayload, maxClients, queueDepth int) (*networkMiddleSession, error) {
-	wire, err := dialMiddleWire(ctx, endpoint, secret, maxPayload)
+	wire, err := dialMiddleWire(ctx, endpoint, secret, maxPayload+64)
 	if err != nil {
 		return nil, err
 	}
-	networkSession := &networkMiddleSession{wire: wire, done: make(chan struct{})}
+	networkSession := &networkMiddleSession{wire: wire, clientMaxPayload: maxPayload, done: make(chan struct{})}
 	coreSession, err := NewMiddleSession(maxClients, queueDepth, wire.writeMessage)
 	if err != nil {
 		_ = wire.connection.Close()
 		return nil, err
 	}
 	networkSession.core = coreSession
+	coreSession.SetWriteFailureHandler(networkSession.Close)
 	go networkSession.readLoop()
 	return networkSession, nil
 }
@@ -255,7 +259,7 @@ func (s *networkMiddleSession) readLoop() {
 			s.Close(err)
 			return
 		}
-		if err := s.core.HandleMessage(message, s.wire.maxPayload); err != nil && err != ErrMiddleBackpressure {
+		if err := s.core.HandleMessage(message, s.clientMaxPayload); err != nil && err != ErrMiddleBackpressure {
 			s.Close(err)
 			return
 		}

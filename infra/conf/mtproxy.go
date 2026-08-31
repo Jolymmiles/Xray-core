@@ -147,12 +147,12 @@ func (c MTProxyUpstreamConfig) build() (*mtproxy.UpstreamConfig, error) {
 		result.MaxSessionsPerDc = 8
 	}
 	if result.MaxClientsPerSession == 0 {
-		result.MaxClientsPerSession = 4096
+		result.MaxClientsPerSession = 1024
 	}
 	if result.DeliveryQueueDepth == 0 {
-		result.DeliveryQueueDepth = 32
+		result.DeliveryQueueDepth = 4
 	}
-	if result.MaxSessionsPerDc > 64 || result.MaxClientsPerSession > 65536 || result.DeliveryQueueDepth > 1024 {
+	if result.MaxSessionsPerDc > 64 || result.MaxClientsPerSession > 4096 || result.DeliveryQueueDepth > 64 {
 		return nil, fmt.Errorf("mtproxy: upstream pool limits are too large")
 	}
 	return result, nil
