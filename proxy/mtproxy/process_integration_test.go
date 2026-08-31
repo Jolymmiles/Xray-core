@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"os"
@@ -466,6 +467,7 @@ func serveProcessMiddleClients(listener net.Listener, secret []byte, clientCount
 	if err := wire.writeMessage(handshake); err != nil {
 		return err
 	}
+	wire.crcTable = crc32.MakeTable(crc32.Castagnoli)
 	for clientIndex := 0; clientIndex < clientCount; clientIndex++ {
 		requestBytes, err := wire.readMessage()
 		if err != nil {
@@ -474,6 +476,9 @@ func serveProcessMiddleClients(listener net.Listener, secret []byte, clientCount
 		request, err := DecodeProxyRequest(requestBytes, 1<<20)
 		if err != nil {
 			return err
+		}
+		if request.Flags != 0x28021000 {
+			return fmt.Errorf("unexpected padded transport flags %#x", request.Flags)
 		}
 		if err := wire.writeMessage(EncodeProxyAnswer(ProxyAnswer{ConnectionID: request.ConnectionID, Payload: request.Payload})); err != nil {
 			return err

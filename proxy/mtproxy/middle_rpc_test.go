@@ -38,6 +38,25 @@ func TestRPCFrameRoundTripAndValidation(t *testing.T) {
 	}
 }
 
+func TestRPCFrameCRC32CNegotiation(t *testing.T) {
+	table := crc32.MakeTable(crc32.Castagnoli)
+	payload := []byte{1, 2, 3, 4}
+	frame, err := encodeMiddleRPCFrame(0, payload, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := binary.LittleEndian.Uint32(frame[len(frame)-4:]), crc32.Checksum(frame[:len(frame)-4], table); got != want {
+		t.Fatalf("CRC32C = %#x, want %#x", got, want)
+	}
+	if _, err := ReadMiddleRPCFrame(bytes.NewReader(frame), 1024); err == nil {
+		t.Fatal("IEEE reader accepted negotiated CRC32C frame")
+	}
+	decoded, err := readMiddleRPCFrame(bytes.NewReader(frame), 1024, table)
+	if err != nil || !bytes.Equal(decoded.Payload, payload) {
+		t.Fatalf("CRC32C decode = %+v, %v", decoded, err)
+	}
+}
+
 func TestProxyRequestAndResponseMessages(t *testing.T) {
 	request := ProxyRequest{
 		Flags:        8,
@@ -80,6 +99,19 @@ func TestProxyRequestAndResponseMessages(t *testing.T) {
 		if _, err := DecodeMiddleMessage(data, 1024); err != nil {
 			t.Fatalf("DecodeMiddleMessage(%x) error = %v", data, err)
 		}
+	}
+}
+
+func TestMiddleRPCPingPongControl(t *testing.T) {
+	pingBytes := EncodePing(Ping{ID: 0x1122334455667788})
+	message, err := DecodeMiddleMessage(pingBytes, 1024)
+	if err != nil || message.(Ping).ID != 0x1122334455667788 {
+		t.Fatalf("ping decode = %#v, %v", message, err)
+	}
+	pongBytes := EncodePong(Pong{ID: message.(Ping).ID})
+	message, err = DecodeMiddleMessage(pongBytes, 1024)
+	if err != nil || message.(Pong).ID != 0x1122334455667788 {
+		t.Fatalf("pong decode = %#v, %v", message, err)
 	}
 }
 

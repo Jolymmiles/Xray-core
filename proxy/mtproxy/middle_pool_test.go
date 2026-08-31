@@ -153,6 +153,21 @@ func TestMiddlePoolSelectsLeastLoadedSessionAndDefaultDC(t *testing.T) {
 	}
 }
 
+func TestMiddlePoolExactDoesNotUseDefaultDCSession(t *testing.T) {
+	defaultSession, _ := NewMiddleSession(2, 1, func([]byte) error { return nil })
+	pool, _ := NewMiddlePool(2, 2)
+	if err := pool.AddSession(2, defaultSession); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.OpenClientExact(4, nil); !errors.Is(err, ErrMiddleClosed) {
+		t.Fatalf("OpenClientExact(4) error = %v, want ErrMiddleClosed", err)
+	}
+	client, err := pool.OpenClient(4, nil)
+	if err != nil || client.session != defaultSession {
+		t.Fatalf("fallback OpenClient(4) = %+v, %v", client, err)
+	}
+}
+
 func TestMiddlePoolDeliveryByteBudgetIsReleasedOnReceive(t *testing.T) {
 	session, err := newMiddleSession(2, 8, 24, func([]byte) error { return nil })
 	if err != nil {

@@ -68,6 +68,30 @@ func TestMTProxyHandlerUserManagerAndHardRevoke(t *testing.T) {
 	}
 }
 
+func TestMTProxyHandlerRejectsUnsafeDirectProtoLimits(t *testing.T) {
+	tests := map[string]func(*Config){
+		"secrets":    func(config *Config) { config.MaxSecrets = 17 },
+		"packet":     func(config *Config) { config.MaxPacketSize = 8 << 20 },
+		"handshakes": func(config *Config) { config.HandshakeConcurrency = 4097 },
+		"sessions":   func(config *Config) { config.Upstream.MaxSessionsPerDc = 65 },
+		"clients":    func(config *Config) { config.Upstream.MaxClientsPerSession = 65537 },
+		"queue":      func(config *Config) { config.Upstream.DeliveryQueueDepth = 1025 },
+		"replay": func(config *Config) {
+			config.FakeTls = &FakeTLSConfig{Enabled: true, Domains: []string{"cover.example"}, ReplayCacheCapacity: (1 << 20) + 1}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			config := testHandlerConfig(t)
+			mutate(config)
+			if handler, err := New(context.Background(), config); err == nil {
+				handler.Close()
+				t.Fatal("New() accepted unsafe direct protobuf limits")
+			}
+		})
+	}
+}
+
 func TestMTProxyHandlerRejectsDuplicateAndWrongAccount(t *testing.T) {
 	config := testHandlerConfig(t)
 	config.Users = nil

@@ -30,6 +30,7 @@ type Handler struct {
 	telegramSource *TelegramUpstreamSource
 	fakeTLS        *FakeTLSAuthenticator
 	handshakeSlots chan struct{}
+	bodySlots      chan struct{}
 
 	closeOnce sync.Once
 }
@@ -41,6 +42,9 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	maxSecrets := config.MaxSecrets
 	if maxSecrets == 0 {
 		maxSecrets = 16
+	}
+	if maxSecrets > 16 || len(config.Users) > int(maxSecrets) {
+		return nil, fmt.Errorf("mtproxy: maxSecrets and users exceed the supported limit 16")
 	}
 	registry, err := NewSecretRegistry(int(maxSecrets))
 	if err != nil {
@@ -61,6 +65,44 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	if config.Upstream.DeliveryQueueDepth == 0 {
 		config.Upstream.DeliveryQueueDepth = 32
 	}
+	if config.MaxPacketSize < 4 || config.MaxPacketSize > 4<<20 || config.MaxPacketSize&3 != 0 {
+		return nil, fmt.Errorf("mtproxy: invalid max packet size %d", config.MaxPacketSize)
+	}
+	if config.HandshakeConcurrency > 4096 || config.Upstream.MaxSessionsPerDc > 64 || config.Upstream.MaxClientsPerSession > 65536 || config.Upstream.DeliveryQueueDepth > 1024 {
+		return nil, fmt.Errorf("mtproxy: configured concurrency limits are too large")
+	}
+	switch config.Upstream.Source {
+	case UpstreamSource_UPSTREAM_SOURCE_FILES:
+		if config.Upstream.SecretFile == "" || config.Upstream.ConfigFile == "" || config.Upstream.CacheDir != "" {
+			return nil, fmt.Errorf("mtproxy: invalid file upstream settings")
+		}
+	case UpstreamSource_UPSTREAM_SOURCE_TELEGRAM:
+		if config.Upstream.CacheDir == "" || config.Upstream.SecretFile != "" || config.Upstream.ConfigFile != "" {
+			return nil, fmt.Errorf("mtproxy: invalid automatic upstream settings")
+		}
+		if config.Upstream.RefreshIntervalSeconds == 0 {
+			config.Upstream.RefreshIntervalSeconds = 86400
+		}
+	default:
+		return nil, fmt.Errorf("mtproxy: unsupported upstream source")
+	}
+	if config.FakeTls != nil && config.FakeTls.Enabled {
+		if len(config.FakeTls.Domains) == 0 {
+			return nil, fmt.Errorf("mtproxy: Fake TLS requires a domain")
+		}
+		if config.FakeTls.ReplayCacheCapacity == 0 {
+			config.FakeTls.ReplayCacheCapacity = 65536
+		}
+		if config.FakeTls.ReplayCacheCapacity > 1<<20 {
+			return nil, fmt.Errorf("mtproxy: Fake TLS replay capacity is too large")
+		}
+		if config.FakeTls.ServerHelloPayloadSize == 0 {
+			config.FakeTls.ServerHelloPayloadSize = 1024
+		}
+		if config.FakeTls.ServerHelloPayloadSize > fakeTLSMaxRecordPayload {
+			return nil, fmt.Errorf("mtproxy: Fake TLS response payload is too large")
+		}
+	}
 
 	handlerContext, cancel := context.WithCancel(ctx)
 	handler := &Handler{
@@ -72,6 +114,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		fingerprintByEmail: make(map[string]SecretFingerprint, maxSecrets),
 		emailByFingerprint: make(map[SecretFingerprint]string, maxSecrets),
 		handshakeSlots:     make(chan struct{}, config.HandshakeConcurrency),
+		bodySlots:          make(chan struct{}, config.HandshakeConcurrency),
 	}
 	for _, user := range config.Users {
 		memoryUser, err := user.ToMemoryUser()
@@ -113,7 +156,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	}
 
 	if config.FakeTls != nil && config.FakeTls.Enabled {
-		replay, err := NewReplayCache(int(config.FakeTls.ReplayCacheCapacity), 48*time.Hour)
+		replay, err := NewReplayCache(int(config.FakeTls.ReplayCacheCapacity), 11*time.Minute)
 		if err != nil {
 			handler.Close()
 			return nil, err

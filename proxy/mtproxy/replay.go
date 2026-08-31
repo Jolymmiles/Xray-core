@@ -52,14 +52,28 @@ func (c *ReplayCache) CheckAndAdd(key [16]byte, now time.Time) error {
 	if expiresAt, found := c.entries[key]; found && expiresAt.After(now) {
 		return ErrFakeTLSReplay
 	}
-	if len(c.entries) >= c.max {
-		return ErrReplayCapacity
+	for len(c.entries) >= c.max {
+		if !c.evictOldest() {
+			return ErrReplayCapacity
+		}
 	}
 
 	expiresAt := now.Add(c.ttl)
 	c.entries[key] = expiresAt
 	c.order = append(c.order, replayEntry{key: key, expiresAt: expiresAt})
 	return nil
+}
+
+func (c *ReplayCache) evictOldest() bool {
+	for c.head < len(c.order) {
+		entry := c.order[c.head]
+		c.head++
+		if expiresAt, found := c.entries[entry.key]; found && expiresAt.Equal(entry.expiresAt) {
+			delete(c.entries, entry.key)
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ReplayCache) removeExpired(now time.Time) {
