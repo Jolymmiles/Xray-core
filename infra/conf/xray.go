@@ -15,6 +15,7 @@ import (
 	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/singmux"
 	core "github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/transport/internet"
 )
@@ -269,20 +270,16 @@ type InboundSMuxConfig struct {
 	H2MuxMaxReadFrameSize int64 `json:"h2muxMaxReadFrameSize"`
 }
 
-// HTTP/2 SETTINGS_MAX_FRAME_SIZE bounds, RFC 9113 section 6.5.2.
-const (
-	h2muxMinReadFrameSize = 1 << 14
-	h2muxMaxReadFrameSize = 1<<24 - 1
-)
-
 func (c *InboundSMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	brutal, err := c.BrutalOpts.Build()
 	if err != nil {
 		return nil, err
 	}
 	if c.H2MuxMaxReadFrameSize != 0 &&
-		(c.H2MuxMaxReadFrameSize < h2muxMinReadFrameSize || c.H2MuxMaxReadFrameSize > h2muxMaxReadFrameSize) {
-		return nil, errors.New("SMUX h2muxMaxReadFrameSize must be 0 or between 16384 and 16777215")
+		(c.H2MuxMaxReadFrameSize < int64(singmux.H2MuxMinReadFrameSize) ||
+			c.H2MuxMaxReadFrameSize > int64(singmux.H2MuxMaxReadFrameSize)) {
+		return nil, errors.New("SMUX h2muxMaxReadFrameSize must be 0 or between ",
+			singmux.H2MuxMinReadFrameSize, " and ", singmux.H2MuxMaxReadFrameSize)
 	}
 	return &proxyman.SmuxConfig{
 		Brutal:                brutal,
