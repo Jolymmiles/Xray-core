@@ -31,6 +31,13 @@ func receiverBrutalOptions(config *proxyman.ReceiverConfig) singmux.BrutalOption
 	}
 }
 
+func receiverH2MuxOptions(config *proxyman.ReceiverConfig) singmux.H2MuxOptions {
+	if config == nil || config.SmuxSettings == nil {
+		return singmux.H2MuxOptions{}
+	}
+	return singmux.H2MuxOptions{MaxReadFrameSize: config.SmuxSettings.H2MuxMaxReadFrameSize}
+}
+
 func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter) {
 	var uplinkCounter stats.Counter
 	var downlinkCounter stats.Counter
@@ -156,6 +163,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 						uplinkCounter:   uplinkCounter,
 						downlinkCounter: downlinkCounter,
 						brutal:          receiverBrutalOptions(receiverConfig),
+						h2mux:           receiverH2MuxOptions(receiverConfig),
 						ctx:             ctx,
 					}
 					h.workers = append(h.workers, worker)

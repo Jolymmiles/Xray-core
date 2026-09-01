@@ -264,14 +264,30 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 
 type InboundSMuxConfig struct {
 	BrutalOpts *SMuxBrutalOpts `json:"brutal-opts"`
+	// H2MuxMaxReadFrameSize advertises SETTINGS_MAX_FRAME_SIZE to H2MUX
+	// clients. 0 keeps the Go default of 1 MiB.
+	H2MuxMaxReadFrameSize int64 `json:"h2muxMaxReadFrameSize"`
 }
+
+// HTTP/2 SETTINGS_MAX_FRAME_SIZE bounds, RFC 9113 section 6.5.2.
+const (
+	h2muxMinReadFrameSize = 1 << 14
+	h2muxMaxReadFrameSize = 1<<24 - 1
+)
 
 func (c *InboundSMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	brutal, err := c.BrutalOpts.Build()
 	if err != nil {
 		return nil, err
 	}
-	return &proxyman.SmuxConfig{Brutal: brutal}, nil
+	if c.H2MuxMaxReadFrameSize != 0 &&
+		(c.H2MuxMaxReadFrameSize < h2muxMinReadFrameSize || c.H2MuxMaxReadFrameSize > h2muxMaxReadFrameSize) {
+		return nil, errors.New("SMUX h2muxMaxReadFrameSize must be 0 or between 16384 and 16777215")
+	}
+	return &proxyman.SmuxConfig{
+		Brutal:                brutal,
+		H2MuxMaxReadFrameSize: uint32(c.H2MuxMaxReadFrameSize),
+	}, nil
 }
 
 // Build creates MultiplexingConfig, Concurrency < 0 completely disables mux.

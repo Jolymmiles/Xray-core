@@ -510,8 +510,11 @@ type SmuxConfig struct {
 	Brutal         *BrutalConfig          `protobuf:"bytes,8,opt,name=brutal,proto3" json:"brutal,omitempty"`
 	// "off" (default), "auto", or "require". SMUX only.
 	LogicalHalfClose string `protobuf:"bytes,9,opt,name=logical_half_close,json=logicalHalfClose,proto3" json:"logical_half_close,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// SETTINGS_MAX_FRAME_SIZE advertised by H2MUX carriers accepted through this
+	// inbound. 0 keeps the Go default; explicit values are 16384..16777215.
+	H2MuxMaxReadFrameSize uint32 `protobuf:"varint,10,opt,name=h2mux_max_read_frame_size,json=h2muxMaxReadFrameSize,proto3" json:"h2mux_max_read_frame_size,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *SmuxConfig) Reset() {
@@ -605,6 +608,13 @@ func (x *SmuxConfig) GetLogicalHalfClose() string {
 		return x.LogicalHalfClose
 	}
 	return ""
+}
+
+func (x *SmuxConfig) GetH2MuxMaxReadFrameSize() uint32 {
+	if x != nil {
+		return x.H2MuxMaxReadFrameSize
+	}
+	return 0
 }
 
 type BrutalConfig struct {
@@ -705,7 +715,7 @@ const file_app_proxyman_config_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12 \n" +
 	"\vconcurrency\x18\x02 \x01(\x05R\vconcurrency\x12(\n" +
 	"\x0fxudpConcurrency\x18\x03 \x01(\x05R\x0fxudpConcurrency\x12(\n" +
-	"\x0fxudpProxyUDP443\x18\x04 \x01(\tR\x0fxudpProxyUDP443\"\xc9\x02\n" +
+	"\x0fxudpProxyUDP443\x18\x04 \x01(\tR\x0fxudpProxyUDP443\"\x83\x03\n" +
 	"\n" +
 	"SmuxConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1a\n" +
@@ -718,7 +728,9 @@ const file_app_proxyman_config_proto_rawDesc = "" +
 	"\apadding\x18\x06 \x01(\bR\apadding\x12\x19\n" +
 	"\bonly_tcp\x18\a \x01(\bR\aonlyTcp\x127\n" +
 	"\x06brutal\x18\b \x01(\v2\x1f.xray.app.proxyman.BrutalConfigR\x06brutal\x12,\n" +
-	"\x12logical_half_close\x18\t \x01(\tR\x10logicalHalfClose\"Z\n" +
+	"\x12logical_half_close\x18\t \x01(\tR\x10logicalHalfClose\x128\n" +
+	"\x19h2mux_max_read_frame_size\x18\n" +
+	" \x01(\rR\x15h2muxMaxReadFrameSize\"Z\n" +
 	"\fBrutalConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x15\n" +
 	"\x06up_bps\x18\x02 \x01(\x04R\x05upBps\x12\x19\n" +
