@@ -27,9 +27,9 @@ func TestH2MuxCarrierAdvertisesMaxFrameSize(t *testing.T) {
 		{name: "omitted", want: defaultH2MuxReadFrameSize},
 		{name: "zero", options: &H2MuxOptions{}, want: defaultH2MuxReadFrameSize},
 		{name: "protocol minimum", options: &H2MuxOptions{MaxReadFrameSize: 16384}, want: 16384},
-		{name: "protocol maximum", options: &H2MuxOptions{MaxReadFrameSize: H2MuxMaxReadFrameSize}, want: H2MuxMaxReadFrameSize},
+		{name: "protocol maximum", options: &H2MuxOptions{MaxReadFrameSize: H2MuxFrameSizeMax}, want: H2MuxFrameSizeMax},
 		{name: "below protocol minimum", options: &H2MuxOptions{MaxReadFrameSize: 16383}, want: defaultH2MuxReadFrameSize},
-		{name: "above protocol maximum", options: &H2MuxOptions{MaxReadFrameSize: H2MuxMaxReadFrameSize + 1}, want: defaultH2MuxReadFrameSize},
+		{name: "above protocol maximum", options: &H2MuxOptions{MaxReadFrameSize: H2MuxFrameSizeMax + 1}, want: defaultH2MuxReadFrameSize},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service := NewService(&echoDispatcher{target: make(chan X.Destination, 1)})
