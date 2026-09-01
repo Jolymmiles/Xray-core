@@ -276,10 +276,10 @@ func (c *InboundSMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 		return nil, err
 	}
 	if c.H2MuxMaxReadFrameSize != 0 &&
-		(c.H2MuxMaxReadFrameSize < int64(singmux.H2MuxMinReadFrameSize) ||
-			c.H2MuxMaxReadFrameSize > int64(singmux.H2MuxMaxReadFrameSize)) {
+		(c.H2MuxMaxReadFrameSize < int64(singmux.H2MuxFrameSizeMin) ||
+			c.H2MuxMaxReadFrameSize > int64(singmux.H2MuxFrameSizeMax)) {
 		return nil, errors.New("SMUX h2muxMaxReadFrameSize must be 0 or between ",
-			singmux.H2MuxMinReadFrameSize, " and ", singmux.H2MuxMaxReadFrameSize)
+			singmux.H2MuxFrameSizeMin, " and ", singmux.H2MuxFrameSizeMax)
 	}
 	return &proxyman.SmuxConfig{
 		Brutal:                brutal,

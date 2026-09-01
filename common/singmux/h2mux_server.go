@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	// H2MuxMinReadFrameSize and H2MuxMaxReadFrameSize bound the HTTP/2
+	// H2MuxFrameSizeMin and H2MuxFrameSizeMax bound the HTTP/2
 	// SETTINGS_MAX_FRAME_SIZE range defined by RFC 9113 section 6.5.2.
-	H2MuxMinReadFrameSize uint32 = 1 << 14
-	H2MuxMaxReadFrameSize uint32 = 1<<24 - 1
+	H2MuxFrameSizeMin uint32 = 1 << 14
+	H2MuxFrameSizeMax uint32 = 1<<24 - 1
 )
 
 // H2MuxOptions controls the per-inbound H2MUX carrier settings.
@@ -44,7 +44,7 @@ func ContextWithServerH2MuxOptions(ctx context.Context, options H2MuxOptions) co
 func serverH2MuxOptions(ctx context.Context) H2MuxOptions {
 	options, _ := ctx.Value(serverH2MuxOptionsKey{}).(H2MuxOptions)
 	if options.MaxReadFrameSize != 0 &&
-		(options.MaxReadFrameSize < H2MuxMinReadFrameSize || options.MaxReadFrameSize > H2MuxMaxReadFrameSize) {
+		(options.MaxReadFrameSize < H2MuxFrameSizeMin || options.MaxReadFrameSize > H2MuxFrameSizeMax) {
 		options.MaxReadFrameSize = 0
 	}
 	return options
