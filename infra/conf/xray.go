@@ -15,6 +15,7 @@ import (
 	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/singmux"
 	core "github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/transport/internet"
 )
@@ -264,6 +265,9 @@ func (m *SMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 
 type InboundSMuxConfig struct {
 	BrutalOpts *SMuxBrutalOpts `json:"brutal-opts"`
+	// H2MuxMaxReadFrameSize advertises SETTINGS_MAX_FRAME_SIZE to H2MUX
+	// clients. 0 keeps the Go default of 1 MiB.
+	H2MuxMaxReadFrameSize int64 `json:"h2muxMaxReadFrameSize"`
 }
 
 func (c *InboundSMuxConfig) Build() (*proxyman.SmuxConfig, error) {
@@ -271,7 +275,16 @@ func (c *InboundSMuxConfig) Build() (*proxyman.SmuxConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &proxyman.SmuxConfig{Brutal: brutal}, nil
+	if c.H2MuxMaxReadFrameSize != 0 &&
+		(c.H2MuxMaxReadFrameSize < int64(singmux.H2MuxFrameSizeMin) ||
+			c.H2MuxMaxReadFrameSize > int64(singmux.H2MuxFrameSizeMax)) {
+		return nil, errors.New("SMUX h2muxMaxReadFrameSize must be 0 or between ",
+			singmux.H2MuxFrameSizeMin, " and ", singmux.H2MuxFrameSizeMax)
+	}
+	return &proxyman.SmuxConfig{
+		Brutal:                brutal,
+		H2MuxMaxReadFrameSize: uint32(c.H2MuxMaxReadFrameSize),
+	}, nil
 }
 
 // Build creates MultiplexingConfig, Concurrency < 0 completely disables mux.
