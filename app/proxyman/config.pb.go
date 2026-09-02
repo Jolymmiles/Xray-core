@@ -511,7 +511,7 @@ type SmuxConfig struct {
 	// "off" (default), "auto", or "require". SMUX only.
 	LogicalHalfClose string `protobuf:"bytes,9,opt,name=logical_half_close,json=logicalHalfClose,proto3" json:"logical_half_close,omitempty"`
 	// SETTINGS_MAX_FRAME_SIZE advertised by H2MUX carriers accepted through this
-	// inbound. 0 keeps the Go default; explicit values are 16384..16777215.
+	// inbound. 0 keeps the Go default; nonzero values are 16384..16777215.
 	H2MuxMaxReadFrameSize uint32 `protobuf:"varint,10,opt,name=h2mux_max_read_frame_size,json=h2muxMaxReadFrameSize,proto3" json:"h2mux_max_read_frame_size,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
