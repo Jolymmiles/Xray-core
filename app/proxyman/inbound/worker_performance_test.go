@@ -14,6 +14,35 @@ import (
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
+func TestReceiverH2MuxOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *proxyman.ReceiverConfig
+		want   singmux.H2MuxOptions
+	}{
+		{name: "nil receiver"},
+		{name: "nil smux", config: &proxyman.ReceiverConfig{}},
+		{
+			name:   "omitted frame size",
+			config: &proxyman.ReceiverConfig{SmuxSettings: &proxyman.SmuxConfig{}},
+		},
+		{
+			name: "configured frame size",
+			config: &proxyman.ReceiverConfig{SmuxSettings: &proxyman.SmuxConfig{
+				H2MuxMaxReadFrameSize: 16384,
+			}},
+			want: singmux.H2MuxOptions{MaxReadFrameSize: 16384},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := receiverH2MuxOptions(test.config); got != test.want {
+				t.Fatalf("receiverH2MuxOptions() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestReceiverBrutalOptions(t *testing.T) {
 	tests := []struct {
 		name   string
