@@ -50,6 +50,26 @@ CONNECT request to authority `localhost`. HTTP status 200 establishes the byte
 stream; the request and response DATA bodies carry the common stream framing
 below. The client may send the stream request before response headers arrive.
 
+## H2MUX frame size
+
+An H2MUX server advertises `SETTINGS_MAX_FRAME_SIZE` in its initial SETTINGS
+frame. Go clients size the per-stream upload buffer of a body without
+`Content-Length` — every H2MUX stream — from that value, so a large one costs
+hundreds of kilobytes per concurrent stream on memory-constrained clients. The
+setting is per inbound and leaves the `golang.org/x/net/http2` default of 1 MiB
+in place when omitted or set to 0:
+
+```json
+"smux": {
+  "h2muxMaxReadFrameSize": 16384
+}
+```
+
+A nonzero value is one of 16384 through 16777215, the range RFC 9113 section
+6.5.2 defines; any other nonzero value is rejected at configuration time. The
+setting applies only to H2MUX carriers accepted through that inbound and never
+changes SMUX carriers, which carry no HTTP/2 settings.
+
 ## Stream request and response
 
 A new logical stream starts with `flags(2) destination`.
