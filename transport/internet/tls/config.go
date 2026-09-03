@@ -2,7 +2,6 @@ package tls
 
 import (
 	"bytes"
-	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -22,47 +21,6 @@ import (
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
 	"github.com/xtls/xray-core/transport/internet"
 )
-
-const (
-	configSessionCacheCapacity = 128
-	sessionCacheCapacity       = 128
-)
-
-type configSessionCacheEntry struct {
-	config *Config
-	cache  tls.ClientSessionCache
-}
-
-var configSessionCaches = struct {
-	sync.Mutex
-	entries map[*Config]*list.Element
-	lru     list.List
-}{
-	entries: make(map[*Config]*list.Element),
-}
-
-func clientSessionCache(config *Config) tls.ClientSessionCache {
-	configSessionCaches.Lock()
-	defer configSessionCaches.Unlock()
-
-	if element := configSessionCaches.entries[config]; element != nil {
-		configSessionCaches.lru.MoveToFront(element)
-		return element.Value.(*configSessionCacheEntry).cache
-	}
-
-	entry := &configSessionCacheEntry{
-		config: config,
-		cache:  tls.NewLRUClientSessionCache(sessionCacheCapacity),
-	}
-	element := configSessionCaches.lru.PushFront(entry)
-	configSessionCaches.entries[config] = element
-	if configSessionCaches.lru.Len() > configSessionCacheCapacity {
-		oldest := configSessionCaches.lru.Back()
-		configSessionCaches.lru.Remove(oldest)
-		delete(configSessionCaches.entries, oldest.Value.(*configSessionCacheEntry).config)
-	}
-	return entry.cache
-}
 
 // ParseCertificate converts a cert.Certificate to Certificate.
 func ParseCertificate(c *cert.Certificate) *Certificate {
