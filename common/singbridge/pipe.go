@@ -31,6 +31,11 @@ func CopyConn(ctx context.Context, inboundConn net.Conn, link *transport.Link, s
 	return ReturnError(bufio.CopyConn(ctx, conn, serverConn))
 }
 
+// PipeConnWrapper is the TCP half of the same arrangement as
+// PacketConnWrapper: sing's bufio.CopyConn hands each direction to
+// common/task.Group, so Read and Write run on goroutines this repository never
+// started and nothing on the way in recovers. See panicError() in packet.go
+// for what a panic escaping one of them costs.
 type PipeConnWrapper struct {
 	R io.Reader
 	W buf.Writer
@@ -46,18 +51,36 @@ func (w *PipeConnWrapper) Close() error {
 
 func (w *PipeConnWrapper) Read(b []byte) (n int, err error) {
 	w.T.Update()
+	defer func() {
+		if r := recover(); r != nil {
+			n, err = 0, panicError("singbridge.PipeConnWrapper.Read", r)
+		}
+		if err != nil {
+			// uplinkonly
+			w.T.SetTimeout(2 * time.Second)
+		}
+	}()
 	n, err = w.R.Read(b)
-	if err != nil {
-		// uplinkonly
-		w.T.SetTimeout(2 * time.Second)
-	}
 	return
 }
 
 func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 	w.T.Update()
-	n = len(p)
 	var mb buf.MultiBuffer
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicError("singbridge.PipeConnWrapper.Write", r)
+		}
+		if err != nil {
+			// Release is a no-op on a buffer the writer already released, so
+			// this is safe whichever side the failure came from.
+			n = 0
+			buf.ReleaseMulti(mb)
+			// downlinkonly
+			w.T.SetTimeout(5 * time.Second)
+		}
+	}()
+	n = len(p)
 	pLen := len(p)
 	for pLen > 0 {
 		buffer := buf.New()
@@ -71,11 +94,5 @@ func (w *PipeConnWrapper) Write(p []byte) (n int, err error) {
 		mb = append(mb, buffer)
 	}
 	err = w.W.WriteMultiBuffer(mb)
-	if err != nil {
-		n = 0
-		buf.ReleaseMulti(mb)
-		// downlinkonly
-		w.T.SetTimeout(5 * time.Second)
-	}
 	return
 }
