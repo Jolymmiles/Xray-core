@@ -107,3 +107,7 @@ _Avoid_: Deferred cleanup, manager callback
 **Vision carrier**:
 The authenticated encrypted carrier whose negotiated security state is eligible for a VLESS Vision direct-copy transition. Its carrier kind and security version must be validated before that transition.
 _Avoid_: Vision session, TLS connection
+
+**TLS resumption scope**:
+The isolation identity that couples one configured TLS client context to one impersonated fingerprint. Session tickets learned in one scope must never be offered in another.
+_Avoid_: Session cache, shared ticket pool

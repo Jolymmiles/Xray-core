@@ -1,20 +1,16 @@
 package tls
 
 import (
-	"container/list"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"io"
 	"math/big"
-	"reflect"
 	"slices"
-	"sync"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/xray-core/common/buf"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/utils"
 )
@@ -125,109 +121,6 @@ type UConn struct {
 
 var _ Interface = (*UConn)(nil)
 
-const uTLSSessionCacheScopeCapacity = 256
-
-type uTLSSessionCacheScope struct {
-	source      uintptr
-	fingerprint string
-}
-
-type uTLSSessionCacheEntry struct {
-	scope uTLSSessionCacheScope
-	cache utls.ClientSessionCache
-}
-
-var uTLSSessionCaches = struct {
-	sync.Mutex
-	entries map[uTLSSessionCacheScope]*list.Element
-	lru     list.List
-}{
-	entries: make(map[uTLSSessionCacheScope]*list.Element),
-}
-
-type serializingUTLSSessionCache struct {
-	sync.Mutex
-	cache utls.ClientSessionCache
-}
-
-func newSerializingUTLSSessionCache() utls.ClientSessionCache {
-	return &serializingUTLSSessionCache{
-		cache: utls.NewLRUClientSessionCache(sessionCacheCapacity),
-	}
-}
-
-func (c *serializingUTLSSessionCache) Get(sessionKey string) (*utls.ClientSessionState, bool) {
-	c.Lock()
-	defer c.Unlock()
-
-	session, ok := c.cache.Get(sessionKey)
-	if !ok {
-		return nil, false
-	}
-	c.cache.Put(sessionKey, nil)
-	cloned := cloneUTLSSession(session)
-	return cloned, cloned != nil
-}
-
-func (c *serializingUTLSSessionCache) Put(sessionKey string, session *utls.ClientSessionState) {
-	c.Lock()
-	defer c.Unlock()
-
-	if session == nil {
-		c.cache.Put(sessionKey, nil)
-		return
-	}
-	if cloned := cloneUTLSSession(session); cloned != nil {
-		c.cache.Put(sessionKey, cloned)
-	}
-}
-
-func cloneUTLSSession(session *utls.ClientSessionState) *utls.ClientSessionState {
-	ticket, state, err := session.ResumptionState()
-	if err != nil || state == nil {
-		return nil
-	}
-	serialized, err := state.Bytes()
-	if err != nil {
-		return nil
-	}
-	clonedState, err := utls.ParseSessionState(serialized)
-	if err != nil {
-		return nil
-	}
-	cloned, err := utls.NewResumptionState(slices.Clone(ticket), clonedState)
-	if err != nil {
-		return nil
-	}
-	return cloned
-}
-
-func uTLSSessionCache(source uintptr, fingerprint utls.ClientHelloID) utls.ClientSessionCache {
-	scope := uTLSSessionCacheScope{
-		source:      source,
-		fingerprint: fingerprint.Str(),
-	}
-	uTLSSessionCaches.Lock()
-	defer uTLSSessionCaches.Unlock()
-
-	if element := uTLSSessionCaches.entries[scope]; element != nil {
-		uTLSSessionCaches.lru.MoveToFront(element)
-		return element.Value.(*uTLSSessionCacheEntry).cache
-	}
-	entry := &uTLSSessionCacheEntry{
-		scope: scope,
-		cache: newSerializingUTLSSessionCache(),
-	}
-	element := uTLSSessionCaches.lru.PushFront(entry)
-	uTLSSessionCaches.entries[scope] = element
-	if uTLSSessionCaches.lru.Len() > uTLSSessionCacheScopeCapacity {
-		oldest := uTLSSessionCaches.lru.Back()
-		uTLSSessionCaches.lru.Remove(oldest)
-		delete(uTLSSessionCaches.entries, oldest.Value.(*uTLSSessionCacheEntry).scope)
-	}
-	return entry.cache
-}
-
 func (c *UConn) Close() error {
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
 		c.Conn.NetConn().Close()
@@ -288,107 +181,17 @@ func (c *UConn) NegotiatedProtocol() string {
 }
 
 func UClient(c net.Conn, config *tls.Config, fingerprint *utls.ClientHelloID) net.Conn {
-	uTLSConfig, sessionCacheSource := copyConfig(config)
-	utlsConn := newUClient(c, uTLSConfig, *fingerprint, sessionCacheSource)
-	return &UConn{UConn: utlsConn}
+	uTLSConfig, resumption := copyConfig(config)
+	return &UConn{UConn: resumption.client(c, uTLSConfig, *fingerprint)}
 }
 
 func GeneraticUClient(c net.Conn, config *tls.Config) *utls.UConn {
-	uTLSConfig, sessionCacheSource := copyConfig(config)
-	return newUClient(c, uTLSConfig, utls.HelloChrome_Auto, sessionCacheSource)
+	uTLSConfig, resumption := copyConfig(config)
+	return resumption.client(c, uTLSConfig, utls.HelloChrome_Auto)
 }
 
-func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID, sessionCacheSource uintptr) *utls.UConn {
-	if sessionCacheSource != 0 {
-		if spec, eligible := clientHelloSpecForResumption(fingerprint); eligible {
-			config.ClientSessionCache = uTLSSessionCache(sessionCacheSource, fingerprint)
-			conn := utls.UClient(c, config, utls.HelloCustom)
-			if err := conn.ApplyPreset(spec); err == nil {
-				return conn
-			}
-			config.ClientSessionCache = nil
-		}
-		// Falling back keeps the stock ClientHello. Forcing resumption here
-		// would mean adding extensions the impersonated client does not send.
-		config.OmitEmptyPsk = false
-		reportUnresumableFingerprint(fingerprint)
-	}
-	return utls.UClient(c, config, fingerprint)
-}
-
-var reportedUnresumableFingerprints sync.Map
-
-// reportUnresumableFingerprint logs the intentional fallback once per
-// fingerprint, so an operator who enabled session resumption can tell that it
-// is inactive without a per-connection log flood.
-func reportUnresumableFingerprint(fingerprint utls.ClientHelloID) {
-	name := fingerprint.Str()
-	if _, reported := reportedUnresumableFingerprints.LoadOrStore(name, struct{}{}); reported {
-		return
-	}
-	errors.LogInfo(context.Background(), "TLS session resumption is unavailable for fingerprint ", name,
-		": its ClientHello does not advertise session_ticket and psk_key_exchange_modes, ",
-		"and adding them would not match the impersonated client")
-}
-
-// SupportsSessionResumption reports whether a resumption PSK can be offered
-// under the given fingerprint without altering its ClientHello.
-func SupportsSessionResumption(fingerprint utls.ClientHelloID) bool {
-	_, eligible := clientHelloSpecForResumption(fingerprint)
-	return eligible
-}
-
-// clientHelloSpecForResumption returns a ClientHello template able to carry a
-// resumption PSK, or (nil, false) when the preset must keep its stock shape.
-//
-// A preset qualifies only when it already advertises session_ticket and
-// psk_key_exchange_modes. Those are what the impersonated client really sends;
-// synthesising them produces a ClientHello that matches no real browser and
-// defeats the point of uTLS. Qualifying presets get a pre_shared_key appended
-// last, as RFC 8446 section 4.2.11 requires, and OmitEmptyPsk keeps it off the
-// wire until a ticket has been cached — which is the observed behavior of a
-// real Chrome on its first versus subsequent connection.
-//
-// See SESSION_RESUMPTION_REVIEW.md section 4.
-func clientHelloSpecForResumption(fingerprint utls.ClientHelloID) (*utls.ClientHelloSpec, bool) {
-	spec, err := utls.UTLSIdToSpec(fingerprint)
-	if err != nil {
-		return nil, false
-	}
-	return resumptionSpec(spec)
-}
-
-// resumptionSpec applies the eligibility rule to an already-resolved template.
-// Randomized presets produce a different template on every UTLSIdToSpec call,
-// so taking the spec as input is what lets a caller — and the fidelity tests —
-// reason about one concrete ClientHello rather than a fresh sample.
-func resumptionSpec(spec utls.ClientHelloSpec) (*utls.ClientHelloSpec, bool) {
-	hasPSKExchangeModes := false
-	hasSessionTicket := false
-	for _, extension := range spec.Extensions {
-		switch extension.(type) {
-		case utls.PreSharedKeyExtension:
-			// The preset drives PSK itself; uTLS handles it natively.
-			return nil, false
-		case *utls.PSKKeyExchangeModesExtension:
-			hasPSKExchangeModes = true
-		case utls.ISessionTicketExtension:
-			hasSessionTicket = true
-		}
-	}
-	if !hasSessionTicket || !hasPSKExchangeModes {
-		return nil, false
-	}
-
-	// Copy rather than append in place: UTLSIdToSpec may hand back a slice
-	// sharing storage with the package-level template.
-	extensions := make([]utls.TLSExtension, len(spec.Extensions), len(spec.Extensions)+1)
-	copy(extensions, spec.Extensions)
-	spec.Extensions = append(extensions, &utls.UtlsPreSharedKeyExtension{})
-	return &spec, true
-}
-
-func copyConfig(c *tls.Config) (*utls.Config, uintptr) {
+func copyConfig(c *tls.Config) (*utls.Config, clientSessionResumption) {
+	resumption := newClientSessionResumption(c)
 	config := &utls.Config{
 		Rand:                           c.Rand,
 		RootCAs:                        c.RootCAs,
@@ -399,16 +202,9 @@ func copyConfig(c *tls.Config) (*utls.Config, uintptr) {
 		EncryptedClientHelloConfigList: c.EncryptedClientHelloConfigList,
 		NextProtos:                     c.NextProtos,
 		SessionTicketsDisabled:         c.SessionTicketsDisabled,
+		OmitEmptyPsk:                   resumption.enabled(),
 	}
-	var sessionCacheSource uintptr
-	if c.ClientSessionCache != nil && !c.SessionTicketsDisabled {
-		config.OmitEmptyPsk = true
-		cacheValue := reflect.ValueOf(c.ClientSessionCache)
-		if cacheValue.Kind() == reflect.Pointer {
-			sessionCacheSource = cacheValue.Pointer()
-		}
-	}
-	return config, sessionCacheSource
+	return config, resumption
 }
 
 func init() {
