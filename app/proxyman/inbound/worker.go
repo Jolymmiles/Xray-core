@@ -48,6 +48,7 @@ type tcpWorker struct {
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 	brutal          singmux.BrutalOptions
+	h2mux           singmux.H2MuxOptions
 
 	hub internet.Listener
 
@@ -179,6 +180,9 @@ func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx = session.ContextWithConnection(ctx, sid, inbound, outbound, content)
 	if w.brutal.Enabled {
 		ctx = singmux.ContextWithServerBrutalOptions(ctx, w.brutal)
+	}
+	if w.h2mux.MaxReadFrameSize != 0 {
+		ctx = singmux.ContextWithServerH2MuxOptions(ctx, w.h2mux)
 	}
 
 	if err := w.proxy.Process(ctx, net.Network_TCP, conn, w.dispatcher); err != nil {
