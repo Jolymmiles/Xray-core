@@ -13,6 +13,7 @@ Explore the fork's architecture, code, and features or ask questions directly in
 This repository tracks upstream Xray-core and maintains additional server-focused features and hardening:
 
 - **In-tree sing-mux stack:** sing-mux-compatible `smux` and `h2mux` clients and servers with TCP/UDP streams, optional padding, bounded connection pools, and no runtime dependency on an external mux library. H2MUX is selected outbound with `smux.protocol` and auto-detected inbound. See the [wire protocol specification](common/singmux/SPEC.md).
+- **Per-inbound H2MUX frame size:** `smux.h2muxMaxReadFrameSize` advertises `SETTINGS_MAX_FRAME_SIZE` to H2MUX clients, whose per-stream upload buffers scale with it. Omitting it keeps the 1 MiB library default.
 - **Brutal congestion control:** opt-in Brutal bandwidth negotiation for outbound SMUX/H2MUX clients and per-inbound servers through `smux.brutal-opts` (`enabled`, `up`, and `down`). Linux servers need the `brutal` congestion-control module.
 - **Structured logging:** multiple independent console, JSONL file, and Unix-socket outputs with event filtering, batching, bounded queues, and configurable backpressure. Legacy logging remains supported. See the [configuration guide](common/log/CONFIGURATION.md).
 - **Exact online presence:** when `statsUserOnline` is enabled, `user>>><email>>>online`, `GetStatsOnlineIpList`, and `GetAllOnlineUsers` follow authenticated logical traffic rather than long-lived carriers. This covers direct traffic, SMUX/H2MUX, legacy Mux/XUDP, reverse connections, and WireGuard flows.

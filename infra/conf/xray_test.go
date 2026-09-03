@@ -546,6 +546,41 @@ func TestInboundSMuxConfigBuild(t *testing.T) {
 			fields:  `{"brutal-opts":{"enabled":true,"up":"64 KBps","down":"1 Gbps"}}`,
 			wantErr: true,
 		},
+		{
+			name:   "h2mux frame size omitted",
+			fields: `{"brutal-opts":{"enabled":false}}`,
+			want:   &proxyman.SmuxConfig{Brutal: &proxyman.BrutalConfig{}},
+		},
+		{
+			name:   "h2mux frame size protocol minimum",
+			fields: `{"h2muxMaxReadFrameSize":16384}`,
+			want:   &proxyman.SmuxConfig{H2MuxMaxReadFrameSize: 16384},
+		},
+		{
+			name:   "h2mux frame size protocol maximum",
+			fields: `{"h2muxMaxReadFrameSize":16777215}`,
+			want:   &proxyman.SmuxConfig{H2MuxMaxReadFrameSize: 16777215},
+		},
+		{
+			name:   "h2mux frame size zero keeps the default",
+			fields: `{"h2muxMaxReadFrameSize":0}`,
+			want:   &proxyman.SmuxConfig{},
+		},
+		{
+			name:    "h2mux frame size below protocol minimum",
+			fields:  `{"h2muxMaxReadFrameSize":16383}`,
+			wantErr: true,
+		},
+		{
+			name:    "h2mux frame size above protocol maximum",
+			fields:  `{"h2muxMaxReadFrameSize":16777216}`,
+			wantErr: true,
+		},
+		{
+			name:    "h2mux frame size negative",
+			fields:  `{"h2muxMaxReadFrameSize":-1}`,
+			wantErr: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -589,6 +624,42 @@ func TestInboundDetourCarriesSMuxBrutalIntoReceiverSettings(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(receiver.SmuxSettings, want) {
 		t.Fatalf("receiver SMUX settings = %#v, want %#v", receiver.SmuxSettings, want)
+	}
+}
+
+func TestInboundDetourCarriesSMuxH2MuxFrameSizeIntoReceiverSettings(t *testing.T) {
+	var config Config
+	common.Must(json.Unmarshal([]byte(`{
+		"inbounds": [{
+			"protocol": "dokodemo-door",
+			"port": 1234,
+			"settings": {"address": "127.0.0.1", "port": 80, "network": "tcp"},
+			"smux": {"h2muxMaxReadFrameSize": 16384}
+		}]
+	}`), &config))
+	built, err := config.Build()
+	common.Must(err)
+	message, err := built.Inbound[0].ReceiverSettings.GetInstance()
+	common.Must(err)
+	receiver := message.(*proxyman.ReceiverConfig)
+	want := &proxyman.SmuxConfig{H2MuxMaxReadFrameSize: 16384}
+	if !reflect.DeepEqual(receiver.SmuxSettings, want) {
+		t.Fatalf("receiver SMUX settings = %#v, want %#v", receiver.SmuxSettings, want)
+	}
+}
+
+func TestInboundDetourRejectsInvalidSMuxH2MuxFrameSize(t *testing.T) {
+	var config Config
+	common.Must(json.Unmarshal([]byte(`{
+		"inbounds": [{
+			"protocol": "dokodemo-door",
+			"port": 1234,
+			"settings": {"address": "127.0.0.1", "port": 80, "network": "tcp"},
+			"smux": {"h2muxMaxReadFrameSize": 1024}
+		}]
+	}`), &config))
+	if _, err := config.Build(); err == nil {
+		t.Fatal("expected an error for an out-of-range h2muxMaxReadFrameSize")
 	}
 }
 

@@ -15,6 +15,41 @@ import (
 	"golang.org/x/net/http2"
 )
 
+const (
+	// H2MuxFrameSizeMin and H2MuxFrameSizeMax bound the HTTP/2
+	// SETTINGS_MAX_FRAME_SIZE range defined by RFC 9113 section 6.5.2.
+	H2MuxFrameSizeMin uint32 = 1 << 14
+	H2MuxFrameSizeMax uint32 = 1<<24 - 1
+)
+
+// H2MuxOptions controls the per-inbound H2MUX carrier settings.
+type H2MuxOptions struct {
+	// MaxReadFrameSize is advertised as SETTINGS_MAX_FRAME_SIZE, which sizes
+	// the per-stream upload buffer of Go clients. Zero keeps the
+	// golang.org/x/net/http2 default of 1 MiB.
+	MaxReadFrameSize uint32
+}
+
+type serverH2MuxOptionsKey struct{}
+
+// ContextWithServerH2MuxOptions attaches immutable per-inbound H2MUX settings
+// to an accepted carrier context. SMUX carriers are unaffected by them.
+func ContextWithServerH2MuxOptions(ctx context.Context, options H2MuxOptions) context.Context {
+	return context.WithValue(ctx, serverH2MuxOptionsKey{}, options)
+}
+
+// serverH2MuxOptions reads the carrier options, dropping a frame size outside
+// the protocol range so that a carrier keeps the library default instead of
+// letting http2 clamp a value config validation should already have rejected.
+func serverH2MuxOptions(ctx context.Context) H2MuxOptions {
+	options, _ := ctx.Value(serverH2MuxOptionsKey{}).(H2MuxOptions)
+	if options.MaxReadFrameSize != 0 &&
+		(options.MaxReadFrameSize < H2MuxFrameSizeMin || options.MaxReadFrameSize > H2MuxFrameSizeMax) {
+		options.MaxReadFrameSize = 0
+	}
+	return options
+}
+
 func (c *serviceCarrier) wrapH2MuxHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if !c.beginHandler() {
@@ -27,7 +62,9 @@ func (c *serviceCarrier) wrapH2MuxHandler(next http.Handler) http.Handler {
 }
 
 func (s *Service) serveH2Mux(ctx context.Context, carrier net.Conn, owner *serviceCarrier, brutal *serverBrutalController, presence session.PresenceScope) error {
-	server := &http2.Server{}
+	server := &http2.Server{
+		MaxReadFrameSize: serverH2MuxOptions(ctx).MaxReadFrameSize,
+	}
 	server.ServeConn(carrier, &http2.ServeConnOpts{
 		Context: ctx,
 		Handler: owner.wrapH2MuxHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

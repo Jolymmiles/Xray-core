@@ -87,6 +87,9 @@ message SmuxConfig {
   BrutalConfig brutal = 8;
   // "off" (default), "auto", or "require". SMUX only.
   string logical_half_close = 9;
+  // SETTINGS_MAX_FRAME_SIZE advertised by H2MUX carriers accepted through this
+  // inbound. 0 keeps the Go default; nonzero values are 16384..16777215.
+  uint32 h2mux_max_read_frame_size = 10;
 }
 
 message BrutalConfig {
