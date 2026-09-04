@@ -173,7 +173,7 @@ func (c *MTProxyFakeTLSConfig) build() (*mtproxy.FakeTLSConfig, error) {
 	seen := make(map[string]struct{}, len(c.Domains))
 	for _, domain := range c.Domains {
 		domain = strings.ToLower(strings.TrimSpace(domain))
-		if domain == "" || strings.ContainsAny(domain, "/: ") {
+		if err := mtproxy.ValidateFakeTLSDomain(domain); err != nil {
 			return nil, fmt.Errorf("mtproxy: invalid fakeTLS domain %q", domain)
 		}
 		if _, exists := seen[domain]; exists {

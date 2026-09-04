@@ -19,6 +19,9 @@ func newUpstreamData(secret, rawConfig []byte, loadedAt time.Time) (*UpstreamDat
 	if len(secret) < minMiddleSecretLength || len(secret) > maxMiddleSecretLength {
 		return nil, fmt.Errorf("mtproxy: invalid downloaded Middle-End secret length %d", len(secret))
 	}
+	if secret[0] == 0 && secret[1] == 0 && secret[2] == 0 && secret[3] == 0 {
+		return nil, fmt.Errorf("mtproxy: zero Middle-End key selector")
+	}
 	if len(rawConfig) == 0 || len(rawConfig) > maxDownloadedConfig {
 		return nil, fmt.Errorf("mtproxy: invalid downloaded proxy config length %d", len(rawConfig))
 	}

@@ -86,6 +86,9 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		if config.Upstream.CacheDir == "" || config.Upstream.SecretFile != "" || config.Upstream.ConfigFile != "" {
 			return nil, fmt.Errorf("mtproxy: invalid automatic upstream settings")
 		}
+		if config.Upstream.RefreshIntervalSeconds > 0 && config.Upstream.RefreshIntervalSeconds < 60 {
+			return nil, fmt.Errorf("mtproxy: refresh interval must be at least 60 seconds")
+		}
 		if config.Upstream.RefreshIntervalSeconds == 0 {
 			config.Upstream.RefreshIntervalSeconds = 86400
 		}
@@ -95,6 +98,11 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	if config.FakeTls != nil && config.FakeTls.Enabled {
 		if len(config.FakeTls.Domains) == 0 {
 			return nil, fmt.Errorf("mtproxy: Fake TLS requires a domain")
+		}
+		for _, domain := range config.FakeTls.Domains {
+			if err := ValidateFakeTLSDomain(domain); err != nil {
+				return nil, err
+			}
 		}
 		if config.FakeTls.ReplayCacheCapacity == 0 {
 			config.FakeTls.ReplayCacheCapacity = 65536
@@ -178,6 +186,15 @@ func (h *Handler) Process(ctx context.Context, network corenet.Network, connecti
 	if network != corenet.Network_TCP {
 		return fmt.Errorf("mtproxy: unsupported network %s", network)
 	}
+	if err := h.ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopHandler := context.AfterFunc(h.ctx, cancel)
+	defer stopHandler()
+	stopConnection := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopConnection()
 	return h.processConnection(ctx, connection, dispatcher)
 }
 
@@ -205,6 +222,8 @@ func (h *Handler) AddUser(_ context.Context, user *protocol.MemoryUser) error {
 		return fmt.Errorf("mtproxy: duplicate client secret")
 	}
 	copyUser := *user
+	copyAccount := *account
+	copyUser.Account = &copyAccount
 	h.users[user.Email] = &copyUser
 	h.fingerprintByEmail[user.Email] = fingerprint
 	h.emailByFingerprint[fingerprint] = user.Email
@@ -235,6 +254,8 @@ func (h *Handler) GetUser(_ context.Context, email string) *protocol.MemoryUser 
 		return nil
 	}
 	copyUser := *user
+	copyAccount := *user.Account.(*MemoryAccount)
+	copyUser.Account = &copyAccount
 	return &copyUser
 }
 
@@ -244,6 +265,8 @@ func (h *Handler) GetUsers(context.Context) []*protocol.MemoryUser {
 	result := make([]*protocol.MemoryUser, 0, len(h.users))
 	for _, user := range h.users {
 		copyUser := *user
+		copyAccount := *user.Account.(*MemoryAccount)
+		copyUser.Account = &copyAccount
 		result = append(result, &copyUser)
 	}
 	return result
