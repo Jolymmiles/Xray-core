@@ -99,6 +99,11 @@ func TestSMUXAutoFallbackLegacyXray(t *testing.T) {
 			serverPath := filepath.Join(dir, "server.json")
 			writeConfig(t, serverPath, xrayConfig(t, true, "vless", serverPort, 0, "smux", padding, certificate, privateKey))
 			server := startE2EProcess(t, legacyXray, "run", "-config", serverPath)
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Logf("server logs:\n%s", server.logs.String())
+				}
+			})
 			waitTCP(t, server, serverPort)
 
 			// Reject a fixture that already negotiates the extension: a successful
@@ -107,6 +112,11 @@ func TestSMUXAutoFallbackLegacyXray(t *testing.T) {
 			requirePath := filepath.Join(dir, "require.json")
 			writeConfig(t, requirePath, negotiatedSMUXConfig(t, xrayConfig(t, false, "vless", serverPort, requirePort, "smux", padding, certificate, ""), padding, "require"))
 			requireClient := startE2EProcess(t, xray, "run", "-config", requirePath)
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Logf("require client logs:\n%s", requireClient.logs.String())
+				}
+			})
 			waitSOCKS(t, requireClient, requirePort)
 			if err := runSOCKSTCP(requirePort, tcpEcho); err == nil {
 				t.Fatal("legacy Xray server unexpectedly accepted required half-close negotiation")
@@ -120,7 +130,6 @@ func TestSMUXAutoFallbackLegacyXray(t *testing.T) {
 			waitSOCKS(t, client, socksPort)
 			t.Cleanup(func() {
 				if t.Failed() {
-					t.Logf("server logs:\n%s", server.logs.String())
 					t.Logf("client logs:\n%s", client.logs.String())
 				}
 			})
