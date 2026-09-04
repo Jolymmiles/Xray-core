@@ -125,8 +125,10 @@ layout stated above with Python standard-library hashlib and struct, then stored
 as literal expected bytes before the Go implementation was accepted. Client
 transport vectors are constructed from the stated SHA-256/AES-CTR equations by
 standard-library primitives in tests rather than copied fixtures. In-process
-integration tests use an independently acting local peer state machine, but they are not claimed
-as a substitute for official Telegram-client interoperability.
+integration tests use an independently acting local peer state machine. The
+subprocess suite adds real Xray executable, JSON configuration, TCP, and gRPC
+HandlerService boundaries. Both suites use local protocol fixtures and are not
+substitutes for official Telegram-client interoperability.
 
 No GPL source file, function body, type layout, comment, or generated artifact
 is included in this package. Numeric operation identifiers and wire constants

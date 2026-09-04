@@ -435,40 +435,11 @@ func serveProcessMiddleClients(listener net.Listener, secret []byte, clientCount
 		return err
 	}
 	defer connection.Close()
-	nonceFrame, err := ReadMiddleRPCFrame(connection, 512)
+	wire, err := handshakeProcessMiddle(connection, secret)
 	if err != nil {
 		return err
 	}
-	clientNonce, err := DecodeMiddleNonce(nonceFrame.Payload)
-	if err != nil {
-		return err
-	}
-	serverNonce := clientNonce
-	for i := range serverNonce.Nonce {
-		serverNonce.Nonce[i] ^= 0x5a
-	}
-	response, _ := EncodeMiddleRPCFrame(middleNonceSequence, EncodeMiddleNonce(serverNonce))
-	if err := writeFull(connection, response); err != nil {
-		return err
-	}
-	serverEndpoint, clientEndpoint, err := connectionEndpoints(connection)
-	if err != nil {
-		return err
-	}
-	keys, err := DeriveMiddleKeyData(false, secret, serverNonce.Nonce, clientNonce.Nonce, clientNonce.Timestamp, MiddleEndpoints{Server: serverEndpoint, Client: clientEndpoint})
-	if err != nil {
-		return err
-	}
-	cbc, _ := NewMiddleCBC(keys)
-	wire := &middleWire{connection: connection, crypto: cbc, maxPayload: 1 << 20, writeSequence: -1, readSequence: -1}
-	handshake, err := wire.readMessage()
-	if err != nil {
-		return err
-	}
-	if err := wire.writeMessage(handshake); err != nil {
-		return err
-	}
-	wire.crcTable = crc32.MakeTable(crc32.Castagnoli)
+
 	for clientIndex := 0; clientIndex < clientCount; clientIndex++ {
 		requestBytes, err := wire.readMessage()
 		if err != nil {
@@ -499,4 +470,53 @@ func serveProcessMiddleClients(listener net.Listener, secret []byte, clientCount
 		}
 	}
 	return nil
+}
+
+// handshakeProcessMiddle runs the peer side of the Middle-End handshake for
+// both in-process and executable fixtures. The caller owns the connection.
+func handshakeProcessMiddle(connection net.Conn, secret []byte) (*middleWire, error) {
+	nonceFrame, err := ReadMiddleRPCFrame(connection, 512)
+	if err != nil {
+		return nil, err
+	}
+	clientNonce, err := DecodeMiddleNonce(nonceFrame.Payload)
+	if err != nil {
+		return nil, err
+	}
+	serverNonce := clientNonce
+	for i := range serverNonce.Nonce {
+		serverNonce.Nonce[i] ^= 0x5a
+	}
+	response, err := EncodeMiddleRPCFrame(middleNonceSequence, EncodeMiddleNonce(serverNonce))
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFull(connection, response); err != nil {
+		return nil, err
+	}
+	serverEndpoint, clientEndpoint, err := connectionEndpoints(connection)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := DeriveMiddleKeyData(false, secret, serverNonce.Nonce, clientNonce.Nonce, clientNonce.Timestamp, MiddleEndpoints{Server: serverEndpoint, Client: clientEndpoint})
+	if err != nil {
+		return nil, err
+	}
+	cbc, err := NewMiddleCBC(keys)
+	if err != nil {
+		return nil, err
+	}
+	wire := &middleWire{connection: connection, crypto: cbc, maxPayload: 1 << 20, writeSequence: -1, readSequence: -1}
+	handshake, err := wire.readMessage()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateHandshake(handshake); err != nil {
+		return nil, err
+	}
+	if err := wire.writeMessage(handshake); err != nil {
+		return nil, err
+	}
+	wire.crcTable = crc32.MakeTable(crc32.Castagnoli)
+	return wire, nil
 }
