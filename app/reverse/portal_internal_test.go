@@ -115,8 +115,12 @@ func TestPortalWorkerCloseUnblocksAndJoinsHeartbeat(t *testing.T) {
 		timer:  signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour),
 	}
 	worker.control = &task.Periodic{Execute: worker.heartbeat, Interval: time.Hour}
+	t.Cleanup(func() {
+		_ = heartbeatWriter.Close()
+		_ = worker.Close()
+	})
 	heartbeatDone := make(chan error, 1)
-	go func() { heartbeatDone <- worker.heartbeat() }()
+	go func() { heartbeatDone <- worker.control.Start() }()
 	<-heartbeatWriter.started
 
 	closeDone := make(chan error, 1)

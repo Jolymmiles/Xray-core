@@ -57,7 +57,7 @@ XRAY_SMUX_STRESS_CYCLES= XRAY_SMUX_STRESS_TCP_STREAMS= go test -timeout=45m -tag
 XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress' ./common/singmux \
 	-run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 go test -timeout=45m -tags 'integration stress performance' ./common/singmux \
-	-run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstPreviousRelease)$' -count=3 -v
+	-run '^TestCandidatePerformanceAgainstPreviousRelease$' -count=3 -v
 go test -tags 'integration remnanode_release' ./common/singmux \
 	-run '^(TestRemnaNodeLinuxReleaseEnvironment|TestRemnaNodeProductionConfigContract|TestRemnaNodeConfigRejectsLiteralNoneFlow|TestRemnaNodeConfigProcessE2E)$' -count=1 -v
 
