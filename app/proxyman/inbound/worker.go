@@ -500,7 +500,6 @@ func (w *udpWorker) Start() error {
 
 func (w *udpWorker) Close() error {
 	w.Lock()
-	defer w.Unlock()
 
 	var errs []interface{}
 
@@ -509,6 +508,7 @@ func (w *udpWorker) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	w.Unlock()
 
 	if w.checker != nil {
 		if err := w.checker.Close(); err != nil {

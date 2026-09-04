@@ -439,9 +439,6 @@ func (w *PortalWorker) Closed() bool {
 func (w *PortalWorker) Close() error {
 	var result error
 	w.closeOnce.Do(func() {
-		if w.control != nil {
-			result = w.control.Close()
-		}
 		w.heartbeatMu.Lock()
 		w.heartbeatClosing = true
 		w.heartbeatMu.Unlock()
@@ -455,6 +452,9 @@ func (w *PortalWorker) Close() error {
 		w.mu.Unlock()
 		// Close captured I/O before joining a heartbeat that may be blocked in it.
 		result = errors.Combine(result, common.Close(writer), common.Interrupt(reader), w.client.Close())
+		if w.control != nil {
+			result = errors.Combine(result, w.control.Close())
+		}
 		w.heartbeats.Wait()
 	})
 	return result

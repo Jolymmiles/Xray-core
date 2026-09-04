@@ -7,8 +7,6 @@ import (
 	go_errors "errors"
 	"io"
 	"math/rand"
-	stdnet "net"
-	"net/netip"
 	"sync"
 
 	"github.com/apernet/quic-go"
@@ -465,8 +463,6 @@ type UDPReader struct {
 	lastDomain     string
 	lastDomainPort net.Port
 	lastAddress    string
-	serverDomain   udpReaderDomainAddress
-	serverIPv4     udpReaderIPv4Address
 	serverWriter   UDPWriter
 	link           transport.Link
 	buf            [hysteria.MaxDatagramFrameSize]byte
@@ -496,7 +492,6 @@ func releasePooledUDPReader(reader *UDPReader) {
 	reader.lastDomain = ""
 	reader.lastDomainPort = 0
 	reader.lastAddress = ""
-	reader.serverDomain.domain = ""
 	reader.serverWriter.writer = nil
 	reader.serverWriter.addr = ""
 	reader.serverWriter.defaultHeaderLength = 0
@@ -513,33 +508,7 @@ func releasePooledUDPReader(reader *UDPReader) {
 	udpReaderPool.Put(reader)
 }
 
-type udpReaderDomainAddress struct {
-	domain string
-}
-
-func (*udpReaderDomainAddress) IP() stdnet.IP             { panic("Calling IP() on a DomainAddress.") }
-func (a *udpReaderDomainAddress) Domain() string          { return a.domain }
-func (*udpReaderDomainAddress) Family() net.AddressFamily { return net.AddressFamilyDomain }
-func (a *udpReaderDomainAddress) String() string          { return a.domain }
-
-type udpReaderIPv4Address [4]byte
-
-func (a *udpReaderIPv4Address) IP() stdnet.IP           { return stdnet.IP(a[:]) }
-func (*udpReaderIPv4Address) Domain() string            { panic("Calling Domain() on an IPv4Address.") }
-func (*udpReaderIPv4Address) Family() net.AddressFamily { return net.AddressFamilyIPv4 }
-func (a *udpReaderIPv4Address) String() string          { return a.IP().String() }
-func (a *udpReaderIPv4Address) NetIPAddr() netip.Addr   { return netip.AddrFrom4([4]byte(*a)) }
-func (a *udpReaderIPv4Address) RawIPv4() [4]byte        { return [4]byte(*a) }
-
 func (r *UDPReader) serverPacketDestination(destination udpPacketDestination) net.Destination {
-	if destination.isIPv4 {
-		r.serverIPv4 = udpReaderIPv4Address(destination.ipv4)
-		return net.UDPDestination(&r.serverIPv4, destination.port)
-	}
-	if destination.isDomain {
-		r.serverDomain.domain = destination.domain
-		return net.UDPDestination(&r.serverDomain, destination.port)
-	}
 	return destination.Destination()
 }
 

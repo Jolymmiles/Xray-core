@@ -25,13 +25,12 @@ const (
 )
 
 type stressTopology struct {
-	serverBinary      string
-	serverArgs        []string
-	serverPort        int
-	serverReadyMarker string
-	client            *e2eProcess
-	server            *e2eProcess
-	socksPort         int
+	serverBinary string
+	serverArgs   []string
+	serverPort   int
+	client       *e2eProcess
+	server       *e2eProcess
+	socksPort    int
 }
 
 func TestConfiguredStressCycles(t *testing.T) {
@@ -70,19 +69,16 @@ func TestMihomoStressSpreadsOnlyStressClientConnections(t *testing.T) {
 	if !bytes.Contains(xrayConfig, []byte(`"maxConnections": 1`)) {
 		t.Fatalf("ordinary Xray matrix config lost its single-carrier limit: %s", xrayConfig)
 	}
-	if spread := spreadMihomoStressConnections(t, "xray-client", xrayConfig); !bytes.Contains(spread, []byte(`"maxConnections": 4`)) {
-		t.Fatalf("Mihomo-server stress Xray config = %s", spread)
-	}
 
 	mihomoConfig := mihomoClientConfig("vless", 443, 1080, "smux", true)
 	if !bytes.Contains(mihomoConfig, []byte("max-connections: 1")) {
 		t.Fatalf("ordinary Mihomo matrix config lost its single-carrier limit: %s", mihomoConfig)
 	}
-	if spread := spreadMihomoStressConnections(t, "xray-server", mihomoConfig); !bytes.Contains(spread, []byte("max-connections: 4")) {
+	if spread := spreadMihomoStressConnections(t, mihomoConfig); !bytes.Contains(spread, []byte("max-connections: 4")) {
 		t.Fatalf("Mihomo-client stress config = %s", spread)
 	}
 
-	singBoxConfig := singBoxConfig(t, false, "vless", 443, 1080, "smux", true, "", "")
+	singBoxConfig := singBoxClientConfig(t, "vless", 443, 1080, "smux", true)
 	if !bytes.Contains(singBoxConfig, []byte(`"max_connections": 1`)) {
 		t.Fatalf("sing-box stress config lost its single-carrier limit: %s", singBoxConfig)
 	}
@@ -127,30 +123,28 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 	tcpStreams := configuredStressTCPStreams(t)
 	cycles := configuredStressCycles(t)
 
-	for _, peer := range []string{"sing-box", "mihomo"} {
-		for _, direction := range []string{"xray-client", "xray-server"} {
-			for _, carrier := range []string{"vless", "trojan"} {
-				name := fmt.Sprintf("%s/%s/%s", peer, direction, carrier)
-				t.Run(name, func(t *testing.T) {
-					topology := startStressTopology(t, workDir, binaries, certificate, privateKey, peer, direction, carrier)
-					assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
-					peerTCPStreams := stressTCPStreamsForPeer(peer, tcpStreams)
-					resources := make([]processResourceSnapshot, 0, cycles)
-					for cycle := 0; cycle < cycles; cycle++ {
-						t.Run(fmt.Sprintf("cycle-%d", cycle+1), func(t *testing.T) {
-							stressTCP(t, topology.socksPort, tcpEcho, peerTCPStreams)
-							stressUDP(t, topology.socksPort, udpEchoes)
-						})
-						resources = append(resources, captureProcessResources(t, topology.client.command.Process.Pid))
-						if cycle+1 < cycles {
-							stopE2EProcess(t, topology.server)
-							topology.server = startReadyE2EServer(t, topology.serverBinary, topology.serverArgs, topology.serverPort, topology.serverReadyMarker)
-							assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
-						}
+	for _, peer := range []string{"xray", "sing-box", "mihomo"} {
+		for _, carrier := range []string{"vless", "trojan"} {
+			name := fmt.Sprintf("%s/xray-server/%s", peer, carrier)
+			t.Run(name, func(t *testing.T) {
+				topology := startStressTopology(t, workDir, binaries, certificate, privateKey, peer, carrier)
+				assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
+				peerTCPStreams := stressTCPStreamsForPeer(peer, tcpStreams)
+				resources := make([]processResourceSnapshot, 0, cycles)
+				for cycle := 0; cycle < cycles; cycle++ {
+					t.Run(fmt.Sprintf("cycle-%d", cycle+1), func(t *testing.T) {
+						stressTCP(t, topology.socksPort, tcpEcho, peerTCPStreams)
+						stressUDP(t, topology.socksPort, udpEchoes)
+					})
+					resources = append(resources, captureProcessResources(t, topology.client.command.Process.Pid))
+					if cycle+1 < cycles {
+						stopE2EProcess(t, topology.server)
+						topology.server = startReadyE2EServer(t, topology.serverBinary, topology.serverArgs, topology.serverPort, "")
+						assertStressPathReady(t, topology.client, topology.socksPort, tcpEcho)
 					}
-					assertNoLinearResourceGrowth(t, resources, cycles)
-				})
-			}
+				}
+				assertNoLinearResourceGrowth(t, resources, cycles)
+			})
 		}
 	}
 }
@@ -190,7 +184,7 @@ func configuredStressTCPStreams(t *testing.T) int {
 	return streamCount
 }
 
-func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, direction, carrier string) *stressTopology {
+func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, carrier string) *stressTopology {
 	t.Helper()
 	serverPort := freeTCPPort(t)
 	socksPort := freeTCPPort(t)
@@ -201,71 +195,45 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 	certificate = copyScenarioFile(t, certificate, filepath.Join(scenarioDir, "server.crt"))
 	privateKey = copyScenarioFile(t, privateKey, filepath.Join(scenarioDir, "server.key"))
 
-	var serverBinary string
-	var serverArgs []string
-	var serverConfig []byte
-	var clientBinary string
-	var clientArgs []string
-	var clientConfig []byte
-	if direction == "xray-client" {
-		serverBinary, serverArgs, serverConfig = peerServerConfig(t, binaries, peer, carrier, serverPort, true, certificate, privateKey)
-		clientBinary = binaries.xray
-		clientArgs = []string{"run", "-config", "client.json"}
-		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, "smux", true, certificate, privateKey)
-	} else {
-		serverBinary = binaries.xray
-		serverArgs = []string{"run", "-config", "server.json"}
-		serverConfig = xrayConfig(t, true, carrier, serverPort, 0, "smux", true, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, "smux", true, certificate)
-	}
-	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
-	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))
+	serverArgs := []string{"run", "-config", "server.json"}
+	serverConfig := xrayConfig(t, true, carrier, serverPort, 0, "smux", true, certificate, privateKey)
+	clientBinary, clientArgs, clientConfig := peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, "smux", true, certificate)
+	serverPath := filepath.Join(scenarioDir, "server.json")
+	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, false))
 	serverConfig = quietStressConfig(serverConfig)
 	clientConfig = quietStressConfig(clientConfig)
 	if peer == "mihomo" {
-		clientConfig = spreadMihomoStressConnections(t, direction, clientConfig)
+		clientConfig = spreadMihomoStressConnections(t, clientConfig)
 	}
 	serverArgs = replaceConfigPath(serverArgs, serverPath)
 	clientArgs = replaceConfigPath(clientArgs, clientPath)
 	writeConfig(t, serverPath, serverConfig)
 	writeConfig(t, clientPath, clientConfig)
 
-	serverReadyMarker := ""
-	if peer == "mihomo" && direction == "xray-client" {
-		serverReadyMarker = filepath.Join(scenarioDir, "server-ready")
-		serverArgs = withMihomoPostUp(serverArgs, serverReadyMarker)
-	}
-	server := startReadyE2EServer(t, serverBinary, serverArgs, serverPort, serverReadyMarker)
-	client := startE2EProcess(t, clientBinary, clientArgs...)
-	waitSOCKS(t, client, socksPort)
-	if peer == "mihomo" && direction == "xray-server" {
-		waitProcessLog(t, client, "Initial configuration complete")
+	server := startReadyE2EServer(t, binaries.xray, serverArgs, serverPort, "")
+	client := startReadyE2EClient(t, peer, clientBinary, clientArgs, socksPort)
+
+	topology := &stressTopology{
+		serverBinary: binaries.xray,
+		serverArgs:   serverArgs,
+		serverPort:   serverPort,
+		client:       client,
+		server:       server,
+		socksPort:    socksPort,
 	}
 	t.Cleanup(func() {
 		if t.Failed() {
-			t.Logf("stress server logs:\n%s", server.logs.String())
+			t.Logf("stress server logs:\n%s", topology.server.logs.String())
 			t.Logf("stress client logs:\n%s", client.logs.String())
 		}
 	})
-	return &stressTopology{
-		serverBinary:      serverBinary,
-		serverArgs:        serverArgs,
-		serverPort:        serverPort,
-		serverReadyMarker: serverReadyMarker,
-		client:            client,
-		server:            server,
-		socksPort:         socksPort,
-	}
+	return topology
 }
 
-func spreadMihomoStressConnections(t *testing.T, direction string, config []byte) []byte {
+func spreadMihomoStressConnections(t *testing.T, config []byte) []byte {
 	t.Helper()
-	oldValue := []byte(`"maxConnections": 1`)
-	newValue := []byte(`"maxConnections": 4`)
-	if direction == "xray-server" {
-		oldValue = []byte("max-connections: 1")
-		newValue = []byte("max-connections: 4")
-	}
+	oldValue := []byte("max-connections: 1")
+	newValue := []byte("max-connections: 4")
 	if bytes.Count(config, oldValue) != 1 {
 		t.Fatalf("Mihomo stress config has %d occurrences of %q, want 1", bytes.Count(config, oldValue), oldValue)
 	}

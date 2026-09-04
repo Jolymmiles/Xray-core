@@ -91,6 +91,11 @@ func executeRun(cmd *base.Command, args []string) {
 		os.Exit(0)
 	}
 
+	// Handle shutdown before Start can publish readiness to clients.
+	osSignals := make(chan os.Signal, 1)
+	signal.Notify(osSignals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(osSignals)
+
 	if err := server.Start(); err != nil {
 		fmt.Println("Failed to start:", err)
 		os.Exit(-1)
@@ -101,11 +106,7 @@ func executeRun(cmd *base.Command, args []string) {
 	runtime.GC()
 	debug.FreeOSMemory()
 
-	{
-		osSignals := make(chan os.Signal, 1)
-		signal.Notify(osSignals, os.Interrupt, syscall.SIGTERM)
-		<-osSignals
-	}
+	<-osSignals
 }
 
 func dumpConfig() int {
