@@ -29,11 +29,36 @@ Run these in-process integration tests three times:
     GOTOOLCHAIN=auto go test -tags integration ./proxy/mtproxy \
       -run '^TestMTProxyProcess' -count=3 -v
 
-## Outstanding merge gates
+## Executable and HandlerService E2E
 
-A real Xray subprocess test must still exercise configuration loading,
-HandlerService RemoveUser, and byte-identical allowlisted fallback, including
-shutdown and cancellation. In-process fixtures do not satisfy this gate.
+The subprocess suite builds this checkout's `./main`, launches Xray with a real
+JSON configuration, and connects TCP clients and a loopback Middle-End fixture.
+It verifies:
+
+- DD and fragmented EE handshakes and complete MTProto payload round trips;
+- two independently authenticated clients sharing a physical Middle-End session;
+- HandlerService user counts and RemoveUser over actual gRPC, including socket
+  closure, logical Middle-End close, rejection of the removed secret, and an
+  unrelated client's continued operation;
+- byte-identical fragmented ClientHello plus coalesced payload fallback through
+  the real dispatcher and a loopback cover endpoint;
+- closure of both fallback directions after client EOF, cover EOF, RemoveInbound
+  over gRPC, and graceful process shutdown;
+- wrong DD secret, unlisted SNI, and malformed ClientHello rejection.
+
+Run the nine leaf scenarios three times (21 Xray subprocesses, 27 leaf results):
+
+    GOTOOLCHAIN=auto go test -tags integration ./proxy/mtproxy \
+      -run '^TestMTProxySubprocess$' -count=3 -v
+
+An explicit `XRAY_MTPROXY_E2E_BIN` may supply a previously built binary from the
+same checkout, including a race-instrumented build. The general `XRAY_E2E_BIN`
+is deliberately ignored because a main-branch binary may not contain MTProxy.
+The startup log event is followed by a real HandlerService RPC; DD/EE readiness
+is proven by the full TCP-to-Xray-to-Middle-End round trip. Failed operations
+are not retried.
+
+## Manual interoperability gate
 
 Before merge, connect current official Telegram Desktop and Android clients in
 DD and EE modes. Verify authorization, messages, large media transfer,
