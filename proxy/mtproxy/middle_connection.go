@@ -23,9 +23,10 @@ const (
 )
 
 type middleWire struct {
-	connection net.Conn
-	crypto     *MiddleCBC
-	maxPayload int
+	connection  net.Conn
+	crypto      *MiddleCBC
+	maxPayload  int
+	handshaking bool
 
 	writeMu       sync.Mutex
 	writeSequence int32
@@ -37,8 +38,10 @@ type middleWire struct {
 func (w *middleWire) writeMessage(payload []byte) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
-	_ = w.connection.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	defer w.connection.SetWriteDeadline(time.Time{})
+	if !w.handshaking {
+		_ = w.connection.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		defer w.connection.SetWriteDeadline(time.Time{})
+	}
 	frame, err := encodeMiddleRPCFrame(uint32(w.writeSequence), payload, w.crcTable)
 	if err != nil {
 		return err
@@ -55,6 +58,12 @@ func (w *middleWire) writeMessage(payload []byte) error {
 }
 
 func (w *middleWire) readMessage() ([]byte, error) {
+	// The handshake owns one absolute deadline. Steady-state messages must
+	// complete within one read budget, even when padding or fragments arrive.
+	if !w.handshaking {
+		_ = w.connection.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		defer w.connection.SetReadDeadline(time.Time{})
+	}
 	for {
 		for len(w.readBuffer) < 4 {
 			if err := w.readBlock(); err != nil {
@@ -89,8 +98,6 @@ func (w *middleWire) readMessage() ([]byte, error) {
 }
 
 func (w *middleWire) readBlock() error {
-	_ = w.connection.SetReadDeadline(time.Now().Add(5 * time.Minute))
-	defer w.connection.SetReadDeadline(time.Time{})
 	var encrypted [16]byte
 	if _, err := io.ReadFull(w.connection, encrypted[:]); err != nil {
 		return err
@@ -144,7 +151,13 @@ func dialMiddleWire(ctx context.Context, endpoint MiddleEndpoint, secret []byte,
 			_ = connection.Close()
 		}
 	}()
-	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
+	deadline := time.Now().Add(10 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = connection.SetDeadline(deadline)
 
 	local, remote, err := connectionEndpoints(connection)
 	if err != nil {
@@ -188,7 +201,7 @@ func dialMiddleWire(ctx context.Context, endpoint MiddleEndpoint, secret []byte,
 	if err != nil {
 		return nil, err
 	}
-	wire := &middleWire{connection: connection, crypto: cbc, maxPayload: maxPayload, writeSequence: -1, readSequence: -1}
+	wire := &middleWire{connection: connection, crypto: cbc, maxPayload: maxPayload, writeSequence: -1, readSequence: -1, handshaking: true}
 	sender := processID{IP: numericIPv4(local.Addr()), Port: local.Port(), PID: uint16(os.Getpid()), UTime: timestamp}
 	peer := processID{IP: numericIPv4(remote.Addr()), Port: remote.Port()}
 	if err := wire.writeMessage(encodeHandshake(sender, peer)); err != nil {
@@ -201,6 +214,10 @@ func dialMiddleWire(ctx context.Context, endpoint MiddleEndpoint, secret []byte,
 	if err := validateHandshake(handshakeResponse); err != nil {
 		return nil, err
 	}
+	if !stopCancellation() {
+		return nil, ctx.Err()
+	}
+	wire.handshaking = false
 	wire.crcTable = crc32.MakeTable(crc32.Castagnoli)
 	_ = connection.SetDeadline(time.Time{})
 	failed = false
@@ -351,13 +368,21 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 		return nil, fmt.Errorf("mtproxy: all Middle-End endpoints for DC %d failed: %w", targetDC, dialErr)
 	}
 	networkSession.upstream = data
+	m.poolMu.Lock()
+	if m.appliedUpstream != data || m.upstream.Load() != data {
+		m.poolMu.Unlock()
+		networkSession.Close(ErrMiddleClosed)
+		return nil, ErrMiddleClosed
+	}
 	if err := pool.AddSession(targetDC, networkSession.core); err != nil {
+		m.poolMu.Unlock()
 		networkSession.Close(err)
 		return nil, err
 	}
 	m.sessionsMu.Lock()
 	if m.closed {
 		m.sessionsMu.Unlock()
+		m.poolMu.Unlock()
 		networkSession.Close(ErrMiddleClosed)
 		return nil, ErrMiddleClosed
 	}
@@ -369,7 +394,9 @@ func (m *middleManager) OpenClient(ctx context.Context, dcID int16, onClose func
 	}
 	m.sessions = append(activeSessions, networkSession)
 	m.sessionsMu.Unlock()
-	return networkSession.core.OpenClient(onClose)
+	client, err := networkSession.core.OpenClient(onClose)
+	m.poolMu.Unlock()
+	return client, err
 }
 
 func (m *middleManager) poolFor(data *UpstreamData) (*MiddlePool, error) {
@@ -403,7 +430,7 @@ func (m *middleManager) retireIdleSessions(current *UpstreamData) {
 		if closed {
 			continue
 		}
-		if session.upstream != nil && session.upstream != current && count == 0 {
+		if session.upstream != nil && session.upstream.LoadedAt.Before(current.LoadedAt) && count == 0 {
 			retired = append(retired, session)
 			continue
 		}

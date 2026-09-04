@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	corenet "github.com/xtls/xray-core/common/net"
-	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
@@ -29,16 +29,16 @@ type fakeTLSFallback struct {
 func (e *fakeTLSFallback) Error() string { return "mtproxy: fake TLS camouflage fallback" }
 
 type acceptedClient struct {
-	state       *ObfuscatedState
-	fingerprint SecretFingerprint
-	reader      io.Reader
-	fakeTLS     bool
+	state   *ObfuscatedState
+	runtime *secretRuntime
+	reader  io.Reader
+	fakeTLS bool
 }
 
 var mtproxySessionID atomic.Uint64
 
 func (h *Handler) processConnection(ctx context.Context, connection stat.Connection, dispatcher routing.Dispatcher) error {
-	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
 	select {
 	case h.handshakeSlots <- struct{}{}:
 	case <-ctx.Done():
@@ -57,7 +57,7 @@ func (h *Handler) processConnection(ctx context.Context, connection stat.Connect
 		if fallback, ok := err.(*fakeTLSFallback); ok {
 			<-h.handshakeSlots
 			handshakeSlotHeld = false
-			_ = connection.SetReadDeadline(time.Time{})
+			_ = connection.SetDeadline(time.Time{})
 			return relayFakeTLSFallback(ctx, connection, dispatcher, fallback)
 		}
 		return err
@@ -66,12 +66,12 @@ func (h *Handler) processConnection(ctx context.Context, connection stat.Connect
 	// dialing or relaying long-lived traffic.
 	<-h.handshakeSlots
 	handshakeSlotHeld = false
-	_ = connection.SetReadDeadline(time.Time{})
+	_ = connection.SetDeadline(time.Time{})
 
 	sessionID := mtproxySessionID.Add(1)
 	var revoked atomic.Bool
 	var middleReference atomic.Pointer[MiddleClient]
-	unregister, ok := h.secrets.RegisterSession(accepted.fingerprint, sessionID, func() {
+	unregister, ok := accepted.runtime.register(sessionID, func() {
 		revoked.Store(true)
 		_ = connection.Close()
 		if middle := middleReference.Load(); middle != nil {
@@ -149,9 +149,6 @@ func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
 		capture := newCapturingReader(connection, prefix[:])
 		hello, err := readFakeTLSClientHello(capture, prefix)
 		if err != nil {
-			if h.config.FakeTls != nil && len(h.config.FakeTls.Domains) > 0 {
-				return nil, &fakeTLSFallback{serverName: h.config.FakeTls.Domains[0], clientHello: append([]byte(nil), capture.wire.Bytes()...)}
-			}
 			return nil, err
 		}
 		auth, err := h.fakeTLS.Authenticate(hello.Canonical)
@@ -180,7 +177,7 @@ func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &acceptedClient{state: state, fingerprint: auth.Fingerprint, reader: &decryptingReader{reader: recordReader, state: state}, fakeTLS: true}, nil
+		return &acceptedClient{state: state, runtime: auth.runtime, reader: &decryptingReader{reader: recordReader, state: state}, fakeTLS: true}, nil
 	}
 	if h.config.FakeTls != nil && h.config.FakeTls.Only {
 		return nil, ErrInvalidFakeTLS
@@ -193,7 +190,7 @@ func (h *Handler) acceptClient(connection net.Conn) (*acceptedClient, error) {
 	for _, candidate := range h.secrets.candidates() {
 		state, err := AcceptObfuscatedHeader(header, [][16]byte{candidate.secret})
 		if err == nil {
-			return &acceptedClient{state: state, fingerprint: candidate.fingerprint, reader: &decryptingReader{reader: connection, state: state}}, nil
+			return &acceptedClient{state: state, runtime: candidate.runtime, reader: &decryptingReader{reader: connection, state: state}}, nil
 		}
 	}
 	return nil, errInvalidObfuscated
@@ -208,13 +205,27 @@ func relayFakeTLSFallback(ctx context.Context, connection net.Conn, dispatcher r
 	if err != nil {
 		return err
 	}
+	cleanup := func() {
+		_ = connection.Close()
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
+	}
+	defer cleanup()
+	stop := context.AfterFunc(ctx, cleanup)
+	defer stop()
 	if err := link.Writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes(fallback.clientHello)}); err != nil {
 		return err
 	}
-	return task.Run(ctx,
-		func() error { return buf.Copy(buf.NewReader(connection), link.Writer) },
-		func() error { return buf.Copy(link.Reader, buf.NewWriter(connection)) },
-	)
+	results := make(chan error, 2)
+	go func() { results <- buf.Copy(buf.NewReader(connection), link.Writer) }()
+	go func() { results <- buf.Copy(link.Reader, buf.NewWriter(connection)) }()
+	err = <-results
+	cleanup()
+	<-results
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 type decryptingReader struct {

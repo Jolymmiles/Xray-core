@@ -33,3 +33,16 @@ func (a *Account) AsAccount() (protocol.Account, error) {
 	copy(memory.Secret[:], a.Secret)
 	return memory, nil
 }
+
+// ValidateFakeTLSDomain applies the same name policy to configuration and SNI.
+func ValidateFakeTLSDomain(name string) error {
+	if len(name) == 0 || len(name) > 253 {
+		return fmt.Errorf("mtproxy: invalid Fake TLS domain length")
+	}
+	for _, character := range name {
+		if !(character == '.' || character == '-' || character >= '0' && character <= '9' || character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z') {
+			return fmt.Errorf("mtproxy: invalid Fake TLS domain character")
+		}
+	}
+	return nil
+}

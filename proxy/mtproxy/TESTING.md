@@ -15,22 +15,50 @@ The complete infra/conf suite also requires the repository geodata assets under
 resources/. A missing geoip.dat/geosite.dat failure is environmental and must be
 reported rather than retried or hidden.
 
-## Process interoperability
+## In-process integration
 
-The integration suite must start a real Xray MTProxy inbound and an independent
-local Middle-End fixture, then exercise:
+The current `TestMTProxyProcess*` tests run Handler directly inside the Go test
+process, using net.Pipe for the inbound and independent loopback Middle-End
+fixtures. Despite their historical names, they do not launch the Xray executable
+or exercise the HandlerService RPC boundary. They cover padded framing, Fake
+TLS, multiplexing, quick acknowledgements, direct RemoveUser calls, reconnect
+and upstream replacement.
 
-- ordinary padded-intermediate (DD) framing;
-- Fake TLS (EE), fragmented TLS records, and allowlisted fallback;
-- multiple logical clients over one Middle-End connection;
-- quick acknowledgements and close propagation;
-- immediate hard revocation through HandlerService RemoveUser;
-- Middle-End disconnect/reconnect and automatic upstream refresh.
-
-Run process tests three times:
+Run these in-process integration tests three times:
 
     GOTOOLCHAIN=auto go test -tags integration ./proxy/mtproxy \
       -run '^TestMTProxyProcess' -count=3 -v
+
+## Executable and HandlerService E2E
+
+The subprocess suite builds this checkout's `./main`, launches Xray with a real
+JSON configuration, and connects TCP clients and a loopback Middle-End fixture.
+It verifies:
+
+- DD and fragmented EE handshakes and complete MTProto payload round trips;
+- two independently authenticated clients sharing a physical Middle-End session;
+- HandlerService user counts and RemoveUser over actual gRPC, including socket
+  closure, logical Middle-End close, rejection of the removed secret, and an
+  unrelated client's continued operation;
+- byte-identical fragmented ClientHello plus coalesced payload fallback through
+  the real dispatcher and a loopback cover endpoint;
+- closure of both fallback directions after client EOF, cover EOF, RemoveInbound
+  over gRPC, and graceful process shutdown;
+- wrong DD secret, unlisted SNI, and malformed ClientHello rejection.
+
+Run the nine leaf scenarios three times (21 Xray subprocesses, 27 leaf results):
+
+    GOTOOLCHAIN=auto go test -tags integration ./proxy/mtproxy \
+      -run '^TestMTProxySubprocess$' -count=3 -v
+
+An explicit `XRAY_MTPROXY_E2E_BIN` may supply a previously built binary from the
+same checkout, including a race-instrumented build. The general `XRAY_E2E_BIN`
+is deliberately ignored because a main-branch binary may not contain MTProxy.
+The startup log event is followed by a real HandlerService RPC; DD/EE readiness
+is proven by the full TCP-to-Xray-to-Middle-End round trip. Failed operations
+are not retried.
+
+## Manual interoperability gate
 
 Before merge, connect current official Telegram Desktop and Android clients in
 DD and EE modes. Verify authorization, messages, large media transfer,
