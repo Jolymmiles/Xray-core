@@ -5,8 +5,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common/protocol"
 )
@@ -117,5 +119,68 @@ func TestMTProxyHandlerRejectsDuplicateAndWrongAccount(t *testing.T) {
 	}
 	if err := handler.RemoveUser(context.Background(), "missing@example"); err == nil {
 		t.Fatal("missing user removal succeeded")
+	}
+}
+
+func TestMTProxyRejectsShortRefreshInterval(t *testing.T) {
+	for _, interval := range []uint32{1, 59} {
+		config := testHandlerConfig(t)
+		config.Upstream = &UpstreamConfig{Source: UpstreamSource_UPSTREAM_SOURCE_TELEGRAM, CacheDir: t.TempDir(), RefreshIntervalSeconds: interval}
+		source, err := NewTelegramUpstreamSource(config.Upstream.CacheDir, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := newUpstreamData(bytes.Repeat([]byte{0x55}, 32), []byte(testProxyConfig), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := source.storeCache(data); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		handler, err := New(ctx, config)
+		if handler != nil {
+			handler.Close()
+		}
+		if err == nil {
+			t.Errorf("accepted refresh interval %d", interval)
+		}
+	}
+}
+
+func TestMTProxyRejectsInvalidFakeTLSDomains(t *testing.T) {
+	for _, domain := range []string{"", "cover\texample", "пример.рф", strings.Repeat("a", 254)} {
+		config := testHandlerConfig(t)
+		config.FakeTls = &FakeTLSConfig{Enabled: true, Domains: []string{domain}}
+		handler, err := New(context.Background(), config)
+		if handler != nil {
+			handler.Close()
+		}
+		if err == nil {
+			t.Errorf("accepted invalid domain %q", domain)
+		}
+	}
+}
+
+func TestMTProxyUserAccountsAreIndependentSnapshots(t *testing.T) {
+	handler, err := New(context.Background(), testHandlerConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	secret := testSecret(43)
+	user := &protocol.MemoryUser{Email: "snapshot@example", Account: &MemoryAccount{Secret: secret}}
+	if err := handler.AddUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	user.Account.(*MemoryAccount).Secret[0]++
+	if handler.GetUser(context.Background(), user.Email).Account.(*MemoryAccount).Secret != secret {
+		t.Fatal("AddUser retained caller's mutable account")
+	}
+	handler.GetUser(context.Background(), user.Email).Account.(*MemoryAccount).Secret[0]++
+	handler.GetUsers(context.Background())[0].Account.(*MemoryAccount).Secret[0]++
+	if handler.GetUser(context.Background(), user.Email).Account.(*MemoryAccount).Secret != secret {
+		t.Fatal("management reads exposed mutable account")
 	}
 }

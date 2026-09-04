@@ -15,22 +15,25 @@ The complete infra/conf suite also requires the repository geodata assets under
 resources/. A missing geoip.dat/geosite.dat failure is environmental and must be
 reported rather than retried or hidden.
 
-## Process interoperability
+## In-process integration
 
-The integration suite must start a real Xray MTProxy inbound and an independent
-local Middle-End fixture, then exercise:
+The current `TestMTProxyProcess*` tests run Handler directly inside the Go test
+process, using net.Pipe for the inbound and independent loopback Middle-End
+fixtures. Despite their historical names, they do not launch the Xray executable
+or exercise the HandlerService RPC boundary. They cover padded framing, Fake
+TLS, multiplexing, quick acknowledgements, direct RemoveUser calls, reconnect
+and upstream replacement.
 
-- ordinary padded-intermediate (DD) framing;
-- Fake TLS (EE), fragmented TLS records, and allowlisted fallback;
-- multiple logical clients over one Middle-End connection;
-- quick acknowledgements and close propagation;
-- immediate hard revocation through HandlerService RemoveUser;
-- Middle-End disconnect/reconnect and automatic upstream refresh.
-
-Run process tests three times:
+Run these in-process integration tests three times:
 
     GOTOOLCHAIN=auto go test -tags integration ./proxy/mtproxy \
       -run '^TestMTProxyProcess' -count=3 -v
+
+## Outstanding merge gates
+
+A real Xray subprocess test must still exercise configuration loading,
+HandlerService RemoveUser, and byte-identical allowlisted fallback, including
+shutdown and cancellation. In-process fixtures do not satisfy this gate.
 
 Before merge, connect current official Telegram Desktop and Android clients in
 DD and EE modes. Verify authorization, messages, large media transfer,

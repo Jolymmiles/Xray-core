@@ -71,21 +71,13 @@ func TestMiddlePoolMultiplexesAnswersAndAcknowledgements(t *testing.T) {
 	if err := session.HandleMessage(EncodeSimpleAck(SimpleAck{ConnectionID: first.ID(), Confirm: 0xaabbccdd}), 1024); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case delivery := <-second.Deliveries():
-		if !bytes.Equal(delivery.Payload, []byte{9, 8, 7, 6}) {
-			t.Fatalf("second payload = %v", delivery.Payload)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second answer not delivered")
+	delivery := receiveMiddleDelivery(t, second)
+	if !bytes.Equal(delivery.Payload, []byte{9, 8, 7, 6}) {
+		t.Fatalf("second payload = %v", delivery.Payload)
 	}
-	select {
-	case delivery := <-first.Deliveries():
-		if delivery.Confirm != 0xaabbccdd || delivery.Kind != MiddleDeliveryAck {
-			t.Fatalf("first delivery = %+v", delivery)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first ack not delivered")
+	delivery = receiveMiddleDelivery(t, first)
+	if delivery.Confirm != 0xaabbccdd || delivery.Kind != MiddleDeliveryAck {
+		t.Fatalf("first delivery = %+v", delivery)
 	}
 }
 
@@ -280,10 +272,45 @@ func TestMiddlePoolCapacityCloseAndFailure(t *testing.T) {
 	if closed.Load() != 2 {
 		t.Fatalf("close count after failure = %d, want 2", closed.Load())
 	}
-	if _, ok := <-replacement.Deliveries(); ok {
+	if _, ok := replacement.Receive(); ok {
 		t.Fatal("delivery channel remains open after failure")
 	}
 	if _, err := session.OpenClient(nil); !errors.Is(err, ErrMiddleClosed) {
 		t.Fatalf("OpenClient after failure error = %v", err)
+	}
+}
+
+func TestMiddleClientConsumedDeliveriesDoNotExhaustBudget(t *testing.T) {
+	session, err := newMiddleSession(1, 1, 24, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Fail(ErrMiddleClosed)
+	client, err := session.OpenClient(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		if err := session.HandleMessage(EncodeProxyAnswer(ProxyAnswer{ConnectionID: client.ID(), Payload: []byte{1, 2, 3, 4}}), 4); err != nil {
+			t.Fatal(err)
+		}
+		delivery := receiveMiddleDelivery(t, client)
+		if !bytes.Equal(delivery.Payload, []byte{1, 2, 3, 4}) {
+			t.Fatal("delivery payload changed")
+		}
+	}
+}
+
+func receiveMiddleDelivery(t *testing.T, client *MiddleClient) MiddleDelivery {
+	t.Helper()
+	t.Cleanup(client.Close)
+	received := make(chan MiddleDelivery, 1)
+	go func() { delivery, _ := client.Receive(); received <- delivery }()
+	select {
+	case delivery := <-received:
+		return delivery
+	case <-time.After(time.Second):
+		t.Fatal("Middle-End delivery did not arrive")
+		return MiddleDelivery{}
 	}
 }

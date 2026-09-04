@@ -2,6 +2,7 @@ package mtproxy
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -172,7 +173,7 @@ func (s *TelegramUpstreamSource) download(ctx context.Context, address string, m
 
 func (s *TelegramUpstreamSource) loadCache() (*UpstreamData, error) {
 	path := filepath.Join(s.cacheDir, upstreamCacheFile)
-	encoded, err := readBoundedFile(path, maxDownloadedConfig+maxDownloadedSecret+4096)
+	encoded, err := readBoundedFile(path, base64.StdEncoding.EncodedLen(maxDownloadedConfig)+base64.StdEncoding.EncodedLen(maxDownloadedSecret)+4096)
 	if err != nil {
 		return nil, err
 	}

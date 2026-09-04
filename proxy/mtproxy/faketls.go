@@ -229,10 +229,8 @@ func parseServerNameExtension(extension []byte) (string, error) {
 		return "", fmt.Errorf("%w: SNI length", ErrInvalidFakeTLS)
 	}
 	name := strings.ToLower(string(extension[5:]))
-	for _, character := range name {
-		if !(character == '.' || character == '-' || character >= '0' && character <= '9' || character >= 'a' && character <= 'z') {
-			return "", fmt.Errorf("%w: SNI character", ErrInvalidFakeTLS)
-		}
+	if err := ValidateFakeTLSDomain(name); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidFakeTLS, err)
 	}
 	return name, nil
 }
