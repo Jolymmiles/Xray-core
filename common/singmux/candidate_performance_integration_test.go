@@ -26,7 +26,7 @@ func TestCandidatePerformanceAgainstPreviousRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidateBinary := buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray-candidate"), xrayRoot, "./main")
+	candidateBinary := buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray-candidate"), xrayRoot, "./main", "-trimpath", "-buildvcs=false")
 	binaries := e2eBinaries{xray: candidateBinary}
 	oldBinary := buildCandidatePerformanceBaseline(t, workDir)
 	certificate, privateKey := generateCertificate(t, workDir)
@@ -164,7 +164,7 @@ func buildCandidatePerformanceBaseline(t *testing.T, workDir string) string {
 	if err := extract.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command("go", "build", "-trimpath", "-o", binary, "./main")
+	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./main")
 	build.Dir = source
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v\n%s", candidatePerformanceLabel, err, output)

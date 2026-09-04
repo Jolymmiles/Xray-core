@@ -197,8 +197,8 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 ## E2E and benchmark hygiene
 
 - Start a real local Xray server and the selected real Xray, sing-box, or
-  Mihomo client. Test certificates, echo destinations, and REALITY cover
-  fixtures are local supporting services, not alternative proxy servers.
+  Mihomo client. Local echo servers, DNS/upstream fixtures, and REALITY cover
+  targets are supporting services, not alternative proxy-server implementations.
   Do not replace the mandatory compatibility gate with mocks.
 - Use temporary directories, loopback listeners, generated test certificates,
   explicit deadlines, behavior-based readiness, and cleanup registered before
