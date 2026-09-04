@@ -241,13 +241,7 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 	if peer == "mihomo" && direction == "xray-server" {
 		waitProcessLog(t, client, "Initial configuration complete")
 	}
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("stress server logs:\n%s", server.logs.String())
-			t.Logf("stress client logs:\n%s", client.logs.String())
-		}
-	})
-	return &stressTopology{
+	topology := &stressTopology{
 		serverBinary:      serverBinary,
 		serverArgs:        serverArgs,
 		serverPort:        serverPort,
@@ -256,6 +250,13 @@ func startStressTopology(t *testing.T, workDir string, binaries e2eBinaries, cer
 		server:            server,
 		socksPort:         socksPort,
 	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("stress server logs:\n%s", topology.server.logs.String())
+			t.Logf("stress client logs:\n%s", client.logs.String())
+		}
+	})
+	return topology
 }
 
 func spreadMihomoStressConnections(t *testing.T, direction string, config []byte) []byte {

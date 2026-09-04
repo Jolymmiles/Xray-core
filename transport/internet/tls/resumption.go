@@ -57,7 +57,7 @@ func clientSessionCache(config *Config) tls.ClientSessionCache {
 
 type clientSessionResumption struct {
 	configured bool
-	source     uintptr
+	source     tls.ClientSessionCache
 }
 
 func newClientSessionResumption(config *tls.Config) clientSessionResumption {
@@ -68,8 +68,8 @@ func newClientSessionResumption(config *tls.Config) clientSessionResumption {
 		return resumption
 	}
 	cacheValue := reflect.ValueOf(config.ClientSessionCache)
-	if cacheValue.Kind() == reflect.Pointer {
-		resumption.source = cacheValue.Pointer()
+	if cacheValue.Kind() == reflect.Pointer && !cacheValue.IsNil() {
+		resumption.source = config.ClientSessionCache
 	}
 	return resumption
 }
@@ -79,7 +79,7 @@ func (r clientSessionResumption) enabled() bool {
 }
 
 func (r clientSessionResumption) client(connection net.Conn, config *utls.Config, fingerprint utls.ClientHelloID) *utls.UConn {
-	if r.source != 0 {
+	if r.source != nil {
 		if spec, eligible := clientHelloSpecForResumption(fingerprint); eligible {
 			config.ClientSessionCache = r.sessionCache(fingerprint)
 			conn := utls.UClient(connection, config, utls.HelloCustom)
@@ -98,7 +98,8 @@ func (r clientSessionResumption) client(connection net.Conn, config *utls.Config
 }
 
 type uTLSSessionCacheScope struct {
-	source      uintptr
+	// Keep the pointer-backed identity alive while tickets can reference it.
+	source      tls.ClientSessionCache
 	fingerprint string
 }
 
