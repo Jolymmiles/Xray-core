@@ -12,10 +12,92 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 )
+
+type resumedWriteConn struct {
+	writes int
+	resume chan struct{}
+	closed chan struct{}
+	close  sync.Once
+}
+
+func (c *resumedWriteConn) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (c *resumedWriteConn) Write(payload []byte) (int, error) {
+	c.writes++
+	if c.writes == 1 {
+		return len(payload), nil
+	}
+	select {
+	case <-c.resume:
+		return len(payload), nil
+	case <-c.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (c *resumedWriteConn) Close() error {
+	c.close.Do(func() { close(c.closed) })
+	return nil
+}
+
+func TestNegotiatedHalfCloseTimeoutDoesNotBlockSiblingStreams(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		connection := &resumedWriteConn{resume: make(chan struct{}), closed: make(chan struct{})}
+		config := DefaultConfig()
+		config.KeepAliveDisabled = true
+		config.LogicalHalfClose = true
+		session, err := Client(connection, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		stream, err := session.OpenStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := stream.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.CloseWrite(); !errors.Is(err, ErrTimeout) {
+				t.Fatalf("CloseWrite = %v, want timeout", err)
+			}
+		}
+		close(connection.resume)
+		synctest.Wait()
+		siblingResult := make(chan error, 1)
+		go func() {
+			sibling, err := session.OpenStream()
+			if err == nil {
+				_, err = sibling.Write([]byte("sibling remains usable"))
+			}
+			siblingResult <- err
+		}()
+		select {
+		case err := <-siblingResult:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			// Rescue the blocked result publisher on the failing implementation
+			// so the session can still join its goroutines during cleanup.
+			select {
+			case <-stream.writeResult:
+			default:
+			}
+			<-siblingResult
+			t.Error("timed-out half-closes blocked an unrelated stream after the carrier resumed")
+		}
+	})
+}
 
 func testSessionPair(t *testing.T, configure func(*Config)) (*Session, *Session) {
 	t.Helper()

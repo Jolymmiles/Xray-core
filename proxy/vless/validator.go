@@ -51,6 +51,8 @@ func normalizeEmail(email string) string {
 
 // MemoryValidator stores valid VLESS users.
 type MemoryValidator struct {
+	// Map publication and its counters must remain one mutation against deletion.
+	mutationMu sync.Mutex
 	// Considering email's usage here, map + sync.Mutex/RWMutex may have better performance.
 	email               sync.Map
 	emailCount          atomic.Int64
@@ -66,6 +68,8 @@ type MemoryValidator struct {
 
 // Add a VLESS user, Email must be empty or unique.
 func (v *MemoryValidator) Add(u *protocol.MemoryUser) error {
+	v.mutationMu.Lock()
+	defer v.mutationMu.Unlock()
 	if u.Email != "" {
 		warmed := v.emailSnapshot.Load() != nil
 		_, loaded := v.email.LoadOrStore(normalizeEmail(u.Email), u)
@@ -92,6 +96,8 @@ func (v *MemoryValidator) Add(u *protocol.MemoryUser) error {
 
 // Del a VLESS user with a non-empty Email.
 func (v *MemoryValidator) Del(e string) error {
+	v.mutationMu.Lock()
+	defer v.mutationMu.Unlock()
 	if e == "" {
 		return errors.New("Email must not be empty.")
 	}
