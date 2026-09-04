@@ -9,9 +9,12 @@ test, or compatibility gates defined here.
 - Optimize and harden the Xray server first. Linux/amd64 is the release and
   performance target; Darwin is useful for development but is not evidence of
   Linux server capacity.
-- Preserve protocol interoperability. Xray, sing-box, and Mihomo are mandatory
-  external compatibility clients for changed VLESS, Trojan, REALITY, Vision,
-  or mux paths.
+- Preserve protocol interoperability. In process interoperability, stress,
+  reconnect, and performance tests, Xray is the only proxy-server implementation.
+  Run one Xray server per topology and vary the client between Xray, sing-box,
+  and Mihomo for changed VLESS, Trojan, REALITY, Vision, or mux paths. Performance comparisons use baseline
+  and candidate Xray server versions. External-server and reversed-role
+  topologies are outside these gates.
 - Prefer simple, reviewable changes. Do not mix several speculative
   optimizations into one pass.
 - Communicate with the maintainer in Russian unless they request another
@@ -163,6 +166,9 @@ go test -tags integration ./common/singmux \
   -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
 ```
 
+The SMUX process matrix is 3 clients × 2 carriers × 2 payload networks ×
+2 padding modes: 24/24 Xray-server executions must pass.
+
 Run the stress, reconnect, performance, and 50-cycle hardening commands from
 `common/singmux/TESTING.md` when mux production code changes.
 
@@ -190,8 +196,10 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 
 ## E2E and benchmark hygiene
 
-- Start real local Xray, sing-box, and Mihomo processes. Do not replace the
-  mandatory compatibility gate with mocks.
+- Start a real local Xray server and the selected real Xray, sing-box, or
+  Mihomo client. Local echo servers, DNS/upstream fixtures, and REALITY cover
+  targets are supporting services, not alternative proxy-server implementations.
+  Do not replace the mandatory compatibility gate with mocks.
 - Use temporary directories, loopback listeners, generated test certificates,
   explicit deadlines, behavior-based readiness, and cleanup registered before
   the assertion phase.

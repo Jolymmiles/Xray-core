@@ -141,6 +141,13 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 		common.Must(conn.SetReadDeadline(time.Time{}))
 
 		dest := request.destination
+		// Dispatchers and asynchronous logs may retain the destination after
+		// this request's parsing storage returns to its pool.
+		if dest.Address.Family().IsDomain() {
+			dest.Address = net.DomainAddress(strings.Clone(dest.Address.Domain()))
+		} else {
+			dest.Address = net.IPAddress(dest.Address.IP())
+		}
 		from, to := net.FormatAccessEndpointsFromAddr(conn.RemoteAddr(), dest)
 		ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 			FromString: from,
