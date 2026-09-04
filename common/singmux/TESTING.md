@@ -300,6 +300,18 @@ record diagnostics only and cannot satisfy the release gate.
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
+
+On Linux, the mux interoperability client's shared TCP/UDP listener port is
+selected outside `/proc/sys/net/ipv4/ip_local_port_range`. The temporary port
+reservation must close before an external client can bind; excluding automatic
+source ports prevents intervening outbound connections from taking that port.
+Both transports are checked, and allocation stops after 128 occupied candidates.
+Client startup and readiness failures are never retried. The release soak at
+`c1ddf957` failed on cycle 12 because sing-box could not bind its SOCKS listener
+on port 50610; that failed run remains recorded as
+[33924175876](https://github.com/Jolymmiles/Xray-core/actions/runs/33924175876).
+The log did not identify the socket that occupied the port.
+
 `XRAY_SMUX_STRESS_TCP_STREAMS` may reduce TCP concurrency for a diagnostic run;
 the release gate fixes it to 16 only for the cumulative 50-cycle profile after
 the ordinary 128-stream peak profile passes.
