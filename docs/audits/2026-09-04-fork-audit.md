@@ -1,5 +1,8 @@
 # Fork audit — 2026-09-04
 
+Subsequent changes, including real MTProxy subprocess E2E and startup signal
+handling, are recorded in the [2026-09-05 review follow-up](2026-09-05-review-followup.md).
+
 ## Starting state
 
 The clean audit worktree started at `8a9acbd5c7c6d635ad0bc879f4e6c2d24e27d2f3`, equal to fetched `origin/main`. It contains fetched `upstream/main` (`cd4ce973e9f6ef3a7acf9a7030927b4143f9ea47`) with no missing upstream commits. The fork delta contains 226 commits and 454 files: 178 Go production/tool files, 223 Go test files, seven generated files, and 46 documentation/configuration/script files.
