@@ -942,20 +942,32 @@ func dialStatsService(t *testing.T, port int) statscommand.StatsServiceClient {
 
 func waitStatsOnlineIPs(t *testing.T, client statscommand.StatsServiceClient, want ...string) {
 	t.Helper()
-	const metric = "user>>>" + testPresenceEmail + ">>>online"
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		response, err := client.GetStatsOnlineIpList(context.Background(), &statscommand.GetStatsRequest{Name: metric})
-		if err == nil && sameOnlineIPs(response.Ips, want) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	response, err := client.GetStatsOnlineIpList(context.Background(), &statscommand.GetStatsRequest{Name: metric})
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := awaitStatsOnlineIPs(ctx, client, want...); err != nil {
 		t.Fatal(err)
 	}
-	t.Fatalf("StatsService online IPs = %v, want %v", response.Ips, want)
+}
+
+func awaitStatsOnlineIPs(ctx context.Context, client statscommand.StatsServiceClient, want ...string) error {
+	const metric = "user>>>" + testPresenceEmail + ">>>online"
+	var lastIPs map[string]int64
+	var lastErr error
+	for ctx.Err() == nil {
+		response, err := client.GetStatsOnlineIpList(ctx, &statscommand.GetStatsRequest{Name: metric})
+		lastErr = err
+		if err == nil {
+			lastIPs = response.Ips
+			if sameOnlineIPs(lastIPs, want) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("StatsService online IPs = %v, want %v (last RPC error: %v): %w", lastIPs, want, lastErr, ctx.Err())
 }
 
 func sameOnlineIPs(got map[string]int64, want []string) bool {
