@@ -224,3 +224,61 @@ func TestUpstreamSourceTelegramRunAppliesOnlySuccessfulRefresh(t *testing.T) {
 	case <-time.After(60 * time.Millisecond):
 	}
 }
+
+func TestUpstreamCacheRoundTripsMaximumConfig(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x55}, maxMiddleSecretLength)
+	config := append([]byte(testProxyConfig), bytes.Repeat([]byte{'\n'}, maxDownloadedConfig-len(testProxyConfig))...)
+	data, err := newUpstreamData(secret, config, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewTelegramUpstreamSource(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.storeCache(data); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := source.loadCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(loaded.RawConfig, config) || !bytes.Equal(loaded.Secret, secret) {
+		t.Fatal("cache round trip changed data")
+	}
+}
+
+func TestUpstreamRefreshRejectsZeroSelectorWithoutReplacingCache(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x55}, 32)
+	var invalid atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/secret" {
+			value := append([]byte(nil), secret...)
+			if invalid.Load() {
+				clear(value[:4])
+			}
+			_, _ = w.Write(value)
+		} else {
+			_, _ = w.Write([]byte(testProxyConfig))
+		}
+	}))
+	defer server.Close()
+	source, err := newTelegramUpstreamSource(t.TempDir(), server.Client(), server.URL+"/secret", server.URL+"/config", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	invalid.Store(true)
+	if data, err := source.Refresh(context.Background()); err == nil || data != nil {
+		t.Fatal("zero-selector refresh replaced valid upstream")
+	}
+	cached, err := source.loadCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cached.Secret, secret) {
+		t.Fatal("invalid refresh overwrote last-known-good secret")
+	}
+}

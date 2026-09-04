@@ -2,6 +2,7 @@ package conf
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/xtls/xray-core/proxy/mtproxy"
@@ -101,5 +102,15 @@ func TestMTProxyInboundConfigRejectsInvalidSettings(t *testing.T) {
 				t.Fatal("Build() accepted invalid settings")
 			}
 		})
+	}
+}
+
+func TestMTProxyConfigRejectsInvalidFakeTLSDomains(t *testing.T) {
+	for _, domain := range []string{"cover\texample", "пример.рф", strings.Repeat("a", 254)} {
+		config := validMTProxyConfig()
+		config.FakeTLS = &MTProxyFakeTLSConfig{Domains: []string{domain}}
+		if _, err := config.Build(); err == nil {
+			t.Errorf("accepted invalid domain %q", domain)
+		}
 	}
 }

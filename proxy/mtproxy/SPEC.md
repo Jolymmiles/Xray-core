@@ -124,11 +124,33 @@ The fixed IPv4 key vector in middle_crypto_test.go was computed from the byte
 layout stated above with Python standard-library hashlib and struct, then stored
 as literal expected bytes before the Go implementation was accepted. Client
 transport vectors are constructed from the stated SHA-256/AES-CTR equations by
-standard-library primitives in tests rather than copied fixtures. Process tests
-use an independently acting local peer state machine, but they are not claimed
+standard-library primitives in tests rather than copied fixtures. In-process
+integration tests use an independently acting local peer state machine, but they are not claimed
 as a substitute for official Telegram-client interoperability.
 
 No GPL source file, function body, type layout, comment, or generated artifact
 is included in this package. Numeric operation identifiers and wire constants
 are interoperability facts. The implementation uses Xray and Go naming,
 ownership, cancellation, buffer and lifecycle designs.
+
+## Lifecycle and validation boundaries
+
+Handler shutdown initiates cancellation; it does not join active Process calls.
+Handler and caller cancellation interrupt pre-authentication, fallback
+and authenticated connections. A fallback requires a fully parsed, allowlisted
+SNI; malformed ClientHellos are rejected. Either relay direction finishing
+terminates the fallback and interrupts both dispatched link directions.
+
+A handshake registers against the exact secret runtime that authenticated it.
+Deleting and re-adding identical secret bytes does not revive a handshake from
+the deleted generation. Management user accounts are independent snapshots.
+
+The entire Middle-End handshake has one ten-second deadline, shortened by a
+caller deadline and interrupted by cancellation. Each subsequent RPC read has
+one five-minute budget, including fragmented bytes and CBC padding. Retirement
+of an older upstream generation cannot close a session from a newer generation.
+
+Downloaded upstream data with a zero nonce key selector is rejected before
+cache publication. The cache file bound includes JSON's base64 expansion while
+decoded configuration and secret limits remain unchanged. JSON and protobuf
+configuration use the same Fake TLS domain policy and minimum refresh interval.

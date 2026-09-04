@@ -38,8 +38,7 @@ type MiddleClient struct {
 	onClose   func()
 }
 
-func (c *MiddleClient) ID() uint64                        { return c.id }
-func (c *MiddleClient) Deliveries() <-chan MiddleDelivery { return c.queue }
+func (c *MiddleClient) ID() uint64 { return c.id }
 
 func (c *MiddleClient) Receive() (MiddleDelivery, bool) {
 	delivery, ok := <-c.queue
