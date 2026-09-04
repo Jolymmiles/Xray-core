@@ -12,7 +12,22 @@ fixtures remain supporting test services.
 
 The default remains legacy full-close. The negotiated gate covers Xray/Xray over
 TLS and REALITY with padding off/on, plus `auto` fallback from an Xray client
-to a pinned Xray server version predating SMUX half-close negotiation. Every command is wrapped by the NetBird/Mihomo service guard.
+to a pinned Xray server version predating SMUX half-close negotiation. Every
+command is wrapped by the NetBird/Mihomo service guard.
+
+The fallback test needs commit
+`d8a67242bb255b23ddc92338ac8bc98d66b45088` in the local Git object database to
+build its legacy server. Use a full-history checkout (`fetch-depth: 0` in CI),
+or fetch that commit explicitly before running the test:
+
+```sh
+git fetch origin d8a67242bb255b23ddc92338ac8bc98d66b45088
+```
+
+Alternatively, set `XRAY_LEGACY_SMUX_E2E_BIN` to an existing Xray binary built
+from that commit. The test performs no implicit fetch and does not skip a
+missing fixture. Its negative `require` control rejects a server that already
+supports half-close negotiation.
 
 ```sh
 GOTOOLCHAIN=auto go test ./common/singmux/internal/mplsmux \
