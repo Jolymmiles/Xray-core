@@ -88,24 +88,31 @@ func testMuxProcessInteropMatrix(t *testing.T, protocol string) {
 	tcpEcho := startTCPEcho(t)
 	udpEcho := startUDPEcho(t)
 
+	for _, scenario := range muxInteropScenarios() {
+		name := fmt.Sprintf("%s/xray-server/%s/%s/padding=%t", scenario.peer, scenario.carrier, scenario.network, scenario.padding)
+		t.Run(name, func(t *testing.T) {
+			runInteropScenario(t, workDir, binaries, certificate, privateKey, scenario.peer, scenario.carrier, scenario.network, protocol, scenario.padding, tcpEcho, udpEcho)
+		})
+	}
+}
+
+type muxInteropScenario struct {
+	peer, carrier, network string
+	padding                bool
+}
+
+func muxInteropScenarios() []muxInteropScenario {
+	var scenarios []muxInteropScenario
 	for _, peer := range []string{"xray", "sing-box", "mihomo"} {
-		directions := []string{"xray-client", "xray-server"}
-		if peer == "xray" {
-			directions = []string{"xray-server"}
-		}
-		for _, direction := range directions {
-			for _, carrier := range []string{"vless", "trojan"} {
-				for _, network := range []string{"tcp", "udp"} {
-					for _, padding := range []bool{false, true} {
-						name := fmt.Sprintf("%s/%s/%s/%s/padding=%t", peer, direction, carrier, network, padding)
-						t.Run(name, func(t *testing.T) {
-							runInteropScenario(t, workDir, binaries, certificate, privateKey, peer, direction, carrier, network, protocol, padding, tcpEcho, udpEcho)
-						})
-					}
+		for _, carrier := range []string{"vless", "trojan"} {
+			for _, network := range []string{"tcp", "udp"} {
+				for _, padding := range []bool{false, true} {
+					scenarios = append(scenarios, muxInteropScenario{peer: peer, carrier: carrier, network: network, padding: padding})
 				}
 			}
 		}
 	}
+	return scenarios
 }
 
 func TestStructuredRejectedAccessProcess(t *testing.T) {
@@ -205,16 +212,12 @@ func buildE2EBinary(t testing.TB, environment, output, directory, target string,
 	return output
 }
 
-func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, direction, carrier, network, protocol string, padding bool, tcpEcho, udpEcho net.Addr) {
+func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, carrier, network, protocol string, padding bool, tcpEcho, udpEcho net.Addr) {
 	t.Helper()
 	serverPort := freeWildcardTCPPort(t)
 	socksPort := freeTCPUDPPort(t)
-	apiPort := 0
-	wantOnlineIP := ""
-	if direction == "xray-server" {
-		apiPort = freeTCPPort(t)
-		wantOnlineIP = nonLoopbackHostIPv4(t)
-	}
+	apiPort := freeTCPPort(t)
+	wantOnlineIP := nonLoopbackHostIPv4(t)
 	scenarioDir := filepath.Join(workDir, strings.NewReplacer("/", "-", "=", "-").Replace(t.Name()))
 	if err := os.MkdirAll(scenarioDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -222,75 +225,35 @@ func runInteropScenario(t *testing.T, workDir string, binaries e2eBinaries, cert
 	certificate = copyScenarioFile(t, certificate, filepath.Join(scenarioDir, "server.crt"))
 	privateKey = copyScenarioFile(t, privateKey, filepath.Join(scenarioDir, "server.key"))
 
-	var serverBinary string
-	var serverArgs []string
-	var serverConfig []byte
-	var clientBinary string
-	var clientArgs []string
-	var clientConfig []byte
-	if direction == "xray-client" {
-		serverBinary, serverArgs, serverConfig = peerServerConfig(t, binaries, peer, carrier, serverPort, padding, certificate, privateKey)
-		clientBinary = binaries.xray
-		clientArgs = []string{"run", "-config", filepath.Join(scenarioDir, "client.json")}
-		clientConfig = xrayConfig(t, false, carrier, serverPort, socksPort, protocol, padding, certificate, privateKey)
-	} else {
-		serverBinary = binaries.xray
-		serverArgs = []string{"run", "-config", filepath.Join(scenarioDir, "server.json")}
-		serverConfig = xrayPresenceServerConfig(t, carrier, serverPort, apiPort, protocol, padding, certificate, privateKey)
-		clientBinary, clientArgs, clientConfig = peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, protocol, padding, certificate, wantOnlineIP)
-	}
-
-	serverPath := filepath.Join(scenarioDir, "server"+configExtension(peer, direction == "xray-server"))
-	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, direction == "xray-client"))
-	serverReadyMarker := ""
-	if peer == "mihomo" && direction == "xray-client" {
-		serverReadyMarker = filepath.Join(scenarioDir, "server-ready")
-		serverArgs = withMihomoPostUp(serverArgs, serverReadyMarker)
-	}
-	if direction == "xray-client" {
-		serverArgs = replaceConfigPath(serverArgs, serverPath)
-		clientArgs = replaceConfigPath(clientArgs, clientPath)
-	} else {
-		serverArgs = replaceConfigPath(serverArgs, serverPath)
-		clientArgs = replaceConfigPath(clientArgs, clientPath)
-	}
+	serverPath := filepath.Join(scenarioDir, "server.json")
+	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, false))
+	serverConfig := xrayPresenceServerConfig(t, carrier, serverPort, apiPort, protocol, padding, certificate, privateKey)
+	clientBinary, clientArgs, clientConfig := peerClientConfig(t, binaries, peer, carrier, serverPort, socksPort, protocol, padding, certificate, wantOnlineIP)
+	clientArgs = replaceConfigPath(clientArgs, clientPath)
 	writeConfig(t, serverPath, serverConfig)
 	writeConfig(t, clientPath, clientConfig)
 
-	server := startReadyE2EServer(t, serverBinary, serverArgs, serverPort, serverReadyMarker)
-	client := startE2EProcess(t, clientBinary, clientArgs...)
-	waitSOCKS(t, client, socksPort)
-	if peer == "mihomo" && direction == "xray-server" {
-		waitProcessLog(t, client, "Initial configuration complete")
-		// Mihomo opens the SOCKS listener before the GLOBAL provider can carry
-		// traffic. Prove the complete forwarding path before the scenario's
-		// single-shot protocol assertion.
-		waitSOCKSTCPForwarding(t, client, socksPort, tcpEcho.(*net.TCPAddr))
-	}
+	server := startReadyE2EServer(t, binaries.xray, []string{"run", "-config", serverPath}, serverPort, "")
+	client := startReadyE2EClient(t, peer, clientBinary, clientArgs, socksPort)
+
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("server logs:\n%s", server.logs.String())
 			t.Logf("client logs:\n%s", client.logs.String())
 		}
 	})
-	var statsClient statscommand.StatsServiceClient
-	var assertOnline func()
-	if direction == "xray-server" {
-		statsClient = dialStatsService(t, apiPort)
-		assertOnline = func() { waitStatsOnlineIPs(t, statsClient, wantOnlineIP) }
-	}
+	statsClient := dialStatsService(t, apiPort)
+	assertOnline := func() { waitStatsOnlineIPs(t, statsClient, wantOnlineIP) }
 	if network == "tcp" {
 		testSOCKSTCP(t, socksPort, tcpEcho.(*net.TCPAddr), assertOnline)
 	} else {
 		testSOCKSUDP(t, socksPort, udpEcho.(*net.UDPAddr), assertOnline)
 	}
-	if direction == "xray-server" {
-		if network == "udp" {
-			stopE2EProcess(t, client)
-		}
-		waitStatsOnlineIPs(t, statsClient)
-		assertStructuredAccessDestination(t, server, network, tcpEcho, udpEcho)
+	if network == "udp" {
+		stopE2EProcess(t, client)
 	}
+	waitStatsOnlineIPs(t, statsClient)
+	assertStructuredAccessDestination(t, server, network, tcpEcho, udpEcho)
 }
 
 func configExtension(peer string, xray bool) string {
@@ -327,14 +290,6 @@ func withMihomoPostUp(arguments []string, marker string) []string {
 	return result
 }
 
-func peerServerConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, port int, padding bool, certificate, privateKey string) (string, []string, []byte) {
-	t.Helper()
-	if peer == "sing-box" {
-		return binaries.singBox, []string{"run", "-c", "server.json"}, singBoxConfig(t, true, carrier, port, 0, "smux", padding, certificate, privateKey)
-	}
-	return binaries.mihomo, []string{"-d", ".", "-f", "server.yaml"}, mihomoServerConfig(carrier, port, padding, certificate, privateKey)
-}
-
 func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate string, serverAddresses ...string) (string, []string, []byte) {
 	t.Helper()
 	serverAddress := "127.0.0.1"
@@ -345,7 +300,7 @@ func peerClientConfig(t *testing.T, binaries e2eBinaries, peer, carrier string, 
 		return binaries.xray, []string{"run", "-config", "client.json"}, xrayConfig(t, false, carrier, serverPort, socksPort, protocol, padding, certificate, "", serverAddress)
 	}
 	if peer == "sing-box" {
-		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxConfig(t, false, carrier, serverPort, socksPort, protocol, padding, "", "", serverAddress)
+		return binaries.singBox, []string{"run", "-c", "client.json"}, singBoxClientConfig(t, carrier, serverPort, socksPort, protocol, padding, serverAddress)
 	}
 	return binaries.mihomo, []string{"-d", ".", "-f", "client.yaml"}, mihomoClientConfig(carrier, serverPort, socksPort, protocol, padding, serverAddress)
 }
@@ -486,57 +441,33 @@ func xrayTLSSettings(server bool, certificate, privateKey string) map[string]any
 	return settings
 }
 
-func singBoxConfig(t *testing.T, server bool, carrier string, serverPort, socksPort int, protocol string, padding bool, certificate, privateKey string, serverAddresses ...string) []byte {
+func singBoxClientConfig(t *testing.T, carrier string, serverPort, socksPort int, protocol string, padding bool, serverAddresses ...string) []byte {
 	t.Helper()
 	serverAddress := "127.0.0.1"
 	if len(serverAddresses) != 0 {
 		serverAddress = serverAddresses[0]
 	}
 	config := map[string]any{"log": map[string]any{"level": "debug", "timestamp": true}}
-	if server {
-		inbound := map[string]any{
-			"type": carrier, "listen": "127.0.0.1", "listen_port": serverPort,
-			"multiplex": map[string]any{"enabled": true, "padding": padding},
-		}
-		if carrier == "vless" {
-			inbound["users"] = []any{map[string]any{"uuid": testUUID}}
-		} else {
-			inbound["users"] = []any{map[string]any{"password": testPassword}}
-			inbound["tls"] = map[string]any{"enabled": true, "certificate_path": certificate, "key_path": privateKey}
-		}
-		config["inbounds"] = []any{inbound}
-		config["outbounds"] = []any{map[string]any{"type": "direct"}}
-	} else {
-		config["inbounds"] = []any{map[string]any{"type": "socks", "listen": "127.0.0.1", "listen_port": socksPort}}
-		outbound := map[string]any{
-			"type": carrier, "server": serverAddress, "server_port": serverPort,
-			"multiplex": map[string]any{"enabled": true, "protocol": protocol, "max_connections": 1, "padding": padding},
-		}
-		if carrier == "vless" {
-			outbound["uuid"] = testUUID
-			packetEncoding := "packetaddr"
-			outbound["packet_encoding"] = packetEncoding
-		} else {
-			outbound["password"] = testPassword
-			outbound["tls"] = map[string]any{"enabled": true, "server_name": "localhost", "insecure": true}
-		}
-		config["outbounds"] = []any{outbound}
+	config["inbounds"] = []any{map[string]any{"type": "socks", "listen": "127.0.0.1", "listen_port": socksPort}}
+	outbound := map[string]any{
+		"type": carrier, "server": serverAddress, "server_port": serverPort,
+		"multiplex": map[string]any{"enabled": true, "protocol": protocol, "max_connections": 1, "padding": padding},
 	}
+	if carrier == "vless" {
+		outbound["uuid"] = testUUID
+		packetEncoding := "packetaddr"
+		outbound["packet_encoding"] = packetEncoding
+	} else {
+		outbound["password"] = testPassword
+		outbound["tls"] = map[string]any{"enabled": true, "server_name": "localhost", "insecure": true}
+	}
+	config["outbounds"] = []any{outbound}
+
 	encoded, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return encoded
-}
-
-func mihomoServerConfig(carrier string, port int, padding bool, certificate, privateKey string) []byte {
-	credentials := fmt.Sprintf("    users:\n      - username: e2e\n        uuid: %s\n", testUUID)
-	tls := "    allow-insecure: true\n"
-	if carrier == "trojan" {
-		credentials = fmt.Sprintf("    users:\n      - username: e2e\n        password: %s\n", testPassword)
-		tls = fmt.Sprintf("    certificate: %s\n    private-key: %s\n", certificate, privateKey)
-	}
-	return []byte(fmt.Sprintf("mode: direct\nlog-level: warning\nlisteners:\n  - name: e2e-in\n    type: %s\n    listen: 127.0.0.1\n    port: %d\n%s%s    mux-option:\n      padding: %t\n", carrier, port, credentials, tls, padding))
 }
 
 func mihomoClientConfig(carrier string, serverPort, socksPort int, protocol string, padding bool, serverAddresses ...string) []byte {
@@ -595,6 +526,23 @@ func startE2EProcess(t testing.TB, binary string, arguments ...string) *e2eProce
 			t.Errorf("process %s did not exit", binary)
 		}
 	})
+	return process
+}
+
+func startReadyE2EClient(t testing.TB, peer, binary string, arguments []string, socksPort int) *e2eProcess {
+	t.Helper()
+	readyMarker := ""
+	if peer == "mihomo" {
+		readyMarker = filepath.Join(t.TempDir(), "client-ready")
+		arguments = withMihomoPostUp(arguments, readyMarker)
+	}
+	process := startE2EProcess(t, binary, arguments...)
+	if readyMarker != "" {
+		// Mihomo's parse-complete log precedes provider loading and OnRunning.
+		// Its post-up command executes only after ApplyConfig has returned.
+		waitProcessFile(t, process, readyMarker)
+	}
+	waitSOCKS(t, process, socksPort)
 	return process
 }
 
