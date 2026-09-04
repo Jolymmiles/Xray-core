@@ -627,3 +627,59 @@ descriptors versus the previous release. Loaded server FDs may include pooled
 carriers; the hard loaded ceiling is 128, one per concurrent stream. A
 start-to-end self-delta is not used because warmup teardown made that check
 flake (CI count 3 saw 21->44 then drained to 9).
+
+## Xray-server-only audit (2026-09-04)
+
+Production changes are in `502fc09c`; the server-only topology contract is in
+`06869bda`. This pass also fixes VCS stamping when the comparison builds an
+archived source tree. Go 1.27.0, native Linux/amd64, kernel
+`7.1.9-200.fc44.x86_64`, schedutil governor, shared development host. No release
+capacity or speed improvement is claimed. Commands, raw-log locations, PR
+scope, failure history and artifact identities are in the
+[audit report](../../docs/audits/2026-09-04-fork-audit.md).
+
+Five isolated 32 KiB round-trip samples before/after the timeout-channel fix:
+
+| Metric | Original `8a9acbd5` | Candidate |
+|---|---:|---:|
+| Median ns/op | 19864 | 21117 |
+| Observed ns/op range | 18985–20573 | 19165–21734 |
+| B/op | 6 | 6 |
+| allocs/op | 0 | 0 |
+
+Command: compile the original primitive with a Go source overlay and the
+candidate without it; run each test binary with
+`-test.run '^$' -test.bench '^BenchmarkStreamRoundTrip32KiB$' -test.benchmem
+-test.count=5 -test.benchtime=500ms`. Ranges overlap; the result supports no
+speedup claim. Timed-out CloseWrite completion channels are retired just as
+ordinary Write channels already were, preserving sibling progress without
+changing wire bytes or the successful-write allocation path.
+
+All process comparisons used Xray servers and an identical Xray client,
+`go build -trimpath -buildvcs=false`, full warm-up, nine alternating samples per
+carrier, and active Linux budget assertions. No other agent builds or load ran
+concurrently with measurement.
+
+| Xray baseline | Carrier | Baseline median ms | Candidate median ms | Ratio |
+|---|---|---:|---:|---:|
+| `v26.8.25-1457` | VLESS | 1031.456 | 1018.805 | 0.988 |
+| `v26.8.25-1457` | Trojan | 1129.653 | 1126.488 | 0.997 |
+| pre-audit main `8a9acbd5` | VLESS | 1227.690 | 1122.868 | 0.915 |
+| pre-audit main `8a9acbd5` | Trojan | 1384.387 | 1468.100 | 1.060 |
+
+`TestCandidatePerformanceAgainstPreviousRelease` passed the 10% duration and
+RSS/thread/FD limits for both carriers. A diagnostic overlay changing only its
+baseline revision and label to `8a9acbd5` also passed. Shared-host variance was
+large; these observations do not replace the pinned Linux release environment.
+
+The current functional matrices passed 24/24 SMUX, 24/24 H2MUX and 36/36 VLESS
+TCP cells, all with Xray as server. The server-only three-cycle stress passed
+18/18 cycles. Historical mixed-role stress/hardening failures remain recorded
+in the audit report; they were not retried or erased to manufacture success.
+
+The revised 50-cycle profile passed 300/300 cycles in 1654.378s: three clients
+against Xray × VLESS/Trojan × 50. Both the 18-cycle peak profile and the 300-cycle
+profile reported zero loopback error/drop/CRC/carrier/collision deltas and no
+skipped cells. These results follow the server-only contract and corrected
+Mihomo startup barrier. Earlier failed mixed-role runs remain explicit in the
+audit; this is not a claim that all historical reconnect failures were fixed.
