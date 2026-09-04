@@ -1,5 +1,11 @@
 # SMUX v1 baseline
 
+Current validation policy (2026-09-04): Xray is the only proxy server; Xray,
+sing-box, and Mihomo are clients. Performance comparisons use Xray server
+versions. Historical entries below retain the topologies and measurements that
+were actually used; their external-server comparisons are not current gates.
+Use `TESTING.md` and `AGENTS.md` for the current acceptance contract.
+
 Baseline ID: `smux-mpl-v1-2026-07-17`
 
 This is the pre-hardening baseline for the in-tree MPL-2.0 SMUX stack. It is a

@@ -89,12 +89,7 @@ func TestVLESSTLSX25519ProcessMatrix(t *testing.T) {
 				clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, peer == "xray"))
 				clientArgs = replaceConfigPath(clientArgs, clientPath)
 				writeConfig(t, clientPath, clientConfig)
-				client := startE2EProcess(t, clientBinary, clientArgs...)
-				waitSOCKS(t, client, socksPort)
-				if peer == "mihomo" {
-					waitProcessLog(t, client, "Start initial compatible provider GLOBAL")
-					waitSOCKSTCPForwarding(t, client, socksPort, tcpEcho)
-				}
+				client := startReadyE2EClient(t, peer, clientBinary, clientArgs, socksPort)
 				t.Cleanup(func() {
 					if t.Failed() {
 						t.Logf("server logs:\n%s", server.logs.String())

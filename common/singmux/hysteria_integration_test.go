@@ -48,11 +48,7 @@ func runHysteriaClientScenario(t *testing.T, workDir string, binaries e2eBinarie
 	clientPath := filepath.Join(scenarioDir, "client"+configExtension(peer, peer == "xray"))
 	clientArgs = replaceConfigPath(clientArgs, clientPath)
 	writeConfig(t, clientPath, clientConfig)
-	client := startE2EProcess(t, clientBinary, clientArgs...)
-	waitSOCKS(t, client, socksPort)
-	if peer == "mihomo" {
-		waitProcessLog(t, client, "Initial configuration complete")
-	}
+	client := startReadyE2EClient(t, peer, clientBinary, clientArgs, socksPort)
 	waitSOCKSTCPForwarding(t, client, socksPort, tcpEcho)
 
 	t.Cleanup(func() {
