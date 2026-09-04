@@ -273,10 +273,11 @@ func (c *xdnsConnClient) sendLoop() {
 		for {
 			cand := (next + 1) % uint32(len(c.resolverAddrs))
 			if cand == cur {
+				next = cur
 				break
 			}
+			next = cand
 			if c.resolverSend[c.resolverAddrs[cand].String()].Load() < curSend {
-				next = cand
 				break
 			}
 		}
