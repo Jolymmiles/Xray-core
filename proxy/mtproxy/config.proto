@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package xray.proxy.mtproxy;
+option csharp_namespace = "Xray.Proxy.MTProxy";
+option go_package = "github.com/xtls/xray-core/proxy/mtproxy";
+option java_package = "com.xray.proxy.mtproxy";
+option java_multiple_files = true;
+
+import "common/protocol/user.proto";
+
+message Account {
+  bytes secret = 1;
+}
+
+enum UpstreamSource {
+  UPSTREAM_SOURCE_UNSPECIFIED = 0;
+  UPSTREAM_SOURCE_FILES = 1;
+  UPSTREAM_SOURCE_TELEGRAM = 2;
+}
+
+message UpstreamConfig {
+  UpstreamSource source = 1;
+  string secret_file = 2;
+  string config_file = 3;
+  string cache_dir = 4;
+  uint32 refresh_interval_seconds = 5;
+  bytes proxy_tag = 6;
+  uint32 max_sessions_per_dc = 7;
+  uint32 max_clients_per_session = 8;
+  uint32 delivery_queue_depth = 9;
+}
+
+message FakeTLSConfig {
+  bool enabled = 1;
+  bool only = 2;
+  repeated string domains = 3;
+  uint32 replay_cache_capacity = 4;
+  uint32 server_hello_payload_size = 5;
+}
+
+message Config {
+  repeated xray.common.protocol.User users = 1;
+  UpstreamConfig upstream = 2;
+  FakeTLSConfig fake_tls = 3;
+  uint32 max_secrets = 4;
+  uint32 max_packet_size = 5;
+  uint32 handshake_concurrency = 6;
+}
