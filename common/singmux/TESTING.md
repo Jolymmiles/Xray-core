@@ -1,16 +1,39 @@
 # Sing-mux release gates
 
+## Server topology
+
+Xray is the only proxy server in these gates. Xray, sing-box, and Mihomo are
+clients of that server. Baseline/candidate performance runs compare Xray server
+versions. Reverse-role cells and external proxy-server performance comparisons
+are excluded by the repository rule in `AGENTS.md`. Local echo and REALITY cover
+fixtures remain supporting test services.
+
 ## Negotiated logical half-close
 
 The default remains legacy full-close. The negotiated gate covers Xray/Xray over
-TLS and REALITY with padding off/on, plus `auto` fallback against real sing-box
-and Mihomo servers. Every command is wrapped by the NetBird/Mihomo service guard.
+TLS and REALITY with padding off/on, plus `auto` fallback from an Xray client
+to a pinned Xray server version predating SMUX half-close negotiation. Every
+command is wrapped by the NetBird/Mihomo service guard.
+
+The fallback test needs commit
+`d8a67242bb255b23ddc92338ac8bc98d66b45088` in the local Git object database to
+build its legacy server. Use a full-history checkout (`fetch-depth: 0` in CI),
+or fetch that commit explicitly before running the test:
+
+```sh
+git fetch origin d8a67242bb255b23ddc92338ac8bc98d66b45088
+```
+
+Alternatively, set `XRAY_LEGACY_SMUX_E2E_BIN` to an existing Xray binary built
+from that commit. The test performs no implicit fetch and does not skip a
+missing fixture. Its negative `require` control rejects a server that already
+supports half-close negotiation.
 
 ```sh
 GOTOOLCHAIN=auto go test ./common/singmux/internal/mplsmux \
   -run 'Test(NegotiatedHalfClose|CloseFrameTerminatesLogicalStream)' -count=100
 GOTOOLCHAIN=auto go test -tags integration ./common/singmux \
-  -run 'TestSMUX(NegotiatedHalfCloseProcessMatrix|AutoFallbackExternalPeers)' -count=5 -v
+  -run 'TestSMUX(NegotiatedHalfCloseProcessMatrix|AutoFallbackLegacyXray)' -count=5 -v
 ```
 
 ## Logical-stream close semantics
@@ -74,8 +97,9 @@ compiled only without `-race`, because race instrumentation changes allocation
 behavior. Frame, padding, and outer-protocol decoders also have Go fuzz targets.
 
 The functional process suites build and start Xray, sing-box, and Mihomo. They
-run both Xray client and Xray server directions for VLESS and Trojan, TCP and
-UDP, with padding disabled and enabled (40 scenarios per mux protocol).
+run Xray, sing-box, and Mihomo clients against the Xray server for VLESS and
+Trojan, TCP and UDP, with padding disabled and enabled (24 scenarios per mux
+protocol).
 
 ```sh
 go test -tags integration ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
@@ -211,16 +235,16 @@ The gate writes `heap.pb.gz`, `allocs.pb.gz`, `goroutine.pb.gz`, and
 positive loopback error/drop/CRC/carrier/collision/link-change delta. A Darwin
 run validates the harness only; it is not Linux server-capacity evidence.
 
-The stress suite runs eight peer/direction/carrier topologies. Sing-box
-topologies run three cycles with 128 concurrent full-duplex TCP streams;
-Mihomo topologies use 32. Every stream carries 1 MiB in each direction, and
+The stress suite runs six client/carrier topologies against Xray. Xray and
+sing-box clients run three cycles with 128 concurrent full-duplex TCP streams;
+Mihomo clients use 32. Every stream carries 1 MiB in each direction, and
 every cycle sends 10,000 UDP datagrams across four destinations. The server is
 killed and restarted between cycles while the client remains running. After
 each start, the harness waits for an available process-ready marker and requires
 a complete SOCKS-to-server-to-echo exchange before beginning the measured load;
 an open TCP or SOCKS port alone is not readiness evidence.
 
-Sing-box peak stress keeps all 128 streams on one carrier. Mihomo stress caps
+Xray and sing-box peak stress keep all 128 streams on one carrier. Mihomo stress caps
 each cycle at 32 streams and allows up to four carriers to avoid turning the
 peer's capacity into the bottleneck; datagram and restart load is unchanged.
 The ordinary SMUX/H2MUX matrices retain cold single-carrier Mihomo coverage.
@@ -230,7 +254,8 @@ go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStress
 ```
 
 The release gate first runs the three-cycle peak profile,
-then raises every topology to 50 cycles with bounded per-cycle concurrency:
+then raises all six Xray-server topologies (three clients × two carriers) to
+50 cycles with bounded per-cycle concurrency:
 
 ```sh
 XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
@@ -244,7 +269,7 @@ sibling is reused without exceeding the configured carrier cap. If every
 remaining sibling also resets, replay continues up to `maxConnections`
 times and then dials a new carrier.
 That is 800 one-MiB stream
-runs per topology, versus 384 for ordinary sing-box peak stress and 96 for
+runs per topology, versus 384 for ordinary Xray/sing-box peak stress and 96 for
 ordinary Mihomo peak stress; UDP load remains 10,000 datagrams per cycle.
 
 On Linux, the stress test also captures a historical baseline and delta for the
@@ -253,19 +278,13 @@ counters. It never clears counters and fails if any checked counter increases.
 Process RSS and thread counts are sampled after each cycle to detect linear
 growth.
 
-The performance suite still records the same Xray SMUX client against the
-current local sing-box/sing-mux server. That comparison is diagnostic: the
-external sing-mux oracle is historically unstable even on previously published
-fork releases. The Trojan result is also diagnostic because it compares the two
-projects' TLS and Trojan implementations.
-
 The hard Linux release budget is the previous published fork release. It uses a
 full-load warm-up and nine alternating rounds with access logging disabled, and
 fails above a 10% median full-duplex regression.
 
 ```sh
 go test -tags 'integration stress performance' ./common/singmux \
-  -run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstPreviousRelease)$' \
+  -run '^TestCandidatePerformanceAgainstPreviousRelease$' \
   -count=3 -v
 ```
 
@@ -281,6 +300,18 @@ record diagnostics only and cannot satisfy the release gate.
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
+
+On Linux, the mux interoperability client's shared TCP/UDP listener port is
+selected outside `/proc/sys/net/ipv4/ip_local_port_range`. The temporary port
+reservation must close before an external client can bind; excluding automatic
+source ports prevents intervening outbound connections from taking that port.
+Both transports are checked, and allocation stops after 128 occupied candidates.
+Client startup and readiness failures are never retried. The release soak at
+`c1ddf957` failed on cycle 12 because sing-box could not bind its SOCKS listener
+on port 50610; that failed run remains recorded as
+[33924175876](https://github.com/Jolymmiles/Xray-core/actions/runs/33924175876).
+The log did not identify the socket that occupied the port.
+
 `XRAY_SMUX_STRESS_TCP_STREAMS` may reduce TCP concurrency for a diagnostic run;
 the release gate fixes it to 16 only for the cumulative 50-cycle profile after
 the ordinary 128-stream peak profile passes.

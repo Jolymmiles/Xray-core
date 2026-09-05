@@ -253,6 +253,9 @@ func (s *Stream) CloseWrite() error {
 	}
 	s.stateMu.Unlock()
 	if err := s.session.submitResult(frameHalfClose, s.id, nil, deadline, s.writeResult); err != nil {
+		if err == ErrTimeout {
+			s.writeResult = make(chan error, 1)
+		}
 		return err
 	}
 	s.stateMu.Lock()

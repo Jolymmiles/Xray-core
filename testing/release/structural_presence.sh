@@ -19,6 +19,7 @@ go vet ./...
 go test -timeout 2h ./...
 go test -race ./...
 go test -gcflags=all=-d=checkptr=2 ./...
+go test -tags integration ./common/singmux -run '^TestFreeTCPUDPPort' -count=1
 go test -tags integration ./common/singmux \
 	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix/)' -count=3 -v
 go test -tags integration ./testing/scenarios \
@@ -57,7 +58,7 @@ XRAY_SMUX_STRESS_CYCLES= XRAY_SMUX_STRESS_TCP_STREAMS= go test -timeout=45m -tag
 XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress' ./common/singmux \
 	-run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 go test -timeout=45m -tags 'integration stress performance' ./common/singmux \
-	-run '^(TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstPreviousRelease)$' -count=3 -v
+	-run '^TestCandidatePerformanceAgainstPreviousRelease$' -count=3 -v
 go test -tags 'integration remnanode_release' ./common/singmux \
 	-run '^(TestRemnaNodeLinuxReleaseEnvironment|TestRemnaNodeProductionConfigContract|TestRemnaNodeConfigRejectsLiteralNoneFlow|TestRemnaNodeConfigProcessE2E)$' -count=1 -v
 

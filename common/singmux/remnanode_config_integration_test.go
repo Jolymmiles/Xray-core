@@ -99,11 +99,7 @@ func TestRemnaNodeConfigProcessE2E(t *testing.T) {
 				clientPath := filepath.Join(t.TempDir(), "client"+configExtension(peer, peer == "xray"))
 				clientArgs = replaceConfigPath(clientArgs, clientPath)
 				writeConfig(t, clientPath, clientConfig)
-				client := startE2EProcess(t, clientBinary, clientArgs...)
-				waitSOCKS(t, client, socksPort)
-				if peer == "mihomo" {
-					waitProcessLog(t, client, "Initial configuration complete")
-				}
+				client := startReadyE2EClient(t, peer, clientBinary, clientArgs, socksPort)
 				response := waitDeploymentHTTPForwarding(t, client, socksPort, httpPort, "www.google.com")
 				if !strings.Contains(response, "family=ipv4") {
 					t.Fatalf("DIRECT did not use ForceIPv4: %q", response)
