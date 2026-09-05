@@ -6,14 +6,56 @@ import (
 	"io"
 	stdnet "net"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
+
+func TestUDPWorkerCloseAllowsAdmittedCleanupToFinish(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		worker := &udpWorker{activeConn: map[connID]*udpConn{
+			{}: {lastActivityTime: time.Now().Unix()},
+		}}
+		continueCleanup := make(chan struct{})
+		cleanupResult := make(chan error, 1)
+		worker.checker = &task.Periodic{
+			Interval: time.Hour,
+			Execute: func() error {
+				<-continueCleanup
+				// Detect the lock inversion without leaving a permanently blocked
+				// cleanup goroutine on the failing implementation.
+				if !worker.TryLock() {
+					return fmt.Errorf("shutdown holds the mutex required by cleanup")
+				}
+				worker.Unlock()
+				return worker.clean()
+			},
+		}
+		go func() { cleanupResult <- worker.checker.Start() }()
+		synctest.Wait()
+		closeResult := make(chan error, 1)
+		go func() { closeResult <- worker.Close() }()
+		synctest.Wait()
+		select {
+		case <-closeResult:
+			t.Fatal("shutdown returned before admitted cleanup finished")
+		default:
+		}
+		close(continueCleanup)
+		if err := <-cleanupResult; err != nil {
+			t.Error(err)
+		}
+		if err := <-closeResult; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
 
 type escapedContextResult struct {
 	id         c.ID

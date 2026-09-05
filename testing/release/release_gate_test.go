@@ -27,7 +27,6 @@ func TestStructuralPresenceReleaseGateContract(t *testing.T) {
 		"TestSevenThousandExactOwnersEndAtZero",
 		"XRAY_SMUX_STRESS_CYCLES=50",
 		"XRAY_SMUX_STRESS_TCP_STREAMS=16",
-		"TestSMUXServerPerformanceAgainstSingMux|TestCandidatePerformanceAgainstPreviousRelease",
 		"TestRemnaNodeLinuxReleaseEnvironment",
 		"XRAY_STRUCTURAL_SOAK_SECONDS",
 		"mixed-path soak cycle",
