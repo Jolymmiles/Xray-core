@@ -6,6 +6,16 @@ test, or compatibility gates defined here.
 
 ## Project direction
 
+- The primary goal is to make proxy connections appear as legitimate traffic
+  to a censor, resisting passive classification and active probing. Encryption
+  alone does not hide proxy use. Performance and interoperability improvements
+  must preserve traffic camouflage.
+- When changing externally observable behavior, assess TLS handshakes and
+  fingerprints, packet sizes and timing, connection lifecycle, and responses
+  to unauthenticated or malformed probes. State the censor capabilities being
+  considered and record relevant evidence and limitations; successful proxy
+  connections and benchmarks alone do not prove camouflage. Do not claim
+  absolute indistinguishability.
 - Optimize and harden the Xray server first. Linux/amd64 is the release and
   performance target; Darwin is useful for development but is not evidence of
   Linux server capacity.
