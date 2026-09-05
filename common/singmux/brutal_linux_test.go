@@ -6,6 +6,7 @@ package singmux
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -111,6 +112,137 @@ func TestSetBrutalOptionsPropagatesSocketErrors(t *testing.T) {
 func TestBrutalSetRatePropagatesSyscallError(t *testing.T) {
 	if err := setBrutalRate(-1, brutalSocketOptions{Rate: BrutalMinSpeedBPS, CwndGain: 20}); err == nil {
 		t.Fatal("invalid socket descriptor must fail")
+	}
+}
+
+func TestSetBrutalOptionsPreservesLockedCongestion(t *testing.T) {
+	const systemRate = uint64(25_000_000)
+	rate := systemRate
+	restore := installBrutalSocketHooks(
+		func(int, int, int, string) error { return syscall.EPERM },
+		func(_ int, options brutalSocketOptions) error {
+			rate = options.Rate
+			return nil
+		},
+	)
+	t.Cleanup(restore)
+	previousGet := brutalGetCongestion
+	t.Cleanup(func() { brutalGetCongestion = previousGet })
+	brutalGetCongestion = func(int, int, int) (string, error) { return "brutal", nil }
+
+	if err := SetBrutalOptions(&linuxBrutalConn{raw: &linuxRawConn{fd: 41}}, 1_000_000); err != nil {
+		t.Fatalf("system-managed Brutal must remain usable: %v", err)
+	}
+	if rate != systemRate {
+		t.Fatalf("system rate = %d, want %d", rate, systemRate)
+	}
+}
+
+func TestSetBrutalOptionsAcceptsLockedRate(t *testing.T) {
+	restore := installBrutalSocketHooks(
+		func(int, int, int, string) error { return nil },
+		func(int, brutalSocketOptions) error {
+			return fmt.Errorf("set TCP_BRUTAL_RATE: %w", syscall.EPERM)
+		},
+	)
+	t.Cleanup(restore)
+	previousGet := brutalGetCongestion
+	t.Cleanup(func() { brutalGetCongestion = previousGet })
+	brutalGetCongestion = func(fd, level, option int) (string, error) {
+		if fd != 41 || level != syscall.IPPROTO_TCP || option != syscall.TCP_CONGESTION {
+			return "", syscall.EINVAL
+		}
+		return "brutal", nil
+	}
+
+	if err := SetBrutalOptions(&linuxBrutalConn{raw: &linuxRawConn{fd: 41}}, 1_000_000); err != nil {
+		t.Fatalf("system-managed Brutal rate must remain usable: %v", err)
+	}
+}
+
+func TestSetBrutalOptionsRejectsUnverifiedPermissionErrors(t *testing.T) {
+	for _, stage := range []string{"congestion", "rate"} {
+		for _, test := range []struct {
+			name      string
+			algorithm string
+			setErr    error
+			getErr    error
+		}{
+			{name: "different algorithm", algorithm: "cubic", setErr: syscall.EPERM},
+			{name: "empty algorithm", setErr: syscall.EPERM},
+			{name: "read failed", algorithm: "brutal", setErr: syscall.EPERM, getErr: syscall.EBADF},
+			{name: "other denial", algorithm: "brutal", setErr: syscall.EACCES},
+		} {
+			t.Run(stage+"/"+test.name, func(t *testing.T) {
+				restore := installBrutalSocketHooks(
+					func(int, int, int, string) error {
+						if stage == "congestion" {
+							return test.setErr
+						}
+						return nil
+					},
+					func(int, brutalSocketOptions) error { return test.setErr },
+				)
+				t.Cleanup(restore)
+				previousGet := brutalGetCongestion
+				t.Cleanup(func() { brutalGetCongestion = previousGet })
+				brutalGetCongestion = func(int, int, int) (string, error) {
+					return test.algorithm, test.getErr
+				}
+
+				err := SetBrutalOptions(&linuxBrutalConn{raw: &linuxRawConn{fd: 41}}, 1_000_000)
+				if !errors.Is(err, test.setErr) {
+					t.Fatalf("error = %v, want original denial %v", err, test.setErr)
+				}
+				if test.getErr != nil && !errors.Is(err, test.getErr) {
+					t.Fatalf("error = %v, want socket read failure %v", err, test.getErr)
+				}
+			})
+		}
+	}
+}
+
+func TestBrutalCongestionReadFromSocket(t *testing.T) {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Close(fd); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := syscall.SetsockoptString(fd, syscall.IPPROTO_TCP, syscall.TCP_CONGESTION, "reno"); err != nil {
+		t.Fatal(err)
+	}
+	name, err := getBrutalCongestion(fd, syscall.IPPROTO_TCP, syscall.TCP_CONGESTION)
+	if err != nil || name != "reno" {
+		t.Fatalf("TCP_CONGESTION = %q, %v, want reno", name, err)
+	}
+	if _, err := getBrutalCongestion(-1, syscall.IPPROTO_TCP, syscall.TCP_CONGESTION); !errors.Is(err, syscall.EBADF) {
+		t.Fatalf("invalid fd error = %v, want EBADF", err)
+	}
+}
+
+func TestBrutalCongestionNameRejectsInvalidLayout(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		value  string
+		length uint32
+	}{
+		{name: "zero length", length: 0},
+		{name: "oversized length", value: "brutal", length: 17},
+		{name: "empty name", length: 16},
+		{name: "missing terminator", value: "abcdefghijklmnop", length: 16},
+		{name: "truncated name", value: "brutal", length: 6},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var value [16]byte
+			copy(value[:], test.value)
+			if name, err := brutalCongestionName(value, test.length); err == nil {
+				t.Fatalf("invalid socket response accepted as %q", name)
+			}
+		})
 	}
 }
 

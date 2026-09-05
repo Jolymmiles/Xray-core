@@ -90,7 +90,43 @@ carrier-scoped parity:
 ```sh
 go test ./infra/conf ./app/proxyman/inbound -run 'Test(InboundSMuxConfigBuild|ReceiverBrutalOptions)$' -count=1
 go test ./common/singmux -run '^(TestServerBrutal|TestServiceBrutal|TestServiceH2MuxBrutal)' -count=1
+go test ./common/singmux -run '^(TestSetBrutalOptions|TestBrutalSocketABI|TestBrutalSetRate|TestBrutalCongestion)' -count=1
 ```
+
+The Linux socket tests cover locked TCP Brutal v2 algorithm and rate settings,
+preservation of the system-managed rate, and rejection of unverified `EPERM`
+(another algorithm, an empty algorithm, or a failed read). They inject the
+socket-control boundary and separately read a real TCP socket and validate
+response lengths; they do not establish compatibility with a loaded module.
+
+The opt-in `brutalkernel` tests require a disposable Linux/amd64 VM with TCP
+Brutal v2 loaded. They never install modules or change routes. Run both tests
+in each of these preconfigured modes, with loopback up:
+
+| `XRAY_BRUTAL_KERNEL_MODE` | Kernel fixture before connecting |
+| --- | --- |
+| `application` | No destination rule; application rate is 1,000,000 B/s and group ID is zero. |
+| `locked-route` | Locked rule for `127.0.0.1/32`, rate 12,500,000 B/s; the matching local-table route selects `congctl lock brutal`. |
+| `locked-rate` | The same locked rule, but the matching local-table route selects `congctl brutal` without route locking. |
+
+```sh
+XRAY_BRUTAL_KERNEL_MODE=locked-route XRAY_E2E_BIN=/path/to/xray \
+  go test -tags 'integration brutalkernel' -gcflags=all=-d=checkptr=2 \
+  ./common/singmux -run '^TestBrutalKernel' -count=1 -v
+```
+
+`TestBrutalKernelSocketPolicy` reads back the packed v2 parameters to verify
+that system rate/group ownership survives the call, or that the ordinary
+application rate is applied without a rule. `TestBrutalKernelSMUXProcess`
+enables Brutal on a real Xray server and Xray client and verifies the full
+SOCKS-to-server-to-echo path. The ordinary 24-cell matrix separately covers
+sing-box and Mihomo clients. Do not install these loopback rules on the
+maintainer's active NetBird/Mihomo host.
+
+No handshake or framing bytes change for this compatibility fix. A passive
+observer or an active probe that induces loss can still observe the pacing
+and retransmissions selected by the system rule. Functional tests alone do
+not establish traffic camouflage or validate unauthenticated probe behavior.
 
 The 32 KiB hot-path allocation gate is zero allocations per round trip and is
 compiled only without `-race`, because race instrumentation changes allocation

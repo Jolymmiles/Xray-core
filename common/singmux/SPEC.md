@@ -108,7 +108,7 @@ server's unsigned 64-bit big-endian receive ceiling. A false value is followed
 by an unsigned-varint diagnostic length and that many UTF-8 bytes. Diagnostics
 are bounded to 65535 bytes before allocation.
 
-Each endpoint applies the smaller of its configured send ceiling and the
+Each endpoint requests the smaller of its configured send ceiling and the
 peer's advertised receive ceiling to the physical TCP carrier. Xray exposes
 the client setting on outbound mux clients and the server setting per inbound:
 
@@ -124,12 +124,22 @@ the client setting on outbound mux clients and the server setting per inbound:
 
 The server reserves `_BrutalBwExchange:0` before routing, accepts it only as a
 TCP stream, and permits one successful exchange per carrier for both SMUX and
-H2MUX. It applies `min(server up, client down)` and advertises `server down`.
+H2MUX. It requests `min(server up, client down)` and advertises `server down`.
 Disabled, malformed, duplicate, or out-of-range exchanges fail only their
 control stream. If socket control may already have changed the physical TCP
 socket, the server closes the carrier rather than leaving asymmetric
 congestion control. The Linux carrier must have the `brutal`
 congestion-control module available.
+
+On Linux, a locked TCP Brutal v2 destination rule takes precedence over the
+requested per-carrier rate. If setting either `TCP_CONGESTION` or the Brutal
+parameters returns `EPERM`, Xray reads `TCP_CONGESTION` on that same socket.
+Only a successful read of `brutal` permits the exchange to continue, preserving
+the system-managed rate. A rejected algorithm change is not followed by a rate
+write. Other algorithms, failed reads, and other socket errors remain fatal.
+The bandwidth exchange bytes and advertised receive ceiling are unchanged;
+operators must size the system rule for the receiver because it can override
+the negotiated rate. An unlocked rule still permits application settings.
 
 ## UDP packets
 
