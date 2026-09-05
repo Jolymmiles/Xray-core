@@ -683,3 +683,151 @@ profile reported zero loopback error/drop/CRC/carrier/collision deltas and no
 skipped cells. These results follow the server-only contract and corrected
 Mihomo startup barrier. Earlier failed mixed-role runs remain explicit in the
 audit; this is not a claim that all historical reconnect failures were fixed.
+
+## TCP Brutal v2 locked destination rules (2026-09-05)
+
+Source: `5eb02c2016fe2a25054916ea4644855d4ca84f0d` plus the local Brutal
+compatibility patch. Native host: Linux `7.1.9-200.fc44.x86_64`, amd64,
+AMD Ryzen 7 4800H, `schedutil` governor, Go 1.27.0. This shared development
+host is not the pinned release performance environment.
+
+A locked system rule now takes precedence when socket configuration returns
+`EPERM` and a read on the same descriptor confirms `TCP_CONGESTION=brutal`.
+A rejected algorithm change is not followed by a rate write. Other errors
+remain fatal. The control exchange and advertised receive ceiling are
+unchanged. This is a compatibility fix, not a throughput optimization.
+
+The original implementation failed the two targeted locked-setting tests
+with `operation not permitted`. The candidate passes those tests, rejected
+algorithm/read-error cases, a real kernel TCP congestion read, invalid
+response layouts, and the existing Brutal suite. Negative-control overlays
+that accepted another algorithm or invalid response layouts were rejected by
+the new tests. The dependency guard remains unchanged and passes; the Linux
+read uses the existing standard-library syscall approach with a bounded
+16-byte buffer and validated length/termination.
+
+Native unit, race, checkptr and vet commands from `TESTING.md` passed for the
+applicable SMUX packages and callers. The 24-cell Xray-server interoperability
+matrix passed with Xray, sing-box and Mihomo clients. Fifty package repetitions
+passed; embedded engine coverage was 87.3%. The three-cycle peak stress profile
+passed 18/18 cycles in 95.489 s, with zero checked loopback error/drop/CRC/
+carrier/collision deltas. Initial validation exposed the package's prohibition
+on a direct `x/sys/unix` import and missing geodata fixtures. The import was
+removed without changing the guard, and the existing local `geoip.dat` and
+`geosite.dat` fixtures were supplied before the successful package run.
+
+### Real module regression
+
+TCP Brutal v2.0.0 source at
+`04e4dc7ae13a4852f0bfe0c8d353e621e429e22e` was built outside the repository and
+loaded only in a QEMU 10.2.2 TCG guest, using the same Linux kernel version,
+2 virtual CPUs, 1536 MiB RAM, and no guest network interface. The host's kernel
+modules, services and networking were not changed. The module build reported
+GCC 16.2.1 versus kernel GCC 16.1.1 and omitted BTF because `vmlinux` was absent;
+the resulting module loaded and reported version 2.0.0.
+
+The checkptr-enabled tests were compiled with:
+
+```sh
+CGO_ENABLED=0 go test -c -tags 'integration brutalkernel' \
+  -gcflags=all=-d=checkptr=2 -o brutal-kernel.test ./common/singmux
+```
+
+Inside the guest, both `TestBrutalKernelSocketPolicy` and
+`TestBrutalKernelSMUXProcess` passed in all three modes documented in
+`TESTING.md`: application settings without a rule, a locked route plus locked
+rule, and an unlocked route plus locked rule. The process test used a real
+Xray server and Xray client with SMUX Brutal enabled and checked the complete
+SOCKS-to-server-to-echo path. The original Xray binary failed that path under
+the locked route with `Brutal socket control failed`; the candidate passed.
+The system rule retained 12,500,000 B/s and group ID 1 instead of the requested
+1,000,000 B/s; the application-only case retained group ID zero and applied
+1,000,000 B/s. Final rule membership returned to zero after test cleanup.
+
+These are functional kernel-module results, not emulated performance evidence
+or a claim about every supported Linux kernel. No passive-classification,
+active-probing, or packet-loss throughput claim follows from this check.
+
+Release-style Linux/amd64 artifact, built with `CGO_ENABLED=0`, `GOAMD64=v1`,
+`-trimpath`, `-buildvcs=false`, `-gcflags='all=-l=4'`, and
+`-ldflags='-X github.com/xtls/xray-core/core.build=5eb02c20-dirty -s -w -buildid='`:
+SHA-256 `ccf0ce48b2219c0463ff8382c335548ef7610768d81c89de57fe77cfb8fa89d5`.
+`file`, `go version -m`, and `xray version` verified a stripped static amd64
+binary, Go 1.27.0, and version `26.9.4-2204` with build `5eb02c20-dirty`.
+
+The documented bounded hardening command also passed all 300/300 cycles
+(three clients × two carriers × 50) in 1659.635 s:
+
+```sh
+XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 \
+  go test -timeout=45m -tags 'integration stress' ./common/singmux \
+  -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
+```
+
+No cells were skipped. Checked loopback errors, drops, CRC errors, carrier
+errors, collisions and carrier changes all had zero deltas. The harness's
+RSS/thread growth assertions passed.
+
+### Performance regression checks
+
+The previous-release gate used Go 1.27.0, `CGO_ENABLED=0`, identical
+`go build -trimpath -buildvcs=false` flags for both server versions, an
+identical candidate Xray client, full warm-up, and nine alternating samples
+per carrier. Three repetitions passed with Linux duration/RSS/thread/FD
+budget assertions enabled (`XRAY_NATIVE_LINUX_RELEASE=1`). Other builds,
+race tests, stress tests, microbenchmarks and QEMU runs had finished before
+the timed comparisons. This enables the assertions on the shared native host;
+it does not turn that host into the pinned release environment.
+
+| Run | Carrier | Baseline median ms | Candidate median ms | Ratio |
+| --- | --- | ---: | ---: | ---: |
+| 1 | VLESS | 883.810 | 874.381 | 0.989 |
+| 1 | Trojan | 1069.955 | 1054.136 | 0.985 |
+| 2 | VLESS | 875.232 | 876.657 | 1.002 |
+| 2 | Trojan | 1091.032 | 1096.105 | 1.005 |
+| 3 | VLESS | 882.083 | 875.803 | 0.993 |
+| 3 | Trojan | 1062.822 | 1055.900 | 0.993 |
+
+The baseline is `v26.8.25-1457`
+(`b7bdfb03fa582cd691197593cc853f6ea209d04f`). The precompiled equivalent of
+`go test -tags 'integration stress performance' ./common/singmux
+-run '^TestCandidatePerformanceAgainstPreviousRelease$' -count=3 -v`
+was used, with the matching-flags candidate binary supplied via
+`XRAY_E2E_BIN`. Ratios stay within the 10% budget and support no speedup claim.
+These ordinary SMUX comparisons do not exercise Brutal pacing.
+
+The precompiled `BenchmarkStreamRoundTrip32KiB` was then run with
+`-test.run '^$' -test.bench '^BenchmarkStreamRoundTrip32KiB$' -test.benchmem
+-test.count=5`: 26847, 27704, 27710, 27735 and 26662 ns/op. Median was
+27704 ns/op; all samples reported 0 allocs/op (amortized B/op: 3, 4, 6, 3, 1).
+This preserves the allocation gate, not evidence of a local speed improvement.
+
+### TCP counter attribution
+
+Host interface error/drop/FIFO/frame/carrier/collision counters had zero
+deltas during the comparison. Global host TCP counters did increase
+(`RetransSegs=40464`, `OutRsts=15265`, `AttemptFails=15234`), so they were not
+reported as clean network evidence or attributed solely to Xray.
+
+A separate diagnostic repetition ran in a fresh user/network namespace with
+only its own loopback, recording TCP counters around each baseline/candidate
+sample through a temporary test overlay. It passed the same performance and
+resource assertions. Across the complete isolated run, `RetransSegs=7635`,
+`DelayedACKLost=7635` and `TCPLossProbes=7640`; drop and timeout counters did
+not increase. Timed samples showed no connection resets or failed opens.
+Their retransmit/loss-probe totals were:
+
+| Carrier/server | RetransSegs | TCPLossProbes |
+| --- | ---: | ---: |
+| VLESS baseline | 1592 | 1594 |
+| VLESS candidate | 1727 | 1727 |
+| Trojan baseline | 1742 | 1742 |
+| Trojan candidate | 1713 | 1714 |
+
+The retransmits track the kernel's tail-loss probes in both versions rather
+than interface drops. Outside measured transfer samples, the fixture recorded
+8 failed connection attempts and 2 established resets (`TCPAbortOnData=2`),
+accounting for its 10 outgoing resets during startup/teardown. Original global
+host deltas remain unscoped; the isolated diagnostic supplies the attributable
+TCP evidence without changing the host's networking. No packet-loss capacity
+or camouflage claim is made.
