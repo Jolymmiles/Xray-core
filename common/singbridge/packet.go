@@ -2,6 +2,9 @@ package singbridge
 
 import (
 	"context"
+	"io"
+	stdnet "net"
+	"sync"
 	"time"
 
 	B "github.com/sagernet/sing/common/buf"
@@ -33,8 +36,13 @@ type PacketConnWrapper struct {
 	buf.Reader
 	buf.Writer
 	net.Conn
-	Dest   net.Destination
-	cached buf.MultiBuffer
+	Dest net.Destination
+
+	// cacheMu protects cached buffer ownership against concurrent Close.
+	cacheMu sync.Mutex
+	cached  buf.MultiBuffer
+	readErr error
+	closed  bool
 
 	// A simple patch to avoid goroutine leak since sing infra cannot awake read block by write err
 	T *signal.ActivityTimer
@@ -48,38 +56,45 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err 
 			w.T.SetTimeout(2 * time.Second)
 		}
 	}()
-	if w.cached != nil {
-		mb, bb := buf.SplitFirst(w.cached)
-		if bb == nil {
-			w.cached = nil
-		} else {
-			buffer.Write(bb.Bytes())
-			w.cached = mb
-			var destination net.Destination
-			if bb.UDP != nil {
-				destination = *bb.UDP
-			} else {
-				destination = w.Dest
+	w.cacheMu.Lock()
+	defer w.cacheMu.Unlock()
+	for {
+		if w.closed {
+			return M.Socksaddr{}, stdnet.ErrClosed
+		}
+		if len(w.cached) != 0 {
+			var packet *buf.Buffer
+			w.cached, packet = buf.SplitFirst(w.cached)
+			if packet == nil {
+				continue
 			}
-			bb.Release()
+			defer packet.Release()
+			n, err := buffer.Write(packet.Bytes())
+			if err != nil {
+				return M.Socksaddr{}, err
+			}
+			if n != int(packet.Len()) {
+				return M.Socksaddr{}, io.ErrShortBuffer
+			}
+			destination := w.Dest
+			if packet.UDP != nil {
+				destination = *packet.UDP
+			}
 			return ToSocksaddr(destination), nil
 		}
-	}
-	mb, err := w.ReadMultiBuffer()
-	nb, bb := buf.SplitFirst(mb)
-	if bb == nil {
-		return M.Socksaddr{}, nil
-	} else {
-		buffer.Write(bb.Bytes())
-		w.cached = nb
-		var destination net.Destination
-		if bb.UDP != nil {
-			destination = *bb.UDP
-		} else {
-			destination = w.Dest
+		if w.readErr != nil {
+			return M.Socksaddr{}, w.readErr
 		}
-		bb.Release()
-		return ToSocksaddr(destination), nil
+
+		// A blocking read must not prevent Close from releasing cached packets.
+		w.cacheMu.Unlock()
+		mb, readErr := w.ReadMultiBuffer()
+		w.cacheMu.Lock()
+		if w.closed {
+			buf.ReleaseMulti(mb)
+			return M.Socksaddr{}, stdnet.ErrClosed
+		}
+		w.cached, w.readErr = mb, readErr
 	}
 }
 
@@ -102,6 +117,10 @@ func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksadd
 }
 
 func (w *PacketConnWrapper) Close() error {
+	w.cacheMu.Lock()
+	defer w.cacheMu.Unlock()
+	w.closed = true
 	buf.ReleaseMulti(w.cached)
+	w.cached = nil
 	return nil
 }
