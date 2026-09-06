@@ -23,6 +23,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features"
@@ -83,6 +84,9 @@ type Handler struct {
 	observer               features.Feature
 	defaultDispatcher      routing.Dispatcher
 	ctx                    context.Context
+	userMu                 sync.Mutex
+	usersClosed            bool
+	muxCarriers            map[*protocol.MemoryUser]map[*authenticatedMuxCarrier]struct{}
 	reverseLifecycleMu     sync.Mutex
 	reverseClosed          bool
 	reverseClosing         chan struct{}
@@ -281,6 +285,7 @@ func (h *Handler) Close() error {
 		}
 		close(h.reverseClosing)
 		h.reverseLifecycleMu.Unlock()
+		muxErr := h.closeMuxCarriers()
 		h.reverseCalls.Wait()
 		if h.decryption != nil {
 			h.decryption.Close()
@@ -288,20 +293,40 @@ func (h *Handler) Close() error {
 		for _, u := range h.validator.GetAll() {
 			h.RemoveReverse(u)
 		}
-		h.closeErr = errors.Combine(common.Close(h.validator))
+		h.closeErr = errors.Combine(muxErr, common.Close(h.validator))
 	})
 	return h.closeErr
 }
 
 // AddUser implements proxy.UserManager.AddUser().
 func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
-	return h.validator.Add(u)
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	if h.usersClosed {
+		return errors.New("VLESS inbound is closing")
+	}
+	// Authentication retains this identity. A fresh copy gives every addition a
+	// distinct incarnation, even when callers reuse a removed MemoryUser pointer.
+	user := *u
+	return h.validator.Add(&user)
 }
 
 // RemoveUser implements proxy.UserManager.RemoveUser().
 func (h *Handler) RemoveUser(ctx context.Context, e string) error {
-	h.RemoveReverse(h.validator.GetByEmail(e))
-	return h.validator.Del(e)
+	h.userMu.Lock()
+	user := h.validator.GetByEmail(e)
+	if err := h.validator.Del(e); err != nil {
+		h.userMu.Unlock()
+		return err
+	}
+	carriers := h.muxCarriers[user]
+	delete(h.muxCarriers, user)
+	h.userMu.Unlock()
+	// Closing a carrier may make its Process call unregister. Never hold userMu
+	// across connection close or reverse-handler cleanup.
+	err := stopMuxCarriers(carriers)
+	h.RemoveReverse(user)
+	return err
 }
 
 // GetUser implements proxy.UserManager.GetUser().
@@ -656,6 +681,19 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		}
 	default:
 		return unknownRequestFlowError(requestAddons.Flow)
+	}
+
+	// Guard both reserved mux destinations as well as the VLESS Mux command
+	// (also used by XUDP). Decoded domains can use an inline address wrapper.
+	nativeMux := request.Command == protocol.RequestCommandMux ||
+		request.Address.Family() == net.AddressFamilyDomain && request.Address.Domain() == "v1.mux.cool"
+	if nativeMux || singmux.IsDestination(request.Destination()) {
+		var unregister func()
+		ctx, unregister, err = h.registerMuxCarrier(ctx, request.User, connection)
+		if err != nil {
+			return err
+		}
+		defer unregister()
 	}
 
 	if request.Command != protocol.RequestCommandMux {
