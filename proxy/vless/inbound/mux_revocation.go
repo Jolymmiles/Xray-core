@@ -16,6 +16,29 @@ type authenticatedMuxCarrier struct {
 	cancel     context.CancelFunc
 }
 
+// beginUserOperation serializes control-plane mutation through cleanup completion.
+// The single live channel is completion ownership, not a retained user tombstone.
+// Carrier registration/unregistration only needs userMu and remains independent.
+func (h *Handler) beginUserOperation() func() {
+	for {
+		h.userMu.Lock()
+		pending := h.userOperation
+		if pending == nil {
+			done := make(chan struct{})
+			h.userOperation = done
+			h.userMu.Unlock()
+			return func() {
+				h.userMu.Lock()
+				h.userOperation = nil
+				close(done)
+				h.userMu.Unlock()
+			}
+		}
+		h.userMu.Unlock()
+		<-pending
+	}
+}
+
 // registerMuxCarrier linearizes carrier admission against user removal/re-add.
 // The validator retains the exact MemoryUser obtained by authentication; AddUser
 // publishes a new pointer for each incarnation without retaining tombstones.
@@ -63,11 +86,48 @@ func stopMuxCarriers(carriers map[*authenticatedMuxCarrier]struct{}) error {
 	}
 	var closeErrors []error
 	for carrier := range carriers {
-		if err := carrier.connection.Close(); err != nil && !stderrors.Is(err, net.ErrClosed) && !stderrors.Is(err, io.ErrClosedPipe) {
+		if err := filterMuxCloseError(carrier.connection.Close()); err != nil {
 			closeErrors = append(closeErrors, err)
 		}
 	}
-	return errors.Combine(closeErrors...)
+	return stderrors.Join(closeErrors...)
+}
+
+// Preserve wrapper diagnostics while exposing only abnormal children to Is/As.
+type filteredMuxCloseError struct {
+	error
+	cause error
+}
+
+func (e filteredMuxCloseError) Unwrap() error { return e.cause }
+
+func filterMuxCloseError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var abnormal []error
+		for _, child := range joined.Unwrap() {
+			if child = filterMuxCloseError(child); child != nil {
+				abnormal = append(abnormal, child)
+			}
+		}
+		return stderrors.Join(abnormal...)
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		// An Xray Error with no inner error is still an abnormal leaf.
+		if child := wrapped.Unwrap(); child != nil {
+			filtered := filterMuxCloseError(child)
+			if filtered == nil {
+				return nil
+			}
+			return filteredMuxCloseError{error: err, cause: filtered}
+		}
+	}
+	if stderrors.Is(err, net.ErrClosed) || stderrors.Is(err, io.ErrClosedPipe) {
+		return nil
+	}
+	return err
 }
 
 func (h *Handler) closeMuxCarriers() error {
@@ -80,5 +140,5 @@ func (h *Handler) closeMuxCarriers() error {
 	for _, userCarriers := range carriers {
 		closeErrors = append(closeErrors, stopMuxCarriers(userCarriers))
 	}
-	return errors.Combine(closeErrors...)
+	return stderrors.Join(closeErrors...)
 }

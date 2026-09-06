@@ -307,12 +307,14 @@ func TestMUXRevocationReAddWhileOldCarrierCloses(t *testing.T) {
 	}
 	added := make(chan error, 1)
 	go func() { added <- h.AddUser(context.Background(), u) }()
+	// Re-add now waits through cleanup, including reverse-tag removal. The
+	// cleanup-order tests separately prove this gate without timing sleeps.
+	unblock()
 	if err := awaitRevocation(t, added); err != nil {
 		t.Fatal(err)
 	}
 	fresh := startRevocationProcess(t, h, u, "smux")
 	freshCtx := awaitRevocation(t, fresh.dispatch.entered)
-	unblock()
 	if err := awaitRevocation(t, removed); err != nil {
 		t.Fatal(err)
 	}

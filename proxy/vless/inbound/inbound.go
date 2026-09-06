@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	stderrors "errors"
 	"io"
 	"strconv"
 	"strings"
@@ -85,6 +86,7 @@ type Handler struct {
 	defaultDispatcher      routing.Dispatcher
 	ctx                    context.Context
 	userMu                 sync.Mutex
+	userOperation          chan struct{}
 	usersClosed            bool
 	muxCarriers            map[*protocol.MemoryUser]map[*authenticatedMuxCarrier]struct{}
 	reverseLifecycleMu     sync.Mutex
@@ -236,10 +238,9 @@ func (h *Handler) GetReverse(a *vless.MemoryAccount) (*Reverse, error) {
 	if a.Reverse == nil || a.Reverse.Tag == "" {
 		return nil, errors.New("reverse: user " + a.ID.String() + " is not allowed to create reverse proxy")
 	}
-	r := h.outboundHandlerManager.GetHandler(a.Reverse.Tag)
-	if r == nil {
-		picker, _ := reverse.NewStaticMuxPicker()
-		r = &Reverse{tag: a.Reverse.Tag, picker: picker, client: &mux.ClientManager{Picker: picker}}
+	// Readiness may wait indefinitely; it must not block user removal or hold
+	// the publication gate needed by Close. Revalidate after this wait.
+	if h.outboundHandlerManager.GetHandler(a.Reverse.Tag) == nil {
 		for len(h.outboundHandlerManager.ListHandlers(h.ctx)) == 0 {
 			timer := time.NewTimer(time.Second)
 			select {
@@ -247,11 +248,27 @@ func (h *Handler) GetReverse(a *vless.MemoryAccount) (*Reverse, error) {
 				if !timer.Stop() {
 					<-timer.C
 				}
-				_ = r.Close()
 				return nil, errors.New("VLESS inbound reverse owner is closing")
 			case <-timer.C:
 			}
 		}
+	}
+	finish := h.beginUserOperation()
+	defer finish()
+	select {
+	case <-reverseClosing:
+		return nil, errors.New("VLESS inbound reverse owner is closing")
+	default:
+	}
+	if h.validator.Get(a.ID.UUID()) != u {
+		return nil, errors.New("reverse: authenticated user doesn't exist anymore")
+	}
+	// Add/RemoveUser and their complete tag cleanup cannot interleave with
+	// this lookup/publication, including re-add with a reused account pointer.
+	r := h.outboundHandlerManager.GetHandler(a.Reverse.Tag)
+	if r == nil {
+		picker, _ := reverse.NewStaticMuxPicker()
+		r = &Reverse{tag: a.Reverse.Tag, picker: picker, client: &mux.ClientManager{Picker: picker}}
 		if err := h.outboundHandlerManager.AddHandler(h.ctx, r); err != nil {
 			_ = r.Close()
 			return nil, err
@@ -285,21 +302,27 @@ func (h *Handler) Close() error {
 		}
 		close(h.reverseClosing)
 		h.reverseLifecycleMu.Unlock()
+		finish := h.beginUserOperation()
 		muxErr := h.closeMuxCarriers()
+		for _, u := range h.validator.GetAll() {
+			h.RemoveReverse(u)
+		}
+		// A reverse call waiting to publish must be able to acquire the gate,
+		// observe closure, and return before we join reverseCalls.
+		finish()
 		h.reverseCalls.Wait()
 		if h.decryption != nil {
 			h.decryption.Close()
 		}
-		for _, u := range h.validator.GetAll() {
-			h.RemoveReverse(u)
-		}
-		h.closeErr = errors.Combine(muxErr, common.Close(h.validator))
+		h.closeErr = stderrors.Join(muxErr, common.Close(h.validator))
 	})
 	return h.closeErr
 }
 
 // AddUser implements proxy.UserManager.AddUser().
 func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
+	finish := h.beginUserOperation()
+	defer finish()
 	h.userMu.Lock()
 	defer h.userMu.Unlock()
 	if h.usersClosed {
@@ -313,7 +336,13 @@ func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
 
 // RemoveUser implements proxy.UserManager.RemoveUser().
 func (h *Handler) RemoveUser(ctx context.Context, e string) error {
+	finish := h.beginUserOperation()
+	defer finish()
 	h.userMu.Lock()
+	if h.usersClosed {
+		h.userMu.Unlock()
+		return errors.New("VLESS inbound is closing")
+	}
 	user := h.validator.GetByEmail(e)
 	if err := h.validator.Del(e); err != nil {
 		h.userMu.Unlock()
