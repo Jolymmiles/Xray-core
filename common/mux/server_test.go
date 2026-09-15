@@ -3,6 +3,7 @@ package mux_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -120,5 +121,44 @@ func TestRegressionOutboundLeak(t *testing.T) {
 
 	if outbounds[0].Target.Address != nil {
 		t.Error("outbound target got leaked: ", outbounds[0].Target.String())
+	}
+}
+
+// keepAliveConn asks for a KeepAlive and reports its downlink as long silent,
+// so that a worker pokes it at once.
+type keepAliveConn struct {
+	net.Conn
+	bytesFrom, bytesTo int32
+}
+
+func (c keepAliveConn) MuxKeepAlive() (int32, int32)      { return 1, 1 }
+func (c keepAliveConn) MuxKeepAliveBytes() (int32, int32) { return c.bytesFrom, c.bytesTo }
+func (c keepAliveConn) DownlinkIdle() time.Duration       { return time.Hour }
+
+func TestServerWorkerKeepAlive(t *testing.T) {
+	for _, padding := range [][2]int32{{0, 0}, {50, 400}, {10000, 20000}} {
+		uplink, downlink := newLinkPair()
+		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{
+			Conn: keepAliveConn{bytesFrom: padding[0], bytesTo: padding[1]},
+		})
+		worker, err := mux.NewServerWorker(ctx, &TestDispatcher{}, uplink)
+		common.Must(err)
+		defer worker.Close()
+
+		mb, err := downlink.Reader.ReadMultiBuffer()
+		common.Must(err)
+		if mb.Len() > buf.Size {
+			t.Fatal(padding, " frame does not fit one buffer: ", mb.Len())
+		}
+
+		reader := &buf.MultiBufferContainer{MultiBuffer: mb}
+		var meta mux.FrameMetadata
+		common.Must(meta.Unmarshal(reader, false))
+		if meta.SessionStatus != mux.SessionStatusKeepAlive {
+			t.Fatal(padding, " unexpected status: ", meta.SessionStatus)
+		}
+		if got := meta.Option.Has(mux.OptionData); got != (padding[1] > 0) {
+			t.Fatal(padding, " unexpected data flag: ", got)
+		}
 	}
 }
