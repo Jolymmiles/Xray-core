@@ -45,7 +45,8 @@ type side struct {
 }
 
 type modelStream struct {
-	client, server side
+	client, server   side
+	peakUp, peakDown int64
 }
 
 type flowModel struct {
@@ -149,6 +150,7 @@ func readAll(t *testing.T, b []byte, f func(http2.Frame)) {
 }
 
 func (m *flowModel) deliverToServer(b []byte) {
+	m.notePeaks()
 	readAll(m.t, b, func(frame http2.Frame) {
 		switch f := frame.(type) {
 		case *http2.SettingsFrame:
@@ -190,6 +192,7 @@ func (m *flowModel) deliverToServer(b []byte) {
 }
 
 func (m *flowModel) deliverToClient() {
+	m.notePeaks()
 	b := m.capture.take()
 	readAll(m.t, b, func(frame http2.Frame) {
 		switch f := frame.(type) {
@@ -230,19 +233,29 @@ func (m *flowModel) deliverToClient() {
 	})
 }
 
-// limit is the governor's current cap for the stream; caps only grow, so data
-// the reader has not consumed can never exceed it.
-func (m *flowModel) limit(id uint32, up bool) int64 {
+// notePeaks records the largest cap each stream has had: a cap shrinks once
+// its reader slows down, but what was sent under the larger one may still be
+// unread, so that is the bound unread data is held to.
+func (m *flowModel) notePeaks() {
 	m.c.mu.Lock()
 	defer m.c.mu.Unlock()
-	st := m.c.streams[id]
+	for id, s := range m.streams {
+		if st := m.c.streams[id]; st != nil {
+			s.peakUp = max(s.peakUp, int64(st.up.cap))
+			s.peakDown = max(s.peakDown, int64(st.down.cap))
+		}
+	}
+}
+
+func (m *flowModel) limit(id uint32, up bool) int64 {
+	s := m.streams[id]
 	switch {
-	case st == nil:
+	case s == nil:
 		return 0
 	case up && m.up.enabled():
-		return int64(st.up.cap)
+		return s.peakUp
 	case !up && m.down.enabled():
-		return int64(st.down.cap)
+		return s.peakDown
 	}
 	return 0
 }

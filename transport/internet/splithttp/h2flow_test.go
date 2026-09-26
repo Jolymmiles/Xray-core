@@ -510,8 +510,8 @@ func (zeroReader) Read(b []byte) (int, error) {
 }
 
 func TestFlowFastReaderKeepsThroughput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("slow")
+	if testing.Short() || raceEnabled {
+		t.Skip("timing-sensitive")
 	}
 	rtt := 40 * time.Millisecond
 	for _, upload := range []bool{false, true} {

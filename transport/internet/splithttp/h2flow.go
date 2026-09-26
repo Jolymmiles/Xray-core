@@ -50,6 +50,7 @@ const (
 	flowMinRTT       = time.Millisecond
 	flowLearnHalf    = 5 * time.Second
 	flowSmallCredit  = 64 << 10
+	flowShrinkAfter  = 3
 
 	flowUndecided = 0
 	flowH2        = 1
@@ -191,10 +192,14 @@ type flowWindow struct {
 	returned int64
 	mark     time.Time
 	markBase int64
+	slow     int
 	waiting  time.Time
 }
 
-func (w *flowWindow) grow(now time.Time, rtt time.Duration, limit int32) {
+// adjust sets the cap to twice what the reader consumed over the last round
+// trip: at once when that is more, and by a quarter at a time, never below
+// init, once the reader has kept well under it for flowShrinkAfter round trips.
+func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32, shrink bool) {
 	if w.mark.IsZero() {
 		w.mark, w.markBase = now, w.returned
 		return
@@ -202,10 +207,20 @@ func (w *flowWindow) grow(now time.Time, rtt time.Duration, limit int32) {
 	if now.Sub(w.mark) < rtt {
 		return
 	}
-	if s := 2 * (w.returned - w.markBase); s > int64(w.cap) {
-		w.cap = int32(min(s, int64(limit)))
-	}
+	s := 2 * (w.returned - w.markBase)
 	w.mark, w.markBase = now, w.returned
+	switch {
+	case s > int64(w.cap):
+		w.cap = int32(min(s, int64(limit)))
+		w.slow = 0
+	case shrink && 2*s < int64(w.cap):
+		if w.slow++; w.slow >= flowShrinkAfter {
+			w.cap = int32(max(int64(init), s, int64(w.cap)*3/4))
+			w.slow = 0
+		}
+	default:
+		w.slow = 0
+	}
 }
 
 // flowLearned remembers the largest cap a stream on this connection needed
@@ -716,7 +731,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if inc < flowSmallCredit {
 			c.incremental = true
 		}
-		s.down.grow(now, c.currentRTT(), c.down.max)
+		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental)
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
 		if rel <= 0 {
@@ -806,7 +821,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		now := time.Now()
 		s.up.returned += inc
-		s.up.grow(now, c.currentRTT(), c.up.max)
+		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true)
 		c.upLearned.note(now, c.up.init, s.up.cap)
 		rel := c.upRelease(s)
 		if rel <= 0 {

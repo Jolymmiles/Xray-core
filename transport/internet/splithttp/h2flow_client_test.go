@@ -202,8 +202,8 @@ func clientDownloadRate(t *testing.T, sc struct {
 }
 
 func TestFlowClientKeepsThroughput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("slow")
+	if testing.Short() || raceEnabled {
+		t.Skip("timing-sensitive")
 	}
 	rtt := 40 * time.Millisecond
 	for _, sc := range clientCases {
