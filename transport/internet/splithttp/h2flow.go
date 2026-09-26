@@ -41,6 +41,8 @@ const (
 	h2FlagEndHeaders = 0x4
 
 	h2SettingInitialWindowSize = 0x4
+	h2SettingMaxFrameSize      = 0x5
+	h2MinMaxFrameSize          = 16384
 
 	flowPingMagic    = 0x78666c77
 	flowPingInterval = time.Second
@@ -667,6 +669,18 @@ func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found
 	return
 }
 
+// capFrameSize lowers the largest frame the peer is told it may send to the
+// HTTP/2 default. The local stack still takes frames up to what it really
+// allows, but its frame reader keeps a buffer as large as the largest frame
+// it has ever read, for as long as the connection lives.
+func capFrameSize(payload []byte) {
+	for i := 0; i+6 <= len(payload); i += 6 {
+		if binary.BigEndian.Uint16(payload[i:]) == h2SettingMaxFrameSize {
+			binary.BigEndian.PutUint32(payload[i+2:], min(binary.BigEndian.Uint32(payload[i+2:]), h2MinMaxFrameSize))
+		}
+	}
+}
+
 // flowReader handles frames from the client to the server.
 type flowReader flowConn
 
@@ -710,6 +724,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 					c.clientInit, c.clientShown = real, shown
 				}
 			}
+			capFrameSize(payload)
 			c.pingReady = c.pingReady || c.client
 		}
 	case h2Ping:
@@ -806,6 +821,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 					c.serverInit, c.serverShown = real, shown
 				}
 			}
+			capFrameSize(payload)
 			c.settingsSent = true
 			c.pingReady = c.pingReady || !c.client
 		}
