@@ -71,14 +71,25 @@ func TestFlowReadChunked(t *testing.T) {
 	}{
 		{"server passthrough", false, false},
 		{"server governed", false, true},
+		{"client passthrough", true, false},
+		{"client governed", true, true},
 	} {
 		in, want := frameStream(!tc.client)
 		for round := 0; round < 100; round++ {
 			rnd := mrand.New(mrand.NewPCG(uint64(round), 7))
 			cc := &chunkConn{data: append([]byte(nil), in...), rnd: rnd}
-			c := newFlowConn(cc, flowLimit{}, flowLimit{})
-			if tc.governed {
+			var c *flowConn
+			switch {
+			case tc.client:
+				c = newFlowClientConn(cc)
+				c.mode.Store(flowH2)
+				if !tc.governed {
+					c.down = flowLimit{}
+				}
+			case tc.governed:
 				c = newFlowConn(cc, flowDefault, flowDefault)
+			default:
+				c = newFlowConn(cc, flowLimit{}, flowLimit{})
 			}
 			var got []byte
 			for {

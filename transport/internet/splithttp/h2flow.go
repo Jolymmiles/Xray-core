@@ -10,16 +10,17 @@ import (
 	"github.com/xtls/xray-core/common/bytespool"
 )
 
-// flowConn sits between the server's TLS/REALITY connection and net/http.
-// It rewrites HTTP/2 flow control so that neither side buffers more than the
-// reader has recently shown it can consume, the way TCP autotuning does:
+// flowConn sits between a TLS/REALITY connection and the local HTTP/2 stack.
+// It rewrites HTTP/2 flow control so that nothing buffers more than its reader
+// has recently shown it can consume, the way TCP autotuning does:
 //   - uplink: the client is shown a small initial window and gets credit only
 //     as the handler reads, capped at twice what the handler read per RTT;
 //   - downlink: the server is shown a small client window and gets the
 //     client's credit back only while unread data at the client stays under
 //     twice what the client read per RTT.
-// Neither peer needs to know: each only ever sees a window no larger than the
-// other side really granted.
+// On a server both apply; on a client only the downlink does, since that is
+// the only side of the exchange whose buffers are local. Neither peer needs to
+// know: each only ever sees a window no larger than the other side granted.
 
 const (
 	h2Preface     = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -246,6 +247,7 @@ type flowStream struct {
 type flowConn struct {
 	net.Conn
 	up, down flowLimit
+	client   bool
 	mode     atomic.Int32
 
 	mu          sync.Mutex
@@ -278,6 +280,7 @@ type flowConn struct {
 	wqueue       []byte
 	wpending     atomic.Bool
 	settingsSent bool
+	pingReady    bool
 	closed       bool
 }
 
@@ -292,6 +295,13 @@ func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
 		serverInit:  h2InitWindow,
 		serverShown: h2InitWindow,
 	}
+}
+
+// newFlowClientConn governs the downlink of a connection this side dialed.
+func newFlowClientConn(c net.Conn) *flowConn {
+	fc := newFlowConn(c, flowLimit{}, flowDefault)
+	fc.client = true
+	return fc
 }
 
 func (c *flowConn) Read(b []byte) (int, error) {
@@ -316,7 +326,12 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		}
 		in := bytespool.Alloc(int32(n))
 		copy(in, b[:n])
-		out := c.readFrames(in[:n], b[:0])
+		var out []byte
+		if c.client {
+			out = c.fromServer(in[:n], b[:0])
+		} else {
+			out = c.readFrames(in[:n], b[:0])
+		}
 		bytespool.Free(in)
 		m := copy(b, out)
 		if m < len(out) {
@@ -376,18 +391,43 @@ func (c *flowConn) readFrames(in, out []byte) []byte {
 }
 
 func (c *flowConn) Write(b []byte) (int, error) {
+	if c.client {
+		return c.writeToServer(b)
+	}
 	if c.mode.Load() != flowH2 {
 		return c.Conn.Write(b)
 	}
 	c.wmu.Lock()
 	out := bytespool.Alloc(int32(len(b) + 64))
-	c.mu.Lock()
-	out = c.wp.feed(b, out[:0], (*flowWriter)(c))
-	c.mu.Unlock()
+	out = c.fromServer(b, out[:0])
 	_, err := c.Conn.Write(out)
 	bytespool.Free(out)
 	c.wmu.Unlock()
 	c.drainQueue()
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+// fromServer processes frames on their way from the server to the client.
+func (c *flowConn) fromServer(in, out []byte) []byte {
+	c.mu.Lock()
+	out = c.wp.feed(in, out, (*flowWriter)(c))
+	c.mu.Unlock()
+	return out
+}
+
+func (c *flowConn) writeToServer(b []byte) (int, error) {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if c.mode.Load() == flowPlain {
+		return c.Conn.Write(b)
+	}
+	out := bytespool.Alloc(int32(len(b) + 64))
+	out = c.readFrames(b, out[:0])
+	_, err := c.Conn.Write(out)
+	bytespool.Free(out)
 	if err != nil {
 		return 0, err
 	}
@@ -470,6 +510,33 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 	}
 }
 
+// appendPing adds a PING for the remote peer once a second while streams are
+// open, so the connection knows its round trip.
+func (c *flowConn) appendPing(out []byte) []byte {
+	now := time.Now()
+	if !c.pingReady || len(c.streams) == 0 || now.Sub(c.lastPing) < flowPingInterval ||
+		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
+		return out
+	}
+	c.pingSeq++
+	c.pingSentAt, c.lastPing = now, now
+	out = append(out, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
+	out = binary.BigEndian.AppendUint32(out, flowPingMagic)
+	return binary.BigEndian.AppendUint32(out, c.pingSeq)
+}
+
+// pingAck reports whether a PING ACK answers ours, taking its round trip.
+func (c *flowConn) pingAck(f h2Frame, payload []byte) bool {
+	if f.flags&h2FlagAck == 0 || binary.BigEndian.Uint32(payload) != flowPingMagic ||
+		binary.BigEndian.Uint32(payload[4:]) != c.pingSeq || c.pingSentAt.IsZero() {
+		return false
+	}
+	now := time.Now()
+	c.sampleRTT(now, now.Sub(c.pingSentAt))
+	c.pingSentAt = time.Time{}
+	return true
+}
+
 // flowGuardMin bounds how long a downlink stream may sit with the server out
 // of window and no credit from the client before the guard steps in.
 var flowGuardMin = 200 * time.Millisecond
@@ -484,7 +551,7 @@ func (c *flowConn) guardDelay() time.Duration {
 // consumed and would never do it under a small cap. Until the client has
 // shown it credits in small steps, a stream stuck like this gets probed.
 func (c *flowConn) armGuard(s *flowStream) {
-	if c.incremental || !s.down.waiting.IsZero() {
+	if c.client || c.incremental || !s.down.waiting.IsZero() {
 		return
 	}
 	if int64(c.clientShown)+s.downForwarded-s.downSent > 0 {
@@ -622,19 +689,18 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	c := (*flowConn)(r)
 	switch f.typ {
 	case h2Settings:
-		if f.flags&h2FlagAck == 0 && c.down.enabled() {
-			if real, shown, ok := rewriteInitialWindow(payload, c.down.init); ok {
-				c.clientInit, c.clientShown = real, shown
+		if f.flags&h2FlagAck == 0 {
+			if c.down.enabled() {
+				if real, shown, ok := rewriteInitialWindow(payload, c.down.init); ok {
+					c.clientInit, c.clientShown = real, shown
+				}
 			}
+			c.pingReady = c.pingReady || c.client
 		}
 	case h2Ping:
-		if f.flags&h2FlagAck != 0 && binary.BigEndian.Uint32(payload) == flowPingMagic &&
-			binary.BigEndian.Uint32(payload[4:]) == c.pingSeq && !c.pingSentAt.IsZero() {
-			now := time.Now()
-			c.sampleRTT(now, now.Sub(c.pingSentAt))
-			c.pingSentAt = time.Time{}
+		if !c.client && c.pingAck(f, payload) {
 			if c.guardProbe {
-				return c.unstick(now, out)
+				return c.unstick(time.Now(), out)
 			}
 			return out
 		}
@@ -684,6 +750,9 @@ func (r *flowReader) boundary(out []byte) []byte {
 		}
 	}
 	c.opened = c.opened[:0]
+	if c.client {
+		out = c.appendPing(out)
+	}
 	return out
 }
 
@@ -723,6 +792,11 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 				}
 			}
 			c.settingsSent = true
+			c.pingReady = c.pingReady || !c.client
+		}
+	case h2Ping:
+		if c.client && c.pingAck(f, payload) {
+			return out
 		}
 	case h2WindowUpdate:
 		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
@@ -747,21 +821,12 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 
 func (w *flowWriter) boundary(out []byte) []byte {
 	c := (*flowConn)(w)
-	if !c.settingsSent {
+	if c.client || !c.settingsSent {
 		return out
 	}
 	if len(c.wqueue) > 0 {
 		out = append(out, c.wqueue...)
 		c.wqueue = nil
 	}
-	now := time.Now()
-	if len(c.streams) > 0 && now.Sub(c.lastPing) >= flowPingInterval &&
-		(c.pingSentAt.IsZero() || now.Sub(c.pingSentAt) >= flowPingTimeout) {
-		c.pingSeq++
-		c.pingSentAt, c.lastPing = now, now
-		out = append(out, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
-		out = binary.BigEndian.AppendUint32(out, flowPingMagic)
-		out = binary.BigEndian.AppendUint32(out, c.pingSeq)
-	}
-	return out
+	return c.appendPing(out)
 }

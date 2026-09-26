@@ -2,6 +2,7 @@ package splithttp
 
 import (
 	"bytes"
+	mrand "math/rand/v2"
 	"testing"
 
 	"golang.org/x/net/http2"
@@ -58,5 +59,31 @@ func FuzzFlowConn(f *testing.F) {
 			t.Fatalf("read side produced %d bytes from %d", len(out), len(fromClient))
 		}
 		c.Close()
+
+		for _, client := range []bool{false, true} {
+			in := append([]byte(h2Preface), fromClient...)
+			if client {
+				in = fromServer
+			}
+			rnd := mrand.New(mrand.NewPCG(uint64(cut), uint64(len(in))))
+			cc := &chunkConn{data: in, rnd: rnd}
+			rc := newFlowConn(cc, testUp, testDown)
+			if client {
+				rc = newFlowClientConn(cc)
+				rc.mode.Store(flowH2)
+			}
+			var got []byte
+			for {
+				b := make([]byte, 1+rnd.IntN(64))
+				n, err := rc.Read(b)
+				got = append(got, b[:n]...)
+				if err != nil {
+					break
+				}
+			}
+			if len(got) > len(in)+64*(len(in)/h2FrameHeader+2) {
+				t.Fatalf("Read produced %d bytes from %d", len(got), len(in))
+			}
+		}
 	})
 }
