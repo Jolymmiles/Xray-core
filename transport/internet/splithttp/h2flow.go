@@ -318,14 +318,12 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		copy(in, b[:n])
 		out := c.readFrames(in[:n], b[:0])
 		bytespool.Free(in)
-		if len(out) > len(b) {
-			c.rpending = append([]byte(nil), out[len(b):]...)
-			out = out[:len(b)]
-		} else if len(out) > 0 && &out[0] != &b[0] {
-			copy(b, out)
+		m := copy(b, out)
+		if m < len(out) {
+			c.rpending = append([]byte(nil), out[m:]...)
 		}
-		if len(out) > 0 || err != nil {
-			return len(out), err
+		if m > 0 || err != nil {
+			return m, err
 		}
 	}
 }
