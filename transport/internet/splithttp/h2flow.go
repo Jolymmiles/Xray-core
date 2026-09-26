@@ -1,0 +1,769 @@
+package splithttp
+
+import (
+	"encoding/binary"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/xtls/xray-core/common/bytespool"
+)
+
+// flowConn sits between the server's TLS/REALITY connection and net/http.
+// It rewrites HTTP/2 flow control so that neither side buffers more than the
+// reader has recently shown it can consume, the way TCP autotuning does:
+//   - uplink: the client is shown a small initial window and gets credit only
+//     as the handler reads, capped at twice what the handler read per RTT;
+//   - downlink: the server is shown a small client window and gets the
+//     client's credit back only while unread data at the client stays under
+//     twice what the client read per RTT.
+// Neither peer needs to know: each only ever sees a window no larger than the
+// other side really granted.
+
+const (
+	h2Preface     = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+	h2FrameHeader = 9
+	h2InitWindow  = 65535
+	h2MaxWindow   = 1<<31 - 1
+
+	h2Data         = 0x0
+	h2Headers      = 0x1
+	h2RSTStream    = 0x3
+	h2Settings     = 0x4
+	h2Ping         = 0x6
+	h2WindowUpdate = 0x8
+	h2Continuation = 0x9
+
+	h2FlagEndStream  = 0x1
+	h2FlagAck        = 0x1
+	h2FlagEndHeaders = 0x4
+
+	h2SettingInitialWindowSize = 0x4
+
+	flowPingMagic    = 0x78666c77
+	flowPingInterval = time.Second
+	flowPingTimeout  = 10 * time.Second
+	flowDefaultRTT   = 200 * time.Millisecond
+	flowRTTWindow    = 10 * time.Second
+	flowMinRTT       = time.Millisecond
+	flowLearnHalf    = 5 * time.Second
+	flowSmallCredit  = 64 << 10
+
+	flowUndecided = 0
+	flowH2        = 1
+	flowPlain     = 2
+)
+
+type flowLimit struct {
+	init, max int32
+}
+
+func (l flowLimit) enabled() bool {
+	return l.max > 0
+}
+
+// flowDefault starts every stream at the initial window HTTP/2 itself
+// defines and lets it grow no further than the peer really granted.
+var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
+
+type flowListener struct {
+	net.Listener
+	up, down flowLimit
+}
+
+func (l *flowListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return newFlowConn(c, l.up, l.down), nil
+}
+
+type h2Frame struct {
+	typ, flags byte
+	stream     uint32
+	length     int
+}
+
+func (f h2Frame) control() bool {
+	switch f.typ {
+	case h2Settings:
+		return f.length%6 == 0 && f.length <= 16384
+	case h2Ping:
+		return f.length == 8
+	case h2WindowUpdate:
+		return f.length == 4
+	}
+	return false
+}
+
+type frameHandler interface {
+	frame(f h2Frame)
+	control(f h2Frame, header, payload, out []byte) []byte
+	boundary(out []byte) []byte
+}
+
+type frameParser struct {
+	f       h2Frame
+	hdr     [h2FrameHeader]byte
+	hdrLen  int
+	ctrl    []byte
+	remain  int
+	collect bool
+	inBlock bool
+}
+
+func (p *frameParser) atBoundary() bool {
+	return p.hdrLen == 0 && p.remain == 0 && !p.collect && !p.inBlock
+}
+
+func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
+	for len(in) > 0 {
+		switch {
+		case p.remain > 0:
+			n := min(p.remain, len(in))
+			out = append(out, in[:n]...)
+			in, p.remain = in[n:], p.remain-n
+			if p.remain == 0 {
+				out = p.done(out, h)
+			}
+		case p.collect:
+			n := min(p.f.length-len(p.ctrl), len(in))
+			p.ctrl = append(p.ctrl, in[:n]...)
+			in = in[n:]
+			if len(p.ctrl) == p.f.length {
+				out = p.finishControl(out, h)
+			}
+		default:
+			n := copy(p.hdr[p.hdrLen:], in)
+			p.hdrLen += n
+			in = in[n:]
+			if p.hdrLen < h2FrameHeader {
+				continue
+			}
+			p.hdrLen = 0
+			p.f = h2Frame{
+				typ:    p.hdr[3],
+				flags:  p.hdr[4],
+				stream: binary.BigEndian.Uint32(p.hdr[5:]) & 0x7fffffff,
+				length: int(p.hdr[0])<<16 | int(p.hdr[1])<<8 | int(p.hdr[2]),
+			}
+			if p.f.control() {
+				p.collect = true
+				if p.f.length == 0 {
+					out = p.finishControl(out, h)
+				}
+				continue
+			}
+			h.frame(p.f)
+			out = append(out, p.hdr[:]...)
+			p.remain = p.f.length
+			if p.remain == 0 {
+				out = p.done(out, h)
+			}
+		}
+	}
+	return out
+}
+
+func (p *frameParser) finishControl(out []byte, h frameHandler) []byte {
+	out = h.control(p.f, p.hdr[:], p.ctrl, out)
+	p.ctrl = p.ctrl[:0]
+	p.collect = false
+	return p.done(out, h)
+}
+
+func (p *frameParser) done(out []byte, h frameHandler) []byte {
+	switch p.f.typ {
+	case h2Headers, h2Continuation:
+		p.inBlock = p.f.flags&h2FlagEndHeaders == 0
+	}
+	if p.inBlock {
+		return out
+	}
+	return h.boundary(out)
+}
+
+type flowWindow struct {
+	cap      int32
+	returned int64
+	mark     time.Time
+	markBase int64
+	waiting  time.Time
+}
+
+func (w *flowWindow) grow(now time.Time, rtt time.Duration, limit int32) {
+	if w.mark.IsZero() {
+		w.mark, w.markBase = now, w.returned
+		return
+	}
+	if now.Sub(w.mark) < rtt {
+		return
+	}
+	if s := 2 * (w.returned - w.markBase); s > int64(w.cap) {
+		w.cap = int32(min(s, int64(limit)))
+	}
+	w.mark, w.markBase = now, w.returned
+}
+
+// flowLearned remembers the largest cap a stream on this connection needed
+// recently, so short-lived streams (packet-up POSTs) start where the last one
+// left off. It halves every flowLearnHalf, so a fast session on a pooled
+// connection does not hand its window to every session after it.
+type flowLearned struct {
+	cap int32
+	at  time.Time
+}
+
+func (l *flowLearned) value(now time.Time, init int32) int32 {
+	if l.cap <= init {
+		return init
+	}
+	halves := now.Sub(l.at) / flowLearnHalf
+	if halves >= 31 {
+		return init
+	}
+	return init + (l.cap-init)>>halves
+}
+
+func (l *flowLearned) note(now time.Time, init, cap int32) {
+	if cap > l.value(now, init) {
+		l.cap, l.at = cap, now
+	}
+}
+
+type flowStream struct {
+	up, down      flowWindow
+	upSent        int64
+	upForwarded   int64
+	downSent      int64
+	downForwarded int64
+	clientDone    bool
+	serverDone    bool
+}
+
+type flowConn struct {
+	net.Conn
+	up, down flowLimit
+	mode     atomic.Int32
+
+	mu          sync.Mutex
+	streams     map[uint32]*flowStream
+	upLearned   flowLearned
+	downLearned flowLearned
+	clientInit  int32
+	clientShown int32
+	serverInit  int32
+	serverShown int32
+	rtt         time.Duration
+	rttPrev     time.Duration
+	rttSince    time.Time
+	pingSeq     uint32
+	pingSentAt  time.Time
+	lastPing    time.Time
+
+	incremental bool
+	guard       *time.Timer
+	guardProbe  bool
+
+	rp       frameParser
+	rpending []byte
+	prefix   int
+	opened   []uint32
+	toClient []byte
+
+	wmu          sync.Mutex
+	wp           frameParser
+	wqueue       []byte
+	wpending     atomic.Bool
+	settingsSent bool
+	closed       bool
+}
+
+func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
+	return &flowConn{
+		Conn:        c,
+		up:          up,
+		down:        down,
+		streams:     make(map[uint32]*flowStream),
+		clientInit:  h2InitWindow,
+		clientShown: h2InitWindow,
+		serverInit:  h2InitWindow,
+		serverShown: h2InitWindow,
+	}
+}
+
+func (c *flowConn) Read(b []byte) (int, error) {
+	if len(c.rpending) > 0 {
+		n := copy(b, c.rpending)
+		c.rpending = c.rpending[n:]
+		if len(c.rpending) == 0 {
+			c.rpending = nil
+		}
+		return n, nil
+	}
+	for {
+		if c.mode.Load() == flowPlain {
+			return c.Conn.Read(b)
+		}
+		n, err := c.Conn.Read(b)
+		if ne, ok := err.(net.Error); err != nil && !(ok && ne.Timeout()) {
+			c.release()
+		}
+		if n == 0 {
+			return 0, err
+		}
+		in := bytespool.Alloc(int32(n))
+		copy(in, b[:n])
+		out := c.readFrames(in[:n], b[:0])
+		bytespool.Free(in)
+		if len(out) > len(b) {
+			c.rpending = append([]byte(nil), out[len(b):]...)
+			out = out[:len(b)]
+		} else if len(out) > 0 && &out[0] != &b[0] {
+			copy(b, out)
+		}
+		if len(out) > 0 || err != nil {
+			return len(out), err
+		}
+	}
+}
+
+func (c *flowConn) Close() error {
+	c.release()
+	return c.Conn.Close()
+}
+
+// release drops all per-stream state once the connection is gone, so a
+// connection object that lingers in some pool does not pin it.
+func (c *flowConn) release() {
+	c.mu.Lock()
+	c.streams = map[uint32]*flowStream{}
+	c.opened = nil
+	c.toClient = nil
+	c.wqueue = nil
+	c.closed = true
+	if c.guard != nil {
+		c.guard.Stop()
+	}
+	c.mu.Unlock()
+}
+
+func (c *flowConn) readFrames(in, out []byte) []byte {
+	if c.mode.Load() == flowUndecided {
+		for len(in) > 0 && c.prefix < len(h2Preface) {
+			if in[0] != h2Preface[c.prefix] {
+				c.mode.Store(flowPlain)
+				return append(out, in...)
+			}
+			out = append(out, in[0])
+			in = in[1:]
+			c.prefix++
+		}
+		if c.prefix < len(h2Preface) {
+			return out
+		}
+		c.mode.Store(flowH2)
+	}
+	c.mu.Lock()
+	out = c.rp.feed(in, out, (*flowReader)(c))
+	toClient := c.toClient
+	c.toClient = nil
+	c.mu.Unlock()
+	if len(toClient) > 0 {
+		c.injectToClient(toClient)
+	}
+	return out
+}
+
+func (c *flowConn) Write(b []byte) (int, error) {
+	if c.mode.Load() != flowH2 {
+		return c.Conn.Write(b)
+	}
+	c.wmu.Lock()
+	out := bytespool.Alloc(int32(len(b) + 64))
+	c.mu.Lock()
+	out = c.wp.feed(b, out[:0], (*flowWriter)(c))
+	c.mu.Unlock()
+	_, err := c.Conn.Write(out)
+	bytespool.Free(out)
+	c.wmu.Unlock()
+	c.drainQueue()
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+// injectToClient queues frames for the client without ever waiting for a
+// write in progress: whoever holds wmu drains the queue after letting go.
+func (c *flowConn) injectToClient(frames []byte) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.wqueue = append(c.wqueue, frames...)
+	c.mu.Unlock()
+	c.wpending.Store(true)
+	if c.wmu.TryLock() {
+		go func() {
+			c.flushQueueLocked()
+			c.wmu.Unlock()
+			c.drainQueue()
+		}()
+	}
+}
+
+func (c *flowConn) drainQueue() {
+	for c.wpending.Load() && c.wmu.TryLock() {
+		c.flushQueueLocked()
+		c.wmu.Unlock()
+	}
+}
+
+func (c *flowConn) flushQueueLocked() {
+	c.wpending.Store(false)
+	c.mu.Lock()
+	var q []byte
+	if c.settingsSent && c.wp.atBoundary() {
+		q, c.wqueue = c.wqueue, nil
+	}
+	c.mu.Unlock()
+	if len(q) > 0 {
+		c.Conn.Write(q)
+	}
+}
+
+func (c *flowConn) stream(id uint32) *flowStream {
+	if id == 0 {
+		return nil
+	}
+	return c.streams[id]
+}
+
+func (c *flowConn) finish(id uint32, s *flowStream) {
+	if s.clientDone && s.serverDone {
+		delete(c.streams, id)
+	}
+}
+
+// currentRTT is the lowest round trip seen over the last one to two windows:
+// PING queues behind data, so anything above the minimum is our own backlog
+// and must not feed back into the caps.
+func (c *flowConn) currentRTT() time.Duration {
+	switch {
+	case c.rtt == 0:
+		return flowDefaultRTT
+	case c.rttPrev == 0:
+		return c.rtt
+	}
+	return min(c.rtt, c.rttPrev)
+}
+
+func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
+	sample = max(sample, flowMinRTT)
+	if now.Sub(c.rttSince) >= flowRTTWindow {
+		c.rttPrev, c.rtt, c.rttSince = c.rtt, 0, now
+	}
+	if c.rtt == 0 || sample < c.rtt {
+		c.rtt = sample
+	}
+}
+
+// flowGuardMin bounds how long a downlink stream may sit with the server out
+// of window and no credit from the client before the guard steps in.
+var flowGuardMin = 200 * time.Millisecond
+
+func (c *flowConn) guardDelay() time.Duration {
+	return max(4*c.currentRTT(), flowGuardMin)
+}
+
+// armGuard notes that s ran the server out of window while the client still
+// owes it credit. Go clients hand credit back every few KiB they read; some
+// HTTP/2 stacks only do so once half of their own, much larger, window is
+// consumed and would never do it under a small cap. Until the client has
+// shown it credits in small steps, a stream stuck like this gets probed.
+func (c *flowConn) armGuard(s *flowStream) {
+	if c.incremental || !s.down.waiting.IsZero() {
+		return
+	}
+	if int64(c.clientShown)+s.downForwarded-s.downSent > 0 {
+		return
+	}
+	if int64(c.clientInit)+s.down.returned-int64(c.clientShown)-s.downForwarded <= 0 {
+		return
+	}
+	s.down.waiting = time.Now()
+	if c.guard == nil {
+		c.guard = time.AfterFunc(c.guardDelay(), c.fireGuard)
+	} else {
+		c.guard.Reset(c.guardDelay())
+	}
+}
+
+// fireGuard asks the client for a PING: its ACK arrives on the read side,
+// where stuck streams can then be given more room in order with other frames.
+func (c *flowConn) fireGuard() {
+	c.mu.Lock()
+	if c.closed || c.incremental {
+		c.mu.Unlock()
+		return
+	}
+	c.guardProbe = true
+	c.pingSeq++
+	c.pingSentAt = time.Now()
+	var ping []byte
+	ping = append(ping, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
+	ping = binary.BigEndian.AppendUint32(ping, flowPingMagic)
+	ping = binary.BigEndian.AppendUint32(ping, c.pingSeq)
+	c.mu.Unlock()
+	c.injectToClient(ping)
+}
+
+// unstick grows the cap of every stream that has waited out the guard delay
+// to at least half the client's own window, then doubles it on each further
+// probe, and hands the server what that allows.
+func (c *flowConn) unstick(now time.Time, out []byte) []byte {
+	c.guardProbe = false
+	delay := c.guardDelay()
+	again := false
+	for id, s := range c.streams {
+		if s.down.waiting.IsZero() {
+			continue
+		}
+		if now.Sub(s.down.waiting) < delay {
+			again = true
+			continue
+		}
+		s.down.cap = int32(min(int64(c.down.max), max(2*int64(s.down.cap), int64(c.clientInit)/2+flowSmallCredit)))
+		s.down.waiting = time.Time{}
+		if rel := c.downRelease(s); rel > 0 {
+			s.downForwarded += rel
+			out = appendWindowUpdate(out, id, rel)
+		}
+	}
+	if again && c.guard != nil {
+		c.guard.Reset(delay)
+	}
+	return out
+}
+
+// upRelease is how much credit the client may be given on s: no more than the
+// server granted, and no more than keeps the handler's unread data under cap.
+func (c *flowConn) upRelease(s *flowStream) int64 {
+	bank := int64(c.serverInit) + s.up.returned - int64(max(h2InitWindow, c.serverShown)) - s.upForwarded
+	unread := s.upSent - s.up.returned
+	window := int64(c.serverShown) + s.upForwarded - s.upSent
+	return min(bank, int64(s.up.cap)-unread-window, h2MaxWindow)
+}
+
+// downRelease is how much credit the server may be given on s: no more than
+// the client granted, and no more than keeps the client's unread data under cap.
+func (c *flowConn) downRelease(s *flowStream) int64 {
+	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
+	unread := s.downSent - s.down.returned
+	window := int64(c.clientShown) + s.downForwarded - s.downSent
+	return min(bank, int64(s.down.cap)-unread-window, h2MaxWindow)
+}
+
+func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {
+	out = append(out, 0, 0, 4, h2WindowUpdate, 0)
+	out = binary.BigEndian.AppendUint32(out, stream)
+	return binary.BigEndian.AppendUint32(out, uint32(n))
+}
+
+func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found bool) {
+	for i := 0; i+6 <= len(payload); i += 6 {
+		if binary.BigEndian.Uint16(payload[i:]) != h2SettingInitialWindowSize {
+			continue
+		}
+		real = int32(min(binary.BigEndian.Uint32(payload[i+2:]), h2MaxWindow))
+		shown = min(real, limit)
+		binary.BigEndian.PutUint32(payload[i+2:], uint32(shown))
+		found = true
+	}
+	return
+}
+
+// flowReader handles frames from the client to the server.
+type flowReader flowConn
+
+func (r *flowReader) frame(f h2Frame) {
+	c := (*flowConn)(r)
+	switch f.typ {
+	case h2Headers:
+		s := c.stream(f.stream)
+		if s == nil && f.stream%2 == 1 && !c.closed {
+			now := time.Now()
+			s = &flowStream{}
+			s.up.cap = c.upLearned.value(now, c.up.init)
+			s.down.cap = c.downLearned.value(now, c.down.init)
+			c.streams[f.stream] = s
+			c.opened = append(c.opened, f.stream)
+		}
+		if s != nil && f.flags&h2FlagEndStream != 0 {
+			s.clientDone = true
+			c.finish(f.stream, s)
+		}
+	case h2Data:
+		if s := c.stream(f.stream); s != nil {
+			s.upSent += int64(f.length)
+			if f.flags&h2FlagEndStream != 0 {
+				s.clientDone = true
+				c.finish(f.stream, s)
+			}
+		}
+	case h2RSTStream:
+		delete(c.streams, f.stream)
+	}
+}
+
+func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
+	c := (*flowConn)(r)
+	switch f.typ {
+	case h2Settings:
+		if f.flags&h2FlagAck == 0 && c.down.enabled() {
+			if real, shown, ok := rewriteInitialWindow(payload, c.down.init); ok {
+				c.clientInit, c.clientShown = real, shown
+			}
+		}
+	case h2Ping:
+		if f.flags&h2FlagAck != 0 && binary.BigEndian.Uint32(payload) == flowPingMagic &&
+			binary.BigEndian.Uint32(payload[4:]) == c.pingSeq && !c.pingSentAt.IsZero() {
+			now := time.Now()
+			c.sampleRTT(now, now.Sub(c.pingSentAt))
+			c.pingSentAt = time.Time{}
+			if c.guardProbe {
+				return c.unstick(now, out)
+			}
+			return out
+		}
+	case h2WindowUpdate:
+		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
+		s := c.stream(f.stream)
+		if s == nil || inc == 0 || !c.down.enabled() {
+			break
+		}
+		now := time.Now()
+		s.down.returned += inc
+		s.down.waiting = time.Time{}
+		if inc < flowSmallCredit {
+			c.incremental = true
+		}
+		s.down.grow(now, c.currentRTT(), c.down.max)
+		c.downLearned.note(now, c.down.init, s.down.cap)
+		rel := c.downRelease(s)
+		if rel <= 0 {
+			return out
+		}
+		s.downForwarded += rel
+		return appendWindowUpdate(out, f.stream, rel)
+	}
+	out = append(out, header...)
+	return append(out, payload...)
+}
+
+func (r *flowReader) boundary(out []byte) []byte {
+	c := (*flowConn)(r)
+	for _, id := range c.opened {
+		s := c.stream(id)
+		if s == nil {
+			continue
+		}
+		if c.down.enabled() {
+			if rel := c.downRelease(s); rel > 0 {
+				s.downForwarded += rel
+				out = appendWindowUpdate(out, id, rel)
+			}
+		}
+		if c.up.enabled() {
+			if rel := c.upRelease(s); rel > 0 {
+				s.upForwarded += rel
+				c.toClient = appendWindowUpdate(c.toClient, id, rel)
+			}
+		}
+	}
+	c.opened = c.opened[:0]
+	return out
+}
+
+// flowWriter handles frames from the server to the client.
+type flowWriter flowConn
+
+func (w *flowWriter) frame(f h2Frame) {
+	c := (*flowConn)(w)
+	s := c.stream(f.stream)
+	switch f.typ {
+	case h2Data:
+		if s != nil {
+			s.downSent += int64(f.length)
+			if c.down.enabled() {
+				c.armGuard(s)
+			}
+		}
+		fallthrough
+	case h2Headers:
+		if s != nil && f.flags&h2FlagEndStream != 0 {
+			s.serverDone = true
+			c.finish(f.stream, s)
+		}
+	case h2RSTStream:
+		delete(c.streams, f.stream)
+	}
+}
+
+func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
+	c := (*flowConn)(w)
+	switch f.typ {
+	case h2Settings:
+		if f.flags&h2FlagAck == 0 {
+			if c.up.enabled() {
+				if real, shown, ok := rewriteInitialWindow(payload, c.up.init); ok {
+					c.serverInit, c.serverShown = real, shown
+				}
+			}
+			c.settingsSent = true
+		}
+	case h2WindowUpdate:
+		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
+		s := c.stream(f.stream)
+		if s == nil || inc == 0 || !c.up.enabled() {
+			break
+		}
+		now := time.Now()
+		s.up.returned += inc
+		s.up.grow(now, c.currentRTT(), c.up.max)
+		c.upLearned.note(now, c.up.init, s.up.cap)
+		rel := c.upRelease(s)
+		if rel <= 0 {
+			return out
+		}
+		s.upForwarded += rel
+		return appendWindowUpdate(out, f.stream, rel)
+	}
+	out = append(out, header...)
+	return append(out, payload...)
+}
+
+func (w *flowWriter) boundary(out []byte) []byte {
+	c := (*flowConn)(w)
+	if !c.settingsSent {
+		return out
+	}
+	if len(c.wqueue) > 0 {
+		out = append(out, c.wqueue...)
+		c.wqueue = nil
+	}
+	now := time.Now()
+	if len(c.streams) > 0 && now.Sub(c.lastPing) >= flowPingInterval &&
+		(c.pingSentAt.IsZero() || now.Sub(c.pingSentAt) >= flowPingTimeout) {
+		c.pingSeq++
+		c.pingSentAt, c.lastPing = now, now
+		out = append(out, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
+		out = binary.BigEndian.AppendUint32(out, flowPingMagic)
+		out = binary.BigEndian.AppendUint32(out, c.pingSeq)
+	}
+	return out
+}
