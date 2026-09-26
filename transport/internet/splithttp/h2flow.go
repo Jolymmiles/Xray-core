@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/bytespool"
+	"github.com/xtls/xray-core/common/platform"
 )
 
 // flowConn sits between a TLS/REALITY connection and the local HTTP/2 stack.
@@ -66,6 +67,9 @@ type flowLimit struct {
 func (l flowLimit) enabled() bool {
 	return l.max > 0
 }
+
+// flowEnabled lets XRAY_XHTTP_FLOW=off take the governor out of both roles.
+var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }) != "off"
 
 // flowDefault starts every stream at the initial window HTTP/2 itself
 // defines and lets it grow no further than the peer really granted.

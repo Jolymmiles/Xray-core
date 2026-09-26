@@ -591,7 +591,9 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			Protocols:         protocols,
 			ConnContext:       internet.ContextWithPhysicalPeer,
 		}
-		l.listener = &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault}
+		if flowEnabled {
+			l.listener = &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault}
+		}
 		go func() {
 			if err := l.server.Serve(l.listener); err != nil {
 				errors.LogErrorInner(ctx, err, "failed to serve HTTP for XHTTP")
