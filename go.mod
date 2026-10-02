@@ -22,7 +22,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.12.1
 	github.com/vishvananda/netlink v1.3.1
-	github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0
+	github.com/xtls/reality v0.0.0-20260921001439-3c98159dee38
 	go.yaml.in/yaml/v3 v3.0.5
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/crypto v0.57.0
@@ -59,5 +59,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
-
-replace github.com/xtls/reality => github.com/TaiLerV/REALITY v0.0.0-20261001235254-a8e5166f6ba7
