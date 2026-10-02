@@ -508,6 +508,10 @@ func (c *SplitHTTPConfig) Build() (proto.Message, error) {
 		if config.DownloadSettings, err = c.DownloadSettings.Build(); err != nil {
 			return nil, errors.New(`Failed to build "downloadSettings".`).Base(err)
 		}
+		// downloadSettings only ever dials, like an outbound stream.
+		if err := c.DownloadSettings.appendLegacyUDPHop(config.DownloadSettings); err != nil {
+			return nil, errors.New(`Failed to build "downloadSettings".`).Base(err)
+		}
 	}
 
 	return config, nil

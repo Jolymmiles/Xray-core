@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"context"
 	"os"
 	"strings"
 
@@ -69,6 +70,35 @@ type StreamConfig struct {
 }
 
 // Build implements Buildable.
+// appendLegacyUDPHop translates the removed quicParams.udpHop into the
+// client-only "udphop" UDP mask with the old behavior: a random remote port for
+// each dial, then a new local socket and remote port every interval. Only
+// dialing stream settings call it; listeners never hopped.
+func (c *StreamConfig) appendLegacyUDPHop(config *internet.StreamConfig) error {
+	if c == nil || c.FinalMask == nil || c.FinalMask.QuicParams == nil || c.FinalMask.QuicParams.UdpHop == nil {
+		return nil
+	}
+	if config.ProtocolName != "hysteria" && config.ProtocolName != "splithttp" {
+		return nil // only the QUIC dialers ever honored quicParams.udpHop
+	}
+	legacy := c.FinalMask.QuicParams.UdpHop
+	if len(legacy.PortList.Build().Ports()) == 0 {
+		return nil
+	}
+	for _, mask := range c.FinalMask.Udp {
+		if strings.EqualFold(mask.Type, "udphop") || strings.EqualFold(mask.Type, "xicmp") {
+			return errors.New(`quicParams.udpHop cannot be combined with the "`, mask.Type, `" UDP mask; configure the "udphop" UDP mask instead`)
+		}
+	}
+	hop, err := (&UDPHop{Mode: "intervalLocal,intervalRemote", Interval: legacy.Interval, RemotePorts: legacy.PortList}).Build()
+	if err != nil {
+		return errors.New("invalid quicParams.udpHop").Base(err)
+	}
+	config.Udpmasks = append(config.Udpmasks, serial.ToTypedMessage(hop))
+	errors.LogInfo(context.Background(), `quicParams.udpHop is applied as the "udphop" UDP mask; move it to finalmask.udp`)
+	return nil
+}
+
 func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 	config := &internet.StreamConfig{
 		Port:         uint32(c.Port),

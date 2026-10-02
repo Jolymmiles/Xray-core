@@ -1193,6 +1193,16 @@ type QuicParamsConfig struct {
 	DisableChromeParrot           bool      `json:"disableChromeParrot"`
 	DisableGSO                    bool      `json:"disableGSO"`
 	DisableStatelessReset         bool      `json:"disableStatelessReset"`
+	// UdpHop is the removed quicParams.udpHop option, kept so dialing stream
+	// settings can translate it into the "udphop" UDP mask.
+	UdpHop *LegacyQuicUDPHop `json:"udpHop"`
+}
+
+// LegacyQuicUDPHop is the quicParams.udpHop shape from before port hopping
+// became the "udphop" UDP mask.
+type LegacyQuicUDPHop struct {
+	PortList PortList   `json:"ports"`
+	Interval Int32Range `json:"interval"`
 }
 
 type FinalMask struct {
