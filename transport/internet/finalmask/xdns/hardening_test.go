@@ -436,25 +436,10 @@ func TestServerErrorRepliesAreResponses(t *testing.T) {
 	}
 }
 
-// A client and server joined through a loopback resolver must carry data both
-// ways while both sides read, write, and close concurrently.
-func TestLoopbackExchangeAndClose(t *testing.T) {
-	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := NewServer(testServerConfig(), raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientConfig := testServerConfig()
-	clientConfig.Resolvers = []*serial.TypedMessage{serial.ToTypedMessage(&UDPResolverProto{Addr: raw.LocalAddr().String()})}
-	client, err := NewClient(clientConfig, testDialer())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const rounds = 5
+// runExchange sends rounds of datagrams from client to server and back,
+// checking that each one arrives exactly once, then closes both sides.
+func runExchange(t *testing.T, client, server net.PacketConn, rounds int) {
+	t.Helper()
 	serverDone := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 4096)
@@ -493,7 +478,7 @@ func TestLoopbackExchangeAndClose(t *testing.T) {
 				t.Fatalf("round %d: %v", i, err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatalf("round %d: no reply through the loopback resolver", i)
+			t.Fatalf("round %d: no reply through the resolver", i)
 		}
 	}
 	if err := <-serverDone; err != nil {
@@ -501,6 +486,106 @@ func TestLoopbackExchangeAndClose(t *testing.T) {
 	}
 	closeWithin(t, "XDNS client", func() { _ = client.Close() })
 	closeWithin(t, "XDNS server", func() { _ = server.Close() })
+}
+
+// A client and server joined through a loopback resolver must carry data both
+// ways while both sides read, write, and close concurrently.
+func TestLoopbackExchangeAndClose(t *testing.T) {
+	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(testServerConfig(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientConfig := testServerConfig()
+	clientConfig.Resolvers = []*serial.TypedMessage{serial.ToTypedMessage(&UDPResolverProto{Addr: raw.LocalAddr().String()})}
+	client, err := NewClient(clientConfig, testDialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runExchange(t, client, server, 5)
+}
+
+// startTCPForwarder relays DNS over TCP (RFC 1035 section 4.2.2) to a UDP
+// DNS server, like a resolver that clients reach over TCP.
+func startTCPForwarder(t *testing.T, upstream net.Addr) net.Addr {
+	t.Helper()
+	listener, err := stdnet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go relayTCPToUDP(conn, upstream)
+		}
+	}()
+	return listener.Addr()
+}
+
+func relayTCPToUDP(conn stdnet.Conn, upstream net.Addr) {
+	defer conn.Close()
+	udp, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return
+	}
+	defer udp.Close()
+	var writeMu sync.Mutex
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			frame := binary.BigEndian.AppendUint16(nil, uint16(n))
+			writeMu.Lock()
+			_, err = conn.Write(append(frame, buf[:n]...))
+			writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	var prefix [2]byte
+	for {
+		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+			return
+		}
+		query := make([]byte, binary.BigEndian.Uint16(prefix[:]))
+		if _, err := io.ReadFull(conn, query); err != nil {
+			return
+		}
+		if _, err := udp.WriteTo(query, upstream); err != nil {
+			return
+		}
+	}
+}
+
+// The TCP resolver must frame queries and parse framed answers end to end.
+func TestTCPResolverExchange(t *testing.T) {
+	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(testServerConfig(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwarder := startTCPForwarder(t, raw.LocalAddr())
+	clientConfig := testServerConfig()
+	clientConfig.Resolvers = []*serial.TypedMessage{serial.ToTypedMessage(&TCPResolverProto{Addr: forwarder.String()})}
+	client, err := NewClient(clientConfig, testDialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runExchange(t, client, server, 5)
 }
 
 // Error replies are queued for the writer goroutine; a burst of queries the
