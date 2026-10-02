@@ -502,3 +502,49 @@ func TestLoopbackExchangeAndClose(t *testing.T) {
 	closeWithin(t, "XDNS client", func() { _ = client.Close() })
 	closeWithin(t, "XDNS server", func() { _ = server.Close() })
 }
+
+// Error replies are queued for the writer goroutine; a burst of queries the
+// server rejects must not lose replies while that goroutine is busy.
+func TestServerAnswersBurstOfRejectedQueries(t *testing.T) {
+	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(testServerConfig(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	const burst = 32
+	for i := range burst {
+		query := testQuery("probe.example.org.", dnsmessage.TypeTXT)
+		query.Header.ID = uint16(i)
+		packed, err := query.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.WriteTo(packed, raw.LocalAddr()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := make(map[uint16]bool)
+	buf := make([]byte, 4096)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for len(seen) < burst {
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("answered %d of %d rejected queries: %v", len(seen), burst, err)
+		}
+		var reply dnsmessage.Message
+		if err := reply.Unpack(buf[:n]); err != nil || reply.Header.RCode != dnsmessage.RCodeNameError {
+			t.Fatalf("unexpected reply %+v (%v)", reply.Header, err)
+		}
+		seen[reply.Header.ID] = true
+	}
+}
