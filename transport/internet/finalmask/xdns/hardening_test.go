@@ -2,15 +2,18 @@ package xdns
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	stdnet "net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -326,5 +329,49 @@ func TestTCPResolverFramesQueries(t *testing.T) {
 	}
 	if got.length != len(query) || !bytes.Equal(got.body, query) {
 		t.Fatalf("framed query = %d bytes %x, want %d bytes %x", got.length, got.body, len(query), query)
+	}
+}
+
+type trackedPacketConn struct {
+	net.PacketConn
+	once   sync.Once
+	closed *atomic.Int32
+}
+
+// Close counts each socket once, however many owners close it.
+func (c *trackedPacketConn) Close() error {
+	c.once.Do(func() { c.closed.Add(1) })
+	return c.PacketConn.Close()
+}
+
+// The client reaches its resolvers through the finalmask dialer, so the
+// finalmask must not pre-dial a socket for it that nothing owns.
+func TestClientOwnsEveryDialedSocket(t *testing.T) {
+	resolverPeer, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolverPeer.Close()
+
+	var opened, closed atomic.Int32
+	dialUDP := func(ctx context.Context, dest net.Destination) (net.PacketConn, net.Addr, error) {
+		conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			return nil, nil, err
+		}
+		opened.Add(1)
+		return &trackedPacketConn{PacketConn: conn, closed: &closed}, &net.UDPAddr{IP: dest.Address.IP(), Port: int(dest.Port)}, nil
+	}
+	config := testServerConfig()
+	config.Resolvers = []*serial.TypedMessage{serial.ToTypedMessage(&UDPResolverProto{Addr: resolverPeer.LocalAddr().String()})}
+	mask := finalmask.NewFinalMask(nil, []finalmask.UDPMask{config}, nil, nil, dialUDP, nil)
+
+	conn, err := mask.DialUDP(context.Background(), net.UDPDestination(net.LocalHostIP, 443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeWithin(t, "XDNS client", func() { _ = conn.Close() })
+	if opened.Load() != closed.Load() {
+		t.Fatalf("dialed %d sockets but closed %d", opened.Load(), closed.Load())
 	}
 }
