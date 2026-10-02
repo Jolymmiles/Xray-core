@@ -52,7 +52,11 @@ func (m *FragManager) closed() bool {
 }
 
 func (m *FragManager) removeEntey(k FragKey, e *FragEntry) {
-	m.sizem[k.clientID] -= e.size
+	if size := m.sizem[k.clientID] - e.size; size > 0 {
+		m.sizem[k.clientID] = size
+	} else {
+		delete(m.sizem, k.clientID)
+	}
 	delete(m.m, k)
 }
 

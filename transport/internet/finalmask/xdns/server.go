@@ -280,7 +280,12 @@ func (c *xdnsServer) send() {
 			}
 		}
 
-		ch, stash := c.sendManager.Pop(rec.clientID)
+		ch, stash, ok := c.sendManager.Pop(rec.clientID)
+		if !ok {
+			// Too many clients hold queues: answer at once without data.
+			_, _ = c.PacketConn.WriteTo(rec.resp.Encode(buf[:0], nil), rec.addr)
+			continue
+		}
 		left := rec.resp.cap
 		timer.Reset(maxResponseDelay)
 		var ps [][]byte
