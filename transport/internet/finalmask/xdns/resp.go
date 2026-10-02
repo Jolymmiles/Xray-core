@@ -236,15 +236,15 @@ func (r *Resp) Encode(encoded []byte, data []byte) []byte {
 func (r *Resp) Decode(decoded []byte) int {
 	limit := len(decoded)
 	decoded = decoded[:0]
-	fits := func(b []byte) bool {
-		return len(decoded)+len(b) <= limit
+	fits := func(n int) bool {
+		return len(decoded)+n <= limit
 	}
 	msg := r.msg
 	if msg.Questions[0].Type == dnsmessage.TypeTXT {
 		if len(msg.Answers) == 1 && r.domain.IsDomain(msg.Answers[0].Header.Name) && msg.Answers[0].Header.Type == dnsmessage.TypeTXT {
 			for i := range msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT {
 				txt := msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT[i]
-				if len(decoded)+len(txt) > limit {
+				if !fits(len(txt)) {
 					return 0
 				}
 				decoded = append(decoded, txt...)
@@ -277,13 +277,13 @@ func (r *Resp) Decode(decoded []byte) int {
 		if len(frags) < 1 || len(frags[0]) < 2 || int(frags[0][1]) > len(frags) {
 			return 0
 		}
-		if !fits(frags[0][2:]) {
+		if !fits(len(frags[0]) - 2) {
 			return 0
 		}
 		decoded = append(decoded, frags[0][2:]...)
 		for i := range frags {
 			if i > 0 {
-				if frags[i][0] == frags[i-1][0] || !fits(frags[i][1:]) {
+				if frags[i][0] == frags[i-1][0] || !fits(len(frags[i])-1) {
 					return 0
 				}
 				decoded = append(decoded, frags[i][1:]...)
@@ -345,13 +345,14 @@ func (m *SendManager) gc() {
 	}
 }
 
-func (m *SendManager) Push(clientID ClientID, p []byte) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// entry returns the queues of clientID, creating them while fewer than
+// sendClientCount clients are tracked, or nil for a new client beyond that
+// limit. m.mu must be held.
+func (m *SendManager) entry(clientID ClientID) *SendInfo {
 	info := m.m[clientID]
 	if info == nil {
 		if len(m.m) >= sendClientCount {
-			return
+			return nil
 		}
 		info = &SendInfo{
 			stash:    make(chan []byte, 1),
@@ -359,6 +360,16 @@ func (m *SendManager) Push(clientID ClientID, p []byte) {
 			deadline: time.Now().Add(sendTTL),
 		}
 		m.m[clientID] = info
+	}
+	return info
+}
+
+func (m *SendManager) Push(clientID ClientID, p []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.entry(clientID)
+	if info == nil {
+		return
 	}
 	b := make([]byte, len(p))
 	copy(b, p)
@@ -382,22 +393,14 @@ func (m *SendManager) Stash(clientID ClientID, p []byte) {
 	}
 }
 
-// Pop returns the queues of clientID, creating them while fewer than
-// sendClientCount clients are tracked. ok is false for a new client beyond
-// that limit.
+// Pop returns the queues of clientID and refreshes their deadline. ok is
+// false for a new client beyond sendClientCount.
 func (m *SendManager) Pop(clientID ClientID) (ch chan []byte, stash chan []byte, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	info := m.m[clientID]
+	info := m.entry(clientID)
 	if info == nil {
-		if len(m.m) >= sendClientCount {
-			return nil, nil, false
-		}
-		info = &SendInfo{
-			stash: make(chan []byte, 1),
-			ch:    make(chan []byte, 128),
-		}
-		m.m[clientID] = info
+		return nil, nil, false
 	}
 	info.deadline = time.Now().Add(sendTTL)
 	return info.ch, info.stash, true
