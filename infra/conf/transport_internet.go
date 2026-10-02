@@ -69,7 +69,6 @@ type StreamConfig struct {
 	SocketSettings      *SocketConfig      `json:"sockopt"`
 }
 
-// Build implements Buildable.
 // appendLegacyUDPHop translates the removed quicParams.udpHop into the
 // client-only "udphop" UDP mask with the old behavior: a random remote port for
 // each dial, then a new local socket and remote port every interval. Only
@@ -99,6 +98,7 @@ func (c *StreamConfig) appendLegacyUDPHop(config *internet.StreamConfig) error {
 	return nil
 }
 
+// Build implements Buildable.
 func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 	config := &internet.StreamConfig{
 		Port:         uint32(c.Port),
