@@ -20,18 +20,15 @@ import (
 // Dial dials a new TCP connection to the given destination.
 func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
 	logTCPDialDestination(ctx, dest)
-	conn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
-	if err != nil {
-		return nil, err
+	var conn net.Conn
+	var err error
+	if streamSettings.FinalMask != nil {
+		conn, err = streamSettings.FinalMask.DialTCP(ctx, dest)
+	} else {
+		conn, err = internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
 	}
-
-	if streamSettings.TcpmaskManager != nil {
-		newConn, err := streamSettings.TcpmaskManager.WrapConnClient(conn)
-		if err != nil {
-			_ = conn.Close()
-			return nil, errors.New("mask err").Base(err)
-		}
-		conn = newConn
+	if err != nil {
+		return nil, errors.New("failed to dial to dest").Base(err)
 	}
 
 	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
@@ -88,14 +85,14 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		if err != nil {
 			_ = conn.Close()
 			if isFromMitmVerify {
-				return nil, errors.New("MITM freedom RAW TLS: failed to verify Domain Fronting certificate from " + mitmServerName).Base(err).AtWarning()
+				return nil, errors.New("MITM freedom RAW TLS: failed to verify Domain Fronting certificate from " + mitmServerName).Base(err)
 			}
 			return nil, err
 		}
 		negotiatedProtocol := conn.(tls.Interface).NegotiatedProtocol()
 		if isFromMitmAlpn && !mitmAlpn11 && negotiatedProtocol != "h2" {
 			conn.Close()
-			return nil, errors.New("MITM freedom RAW TLS: unexpected Negotiated Protocol (" + negotiatedProtocol + ") with " + mitmServerName).AtWarning()
+			return nil, errors.New("MITM freedom RAW TLS: unexpected Negotiated Protocol (" + negotiatedProtocol + ") with " + mitmServerName)
 		}
 	} else if config := reality.ConfigFromStreamSettings(streamSettings); config != nil {
 		newConn, err := reality.UClient(conn, config, ctx, dest)
@@ -111,12 +108,12 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		headerConfig, err := tcpSettings.HeaderSettings.GetInstance()
 		if err != nil {
 			_ = conn.Close()
-			return nil, errors.New("failed to get header settings").Base(err).AtError()
+			return nil, errors.New("failed to get header settings").Base(err)
 		}
 		auth, err := internet.CreateConnectionAuthenticator(headerConfig)
 		if err != nil {
 			_ = conn.Close()
-			return nil, errors.New("failed to create header authenticator").Base(err).AtError()
+			return nil, errors.New("failed to create header authenticator").Base(err)
 		}
 		conn = auth.Client(conn)
 	}

@@ -121,7 +121,7 @@ func (rr *RoutingRule) BuildCondition() (Condition, error) {
 	}
 
 	if conds.Len() == 0 {
-		return nil, errors.New("this rule has no effective fields").AtWarning()
+		return nil, errors.New("this rule has no effective fields")
 	}
 	if conds.Len() == 1 {
 		return (*conds)[0], nil
@@ -154,7 +154,7 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 		}
 		s, ok := i.(*StrategyLeastLoadConfig)
 		if !ok {
-			return nil, errors.New("not a StrategyLeastLoadConfig").AtError()
+			return nil, errors.New("not a StrategyLeastLoadConfig")
 		}
 		leastLoadStrategy := NewLeastLoadStrategy(s)
 		return &Balancer{

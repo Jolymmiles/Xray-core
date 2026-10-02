@@ -54,16 +54,6 @@ func TestEnabledLogStillReachesHandler(t *testing.T) {
 	}
 }
 
-func TestInnerErrorSeverityKeepsPromotedLogEnabled(t *testing.T) {
-	handler := new(severityFilteringHandler)
-	log.RegisterHandler(handler)
-
-	LogInfoInner(context.Background(), New("inner").AtError(), "promoted error")
-	if handled := handler.handled.Load(); handled != 1 {
-		t.Fatalf("promoted handler received %d messages, want 1", handled)
-	}
-}
-
 func BenchmarkDisabledLogInfo(b *testing.B) {
 	handler := new(severityFilteringHandler)
 	log.RegisterHandler(handler)
@@ -100,7 +90,7 @@ func BenchmarkEnabledLogError(b *testing.B) {
 }
 
 func BenchmarkErrorString(b *testing.B) {
-	err := New("failed to dispatch ", "example.com:443").Base(stderrors.New("upstream unavailable")).AtWarning()
+	err := New("failed to dispatch ", "example.com:443").Base(stderrors.New("upstream unavailable"))
 	b.ReportAllocs()
 	for b.Loop() {
 		errorStringBenchmarkSink = err.Error()

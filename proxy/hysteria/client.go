@@ -66,7 +66,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 
 	conn, err := dialer.Dial(hysteria.ContextWithDatagram(ctx, target.Network == net.Network_UDP), c.server.Destination)
 	if err != nil {
-		return errors.New("failed to find an available destination").AtWarning().Base(err)
+		return errors.New("failed to find an available destination").Base(err)
 	}
 	defer conn.Close()
 	errors.LogInfo(ctx, "tunneling request to ", target, " via ", target.Network, ":", c.server.Destination.NetAddr())
@@ -465,8 +465,10 @@ type UDPReader struct {
 	lastAddress    string
 	serverWriter   UDPWriter
 	link           transport.Link
-	buf            [hysteria.MaxDatagramFrameSize]byte
-	message        UDPMessage
+	// Larger than MaxDatagramFrameSize: with ChromeParrot the peer may send
+	// bigger DATAGRAM frames, and a short buffer would truncate them.
+	buf     [1500]byte
+	message UDPMessage
 }
 
 var udpReaderPool sync.Pool

@@ -36,6 +36,10 @@ func (p TransportProtocol) Build() (string, error) {
 		return "", errors.PrintRemovedFeatureError("QUIC transport (without web service, etc.)", "XHTTP stream-one H3")
 	case "hysteria":
 		return "hysteria", nil
+	case "masque":
+		return "masque", nil
+	case "xdrive":
+		return "xdrive", nil
 	default:
 		return "", errors.New("Config: unknown transport protocol: ", p)
 	}
@@ -59,6 +63,8 @@ type StreamConfig struct {
 	WSSettings          *WebSocketConfig   `json:"wsSettings"`
 	HTTPUPGRADESettings *HttpUpgradeConfig `json:"httpupgradeSettings"`
 	HysteriaSettings    *HysteriaConfig    `json:"hysteriaSettings"`
+	MASQUESettings      *MasqueConfig      `json:"masqueSettings"`
+	XDRIVESettings      *XDriveConfig      `json:"xdriveSettings"`
 	SocketSettings      *SocketConfig      `json:"sockopt"`
 }
 
@@ -192,6 +198,26 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 			Settings:     serial.ToTypedMessage(hs),
 		})
 	}
+	if c.MASQUESettings != nil {
+		ms, err := c.MASQUESettings.Build()
+		if err != nil {
+			return nil, errors.New("Failed to build MASQUE config.").Base(err)
+		}
+		config.TransportSettings = append(config.TransportSettings, &internet.TransportConfig{
+			ProtocolName: "masque",
+			Settings:     serial.ToTypedMessage(ms),
+		})
+	}
+	if c.XDRIVESettings != nil {
+		xs, err := c.XDRIVESettings.Build()
+		if err != nil {
+			return nil, errors.New("Failed to build XDRIVE config.").Base(err)
+		}
+		config.TransportSettings = append(config.TransportSettings, &internet.TransportConfig{
+			ProtocolName: "xdrive",
+			Settings:     serial.ToTypedMessage(xs),
+		})
+	}
 	if c.SocketSettings != nil {
 		ss, err := c.SocketSettings.Build()
 		if err != nil {
@@ -253,10 +279,6 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 				return nil, errors.New("unknown congestion control: ", c.FinalMask.QuicParams.Congestion, ", valid values: reno, bbr, brutal, force-brutal")
 			}
 
-			if (c.FinalMask.QuicParams.UdpHop.Interval.From != 0 && c.FinalMask.QuicParams.UdpHop.Interval.From < 5) || (c.FinalMask.QuicParams.UdpHop.Interval.To != 0 && c.FinalMask.QuicParams.UdpHop.Interval.To < 5) {
-				return nil, errors.New("Interval must be at least 5")
-			}
-
 			if c.FinalMask.QuicParams.InitStreamReceiveWindow > 0 && c.FinalMask.QuicParams.InitStreamReceiveWindow < 16384 {
 				return nil, errors.New("InitStreamReceiveWindow must be at least 16384")
 			}
@@ -290,43 +312,20 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 				BrutalUp:                      up,
 				BrutalDown:                    down,
 				BrutalDisableLossCompensation: c.FinalMask.QuicParams.BrutalDisableLossCompensation,
-				UdpHop: &internet.UdpHop{
-					Ports:       c.FinalMask.QuicParams.UdpHop.PortList.Build().Ports(),
-					IntervalMin: int64(c.FinalMask.QuicParams.UdpHop.Interval.From),
-					IntervalMax: int64(c.FinalMask.QuicParams.UdpHop.Interval.To),
-				},
-				InitStreamReceiveWindow: c.FinalMask.QuicParams.InitStreamReceiveWindow,
-				MaxStreamReceiveWindow:  c.FinalMask.QuicParams.MaxStreamReceiveWindow,
-				InitConnReceiveWindow:   c.FinalMask.QuicParams.InitConnectionReceiveWindow,
-				MaxConnReceiveWindow:    c.FinalMask.QuicParams.MaxConnectionReceiveWindow,
-				MaxIdleTimeout:          c.FinalMask.QuicParams.MaxIdleTimeout,
-				KeepAlivePeriod:         c.FinalMask.QuicParams.KeepAlivePeriod,
-				DisablePathMtuDiscovery: c.FinalMask.QuicParams.DisablePathMTUDiscovery,
-				MaxIncomingStreams:      c.FinalMask.QuicParams.MaxIncomingStreams,
-				DisableChromeParrot:     c.FinalMask.QuicParams.DisableChromeParrot,
-				DisableGSO:              c.FinalMask.QuicParams.DisableGSO,
-				DisableStatelessReset:   c.FinalMask.QuicParams.DisableStatelessReset,
+				InitStreamReceiveWindow:       c.FinalMask.QuicParams.InitStreamReceiveWindow,
+				MaxStreamReceiveWindow:        c.FinalMask.QuicParams.MaxStreamReceiveWindow,
+				InitConnReceiveWindow:         c.FinalMask.QuicParams.InitConnectionReceiveWindow,
+				MaxConnReceiveWindow:          c.FinalMask.QuicParams.MaxConnectionReceiveWindow,
+				MaxIdleTimeout:                c.FinalMask.QuicParams.MaxIdleTimeout,
+				KeepAlivePeriod:               c.FinalMask.QuicParams.KeepAlivePeriod,
+				DisablePathMtuDiscovery:       c.FinalMask.QuicParams.DisablePathMTUDiscovery,
+				DisableChromeParrot:           c.FinalMask.QuicParams.DisableChromeParrot,
+				DisableGSO:                    c.FinalMask.QuicParams.DisableGSO,
+				MaxIncomingStreams:            c.FinalMask.QuicParams.MaxIncomingStreams,
+				DisableStatelessReset:         c.FinalMask.QuicParams.DisableStatelessReset,
 			}
 		}
 	}
 
 	return config, nil
-}
-
-type ProxyConfig struct {
-	Tag string `json:"tag"`
-
-	// TransportLayerProxy: For compatibility.
-	TransportLayerProxy bool `json:"transportLayer"`
-}
-
-// Build implements Buildable.
-func (v *ProxyConfig) Build() (*internet.ProxyConfig, error) {
-	if v.Tag == "" {
-		return nil, errors.New("Proxy tag is not set.")
-	}
-	return &internet.ProxyConfig{
-		Tag:                 v.Tag,
-		TransportLayerProxy: v.TransportLayerProxy,
-	}, nil
 }

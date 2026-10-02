@@ -122,7 +122,7 @@ func NewServer(ctx context.Context, conf *DeviceConfig) (*Server, error) {
 	if source, ok := d.(session.PresenceProviderSource); ok {
 		presenceProvider = source.PresenceProvider()
 	}
-	return &Server{
+	s := &Server{
 		conf:          conf,
 		ctx:           core.ToBackgroundDetachedContext(ctx),
 		policyManager: p,
@@ -142,7 +142,10 @@ func NewServer(ctx context.Context, conf *DeviceConfig) (*Server, error) {
 		users:            users,
 		presence:         newWireGuardPresence(),
 		presenceProvider: presenceProvider,
-	}, nil
+	}
+	// Install the stack's protocol handlers before the device can deliver packets to it (Start -> dev.Up).
+	CreateForwarder(stack, s.HandleConnection)
+	return s, nil
 }
 
 func (s *Server) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
@@ -279,17 +282,15 @@ func (s *Server) Start() error {
 		return errors.New("address is domain")
 	}
 	listenFunc := func() (net.PacketConn, error) {
-		pktConn, err := internet.ListenSystemPacket(context.Background(), &net.UDPAddr{IP: s.src.Address.IP(), Port: int(s.src.Port)}, s.streamSettings.SocketSettings)
+		var pktConn net.PacketConn
+		var err error
+		if s.streamSettings.FinalMask != nil {
+			pktConn, err = s.streamSettings.FinalMask.ListenPacket(context.Background(), &net.UDPAddr{IP: s.src.Address.IP(), Port: int(s.src.Port)})
+		} else {
+			pktConn, err = internet.ListenSystemPacket(context.Background(), &net.UDPAddr{IP: s.src.Address.IP(), Port: int(s.src.Port)}, s.streamSettings.SocketSettings)
+		}
 		if err != nil {
 			return nil, err
-		}
-		if s.streamSettings.UdpmaskManager != nil {
-			newConn, err := s.streamSettings.UdpmaskManager.WrapPacketConnServer(pktConn)
-			if err != nil {
-				pktConn.Close()
-				return nil, errors.New("mask err").Base(err)
-			}
-			pktConn = newConn
 		}
 		if s.uplinkCounter != nil || s.downlinkCounter != nil {
 			pktConn = &PacketCounterConnection{
@@ -347,7 +348,6 @@ func (s *Server) Start() error {
 		return err
 	}
 	s.dev = dev
-	createForwarder(s.stack, s.HandleConnection)
 	return nil
 }
 

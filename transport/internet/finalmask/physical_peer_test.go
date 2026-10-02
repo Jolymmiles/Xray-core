@@ -9,9 +9,7 @@ import (
 
 type physicalPeerMask struct{}
 
-func (physicalPeerMask) TCP() {}
-
-func (physicalPeerMask) WrapConnClient(conn net.Conn) (net.Conn, error) {
+func (physicalPeerMask) WrapConnClient(conn net.Conn, _ *corenet.Destination, _ *Dialer) (net.Conn, error) {
 	return &physicalPeerMaskConn{Conn: conn}, nil
 }
 
@@ -33,8 +31,11 @@ func TestTCPMaskPreservesPhysicalPeer(t *testing.T) {
 		Conn:   server,
 		remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.19"), Port: 8443},
 	})
-	manager := NewTcpmaskManager([]Tcpmask{physicalPeerMask{}})
-	wrapper, err := manager.WrapConnServer(source)
+	listener := &TCPListener{
+		Listener: &singleConnListener{conn: source},
+		tcpMasks: []TCPMask{physicalPeerMask{}},
+	}
+	wrapper, err := listener.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,3 +51,11 @@ type peerAddressConn struct {
 }
 
 func (c *peerAddressConn) RemoteAddr() net.Addr { return c.remote }
+
+// singleConnListener hands out one prepared connection; only Accept is used.
+type singleConnListener struct {
+	net.Listener
+	conn net.Conn
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) { return l.conn, nil }

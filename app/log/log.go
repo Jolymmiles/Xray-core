@@ -118,12 +118,12 @@ func (g *Instance) buildHandlers() (access, errorLog, structured log.Handler, er
 	}
 	access, err = createHandler(g.config.AccessLogType, HandlerCreatorOptions{Path: g.config.AccessLogPath})
 	if err != nil {
-		return nil, nil, nil, errors.New("failed to initialize access logger").Base(err).AtWarning()
+		return nil, nil, nil, errors.New("failed to initialize access logger").Base(err)
 	}
 	errorLog, err = createHandler(g.config.ErrorLogType, HandlerCreatorOptions{Path: g.config.ErrorLogPath})
 	if err != nil {
 		common.Close(access)
-		return nil, nil, nil, errors.New("failed to initialize error logger").Base(err).AtWarning()
+		return nil, nil, nil, errors.New("failed to initialize error logger").Base(err)
 	}
 	return
 }
@@ -143,7 +143,7 @@ func (g *Instance) startInternal() error {
 
 	accessLogger, errorLogger, structuredLogger, err := g.buildHandlers()
 	if err != nil {
-		return errors.New("failed to initialize logger").Base(err).AtWarning()
+		return errors.New("failed to initialize logger").Base(err)
 	}
 	g.accessLogger = accessLogger
 	g.errorLogger = errorLogger
@@ -238,6 +238,17 @@ func (g *Instance) Enabled(severity log.Severity) bool {
 		return true
 	}
 	return state != nil && state.active && state.errorLogger != nil && severity <= state.errorLevel
+}
+
+// Severity implements log.SeverityLogger as the most verbose general-message
+// severity that Enabled accepts.
+func (g *Instance) Severity() log.Severity {
+	for severity := log.Severity_Debug; severity > log.Severity_Unknown; severity-- {
+		if g.Enabled(severity) {
+			return severity
+		}
+	}
+	return log.Severity_Unknown
 }
 
 // StructuredStats returns a point-in-time operational snapshot for every

@@ -104,30 +104,22 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
 	go func() {
 		var streamListener net.Listener
 		var err error
+		var addr net.Addr
 		if port == net.Port(0) { // unix
-			streamListener, err = internet.ListenSystem(ctx, &net.UnixAddr{
-				Name: address.Domain(),
-				Net:  "unix",
-			}, settings.SocketSettings)
-			if err != nil {
-				errors.LogErrorInner(ctx, err, "failed to listen on ", address)
-				return
-			}
+			addr = &net.UnixAddr{Name: address.Domain(), Net: "unix"}
 		} else { // tcp
-			streamListener, err = internet.ListenSystem(ctx, &net.TCPAddr{
-				IP:   address.IP(),
-				Port: int(port),
-			}, settings.SocketSettings)
-			if err != nil {
-				errors.LogErrorInner(ctx, err, "failed to listen on ", address, ":", port)
-				return
-			}
+			addr = &net.TCPAddr{IP: address.IP(), Port: int(port)}
+		}
+		if settings.FinalMask != nil {
+			streamListener, err = settings.FinalMask.Listen(ctx, addr)
+		} else {
+			streamListener, err = internet.ListenSystem(ctx, addr, settings.SocketSettings)
+		}
+		if err != nil {
+			errors.LogErrorInner(ctx, err, "failed to listen on ", address, ":", port)
+			return
 		}
 		streamListener = internet.CapturePhysicalPeerListener(streamListener)
-
-		if settings.TcpmaskManager != nil {
-			streamListener, _ = settings.TcpmaskManager.WrapListener(streamListener)
-		}
 
 		errors.LogDebug(ctx, "gRPC listen for service name `"+grpcSettings.getServiceName()+"` tun `"+grpcSettings.getTunStreamName()+"` multi tun `"+grpcSettings.getTunMultiStreamName()+"`")
 		encoding.RegisterGRPCServiceServerX(s, listener, grpcSettings.getServiceName(), grpcSettings.getTunStreamName(), grpcSettings.getTunMultiStreamName())

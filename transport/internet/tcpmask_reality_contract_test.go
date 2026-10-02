@@ -1,4 +1,4 @@
-package internet
+package internet_test
 
 import (
 	"context"
@@ -8,23 +8,29 @@ import (
 	"time"
 
 	"github.com/xtls/reality"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/xtls/xray-core/transport/internet/finalmask"
+	corenet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/finalmask/fragment"
 	custommask "github.com/xtls/xray-core/transport/internet/finalmask/header/custom"
 	"github.com/xtls/xray-core/transport/internet/finalmask/sudoku"
+	_ "github.com/xtls/xray-core/transport/internet/tcp"
 )
 
-// TestTcpmaskProxyRealityContractChain drives the exact production composition
-// of transport/internet/tcp.ListenTCP: the system listener carries PROXY
-// handling, the capture layer wraps it, and TcpmaskManager wraps both before
-// any connection reaches reality.Server. Every built-in mask that can be
-// constructed from public config must keep the accepted connection satisfying
-// reality.CloseWriteConn, with half-close delivering FIN to the peer.
+// TestTcpmaskProxyRealityContractChain drives the production composition of
+// transport/internet/tcp.ListenTCP: FinalMask listens through the system
+// listener with PROXY handling, the TCP masks wrap every accepted connection,
+// and the hub capture layer wraps the result before any connection reaches
+// reality.Server. Every built-in mask that can be constructed from public
+// config must keep the accepted connection satisfying reality.CloseWriteConn,
+// with half-close delivering FIN to the peer, and must keep the server-observed
+// peer separate from the PROXY-declared source.
 func TestTcpmaskProxyRealityContractChain(t *testing.T) {
 	rows := []struct {
 		name string
-		mask finalmask.Tcpmask
+		mask proto.Message
 	}{
 		{name: "fragment", mask: &fragment.Config{}},
 		{name: "sudoku", mask: &sudoku.Config{Password: "tcpmask-contract-secret", Ascii: "prefer_entropy"}},
@@ -33,18 +39,20 @@ func TestTcpmaskProxyRealityContractChain(t *testing.T) {
 
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			base, err := new(DefaultListener).Listen(context.Background(), &stdnet.TCPAddr{
+			streamSettings, err := internet.ToMemoryStreamConfig(&internet.StreamConfig{
+				Tcpmasks:       []*serial.TypedMessage{serial.ToTypedMessage(row.mask)},
+				SocketSettings: &internet.SocketConfig{AcceptProxyProtocol: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			base, err := streamSettings.FinalMask.Listen(context.Background(), &stdnet.TCPAddr{
 				IP: stdnet.ParseIP("127.0.0.1"),
-			}, &SocketConfig{AcceptProxyProtocol: true})
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			hubView := CapturePhysicalPeerListener(base) // mirrors tcp.ListenTCP
-			manager := finalmask.NewTcpmaskManager([]finalmask.Tcpmask{row.mask})
-			listener, err := manager.WrapListener(hubView)
-			if err != nil {
-				t.Fatal(err)
-			}
+			listener := internet.CapturePhysicalPeerListener(base) // mirrors tcp.ListenTCP
 			defer func() { _ = listener.Close() }()
 
 			clientDone := make(chan stdnet.Conn, 1)
@@ -77,6 +85,14 @@ func TestTcpmaskProxyRealityContractChain(t *testing.T) {
 				if _, err := conn.Read(buffer); err != nil || buffer[0] != 'x' {
 					t.Fatalf("failed to settle custom header auth: byte=%q err=%v", buffer[0], err)
 				}
+			}
+
+			peer, ok := corenet.PhysicalPeer(conn)
+			if !ok || peer.String() != client.LocalAddr().String() {
+				t.Fatalf("%s physical peer = %v (ok=%v), want the TCP peer %v", row.name, peer, ok, client.LocalAddr())
+			}
+			if accepted, ok := corenet.AcceptedProxyPeer(conn); !ok || accepted.String() != "198.51.100.7" {
+				t.Fatalf("%s accepted PROXY peer = %v (ok=%v), want 198.51.100.7", row.name, accepted, ok)
 			}
 
 			closeWriter, ok := conn.(reality.CloseWriteConn)

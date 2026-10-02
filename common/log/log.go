@@ -53,6 +53,23 @@ func ShouldLog(severity Severity) bool {
 	return logHandler.Enabled(severity)
 }
 
+// SeverityLogger is a handler that reports the most verbose severity it accepts.
+type SeverityLogger interface {
+	Handler
+	Severity() Severity
+}
+
+// GetSeverity returns the most verbose severity accepted by the current
+// handler. Handlers that do not report one accept every severity.
+func GetSeverity() Severity {
+	if snapshot := logHandler.snapshot.Load(); snapshot != nil {
+		if logger, ok := snapshot.handler.(SeverityLogger); ok {
+			return logger.Severity()
+		}
+	}
+	return Severity_Debug
+}
+
 var logHandler syncHandler
 
 // RegisterHandler registers a new handler as current log handler. Previous registered handler will be discarded.
