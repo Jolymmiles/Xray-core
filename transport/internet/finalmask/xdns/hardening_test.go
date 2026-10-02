@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -199,4 +200,75 @@ func TestServerKeepsReadingAfterTransientError(t *testing.T) {
 	if reply.Header.ID != 0x4242 || reply.Header.RCode != dnsmessage.RCodeNameError {
 		t.Fatalf("reply = %+v, want NXDOMAIN for query 0x4242", reply.Header)
 	}
+}
+
+// testDialer reaches resolvers over plain loopback sockets, like the
+// finalmask dialer without masks.
+func testDialer() *finalmask.Dialer {
+	return &finalmask.Dialer{
+		DialTCP: func(dest net.Destination) (net.Conn, error) {
+			return stdnet.Dial("tcp", dest.NetAddr())
+		},
+		DialUDP: func(dest net.Destination) (net.Conn, error) {
+			conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				return nil, err
+			}
+			return &net.PacketConnWrapper{PacketConn: conn, Dest: &net.UDPAddr{IP: dest.Address.IP(), Port: int(dest.Port)}}, nil
+		},
+	}
+}
+
+func closeWithin(t *testing.T, name string, closeFn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		closeFn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s Close did not return", name)
+	}
+}
+
+// Close must not wait for the receive goroutine while holding the lock that
+// goroutine needs to finish.
+func TestResolverCloseReturns(t *testing.T) {
+	udpPeer, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpPeer.Close()
+	tcpPeer, err := stdnet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpPeer.Close()
+	accepted := make(chan stdnet.Conn, 1)
+	go func() {
+		if conn, err := tcpPeer.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+
+	udp, err := NewUDPResolver(&UDPResolverProto{Addr: udpPeer.LocalAddr().String()}, testDialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeWithin(t, "UDP resolver", udp.Close)
+
+	tcp, err := NewTCPResolver(&TCPResolverProto{Addr: tcpPeer.Addr().String()}, testDialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		select {
+		case conn := <-accepted:
+			conn.Close()
+		default:
+		}
+	}()
+	closeWithin(t, "TCP resolver", tcp.Close)
 }

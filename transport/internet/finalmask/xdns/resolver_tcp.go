@@ -130,14 +130,17 @@ func (r *TCPResolver) Send(p []byte) {
 
 func (r *TCPResolver) Close() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed() {
+		r.mu.Unlock()
 		return
 	}
 	close(r.closeCh)
 	if r.conn != nil {
 		_ = r.conn.Close()
 	}
+	// recv takes r.mu to retire its connection, so wait without holding it;
+	// dial refuses to start another recv once closeCh is closed.
+	r.mu.Unlock()
 	r.wg.Wait()
 	close(r.readCh)
 }
