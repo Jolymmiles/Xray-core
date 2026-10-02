@@ -435,3 +435,70 @@ func TestServerErrorRepliesAreResponses(t *testing.T) {
 		t.Fatalf("duplicate OPT reply = %+v, want a FORMERR response", reply.Header)
 	}
 }
+
+// A client and server joined through a loopback resolver must carry data both
+// ways while both sides read, write, and close concurrently.
+func TestLoopbackExchangeAndClose(t *testing.T) {
+	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(testServerConfig(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientConfig := testServerConfig()
+	clientConfig.Resolvers = []*serial.TypedMessage{serial.ToTypedMessage(&UDPResolverProto{Addr: raw.LocalAddr().String()})}
+	client, err := NewClient(clientConfig, testDialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const rounds = 5
+	serverDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for range rounds {
+			n, addr, err := server.ReadFrom(buf)
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			reply := append([]byte("pong:"), buf[:n]...)
+			if _, err := server.WriteTo(reply, addr); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	buf := make([]byte, 4096)
+	for i := range rounds {
+		want := []byte{'p', 'i', 'n', 'g', byte('0' + i)}
+		if _, err := client.WriteTo(want, &net.UDPAddr{IP: stdnet.IPv4zero}); err != nil {
+			t.Fatal(err)
+		}
+		readDone := make(chan error, 1)
+		go func() {
+			n, _, err := client.ReadFrom(buf)
+			if err == nil && !bytes.Equal(buf[:n], append([]byte("pong:"), want...)) {
+				err = errors.New("unexpected reply " + string(buf[:n]))
+			}
+			readDone <- err
+		}()
+		select {
+		case err := <-readDone:
+			if err != nil {
+				t.Fatalf("round %d: %v", i, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: no reply through the loopback resolver", i)
+		}
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	closeWithin(t, "XDNS client", func() { _ = client.Close() })
+	closeWithin(t, "XDNS server", func() { _ = server.Close() })
+}

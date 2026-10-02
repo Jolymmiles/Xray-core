@@ -325,9 +325,10 @@ func (c *xdnsClient) send() {
 	ticker := time.NewTicker(initPollDelay)
 	defer ticker.Stop()
 	delay := initPollDelay
-	p := []byte(nil)
 	timeout := false
 	for {
+		// A poll that carries no new datagram must not resend the last one.
+		var p []byte
 		select {
 		case <-c.closeCh:
 			return
