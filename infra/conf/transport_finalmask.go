@@ -805,6 +805,9 @@ type XDNSResolverTCP struct {
 }
 
 func (c *XDNSResolverTCP) Build() (proto.Message, error) {
+	if err := validateXDNSResolverAddr(c.Addr); err != nil {
+		return nil, err
+	}
 	return &xdns.TCPResolverProto{Addr: c.Addr}, nil
 }
 
@@ -813,7 +816,26 @@ type XDNSResolverUDP struct {
 }
 
 func (c *XDNSResolverUDP) Build() (proto.Message, error) {
+	if err := validateXDNSResolverAddr(c.Addr); err != nil {
+		return nil, err
+	}
 	return &xdns.UDPResolverProto{Addr: c.Addr}, nil
+}
+
+// validateXDNSResolverAddr rejects resolver addresses that would otherwise
+// only fail when the client first dials them.
+func validateXDNSResolverAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return errors.New("invalid xdns resolver address ", addr).Base(err)
+	}
+	if host == "" {
+		return errors.New("xdns resolver address ", addr, " has no host")
+	}
+	if p, err := net.PortFromString(port); err != nil || p == 0 {
+		return errors.New("xdns resolver address ", addr, " has no valid port")
+	}
+	return nil
 }
 
 var xdnsLoader = NewJSONConfigLoader(ConfigCreatorCache{
