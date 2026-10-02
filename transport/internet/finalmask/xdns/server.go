@@ -2,7 +2,9 @@ package xdns
 
 import (
 	"context"
+	goerrors "errors"
 	"io"
+	stdnet "net"
 	"sync"
 	"time"
 
@@ -14,6 +16,9 @@ import (
 
 const (
 	maxResponseDelay = time.Second
+
+	recvBackoffMin = 10 * time.Millisecond
+	recvBackoffMax = time.Second
 )
 
 type resp struct {
@@ -247,15 +252,25 @@ func (c *xdnsServer) recv() {
 	defer c.wg.Done()
 
 	var buf [512]byte
+	backoff := time.Duration(0)
 	for {
 		n, addr, err := c.PacketConn.ReadFrom(buf[:])
 		if err != nil {
-			if c.closed() {
+			if c.closed() || goerrors.Is(err, stdnet.ErrClosed) {
 				return
 			}
-			errors.LogErrorInner(context.Background(), err, "recv err")
-			return
+			// One failed read must not stop the server; back off so a
+			// persistent error cannot spin a core.
+			backoff = min(max(2*backoff, recvBackoffMin), recvBackoffMax)
+			errors.LogWarningInner(context.Background(), err, "recv err, retrying in ", backoff)
+			select {
+			case <-c.closeCh:
+				return
+			case <-time.After(backoff):
+			}
+			continue
 		}
+		backoff = 0
 		c.read(buf[:n], addr)
 	}
 }

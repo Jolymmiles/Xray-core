@@ -2,8 +2,13 @@ package xdns
 
 import (
 	"bytes"
+	"errors"
+	stdnet "net"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/xtls/xray-core/common/net"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -117,5 +122,81 @@ func TestFragManagerReleasesClientAccounting(t *testing.T) {
 	m.mu.Unlock()
 	if entries != 0 || accounted != 0 {
 		t.Fatalf("after reassembly: %d entries, %d client size records; want none", entries, accounted)
+	}
+}
+
+func testServerConfig() *Config {
+	return &Config{Domains: []*DomainProto{{Name: "t.example.com", LenLimit: 255, LabelLimit: 63, Types: []int32{int32(TypeTXT)}}}}
+}
+
+// flakyPacketConn fails a number of reads before delegating, like a socket
+// or inner mask reporting a transient error.
+type flakyPacketConn struct {
+	net.PacketConn
+	failures atomic.Int32
+}
+
+func (c *flakyPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	if c.failures.Add(-1) >= 0 {
+		return 0, nil, errors.New("transient read failure")
+	}
+	return c.PacketConn.ReadFrom(p)
+}
+
+// exchange sends one query to the server and returns the parsed reply.
+func exchange(t *testing.T, server net.Addr, query dnsmessage.Message) (dnsmessage.Message, error) {
+	t.Helper()
+	conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	packed, err := query.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.WriteTo(packed, server); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4096)
+	n, _, err := conn.ReadFrom(buf)
+	if err != nil {
+		return dnsmessage.Message{}, err
+	}
+	var reply dnsmessage.Message
+	return reply, reply.Unpack(buf[:n])
+}
+
+func testQuery(name string, qtype dnsmessage.Type) dnsmessage.Message {
+	return dnsmessage.Message{
+		Header:    dnsmessage.Header{ID: 0x4242, RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName(name), Type: qtype, Class: dnsmessage.ClassINET}},
+	}
+}
+
+// A read error that is not caused by Close must not stop the server from
+// answering later queries.
+func TestServerKeepsReadingAfterTransientError(t *testing.T) {
+	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyPacketConn{PacketConn: raw}
+	flaky.failures.Store(2)
+	server, err := NewServer(testServerConfig(), flaky)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	reply, err := exchange(t, raw.LocalAddr(), testQuery("probe.example.org.", dnsmessage.TypeTXT))
+	if err != nil {
+		t.Fatalf("no answer after transient read errors: %v", err)
+	}
+	if reply.Header.ID != 0x4242 || reply.Header.RCode != dnsmessage.RCodeNameError {
+		t.Fatalf("reply = %+v, want NXDOMAIN for query 0x4242", reply.Header)
 	}
 }
