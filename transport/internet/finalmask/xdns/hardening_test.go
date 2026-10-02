@@ -375,3 +375,22 @@ func TestClientOwnsEveryDialedSocket(t *testing.T) {
 		t.Fatalf("dialed %d sockets but closed %d", opened.Load(), closed.Load())
 	}
 }
+
+// A name belongs to the tunnel domain only when the domain ends at a label
+// boundary; a sibling such as foot.example.com is not under t.example.com.
+func TestDomainMatchesWholeLabels(t *testing.T) {
+	domain := testDomain(t, TypeTXT)
+	for name, want := range map[string]bool{
+		"aaaa.t.example.com.": true,
+		"AAAA.T.EXAMPLE.COM.": true,
+		"a.b.t.example.com.":  true,
+		"t.example.com.":      false,
+		"foot.example.com.":   false,
+		"xt.example.com.":     false,
+		"aaaa.t.example.org.": false,
+	} {
+		if got := domain.IsDomain(dnsmessage.MustNewName(name)); got != want {
+			t.Errorf("IsDomain(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
