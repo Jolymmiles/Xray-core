@@ -507,9 +507,6 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 		if err != nil {
 			return nil, errors.New("failed to build stream settings for outbound detour").Base(err)
 		}
-		if err := c.StreamSetting.appendLegacyUDPHop(ss); err != nil {
-			return nil, errors.New("failed to build stream settings for outbound detour").Base(err)
-		}
 		senderSettings.StreamSettings = ss
 	}
 

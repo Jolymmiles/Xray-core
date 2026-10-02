@@ -66,16 +66,3 @@ func TestXDNSMustBeTheLastUDPMask(t *testing.T) {
 		t.Fatal("two xdns masks accepted")
 	}
 }
-
-// The legacy quicParams.udpHop becomes a udphop mask that dials its own
-// sockets, which cannot share the innermost position with xdns.
-func TestLegacyQuicUDPHopRejectsXDNS(t *testing.T) {
-	var outbound OutboundDetourConfig
-	raw := `{"protocol": "freedom", "streamSettings": {"network": "hysteria", "finalmask": {"udp": [` + testXDNSMask + `], "quicParams": {"udpHop": {"ports": "20000-20002"}}}}}`
-	if err := json.Unmarshal([]byte(raw), &outbound); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := outbound.Build(); err == nil {
-		t.Fatal("legacy quicParams.udpHop combined with xdns was accepted")
-	}
-}
