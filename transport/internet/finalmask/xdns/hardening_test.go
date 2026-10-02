@@ -394,3 +394,44 @@ func TestDomainMatchesWholeLabels(t *testing.T) {
 		}
 	}
 }
+
+func optRecord(version uint32) dnsmessage.Resource {
+	return dnsmessage.Resource{
+		Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("."), Type: dnsmessage.TypeOPT, Class: 1232, TTL: version << 16},
+		Body:   &dnsmessage.OPTResource{},
+	}
+}
+
+// Error replies must be marked as responses like any DNS server's: an
+// unsupported EDNS version gets BADVERS and a second OPT record FORMERR.
+func TestServerErrorRepliesAreResponses(t *testing.T) {
+	raw, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(testServerConfig(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	badVersion := testQuery("probe.t.example.com.", dnsmessage.TypeTXT)
+	badVersion.Additionals = []dnsmessage.Resource{optRecord(1)}
+	reply, err := exchange(t, raw.LocalAddr(), badVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reply.Header.Response || len(reply.Additionals) != 1 || reply.Additionals[0].Header.TTL>>24 != 1 {
+		t.Fatalf("EDNS version 1 reply = %+v %+v, want a BADVERS response", reply.Header, reply.Additionals)
+	}
+
+	twoOPT := testQuery("probe.t.example.com.", dnsmessage.TypeTXT)
+	twoOPT.Additionals = []dnsmessage.Resource{optRecord(0), optRecord(0)}
+	reply, err = exchange(t, raw.LocalAddr(), twoOPT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reply.Header.Response || reply.Header.RCode != dnsmessage.RCodeFormatError {
+		t.Fatalf("duplicate OPT reply = %+v, want a FORMERR response", reply.Header)
+	}
+}

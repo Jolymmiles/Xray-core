@@ -123,6 +123,7 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 	for i := range msg.Additionals {
 		if msg.Additionals[i].Header.Type == dnsmessage.TypeOPT {
 			if opt {
+				msg.Header.Response = true
 				msg.Header.RCode = dnsmessage.RCodeFormatError
 				c.decref(msg, addr)
 				return
@@ -130,6 +131,8 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 			opt = true
 			edns0 = uint16(msg.Additionals[i].Header.Class)
 			if ver := (msg.Additionals[i].Header.TTL >> 16) & 0xFF; ver != 0 {
+				// BADVERS: extended RCODE 16 lives in the OPT TTL's top byte.
+				msg.Header.Response = true
 				msg.Header.RCode = dnsmessage.RCodeSuccess
 				msg.Additionals[i].Header.TTL = 1 << 24
 				c.decref(msg, addr)
