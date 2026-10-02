@@ -618,7 +618,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	}
 
 	var input *bytes.Reader
-	var rawInput *bytes.Buffer
+	var rawInput proxy.VisionRawInput
 	switch requestAddons.Flow {
 	case vless.XRV:
 		if account.Flow == requestAddons.Flow {

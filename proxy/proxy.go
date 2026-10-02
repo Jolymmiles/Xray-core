@@ -182,14 +182,14 @@ type VisionReader struct {
 	isUplink     bool
 	conn         net.Conn
 	input        *bytes.Reader
-	rawInput     *bytes.Buffer
+	rawInput     VisionRawInput
 	ob           *session.Outbound
 
 	// internal
 	directReadCounter stats.Counter
 }
 
-func NewVisionReader(reader buf.Reader, trafficState *TrafficState, isUplink bool, ctx context.Context, conn net.Conn, input *bytes.Reader, rawInput *bytes.Buffer, ob *session.Outbound) *VisionReader {
+func NewVisionReader(reader buf.Reader, trafficState *TrafficState, isUplink bool, ctx context.Context, conn net.Conn, input *bytes.Reader, rawInput VisionRawInput, ob *session.Outbound) *VisionReader {
 	return &VisionReader{
 		Reader:       reader,
 		trafficState: trafficState,
@@ -263,13 +263,12 @@ func (w *VisionReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		if inputBuffer, err := buf.ReadFrom(w.input); err == nil && !inputBuffer.IsEmpty() {
 			buffer, _ = buf.MergeMulti(buffer, inputBuffer)
 		}
-		if rawInputBuffer, err := buf.ReadFrom(w.rawInput); err == nil && !rawInputBuffer.IsEmpty() {
+		if rawInputBuffer, err := w.rawInput.Drain(); err == nil && !rawInputBuffer.IsEmpty() {
 			buffer, _ = buf.MergeMulti(buffer, rawInputBuffer)
 		}
 		*w.input = bytes.Reader{} // release memory
 		w.input = nil
-		*w.rawInput = bytes.Buffer{} // release memory
-		w.rawInput = nil
+		w.rawInput = VisionRawInput{}
 
 		if inbound := session.InboundFromContext(w.ctx); inbound != nil && inbound.Conn != nil {
 			// if w.isUplink && inbound.CanSpliceCopy == 2 { // TODO: enable uplink splice
