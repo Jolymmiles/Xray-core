@@ -119,13 +119,19 @@ func (r *TCPResolver) Read(p []byte) (n int, err error) {
 }
 
 func (r *TCPResolver) Send(p []byte) {
+	if len(p) > 0xFFFF {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.dial() != nil {
 		return
 	}
-	_ = binary.Write(r.conn, binary.BigEndian, len(p))
-	_, _ = r.conn.Write(p)
+	// One write per message keeps the two-byte length and the query together.
+	frame := make([]byte, 2+len(p))
+	binary.BigEndian.PutUint16(frame, uint16(len(p)))
+	copy(frame[2:], p)
+	_, _ = r.conn.Write(frame)
 }
 
 func (r *TCPResolver) Close() {

@@ -2,7 +2,9 @@ package xdns
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"io"
 	stdnet "net"
 	"sync/atomic"
 	"testing"
@@ -271,4 +273,58 @@ func TestResolverCloseReturns(t *testing.T) {
 		}
 	}()
 	closeWithin(t, "TCP resolver", tcp.Close)
+}
+
+// DNS over TCP frames every message with a two-byte length (RFC 1035
+// section 4.2.2); the resolver must send that prefix before each query.
+func TestTCPResolverFramesQueries(t *testing.T) {
+	listener, err := stdnet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	type frame struct {
+		length int
+		body   []byte
+		err    error
+	}
+	received := make(chan frame, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			received <- frame{err: err}
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		var prefix [2]byte
+		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+			received <- frame{err: err}
+			return
+		}
+		length := int(binary.BigEndian.Uint16(prefix[:]))
+		body := make([]byte, length)
+		_, err = io.ReadFull(conn, body)
+		received <- frame{length: length, body: body, err: err}
+	}()
+
+	resolver, err := NewTCPResolver(&TCPResolverProto{Addr: listener.Addr().String()}, testDialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolver.Close()
+	message := testQuery("probe.t.example.com.", dnsmessage.TypeTXT)
+	query, err := message.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.Send(query)
+
+	got := <-received
+	if got.err != nil {
+		t.Fatalf("reading the framed query: %v (length prefix %d)", got.err, got.length)
+	}
+	if got.length != len(query) || !bytes.Equal(got.body, query) {
+		t.Fatalf("framed query = %d bytes %x, want %d bytes %x", got.length, got.body, len(query), query)
+	}
 }
