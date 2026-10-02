@@ -60,4 +60,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/xtls/reality => ../REALITY
+replace github.com/xtls/reality => github.com/TaiLerV/REALITY v0.0.0-20261001235254-a8e5166f6ba7

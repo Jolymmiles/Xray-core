@@ -1,3 +1,5 @@
+github.com/TaiLerV/REALITY v0.0.0-20261001235254-a8e5166f6ba7 h1:j35qTW7VwXjexmNtD7YqfzExgzuvPq7IgPmgSpIBz4s=
+github.com/TaiLerV/REALITY v0.0.0-20261001235254-a8e5166f6ba7/go.mod h1:/YQ6FwmAtkDuo8K3ujKQH1Br5eGNFauBipdl1gdiebk=
 github.com/andybalholm/brotli v1.2.3 h1:8H1qwOkl2LPfjf3YezB90JnCliZb6SInJ/OJkEbA5NQ=
 github.com/andybalholm/brotli v1.2.3/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/apernet/quic-go v0.62.1-0.20260912175848-73339f7edbb9 h1:IpePaGNz34fn9X8bUbm+jHBYcQKV90TbrbujQK61Txo=
