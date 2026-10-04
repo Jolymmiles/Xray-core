@@ -51,7 +51,8 @@ const (
 	flowDefaultRTT   = 200 * time.Millisecond
 	flowRTTWindow    = 10 * time.Second
 	flowMinRTT       = time.Millisecond
-	flowLearnHalf    = 5 * time.Second
+	flowLearnHalf    = time.Minute
+	flowStartWindow  = 256 << 10
 	flowSmallCredit  = 64 << 10
 	flowShrinkAfter  = 3
 
@@ -200,24 +201,44 @@ type flowWindow struct {
 	markBase int64
 	slow     int
 	waiting  time.Time
+	prev     int64
+	measured bool
+	ramped   bool
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
 // trip: at once when that is more, and by a quarter at a time, never below
 // init, once the reader has kept well under it for flowShrinkAfter round trips.
+// Until the first round trip is measured the cap opens with every credit, and
+// while the reader keeps speeding up it also covers the sender doubling its
+// rate, as Linux receive autotuning does.
 func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32, shrink bool) {
 	if w.mark.IsZero() {
 		w.mark, w.markBase = now, w.returned
 		return
 	}
+	if !w.measured {
+		if open := int64(init) + 2*w.returned; open > int64(w.cap) {
+			w.cap = int32(min(open, int64(limit)))
+		}
+	}
 	if now.Sub(w.mark) < rtt {
 		return
 	}
-	s := 2 * (w.returned - w.markBase)
+	copied := w.returned - w.markBase
+	s := 2 * copied
+	grow := s
+	if w.prev > 0 && copied <= w.prev {
+		w.ramped = true
+	}
+	if !w.ramped && w.prev > 0 {
+		grow += 2 * s * (copied - w.prev) / w.prev
+	}
+	w.prev, w.measured = copied, true
 	w.mark, w.markBase = now, w.returned
 	switch {
-	case s > int64(w.cap):
-		w.cap = int32(min(s, int64(limit)))
+	case grow > int64(w.cap):
+		w.cap = int32(min(grow, int64(limit)))
 		w.slow = 0
 	case shrink && 2*s < int64(w.cap):
 		if w.slow++; w.slow >= flowShrinkAfter {
@@ -696,8 +717,8 @@ func (r *flowReader) frame(f h2Frame) {
 		if s == nil && f.stream%2 == 1 && !c.closed {
 			now := time.Now()
 			s = &flowStream{}
-			s.up.cap = c.upLearned.value(now, c.up.init)
-			s.down.cap = c.downLearned.value(now, c.down.init)
+			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
+			s.down.cap = max(c.downLearned.value(now, c.down.init), flowStartWindow)
 			c.streams[f.stream] = s
 			c.opened = append(c.opened, f.stream)
 		}
