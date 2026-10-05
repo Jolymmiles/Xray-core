@@ -70,6 +70,13 @@ var (
 	}
 )
 
+// SniffQUIC returns the server name in the ClientHello carried by the QUIC
+// client Initial packets at the start of b.
+//
+// b holds the first datagrams of a UDP flow as the dispatcher caches them, and
+// it is borrowed: the dispatcher forwards those datagrams once sniffing ends.
+// SniffQUIC therefore never writes to b and removes the packet protection of
+// each Initial packet in a copy.
 func SniffQUIC(b []byte) (*SniffHeader, error) {
 	if len(b) == 0 {
 		return nil, common.ErrNoClue
@@ -81,6 +88,9 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	defer cryptoDataBuf.Release()
 	cache := buf.New()
 	defer cache.Release()
+	// The packet whose protection is being removed, copied out of b.
+	packetBuf := buf.NewWithSize(int32(len(b)))
+	defer packetBuf.Release()
 
 	// Parse QUIC packets
 	for len(b) > 0 {
@@ -178,10 +188,13 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		cache.Clear()
 		mask := cache.Extend(int32(block.BlockSize()))
 		block.Encrypt(mask, b[hdrLen+4:hdrLen+4+len(mask)])
-		b[0] ^= mask[0] & 0xf
-		packetNumberLength := int(b[0]&0x3 + 1)
+		packetBuf.Clear()
+		packet := packetBuf.Extend(int32(hdrLen) + packetLen)
+		copy(packet, b)
+		packet[0] ^= mask[0] & 0xf
+		packetNumberLength := int(packet[0]&0x3 + 1)
 		for i := range packetNumberLength {
-			b[hdrLen+i] ^= mask[i+1]
+			packet[hdrLen+i] ^= mask[i+1]
 		}
 
 		key := hkdfExpandLabel(secret, label+" key", 16)
@@ -189,14 +202,10 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		cipher := AEADAESGCMTLS13(key, iv)
 
 		nonce := cache.Extend(int32(cipher.NonceSize()))
-		_, err = buffer.Read(nonce[len(nonce)-packetNumberLength:])
-		if err != nil {
-			return nil, err
-		}
+		copy(nonce[len(nonce)-packetNumberLength:], packet[hdrLen:hdrLen+packetNumberLength])
 
 		extHdrLen := hdrLen + packetNumberLength
-		data := b[extHdrLen : int(packetLen)+hdrLen]
-		decrypted, err := cipher.Open(b[extHdrLen:extHdrLen], nonce, data, b[:extHdrLen])
+		decrypted, err := cipher.Open(packet[extHdrLen:extHdrLen], nonce, packet[extHdrLen:], packet[:extHdrLen])
 		if err != nil {
 			return nil, err
 		}
