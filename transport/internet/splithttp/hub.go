@@ -393,7 +393,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			conn.reader = currentSession.uploadQueue
 			conn.muxKeepAlive = h.ln.config.GetMuxKeepAliveSecs()
 			conn.muxKeepAliveB = h.ln.config.GetMuxKeepAliveBytes()
-			conn.lastWrite.Store(time.Now().UnixNano())
+			conn.markWritten()
 		}
 
 		virtualConn := net.Conn(&conn)

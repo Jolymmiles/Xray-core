@@ -38,14 +38,27 @@ func (c *splitConn) MuxKeepAliveBytes() (int32, int32) {
 	return c.muxKeepAliveB.From, c.muxKeepAliveB.To
 }
 
+// monotonicEpoch anchors downlink write times to the monotonic clock, so a
+// wall-clock step cannot stretch or skip a KeepAlive.
+var monotonicEpoch = time.Now()
+
+func monotonicNow() int64 {
+	return int64(time.Since(monotonicEpoch))
+}
+
+// markWritten records that the downlink carried something just now.
+func (c *splitConn) markWritten() {
+	c.lastWrite.Store(monotonicNow())
+}
+
 // DownlinkIdle reports how long this downlink has carried nothing.
 func (c *splitConn) DownlinkIdle() time.Duration {
-	return time.Since(time.Unix(0, c.lastWrite.Load()))
+	return time.Duration(monotonicNow() - c.lastWrite.Load())
 }
 
 func (c *splitConn) Write(b []byte) (int, error) {
 	n, err := c.writer.Write(b)
-	c.lastWrite.Store(time.Now().UnixNano())
+	c.markWritten()
 	return n, err
 }
 
