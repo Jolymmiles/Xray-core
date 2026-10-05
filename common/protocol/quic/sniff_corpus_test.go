@@ -164,3 +164,44 @@ func TestSniffQUICGoFirstFlight(t *testing.T) {
 		})
 	}
 }
+
+// A UDP flow can carry the Initial packets of more than one connection, for
+// example when a client reuses its socket. The sniffer follows the connection
+// of the first Initial packet and ignores the others.
+func TestSniffQUICFollowsOneConnection(t *testing.T) {
+	chrome := readCorpus(t, "quic-chrome153", 2)
+	firefox := readCorpus(t, "quic-firefox153esr", 2)
+	curl := readCorpus(t, "quic-curl8.14-openssl3.5", 2)
+	assertSniffDatagrams(t, [][]byte{chrome[0], firefox[1], curl[1], chrome[1]}, "chrome.sniff.test")
+}
+
+// Receivers ignore what follows the last packet of a datagram. Firefox pads
+// with zeros there, but any bytes can follow, and the dispatcher caches the
+// datagrams of a flow without their boundaries, so the sniffer must find the
+// next Initial packet of the connection after such a tail.
+func TestSniffQUICSkipsDatagramTails(t *testing.T) {
+	chrome := readCorpus(t, "quic-chrome153", 2)
+	tail := bytes.Repeat([]byte{0x5a}, 37)
+	assertSniffDatagrams(t, [][]byte{append(bytes.Clone(chrome[0]), tail...), chrome[1]}, "chrome.sniff.test")
+}
+
+// SniffQUIC parses datagrams that clients choose. Whatever they hold, it must
+// neither panic nor write to them.
+func FuzzSniffQUIC(f *testing.F) {
+	for _, prefix := range []string{"quic-chrome153", "quic-firefox153esr", "quic-curl8.14-openssl3.5"} {
+		for i := range 2 {
+			datagram, err := os.ReadFile(filepath.Join("testdata", prefix+"-"+strconv.Itoa(i)+".bin"))
+			if err != nil {
+				f.Fatal(err)
+			}
+			f.Add(datagram)
+		}
+	}
+	f.Fuzz(func(t *testing.T, flow []byte) {
+		received := bytes.Clone(flow)
+		_, _ = quic.SniffQUIC(flow)
+		if !bytes.Equal(flow, received) {
+			t.Fatal("SniffQUIC modified its input")
+		}
+	})
+}

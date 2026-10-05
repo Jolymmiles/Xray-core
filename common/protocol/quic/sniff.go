@@ -1,8 +1,10 @@
 package quic
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"io"
 
@@ -115,130 +117,50 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	defer cryptoDataBuf.Release()
 	var received receivedBytes
 	receivedLen := int32(0)
-	cache := buf.New()
-	defer cache.Release()
 	// The packet whose protection is being removed, copied out of b.
 	packetBuf := buf.NewWithSize(int32(len(b)))
 	defer packetBuf.Release()
 
+	// The connection sniffed is the one of the first Initial packet that
+	// decrypts. A flow can carry Initial packets of other connections, which
+	// are skipped.
+	var conn *initialKeys
+
 	// Parse QUIC packets
 	for len(b) > 0 {
-		buffer := buf.FromBytes(b)
-		typeByte, err := buffer.ReadByte()
+		hdr, err := parseLongHeader(b)
 		if err != nil {
-			return nil, errNotQUIC
-		}
-
-		isLongHeader := typeByte&0x80 > 0
-		if !isLongHeader || typeByte&0x40 == 0 {
-			return nil, errNotQUICInitial
-		}
-
-		vb, err := buffer.ReadBytes(4)
-		if err != nil {
-			return nil, errNotQUIC
-		}
-
-		versionNumber := binary.BigEndian.Uint32(vb)
-		var s *quicVersionSpec
-		if v, ok := quicVersionSpecMap[versionNumber]; ok {
-			s = v
-		} else {
-			return nil, errNotQUIC
-		}
-
-		packetType := (typeByte & 0x30) >> 4
-		if packetType == s.typeRetry {
-			return nil, errNotQUICInitial
-		}
-
-		var destConnID []byte
-		if l, err := buffer.ReadByte(); err != nil {
-			return nil, errNotQUIC
-		} else if destConnID, err = buffer.ReadBytes(int32(l)); err != nil {
-			return nil, errNotQUIC
-		}
-
-		if l, err := buffer.ReadByte(); err != nil {
-			return nil, errNotQUIC
-		} else if common.Error2(buffer.ReadBytes(int32(l))) != nil {
-			return nil, errNotQUIC
-		}
-
-		isQUICInitial := packetType == s.typeInitial
-
-		if isQUICInitial { // Only initial packets have token, see https://datatracker.ietf.org/doc/html/rfc9000#section-17.2.2
-			tokenLen, err := readShortQUICVarint(buffer)
-			if err != nil || tokenLen > int32(len(b)) {
-				return nil, errNotQUIC
+			if conn == nil {
+				return nil, err
 			}
-
-			if _, err = buffer.ReadBytes(tokenLen); err != nil {
-				return nil, errNotQUIC
+			// What follows the last packet of a datagram is not a packet: Firefox
+			// pads with zeros there. b keeps no datagram boundaries, so resume
+			// at the next Initial packet of the connection.
+			if b = conn.nextInitial(b); b == nil {
+				break
 			}
+			continue
 		}
-
-		packetLen, err := readShortQUICVarint(buffer)
-		if err != nil {
-			return nil, errNotQUIC
-		}
-		// packetLen is impossible to be shorter than this
-		if packetLen < 4 {
-			return nil, errNotQUIC
-		}
-
-		hdrLen := len(b) - int(buffer.Len())
-		if len(b) < hdrLen+int(packetLen) {
-			return nil, common.ErrNoClue // Not enough data to read as a QUIC packet. QUIC is UDP-based, so this is unlikely to happen.
-		}
-
-		restPayload := b[hdrLen+int(packetLen):]
-		// cachedReader can concatenate zero-padded UDP datagrams.
-		for len(restPayload) > 0 && restPayload[0] == 0 {
-			restPayload = restPayload[1:]
-		}
-		if !isQUICInitial { // Skip this packet if it's not initial packet
-			b = restPayload
+		packet := b[:hdr.pnOffset+hdr.packetLen]
+		b = b[len(packet):]
+		if !hdr.initial || conn != nil && !conn.protects(hdr) { // Only Initial packets of the connection carry its ClientHello
 			continue
 		}
 
-		salt := s.initialSalt
-		label := s.labelPrefix
-		initialSecret := hkdf.Extract(crypto.SHA256.New, destConnID, salt)
-		secret := hkdfExpandLabel(initialSecret, "client in", crypto.SHA256.Size())
-		hpKey := hkdfExpandLabel(secret, label+" hp", 16)
-		block, err := aes.NewCipher(hpKey)
+		keys := conn
+		if keys == nil {
+			keys = newInitialKeys(hdr.spec, hdr.destConnID)
+		}
+		decrypted, err := keys.open(packet, hdr.pnOffset, packetBuf)
 		if err != nil {
-			return nil, err
+			if conn == nil {
+				return nil, err
+			}
+			continue
 		}
-		if len(b) < hdrLen+4+block.BlockSize() {
-			return nil, errNotQUIC
-		}
-		cache.Clear()
-		mask := cache.Extend(int32(block.BlockSize()))
-		block.Encrypt(mask, b[hdrLen+4:hdrLen+4+len(mask)])
-		packetBuf.Clear()
-		packet := packetBuf.Extend(int32(hdrLen) + packetLen)
-		copy(packet, b)
-		packet[0] ^= mask[0] & 0xf
-		packetNumberLength := int(packet[0]&0x3 + 1)
-		for i := range packetNumberLength {
-			packet[hdrLen+i] ^= mask[i+1]
-		}
+		conn = keys
 
-		key := hkdfExpandLabel(secret, label+" key", 16)
-		iv := hkdfExpandLabel(secret, label+" iv", 12)
-		cipher := AEADAESGCMTLS13(key, iv)
-
-		nonce := cache.Extend(int32(cipher.NonceSize()))
-		copy(nonce[len(nonce)-packetNumberLength:], packet[hdrLen:hdrLen+packetNumberLength])
-
-		extHdrLen := hdrLen + packetNumberLength
-		decrypted, err := cipher.Open(packet[extHdrLen:extHdrLen], nonce, packet[extHdrLen:], packet[:extHdrLen])
-		if err != nil {
-			return nil, err
-		}
-		buffer = buf.FromBytes(decrypted)
+		buffer := buf.FromBytes(decrypted)
 		for !buffer.IsEmpty() {
 			frameType, _ := buffer.ReadByte()
 			for frameType == 0x0 && !buffer.IsEmpty() {
@@ -328,7 +250,6 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		receivedLen = received.prefix(receivedLen, cryptoLen)
 		stream := cryptoDataBuf.BytesTo(receivedLen)
 		if len(stream) < 4 {
-			b = restPayload
 			continue
 		}
 		if stream[0] != 1 {
@@ -339,7 +260,6 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 			return nil, errNotClientHello
 		}
 		if len(stream) < helloLen {
-			b = restPayload
 			continue
 		}
 		tlsHdr := &ptls.SniffHeader{}
@@ -351,6 +271,157 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	}
 	// All payload is parsed as valid QUIC packets, but we need more packets for crypto data to read client hello.
 	return nil, protocol.ErrProtoNeedMoreData
+}
+
+// longHeader is the part of a QUIC long header packet the sniffer reads.
+type longHeader struct {
+	spec       *quicVersionSpec
+	initial    bool
+	destConnID []byte
+	pnOffset   int // where the Packet Number field starts
+	packetLen  int // the Packet Number field and the payload
+}
+
+// parseLongHeader parses the header of the long header packet at the start of
+// b, which must hold the whole packet.
+func parseLongHeader(b []byte) (longHeader, error) {
+	buffer := buf.FromBytes(b)
+	typeByte, err := buffer.ReadByte()
+	if err != nil {
+		return longHeader{}, errNotQUIC
+	}
+
+	isLongHeader := typeByte&0x80 > 0
+	if !isLongHeader || typeByte&0x40 == 0 {
+		return longHeader{}, errNotQUICInitial
+	}
+
+	vb, err := buffer.ReadBytes(4)
+	if err != nil {
+		return longHeader{}, errNotQUIC
+	}
+
+	s, ok := quicVersionSpecMap[binary.BigEndian.Uint32(vb)]
+	if !ok {
+		return longHeader{}, errNotQUIC
+	}
+
+	packetType := (typeByte & 0x30) >> 4
+	if packetType == s.typeRetry {
+		return longHeader{}, errNotQUICInitial
+	}
+	hdr := longHeader{spec: s, initial: packetType == s.typeInitial}
+
+	if l, err := buffer.ReadByte(); err != nil {
+		return longHeader{}, errNotQUIC
+	} else if hdr.destConnID, err = buffer.ReadBytes(int32(l)); err != nil {
+		return longHeader{}, errNotQUIC
+	}
+
+	if l, err := buffer.ReadByte(); err != nil {
+		return longHeader{}, errNotQUIC
+	} else if common.Error2(buffer.ReadBytes(int32(l))) != nil {
+		return longHeader{}, errNotQUIC
+	}
+
+	if hdr.initial { // Only initial packets have token, see https://datatracker.ietf.org/doc/html/rfc9000#section-17.2.2
+		tokenLen, err := readShortQUICVarint(buffer)
+		if err != nil || tokenLen > int32(len(b)) {
+			return longHeader{}, errNotQUIC
+		}
+
+		if _, err = buffer.ReadBytes(tokenLen); err != nil {
+			return longHeader{}, errNotQUIC
+		}
+	}
+
+	packetLen, err := readShortQUICVarint(buffer)
+	if err != nil {
+		return longHeader{}, errNotQUIC
+	}
+	// packetLen is impossible to be shorter than this
+	if packetLen < 4 {
+		return longHeader{}, errNotQUIC
+	}
+
+	hdr.pnOffset = len(b) - int(buffer.Len())
+	hdr.packetLen = int(packetLen)
+	if len(b) < hdr.pnOffset+hdr.packetLen {
+		return longHeader{}, common.ErrNoClue // Not enough data to read as a QUIC packet. QUIC is UDP-based, so this is unlikely to happen.
+	}
+	return hdr, nil
+}
+
+// initialKeys removes the protection of the client Initial packets of one
+// connection (RFC 9001, Section 5).
+type initialKeys struct {
+	spec       *quicVersionSpec
+	destConnID []byte
+	hp         cipher.Block
+	aead       cipher.AEAD
+}
+
+func newInitialKeys(s *quicVersionSpec, destConnID []byte) *initialKeys {
+	initialSecret := hkdf.Extract(crypto.SHA256.New, destConnID, s.initialSalt)
+	secret := hkdfExpandLabel(initialSecret, "client in", crypto.SHA256.Size())
+	// AES-128 accepts every 16-byte key.
+	hp := common.Must2(aes.NewCipher(hkdfExpandLabel(secret, s.labelPrefix+" hp", 16)))
+	key := hkdfExpandLabel(secret, s.labelPrefix+" key", 16)
+	iv := hkdfExpandLabel(secret, s.labelPrefix+" iv", 12)
+	return &initialKeys{spec: s, destConnID: destConnID, hp: hp, aead: AEADAESGCMTLS13(key, iv)}
+}
+
+// protects reports whether the packet with header hdr belongs to the
+// connection.
+func (k *initialKeys) protects(hdr longHeader) bool {
+	return hdr.spec == k.spec && bytes.Equal(hdr.destConnID, k.destConnID)
+}
+
+// open returns the payload of an Initial packet of the connection whose Packet
+// Number field starts at pnOffset. The packet is borrowed, so its protection
+// is removed in a copy held by packetBuf.
+func (k *initialKeys) open(packet []byte, pnOffset int, packetBuf *buf.Buffer) ([]byte, error) {
+	// The header protection sample starts 4 bytes into the Packet Number field.
+	if len(packet) < pnOffset+4+aes.BlockSize {
+		return nil, errNotQUIC
+	}
+	var mask [aes.BlockSize]byte
+	k.hp.Encrypt(mask[:], packet[pnOffset+4:pnOffset+4+aes.BlockSize])
+	packetBuf.Clear()
+	unprotected := packetBuf.Extend(int32(len(packet)))
+	copy(unprotected, packet)
+	unprotected[0] ^= mask[0] & 0xf
+	packetNumberLength := int(unprotected[0]&0x3 + 1)
+	nonce := make([]byte, k.aead.NonceSize())
+	for i := range packetNumberLength {
+		unprotected[pnOffset+i] ^= mask[i+1]
+	}
+	copy(nonce[len(nonce)-packetNumberLength:], unprotected[pnOffset:pnOffset+packetNumberLength])
+
+	extHdrLen := pnOffset + packetNumberLength
+	return k.aead.Open(unprotected[extHdrLen:extHdrLen], nonce, unprotected[extHdrLen:], unprotected[:extHdrLen])
+}
+
+// nextInitial returns b from the next Initial packet of the connection after
+// the first byte of b, or nil if there is none.
+func (k *initialKeys) nextInitial(b []byte) []byte {
+	// A long header packet starts with its type byte, the version and the
+	// length-prefixed Destination Connection ID.
+	var signature [4 + 1 + 255]byte
+	binary.BigEndian.PutUint32(signature[:4], k.spec.ver)
+	signature[4] = byte(len(k.destConnID))
+	n := 5 + copy(signature[5:], k.destConnID)
+	for start := 1; start < len(b); start++ {
+		index := bytes.Index(b[start+1:], signature[:n])
+		if index < 0 {
+			return nil
+		}
+		start += index
+		if typeByte := b[start]; typeByte&0xc0 == 0xc0 && (typeByte&0x30)>>4 == k.spec.typeInitial {
+			return b[start:]
+		}
+	}
+	return nil
 }
 
 func hkdfExpandLabel(secret []byte, label string, length int) []byte {
