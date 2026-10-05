@@ -2,6 +2,7 @@ package splithttp
 
 import (
 	"encoding/binary"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -46,7 +47,6 @@ const (
 	h2SettingMaxFrameSize      = 0x5
 	h2MinMaxFrameSize          = 16384
 
-	flowPingMagic    = 0x78666c77
 	flowPingInterval = time.Second
 	flowPingTimeout  = 10 * time.Second
 	flowDefaultRTT   = 200 * time.Millisecond
@@ -315,7 +315,7 @@ type flowConn struct {
 	rtt         time.Duration
 	rttPrev     time.Duration
 	rttSince    time.Time
-	pingSeq     uint32
+	pingData    uint64
 	pingSentAt  time.Time
 	lastPing    time.Time
 
@@ -605,17 +605,21 @@ func (c *flowConn) appendPing(out []byte) []byte {
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
 	}
-	c.pingSeq++
 	c.pingSentAt, c.lastPing = now, now
+	return c.appendPingFrame(out)
+}
+
+// appendPingFrame adds a PING carrying fresh random data, as Go's own HTTP/2
+// health checks do, and remembers it to recognize the ACK.
+func (c *flowConn) appendPingFrame(out []byte) []byte {
+	c.pingData = rand.Uint64()
 	out = append(out, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
-	out = binary.BigEndian.AppendUint32(out, flowPingMagic)
-	return binary.BigEndian.AppendUint32(out, c.pingSeq)
+	return binary.BigEndian.AppendUint64(out, c.pingData)
 }
 
 // pingAck reports whether a PING ACK answers ours, taking its round trip.
 func (c *flowConn) pingAck(f h2Frame, payload []byte) bool {
-	if f.flags&h2FlagAck == 0 || binary.BigEndian.Uint32(payload) != flowPingMagic ||
-		binary.BigEndian.Uint32(payload[4:]) != c.pingSeq || c.pingSentAt.IsZero() {
+	if f.flags&h2FlagAck == 0 || binary.BigEndian.Uint64(payload) != c.pingData || c.pingSentAt.IsZero() {
 		return false
 	}
 	now := time.Now()
@@ -664,12 +668,8 @@ func (c *flowConn) fireGuard() {
 		return
 	}
 	c.guardProbe = true
-	c.pingSeq++
 	c.pingSentAt = time.Now()
-	var ping []byte
-	ping = append(ping, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
-	ping = binary.BigEndian.AppendUint32(ping, flowPingMagic)
-	ping = binary.BigEndian.AppendUint32(ping, c.pingSeq)
+	ping := c.appendPingFrame(nil)
 	c.mu.Unlock()
 	c.injectToClient(ping)
 }
