@@ -3,6 +3,7 @@ package hysteria
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -162,9 +163,29 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 		// Like the UDP link, these stay reachable after Process returns.
 		return dispatcher.DispatchLink(ctx, dest, &transport.Link{
 			Reader: buf.NewReader(conn),
-			Writer: buf.NewWriter(conn),
+			Writer: newServerStreamWriter(conn),
 		})
 	}
+}
+
+// serverStreamWriter is the link writer of a Hysteria TCP stream. Mux.Cool
+// session handlers write their frames through it from separate goroutines, so
+// it serializes whole MultiBuffers to keep frames of concurrent sessions from
+// interleaving on the stream.
+type serverStreamWriter struct {
+	sync.Mutex
+	writer buf.Writer
+}
+
+func newServerStreamWriter(conn stat.Connection) *serverStreamWriter {
+	return &serverStreamWriter{writer: buf.NewWriter(conn)}
+}
+
+// WriteMultiBuffer implements buf.Writer.
+func (w *serverStreamWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	w.Lock()
+	defer w.Unlock()
+	return w.writer.WriteMultiBuffer(mb)
 }
 
 func (s *Server) policyForLevel(level uint32) policy.Session {

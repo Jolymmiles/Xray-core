@@ -89,6 +89,6 @@ func BenchmarkServerTCPIOSetup(b *testing.B) {
 		if err := writeTCPResponseOK(io.Discard); err != nil {
 			b.Fatal(err)
 		}
-		hysteriaServerLinkSink = &transport.Link{Reader: buf.NewReader(readerSource), Writer: buf.NewWriter(io.Discard)}
+		hysteriaServerLinkSink = &transport.Link{Reader: buf.NewReader(readerSource), Writer: &serverStreamWriter{writer: buf.NewWriter(io.Discard)}}
 	}
 }
