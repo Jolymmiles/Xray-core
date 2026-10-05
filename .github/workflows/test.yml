@@ -67,9 +67,7 @@ jobs:
           check-latest: true
           cache: false
       - name: Check Format
-        run: |
-          go install -v mvdan.cc/gofumpt@latest
-          go run ./infra/vformat/main.go -mode check -pwd ./
+        run: go run ./infra/vformat/main.go -mode check -pwd ./
 
   test:
     needs: check-assets
@@ -77,6 +75,9 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    env:
+      # Test what ships: release builds keep x/net's HTTP/2 pool (XTLS/Xray-core#6797).
+      GOFLAGS: -tags=http2legacy
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v7

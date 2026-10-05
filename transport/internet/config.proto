@@ -64,18 +64,16 @@ message StreamConfig {
   SocketConfig socket_settings = 6;
 }
 
-message UdpHop {
-  repeated uint32 ports = 1;
-  int64 interval_min = 2;
-  int64 interval_max = 3;
-}
-
 message QuicParams {
+  // Field numbers are kept stable for serialized fork configs. udp_hop moved
+  // to the "udphop" UDP finalmask upstream; its number must not be reused.
+  reserved 5;
+  reserved "udp_hop";
+
   string congestion = 1;
   string bbr_profile = 2;
   uint64 brutal_up = 3;
   uint64 brutal_down = 4;
-  UdpHop udp_hop = 5;
   uint64 init_stream_receive_window = 6;
   uint64 max_stream_receive_window = 7;
   uint64 init_conn_receive_window = 8;
@@ -88,11 +86,6 @@ message QuicParams {
   bool disable_chrome_parrot = 15;
   bool disableGSO = 16;
   bool disable_stateless_reset = 17;
-}
-
-message ProxyConfig {
-  string tag = 1;
-  bool transportLayerProxy = 2;
 }
 
 message CustomSockopt {

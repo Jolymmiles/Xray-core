@@ -2,8 +2,8 @@ package hysteria
 
 import (
 	"context"
-	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -17,6 +17,7 @@ import (
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/proxy/hysteria/account"
+	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/hysteria"
 	"github.com/xtls/xray-core/transport/internet/stat"
@@ -44,11 +45,11 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	for _, user := range config.Users {
 		u, err := user.ToMemoryUser()
 		if err != nil {
-			return nil, errors.New("failed to get hysteria user").Base(err).AtError()
+			return nil, errors.New("failed to get hysteria user").Base(err)
 		}
 
 		if err := validator.Add(u); err != nil {
-			return nil, errors.New("failed to add user").Base(err).AtError()
+			return nil, errors.New("failed to add user").Base(err)
 		}
 	}
 	validator.Warmup()
@@ -106,23 +107,19 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 
 	if _, ok := iConn.(*hysteria.InterConn); ok {
-		reader := newPooledUDPReader(conn)
-		defer releasePooledUDPReader(reader)
-
+		// The link outlives Process: mux workers and task.Run goroutines keep
+		// using it after DispatchLink returns, so it is owned by the session.
+		reader := &UDPReader{reader: conn}
 		b, packetDestination, err := reader.readBufferPacket()
 		if err != nil {
 			return err
 		}
-		destination := reader.serverPacketDestination(packetDestination)
-
 		reader.firstBuf = b
-
-		writer := &reader.serverWriter
-		writer.writer = conn
-		writer.addr = reader.serverPacketAddress(packetDestination)
-		reader.link.Reader = reader
-		reader.link.Writer = writer
-		return dispatcher.DispatchLink(ctx, destination, &reader.link)
+		writer := &UDPWriter{writer: conn, addr: reader.serverPacketAddress(packetDestination)}
+		return dispatcher.DispatchLink(ctx, reader.serverPacketDestination(packetDestination), &transport.Link{
+			Reader: reader,
+			Writer: writer,
+		})
 	} else {
 		sessionPolicy := s.policyForLevel(inbound.User.Level)
 
@@ -159,23 +156,36 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			errors.LogInfo(ctx, "tunnelling request to ", dest)
 		}
 
-		wireWriter := buf.NewPooledWriter(conn)
-		defer buf.ReleasePooledWriter(wireWriter)
-		responseWriter, ok := wireWriter.(io.Writer)
-		if !ok {
-			return errors.New("failed to create byte response writer")
-		}
-		err = writeTCPResponseOK(responseWriter)
-		if err != nil {
+		if err := writeTCPResponseOK(conn); err != nil {
 			return errors.New("failed to write response").Base(err)
 		}
 
-		reader := buf.NewPooledReader(conn)
-		defer buf.ReleasePooledReader(reader)
-		request.link.Reader = reader
-		request.link.Writer = wireWriter
-		return dispatcher.DispatchLink(ctx, dest, &request.link)
+		// Like the UDP link, these stay reachable after Process returns.
+		return dispatcher.DispatchLink(ctx, dest, &transport.Link{
+			Reader: buf.NewReader(conn),
+			Writer: newServerStreamWriter(conn),
+		})
 	}
+}
+
+// serverStreamWriter is the link writer of a Hysteria TCP stream. Mux.Cool
+// session handlers write their frames through it from separate goroutines, so
+// it serializes whole MultiBuffers to keep frames of concurrent sessions from
+// interleaving on the stream.
+type serverStreamWriter struct {
+	sync.Mutex
+	writer buf.Writer
+}
+
+func newServerStreamWriter(conn stat.Connection) *serverStreamWriter {
+	return &serverStreamWriter{writer: buf.NewWriter(conn)}
+}
+
+// WriteMultiBuffer implements buf.Writer.
+func (w *serverStreamWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	w.Lock()
+	defer w.Unlock()
+	return w.writer.WriteMultiBuffer(mb)
 }
 
 func (s *Server) policyForLevel(level uint32) policy.Session {

@@ -115,10 +115,7 @@ type BufferedWriter struct {
 	buffer    *Buffer
 	buffered  bool
 	flushNext bool
-	pooled    bool
 }
-
-var bufferedWriterPool sync.Pool
 
 type prefixMultiBufferWriter interface {
 	WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error
@@ -204,45 +201,6 @@ func NewBufferedWriterWithPrefix(writer Writer, prefix []byte) (*BufferedWriter,
 	}, nil
 }
 
-// NewPooledBufferedWriterWithPrefix returns a writer whose lifetime must end
-// with Release after all consumers have stopped using it.
-func NewPooledBufferedWriterWithPrefix(writer Writer, prefix []byte) (*BufferedWriter, error) {
-	buffer := New()
-	if _, err := buffer.Write(prefix); err != nil {
-		buffer.Release()
-		return nil, err
-	}
-	bufferedWriter, _ := bufferedWriterPool.Get().(*BufferedWriter)
-	if bufferedWriter == nil {
-		bufferedWriter = new(BufferedWriter)
-	}
-	bufferedWriter.writer = writer
-	bufferedWriter.buffer = buffer
-	bufferedWriter.buffered = true
-	bufferedWriter.flushNext = true
-	bufferedWriter.pooled = true
-	return bufferedWriter, nil
-}
-
-// Release discards any unflushed prefix, clears connection references, and
-// returns a pooled writer for reuse. It is a no-op for non-pooled writers.
-func (w *BufferedWriter) Release() {
-	if w == nil || !w.pooled {
-		return
-	}
-	w.Lock()
-	if w.buffer != nil {
-		w.buffer.Release()
-	}
-	w.writer = nil
-	w.buffer = nil
-	w.buffered = false
-	w.flushNext = false
-	w.pooled = false
-	w.Unlock()
-	bufferedWriterPool.Put(w)
-}
-
 // WriteByte implements io.ByteWriter.
 func (w *BufferedWriter) WriteByte(c byte) error {
 	return common.Error2(w.Write([]byte{c}))
@@ -271,7 +229,9 @@ func (w *BufferedWriter) Write(b []byte) (int, error) {
 
 		nBytes, err := w.buffer.Write(b)
 		totalBytes += nBytes
-		if err != nil {
+
+		// ErrBufferFull means a partial write, so flush below and continue
+		if err != nil && err != ErrBufferFull {
 			return totalBytes, err
 		}
 		if !w.buffered || w.buffer.IsFull() {

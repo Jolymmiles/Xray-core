@@ -8,6 +8,10 @@ versions. Reverse-role cells and external proxy-server performance comparisons
 are excluded by the repository rule in `AGENTS.md`. Local echo and REALITY cover
 fixtures remain supporting test services.
 
+Release builds use `-tags http2legacy` (see `AGENTS.md`), so every command
+below carries it, and the binaries the tests build match the release. An
+explicit tag list replaces the tags in `GOFLAGS`; keep `http2legacy` in it.
+
 ## Negotiated logical half-close
 
 The default remains legacy full-close. The negotiated gate covers Xray/Xray over
@@ -32,7 +36,7 @@ supports half-close negotiation.
 ```sh
 GOTOOLCHAIN=auto go test ./common/singmux/internal/mplsmux \
   -run 'Test(NegotiatedHalfClose|CloseFrameTerminatesLogicalStream)' -count=100
-GOTOOLCHAIN=auto go test -tags integration ./common/singmux \
+GOTOOLCHAIN=auto go test -tags 'integration http2legacy' ./common/singmux \
   -run 'TestSMUX(NegotiatedHalfCloseProcessMatrix|AutoFallbackLegacyXray)' -count=5 -v
 ```
 
@@ -111,7 +115,7 @@ in each of these preconfigured modes, with loopback up:
 
 ```sh
 XRAY_BRUTAL_KERNEL_MODE=locked-route XRAY_E2E_BIN=/path/to/xray \
-  go test -tags 'integration brutalkernel' -gcflags=all=-d=checkptr=2 \
+  go test -tags 'integration brutalkernel http2legacy' -gcflags=all=-d=checkptr=2 \
   ./common/singmux -run '^TestBrutalKernel' -count=1 -v
 ```
 
@@ -138,8 +142,8 @@ Trojan, TCP and UDP, with padding disabled and enabled (24 scenarios per mux
 protocol).
 
 ```sh
-go test -tags integration ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
-go test -tags integration ./common/singmux -run '^TestH2MUXProcessInteropMatrix$' -count=1 -v
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestH2MUXProcessInteropMatrix$' -count=1 -v
 ```
 
 The separate VLESS TCP server gate keeps SMUX out of the topology and covers
@@ -149,7 +153,7 @@ confirmed by a full SOCKS-to-echo probe instead of accepting an open local
 SOCKS port as proof that its provider has finished starting.
 
 ```sh
-go test -tags integration ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
 ```
 
 The matching connection-latency benchmark keeps one Xray client and server
@@ -158,7 +162,7 @@ Use a fixed iteration count on macOS: adaptive multi-second runs can exhaust
 its ephemeral port range before TIME_WAIT entries expire.
 
 ```sh
-go test -tags integration ./common/singmux -run '^$' \
+go test -tags 'integration http2legacy' ./common/singmux -run '^$' \
   -bench '^BenchmarkVLESSTCPProcess$' -benchtime=50x -count=5
 ```
 
@@ -172,7 +176,7 @@ an empty string: the literal value `none` is invalid and has a separate
 negative regression test.
 
 ```sh
-go test -tags integration ./common/singmux \
+go test -tags 'integration http2legacy' ./common/singmux \
   -run '^(TestRemnaNodeProductionConfigContract|TestRemnaNodeConfigRejectsLiteralNoneFlow|TestRemnaNodeConfigProcessE2E)$' \
   -count=1 -v
 ```
@@ -211,7 +215,7 @@ ip -6 address add fd00:7872:6179::1/128 dev yt
 
 XRAY_E2E_YT_INTERFACE=yt \
 XRAY_E2E_YT_IPV6=fd00:7872:6179::1 \
-go test -tags 'integration remnanode_release' ./common/singmux \
+go test -tags 'integration remnanode_release http2legacy' ./common/singmux \
   -run '^(TestRemnaNodeLinuxReleaseEnvironment|TestRemnaNodeProductionConfigContract|TestRemnaNodeConfigRejectsLiteralNoneFlow|TestRemnaNodeConfigProcessE2E)$' \
   -count=1 -v
 
@@ -252,7 +256,7 @@ mkdir -p /tmp/xray-remnanode-profiles
 
 XRAY_REMNANODE_MEMORY_PROFILE=1 \
 XRAY_REMNANODE_PROFILE_DIR=/tmp/xray-remnanode-profiles \
-go test -tags 'integration stress' ./common/singmux \
+go test -tags 'integration stress http2legacy' ./common/singmux \
   -run '^TestRemnaNodeServerMemoryProfile$' -count=1 -v
 ```
 
@@ -261,7 +265,7 @@ Use the direct mode when profiling the ordinary non-multiplexed server path:
 ```sh
 XRAY_REMNANODE_DIRECT_MEMORY_PROFILE=1 \
 XRAY_REMNANODE_PROFILE_DIR=/tmp/xray-remnanode-direct-profiles \
-go test -tags 'integration stress' ./common/singmux \
+go test -tags 'integration stress http2legacy' ./common/singmux \
   -run '^TestRemnaNodeDirectServerMemoryProfile$' -count=1 -v
 ```
 
@@ -286,7 +290,7 @@ peer's capacity into the bottleneck; datagram and restart load is unchanged.
 The ordinary SMUX/H2MUX matrices retain cold single-carrier Mihomo coverage.
 
 ```sh
-go test -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
+go test -tags 'integration stress http2legacy' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 ```
 
 The release gate first runs the three-cycle peak profile,
@@ -294,7 +298,7 @@ then raises all six Xray-server topologies (three clients × two carriers) to
 50 cycles with bounded per-cycle concurrency:
 
 ```sh
-XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
+XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m -tags 'integration stress http2legacy' ./common/singmux -run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 ```
 
 The hardening gate uses 16 TCP streams per cycle to keep GitHub runner
@@ -319,7 +323,7 @@ full-load warm-up and nine alternating rounds with access logging disabled, and
 fails above a 10% median full-duplex regression.
 
 ```sh
-go test -tags 'integration stress performance' ./common/singmux \
+go test -tags 'integration stress performance http2legacy' ./common/singmux \
   -run '^TestCandidatePerformanceAgainstPreviousRelease$' \
   -count=3 -v
 ```

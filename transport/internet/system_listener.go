@@ -103,6 +103,16 @@ func CapturePhysicalPeerListener(listener net.Listener) net.Listener {
 	return &physicalPeerListener{Listener: listener}
 }
 
+// ListenSystemCapturingPhysicalPeer listens like ListenSystem and freezes
+// accepted peers before any finalmask or transport wrapper sees them.
+func ListenSystemCapturingPhysicalPeer(ctx context.Context, addr net.Addr, sockopt *SocketConfig) (net.Listener, error) {
+	listener, err := ListenSystem(ctx, addr, sockopt)
+	if err != nil {
+		return nil, err
+	}
+	return CapturePhysicalPeerListener(listener), nil
+}
+
 func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []func(network, address string, c syscall.RawConn) error) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {

@@ -47,17 +47,16 @@ func TestServerTCPDestinationSurvivesRequestRelease(t *testing.T) {
 	}
 }
 
-func TestServerUDPDestinationSurvivesReaderRelease(t *testing.T) {
+func TestServerUDPDestinationSurvivesLaterPackets(t *testing.T) {
 	for _, packet := range []udpPacketDestination{
 		{domain: "example.com", port: 53, isDomain: true},
 		{ipv4: [4]byte{192, 0, 2, 1}, port: 53, isIPv4: true},
 	} {
-		reader := newPooledUDPReader(bytes.NewReader(nil))
+		reader := &UDPReader{reader: bytes.NewReader(nil)}
 		destination := reader.serverPacketDestination(packet)
 		want := destination.String()
 		reader.serverPacketDestination(udpPacketDestination{domain: "next.example", port: 53, isDomain: true})
 		reader.serverPacketDestination(udpPacketDestination{ipv4: [4]byte{192, 0, 2, 2}, port: 53, isIPv4: true})
-		releasePooledUDPReader(reader)
 		if got := destination.String(); got != want {
 			t.Fatalf("retained destination = %s, want %s", got, want)
 		}

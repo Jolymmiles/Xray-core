@@ -1,0 +1,139 @@
+package xdns
+
+import (
+	"errors"
+	"io"
+	"sync"
+	"sync/atomic"
+
+	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/transport/internet/finalmask"
+)
+
+type UDPResolver struct {
+	dest   net.Destination
+	dialer *finalmask.Dialer
+
+	conn    net.PacketConn
+	udpAddr atomic.Pointer[net.UDPAddr]
+
+	readCh  chan []byte
+	closeCh chan struct{}
+	wg      sync.WaitGroup
+	mu      sync.Mutex
+}
+
+func NewUDPResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, error) {
+	dest, err := net.ParseDestination("udp:" + config.Addr)
+	if err != nil {
+		return nil, err
+	}
+	r := &UDPResolver{
+		dest:    dest,
+		dialer:  dialer,
+		readCh:  make(chan []byte),
+		closeCh: make(chan struct{}),
+	}
+	if err := r.dial(); err != nil {
+		r.Close()
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *UDPResolver) closed() bool {
+	select {
+	case <-r.closeCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *UDPResolver) dial() error {
+	if r.closed() {
+		return errors.New("closed")
+	}
+	if r.conn != nil {
+		return nil
+	}
+	conn, err := r.dialer.DialUDP(r.dest)
+	if err != nil {
+		return err
+	}
+	r.conn = conn.(*net.PacketConnWrapper).PacketConn
+	r.udpAddr.Store(conn.RemoteAddr().(*net.UDPAddr))
+	r.wg.Add(1)
+	go r.recv(conn.(*net.PacketConnWrapper).PacketConn)
+	return nil
+}
+
+func (r *UDPResolver) recv(conn net.PacketConn) {
+	defer r.wg.Done()
+
+	var buf [4096]byte
+	for {
+		n, _, err := conn.ReadFrom(buf[:])
+		if err != nil {
+			break
+		}
+		p := pool4K.Get().([]byte)
+		copy(p, buf[:n])
+		select {
+		case <-r.closeCh:
+			pool4K.Put(p[:cap(p)])
+		case r.readCh <- p[:n]:
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_ = conn.Close()
+	if r.conn == conn {
+		r.conn = nil
+	}
+}
+
+func (r *UDPResolver) Addr() *net.UDPAddr {
+	return r.udpAddr.Load()
+}
+
+func (r *UDPResolver) Read(p []byte) (n int, err error) {
+	packet, ok := <-r.readCh
+	if ok {
+		n = copy(p, packet)
+		pool4K.Put(packet[:cap(packet)])
+		return n, nil
+	}
+	return 0, io.ErrClosedPipe
+}
+
+func (r *UDPResolver) Send(p []byte) {
+	r.mu.Lock()
+	if err := r.dial(); err != nil {
+		r.mu.Unlock()
+		return
+	}
+	conn := r.conn
+	r.mu.Unlock()
+	// Write outside mu: a conn behind dialerProxy can block until Close
+	// closes it, and Close needs mu to reach it.
+	_, _ = conn.WriteTo(p, r.udpAddr.Load())
+}
+
+func (r *UDPResolver) Close() {
+	r.mu.Lock()
+	if r.closed() {
+		r.mu.Unlock()
+		return
+	}
+	close(r.closeCh)
+	conn := r.conn
+	r.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	r.wg.Wait()
+	close(r.readCh)
+}

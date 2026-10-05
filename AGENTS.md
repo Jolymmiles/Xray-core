@@ -39,6 +39,19 @@ test, or compatibility gates defined here.
   that side of the gate rejects nobody. Do not reintroduce upstream's implicit
   `26.3.27` minimum. Covered by `infra/conf/reality_clientver_test.go` and
   `transport/internet/reality/clientver_test.go`.
+- The REALITY server runs from the in-tree module copy `third_party/reality`
+  (a `replace` in `go.mod`). A Client Hello that offers X25519MLKEM768 in
+  neither `supported_groups` nor `key_share` authenticates through its single
+  X25519 key share; hellos that offer the hybrid group keep upstream's rules.
+  `third_party/reality/FORK.md` lists every fork change and the update
+  procedure. Covered by `transport/internet/reality/keyshare_test.go`.
+- Every shipped and release-tested build uses Go 1.27.1 (`go.mod`) and
+  `-tags http2legacy`. Without the tag, Go 1.27's x/net HTTP/2 client dials
+  once per request while a TLS handshake hangs, defeating XHTTP
+  `xmux.maxConnections` and producing connection bursts that censors block on
+  (XTLS/Xray-core#6797). Covered by
+  `transport/internet/splithttp/http2_dial_test.go` and
+  `testing/release/build_contract_test.go`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
@@ -93,7 +106,9 @@ gain a permanent regression test before the fix.
 
 ## Go implementation standards
 
-- Run `gofmt` on every changed Go file.
+- Run `gofmt` on every changed Go file. Vendored modules under `third_party/`
+  keep their upstream bytes; only the fork-owned files listed in their
+  `FORK.md` follow this rule.
 - Use descriptive names, early returns, narrow helpers, and the simplest
   implementation that preserves the protocol.
 - Add context to errors at subsystem boundaries. Never swallow an error that
@@ -147,6 +162,9 @@ gain a permanent regression test before the fix.
 ## Required test tiers
 
 Run the narrowest applicable tier after every edit, then expand before handoff.
+Export `GOFLAGS=-tags=http2legacy` first so tests, and the binaries they build,
+match the release. An explicit `-tags` replaces the tags in `GOFLAGS`, so add
+`http2legacy` to it.
 
 ### VLESS TCP and REALITY
 
@@ -159,7 +177,7 @@ go test -gcflags=all=-d=checkptr=2 \
   ./transport/internet/reality ./proxy ./proxy/vless/inbound \
   ./proxy/vless/outbound -count=1
 go vet ./transport/internet/reality ./proxy ./proxy/vless/...
-go test -tags integration ./common/singmux \
+go test -tags 'integration http2legacy' ./common/singmux \
   -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
 ```
 
@@ -172,7 +190,7 @@ The process gate is 3 clients × 2 security modes × 2 flow modes × 3 runs:
 go test ./common/singmux/... ./common/mux ./app/proxyman/outbound ./infra/conf
 go test -race ./common/singmux/... ./common/mux
 go test -cover ./common/singmux/internal/mplsmux
-go test -tags integration ./common/singmux \
+go test -tags 'integration http2legacy' ./common/singmux \
   -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
 ```
 
@@ -192,8 +210,9 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 
 ## Linux server and network gates
 
-- Build Linux/amd64 with `CGO_ENABLED=0`, `GOAMD64=v1`, `-trimpath`, and the
-  release linker flags. Verify `file`, `sha256sum`, and `go version -m`.
+- Build Linux/amd64 with `CGO_ENABLED=0`, `GOAMD64=v1`, `-trimpath`,
+  `-tags http2legacy`, and the release linker flags. Verify `file`,
+  `sha256sum`, and `go version -m`.
 - For load work, test TLS/no-flow, TLS/Vision, REALITY/no-flow, and
   REALITY/Vision independently. Record throughput, p50/p95/p99 latency, CPU,
   RSS, GC, goroutines, threads, and file descriptors.

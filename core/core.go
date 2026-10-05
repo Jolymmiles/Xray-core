@@ -28,7 +28,7 @@ const versionHHMM = 936
 
 var (
 	build    = "Custom"
-	codename = "Xray, Penetrates Everything.(jesus)"
+	codename = "Xray, Penetrates Everything.(Jolymmiles)"
 	intro    = "A unified platform for anti-censorship."
 )
 

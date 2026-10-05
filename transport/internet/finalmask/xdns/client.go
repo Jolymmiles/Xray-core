@@ -1,471 +1,462 @@
 package xdns
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/base32"
-	"encoding/binary"
-	go_errors "errors"
 	"io"
-	"net"
-	"strconv"
+	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
+	"golang.org/x/net/dns/dnsmessage"
+)
+
+var (
+	enqueueBlockWindow = 20 * time.Millisecond
+	errQueueFull       = errors.New("xdns send queue full")
 )
 
 const (
-	numPadding          = 3
-	numPaddingForPoll   = 8
 	initPollDelay       = 500 * time.Millisecond
 	maxPollDelay        = 10 * time.Second
 	pollDelayMultiplier = 2.0
 	pollLimit           = 16
 )
 
-var (
-	// Vars so tests can tighten them; treat as constants in production.
-	queueWriteCap      = 256
-	enqueueBlockWindow = 20 * time.Millisecond
-
-	errQueueFull     = go_errors.New("xdns write queue full")
-	errShortBuffer   = go_errors.New("xdns read buffer too small")
-	errPayloadTooBig = go_errors.New("xdns payload exceeds encoder limit")
-)
-
-var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+var pool4K = sync.Pool{
+	New: func() any {
+		return make([]byte, 4096)
+	},
+}
 
 type packet struct {
 	p    []byte
 	addr net.Addr
 }
 
-type xdnsConnClient struct {
-	net.PacketConn
+type xdnsClient struct {
+	dialer *finalmask.Dialer
 
-	resolverAddrs []*net.UDPAddr
-	resolverTypes []uint16
-	// resolverIdx selects the next outbound resolver; written only by
-	// sendLoop, read by WriteTo callers.
-	resolverIdx atomic.Uint32
-	// maxPayload[i] is the largest payload encodable for resolver i.
-	maxPayload   []int
-	resolverSend map[string]*atomic.Uint32
+	clientID  ClientID
+	fragID    atomic.Uint32
+	domains   []*Domain
+	extraPoll int32
 
-	clientID []byte
-	domains  []Name
+	resolvers     []Resolver
+	resolverSends []atomic.Uint32
+	resolverIndex atomic.Uint32
 
-	pollChan   chan struct{}
-	readQueue  chan *packet
-	writeQueue chan *packet
-
-	closed atomic.Bool
-	mutex  sync.Mutex
+	readCh  chan packet
+	sendCh  chan []byte
+	poolCh  chan struct{}
+	closeCh chan struct{}
+	wg      sync.WaitGroup
+	mu      sync.Mutex
 }
 
-func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
+func NewClient(c *Config, dialer *finalmask.Dialer) (net.PacketConn, error) {
+	if len(c.Domains) == 0 {
+		return nil, errors.New("empty domains")
+	}
 	if len(c.Resolvers) == 0 {
 		return nil, errors.New("empty resolvers")
 	}
-
-	var domains []Name
-	var servers []string
-	var resolverTypes []uint16
-	for _, rs := range c.Resolvers {
-		domain, server, resolverType, err := parseResolver(rs)
-		if err != nil {
-			return nil, errors.New("invalid resolvers").Base(err)
-		}
-		domains = append(domains, domain)
-		servers = append(servers, server)
-		resolverTypes = append(resolverTypes, resolverType)
+	if c.ExtraPoll < 0 || c.ExtraPoll > 3 {
+		return nil, errors.New("c.ExtraPoll < 0 || c.ExtraPoll > 3")
 	}
-
-	var resolverAddrs []*net.UDPAddr
-	resolverSend := make(map[string]*atomic.Uint32)
-	for _, rs := range servers {
-		h, p, err := net.SplitHostPort(rs)
+	domains := make([]*Domain, 0, len(c.Domains))
+	for i := range c.Domains {
+		types := make([]uint16, 0, len(c.Domains[i].Types))
+		for j := range c.Domains[i].Types {
+			types = append(types, uint16(c.Domains[i].Types[j]))
+		}
+		if len(types) == 0 {
+			types = []uint16{16}
+		}
+		domain, err := NewDomain(c.Domains[i].Name, int(c.Domains[i].LenLimit), int(c.Domains[i].LabelLimit), types, uint16(c.Domains[i].Edns0))
 		if err != nil {
 			return nil, err
 		}
-		ip := net.ParseIP(h)
-		if ip == nil {
-			return nil, errors.New("invalid ip address")
-		}
-		port, err := strconv.Atoi(p)
+		domains = append(domains, domain)
+	}
+	resolvers := make([]Resolver, 0, len(c.Resolvers))
+	for i := range c.Resolvers {
+		resolver, err := NewResolver(c.Resolvers[i], dialer)
 		if err != nil {
-			return nil, errors.New("invalid port").Base(err)
+			for _, resolver := range resolvers {
+				resolver.Close()
+			}
+			return nil, err
 		}
-		addr := &net.UDPAddr{IP: ip, Port: port}
-		resolverAddrs = append(resolverAddrs, addr)
-		resolverSend[addr.String()] = &atomic.Uint32{}
+		resolvers = append(resolvers, resolver)
 	}
+	client := &xdnsClient{
+		dialer: dialer,
 
-	conn := &xdnsConnClient{
-		PacketConn: raw,
+		clientID:  NewClientID(),
+		domains:   domains,
+		extraPoll: c.ExtraPoll,
 
-		resolverAddrs: resolverAddrs,
-		resolverTypes: resolverTypes,
-		resolverSend:  resolverSend,
-		maxPayload:    make([]int, len(resolverTypes)),
+		resolvers:     resolvers,
+		resolverSends: make([]atomic.Uint32, len(c.Resolvers)),
 
-		clientID: make([]byte, 8),
-		domains:  domains,
-
-		pollChan:   make(chan struct{}, pollLimit),
-		readQueue:  make(chan *packet, queueWriteCap),
-		writeQueue: make(chan *packet, queueWriteCap),
+		readCh:  make(chan packet),
+		sendCh:  make(chan []byte, 16),
+		poolCh:  make(chan struct{}, pollLimit),
+		closeCh: make(chan struct{}),
 	}
-
-	common.Must2(rand.Read(conn.clientID))
-
-	// Measure the largest payload the encoder accepts per resolver suffix so
-	// oversize frames are rejected up front with a typed error instead of
-	// surfacing as a generic name-length failure mid-encode.
-	for i, dom := range conn.domains {
-		conn.maxPayload[i] = maxPayloadForDomain(dom, conn.clientID)
-	}
-
-	go conn.recvLoop()
-	go conn.sendLoop()
-
-	return conn, nil
+	go client.run()
+	return client, nil
 }
 
-func (c *xdnsConnClient) recvLoop() {
-	var buf [finalmask.UDPSize]byte
+func (c *xdnsClient) closed() bool {
+	select {
+	case <-c.closeCh:
+		return true
+	default:
+		return false
+	}
+}
 
-	consecFails := 0
-	for {
-		if c.closed.Load() {
+func (c *xdnsClient) read(buf []byte, addr net.Addr) bool {
+	msg := dnsmessage.Message{}
+	if err := msg.Unpack(buf); err != nil {
+		return false
+	}
+	if !msg.Header.Response || msg.Header.Truncated || msg.Header.RCode != dnsmessage.RCodeSuccess || len(msg.Questions) != 1 {
+		return false
+	}
+
+	var domain *Domain
+	for i := range c.domains {
+		if c.domains[i].IsDomain(msg.Questions[0].Name) {
+			domain = c.domains[i]
 			break
 		}
+	}
+	if domain == nil || !domain.HasType(uint16(msg.Questions[0].Type)) {
+		return false
+	}
 
-		n, addr, err := c.PacketConn.ReadFrom(buf[:])
+	edns0 := uint16(0)
+	for i := range msg.Additionals {
+		if msg.Additionals[i].Header.Type == dnsmessage.TypeOPT {
+			edns0 = uint16(msg.Additionals[i].Header.Class)
+			break
+		}
+	}
+	errors.LogDebug(context.Background(), addr, " edns0 ", edns0, " buf ", len(buf), " ", msg.Questions[0].Type)
+
+	resp := NewResp(msg, domain, 0)
+
+	p := pool4K.Get().([]byte)
+	n := resp.Decode(p)
+	p = p[:n]
+
+	b := p
+	var bs [][]byte
+	for len(b) > 1 {
+		last := b[0]&0xC0 == 0xC0
+		length := int(b[0]&0x3F)<<8 | int(b[1])
+		b = b[2:]
+		if length > len(b) {
+			bs = nil
+			break
+		}
+		packet := make([]byte, length)
+		copy(packet, b)
+		bs = append(bs, packet)
+		if last {
+			break
+		}
+		b = b[length:]
+		if len(b) < 2 {
+			bs = nil
+		}
+	}
+	pool4K.Put(p[:cap(p)])
+
+	for i := range bs {
+		select {
+		case <-c.closeCh:
+			return true
+		case c.readCh <- packet{p: bs[i], addr: addr}:
+		}
+	}
+	return len(bs) > 0
+}
+
+func (c *xdnsClient) run() {
+	for i := range len(c.resolvers) {
+		c.wg.Add(1)
+		go c.recv(i)
+	}
+
+	c.wg.Add(1)
+	go c.send()
+
+	c.wg.Wait()
+	close(c.readCh)
+	close(c.sendCh)
+	close(c.poolCh)
+}
+
+func (c *xdnsClient) recv(i int) {
+	defer c.wg.Done()
+
+	var buf [4096]byte
+	for {
+		n, err := c.resolvers[i].Read(buf[:])
 		if err != nil {
-			if go_errors.Is(err, net.ErrClosed) {
-				break
+			if c.closed() {
+				return
 			}
-			consecFails++
-			time.Sleep(recvErrorBackoff(consecFails))
-			continue
+			errors.LogErrorInner(context.Background(), err, "recv err ", i)
+			return
 		}
-		consecFails = 0
-
-		if addr == nil {
-			continue
-		}
-
-		send := c.resolverSend[addr.String()]
-		if send == nil {
-			continue
-		}
-
-		resp, err := MessageFromWireFormat(buf[:n])
-		if err != nil {
-			errors.LogDebug(context.Background(), addr, " xdns from wireformat err ", err)
-			continue
-		}
-
-		payload := dnsResponsePayload(&resp, c.domains)
-
-		r := bytes.NewReader(payload)
-		anyPacket := false
-		for {
-			p, err := nextPacket(r)
-			if err != nil {
-				break
-			}
-			anyPacket = true
-
-			buf := make([]byte, len(p))
-			copy(buf, p)
+		if c.read(buf[:n], c.resolvers[i].Addr()) {
+			c.resolverSends[i].Store(0)
 			select {
-			case c.readQueue <- &packet{
-				p:    buf,
-				addr: addr,
-			}:
-			default:
-				errors.LogDebug(context.Background(), addr, " mask read err queue full")
-			}
-		}
-
-		if anyPacket {
-			send.Store(0)
-			select {
-			case c.pollChan <- struct{}{}:
+			case c.poolCh <- struct{}{}:
 			default:
 			}
 		}
 	}
-
-	errors.LogDebug(context.Background(), "xdns closed")
-
-	close(c.pollChan)
-	close(c.readQueue)
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.closed.Store(true)
-	close(c.writeQueue)
 }
 
-func (c *xdnsConnClient) sendLoop() {
-	pollDelay := initPollDelay
-	pollTimer := time.NewTimer(pollDelay)
-	for {
-		var p *packet
-		pollTimerExpired := false
+func (c *xdnsClient) send() {
+	defer c.wg.Done()
 
-		select {
-		case p = <-c.writeQueue:
-		default:
-			select {
-			case p = <-c.writeQueue:
-			case <-c.pollChan:
-			case <-pollTimer.C:
-				pollTimerExpired = true
+	var buf [512]byte
+	var data [255]byte
+
+	sendMsg := func(p []byte, domain *Domain, qtype uint16) {
+		msg := dnsmessage.Message{
+			Header: dnsmessage.Header{
+				RecursionDesired: true,
+			},
+			Questions: []dnsmessage.Question{
+				{
+					Name:  domain.Encode(p),
+					Type:  dnsmessage.Type(qtype),
+					Class: dnsmessage.ClassINET,
+				},
+			},
+		}
+		if domain.edns0 > 0 {
+			msg.Additionals = []dnsmessage.Resource{
+				{
+					Header: dnsmessage.ResourceHeader{
+						Name:  dnsmessage.MustNewName("."),
+						Type:  dnsmessage.TypeOPT,
+						Class: dnsmessage.Class(domain.edns0),
+						TTL:   0,
+					},
+					Body: &dnsmessage.OPTResource{},
+				},
 			}
 		}
+		pack := common.Must2(msg.AppendPack(buf[:0]))
+		common.Must2(rand.Read(pack[:2]))
 
-		if p != nil {
-			select {
-			case <-c.pollChan:
-			default:
+		index := c.resolverIndex.Load()
+		cur := c.resolverSends[index].Add(1)
+		i := index
+		for {
+			i++
+			if i == uint32(len(c.resolvers)) {
+				i = 0
 			}
-		} else {
-			idx := c.resolverIdx.Load()
-			encoded, _ := encode(nil, c.clientID, c.domains[idx], c.resolverTypes[idx])
-			p = &packet{
-				p: encoded,
+			if i == index {
+				break
+			}
+			if cur > c.resolverSends[i].Load() {
+				break
 			}
 		}
+		c.resolverIndex.Store(i)
+		c.resolvers[index].Send(pack)
+	}
 
-		if pollTimerExpired {
-			pollDelay = time.Duration(float64(pollDelay) * pollDelayMultiplier)
-			if pollDelay > maxPollDelay {
-				pollDelay = maxPollDelay
-			}
-		} else {
-			if !pollTimer.Stop() {
-				<-pollTimer.C
-			}
-			pollDelay = initPollDelay
-		}
-		pollTimer.Reset(pollDelay)
+	send := func(p []byte) {
+		domain := c.domains[mrand.Intn(len(c.domains))]
+		qtype := domain.types[mrand.Intn(len(domain.types))]
 
-		if c.closed.Load() {
+		if len(p) == 0 {
+			copy(data[:], c.clientID[:])
+			data[0] |= TypeMap[qtype]
+			data[8] = 8
+			common.Must2(rand.Read(data[9:17]))
+			sendMsg(data[:17], domain, qtype)
 			return
 		}
 
-		// Single writer: cursor advances locally and is published once, so
-		// concurrent WriteTo readers always observe a consistent slot.
-		cur := c.resolverIdx.Load()
-		curSend := c.resolverSend[c.resolverAddrs[cur].String()].Add(1)
-		_, _ = c.PacketConn.WriteTo(p.p, c.resolverAddrs[cur])
-		next := cur
-		for {
-			cand := (next + 1) % uint32(len(c.resolverAddrs))
-			if cand == cur {
-				next = cur
-				break
+		if len(p) <= domain.cap-12 {
+			copy(data[:], c.clientID[:])
+			data[0] |= TypeMap[qtype]
+			data[8] = 3
+			common.Must2(rand.Read(data[9:12]))
+			copy(data[12:], p)
+			sendMsg(data[:12+len(p)], domain, qtype)
+			return
+		}
+
+		if len(p) <= 255*(domain.cap-15) {
+			copy(data[:], c.clientID[:])
+			data[0] |= TypeMap[qtype]
+			data[8] = 3 | 0xC0
+			common.Must2(rand.Read(data[9:12]))
+
+			fragID := byte(c.fragID.Add(1))
+			fragN := len(p) / (domain.cap - 15)
+			if len(p)%(domain.cap-15) > 0 {
+				fragN++
 			}
-			next = cand
-			if c.resolverSend[c.resolverAddrs[cand].String()].Load() < curSend {
-				break
+
+			for i := range fragN {
+				data[12] = fragID
+				data[13] = byte(i)
+				data[14] = byte(fragN)
+				size := min(len(p), domain.cap-15)
+				copy(data[15:], p[:size])
+				sendMsg(data[:15+size], domain, qtype)
+				p = p[size:]
+			}
+			return
+		}
+
+		errors.LogError(context.Background(), "err size ", len(p))
+	}
+
+	ticker := time.NewTicker(initPollDelay)
+	defer ticker.Stop()
+	delay := initPollDelay
+	timeout := false
+	for {
+		// Only a packet from sendCh carries data; polls are empty.
+		var p []byte
+		select {
+		case <-c.closeCh:
+			return
+		default:
+			select {
+			case <-c.closeCh:
+				return
+			case p = <-c.sendCh:
+			case <-c.poolCh:
+			case <-ticker.C:
+				timeout = true
 			}
 		}
-		c.resolverIdx.Store(next)
+
+		if len(p) > 0 {
+			select {
+			case <-c.poolCh:
+			default:
+			}
+		}
+
+		send(p)
+		for range c.extraPoll {
+			send(nil)
+		}
+
+		if timeout {
+			delay *= pollDelayMultiplier
+			if delay > maxPollDelay {
+				delay = maxPollDelay
+			}
+			timeout = false
+		} else {
+			delay = initPollDelay
+		}
+		ticker.Reset(delay)
 	}
 }
 
-func (c *xdnsConnClient) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	packet, ok := <-c.readQueue
-	if !ok {
-		return 0, nil, net.ErrClosed
+func (c *xdnsClient) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	packet, ok := <-c.readCh
+	if ok {
+		return copy(p, packet.p), packet.addr, nil
 	}
-	if len(p) < len(packet.p) {
-		errors.LogDebug(context.Background(), packet.addr, " mask read err short buffer ", len(p), " ", len(packet.p))
-		return 0, packet.addr, errShortBuffer
-	}
-	copy(p, packet.p)
-	return len(packet.p), packet.addr, nil
+	return 0, nil, io.ErrClosedPipe
 }
 
-func (c *xdnsConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	if c.closed.Load() {
+func (c *xdnsClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed() {
 		return 0, io.ErrClosedPipe
 	}
-
-	idx := c.resolverIdx.Load() % uint32(len(c.resolverAddrs))
-	if len(p) > c.maxPayload[idx] {
-		errors.LogDebug(context.Background(), addr, " xdns payload too large ", len(p), " > ", c.maxPayload[idx])
-		return 0, errPayloadTooBig
+	if len(p) == 0 || len(p) > 4096 {
+		errors.LogError(context.Background(), "err size ", len(p))
+		return 0, errors.New("err size")
 	}
-	encoded, err := encode(p, c.clientID, c.domains[idx], c.resolverTypes[idx])
-	if err != nil {
-		errors.LogDebug(context.Background(), addr, " xdns wireformat err ", err, " ", len(p))
-		return 0, err
+	b := make([]byte, len(p))
+	copy(b, p)
+	select {
+	case c.sendCh <- b:
+		return len(p), nil
+	default:
 	}
-
-	// Bounded block: give the pipeline a short window to drain instead of
-	// dropping silently, then report the loss to the caller.
+	// Absorb a short burst, then report the loss instead of hiding it.
 	timer := time.NewTimer(enqueueBlockWindow)
 	defer timer.Stop()
 	select {
-	case c.writeQueue <- &packet{
-		p:    encoded,
-		addr: addr,
-	}:
+	case c.sendCh <- b:
 		return len(p), nil
 	case <-timer.C:
-		errors.LogDebug(context.Background(), addr, " mask write err queue full")
 		return 0, errQueueFull
 	}
 }
 
-func (c *xdnsConnClient) Close() error {
-	c.closed.Store(true)
-	return c.PacketConn.Close()
-}
-
-func encode(p []byte, clientID []byte, domain Name, qtype uint16) ([]byte, error) {
-	var decoded []byte
-	{
-		// Payload size is bounded by the measured per-resolver limit checked
-		// in WriteTo; oversized input fails inside NewName below.
-		var buf bytes.Buffer
-		buf.Write(clientID[:])
-		n := numPadding
-		if len(p) == 0 {
-			n = numPaddingForPoll
-		}
-		buf.WriteByte(byte(224 + n))
-		_, _ = io.CopyN(&buf, rand.Reader, int64(n))
-		if len(p) > 0 {
-			buf.WriteByte(byte(len(p)))
-			buf.Write(p)
-		}
-		decoded = buf.Bytes()
-	}
-
-	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
-	base32Encoding.Encode(encoded, decoded)
-	encoded = bytes.ToLower(encoded)
-	labels := chunks(encoded, 63)
-	labels = append(labels, domain...)
-	name, err := NewName(labels)
-	if err != nil {
-		return nil, err
-	}
-
-	var id uint16
-	_ = binary.Read(rand.Reader, binary.BigEndian, &id)
-	query := &Message{
-		ID:    id,
-		Flags: 0x0100,
-		Question: []Question{
-			{
-				Name:  name,
-				Type:  qtype,
-				Class: ClassIN,
-			},
-		},
-		Additional: []RR{
-			{
-				Name:  Name{},
-				Type:  RRTypeOPT,
-				Class: 4096,
-				TTL:   0,
-				Data:  []byte{},
-			},
-		},
-	}
-
-	buf, err := query.WireFormat()
-	if err != nil {
-		return nil, err
-	}
-
-	return buf, nil
-}
-
-// maxPayloadForDomain measures the largest payload the encoder accepts for a
-// resolver suffix, so oversize frames are rejected with a typed error instead
-// of failing inside NewName.
-func maxPayloadForDomain(domain Name, clientID []byte) int {
-	lo, hi := 0, 4096
-	for lo+1 < hi {
-		mid := (lo + hi) / 2
-		if _, err := encode(make([]byte, mid), clientID, domain, RRTypeTXT); err == nil {
-			lo = mid
-		} else {
-			hi = mid
-		}
-	}
-	return lo
-}
-
-func chunks(p []byte, n int) [][]byte {
-	var result [][]byte
-	for len(p) > 0 {
-		sz := len(p)
-		if sz > n {
-			sz = n
-		}
-		result = append(result, p[:sz])
-		p = p[sz:]
-	}
-	return result
-}
-
-func nextPacket(r *bytes.Reader) ([]byte, error) {
-	var n uint16
-	err := binary.Read(r, binary.BigEndian, &n)
-	if err != nil {
-		return nil, err
-	}
-	p := make([]byte, n)
-	_, err = io.ReadFull(r, p)
-	if err == io.EOF {
-		err = io.ErrUnexpectedEOF
-	}
-	return p, err
-}
-
-func dnsResponsePayload(resp *Message, domains []Name) []byte {
-	if resp.Flags&0x8000 != 0x8000 {
+func (c *xdnsClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed() {
 		return nil
 	}
-	if resp.Flags&0x000f != RcodeNoError {
-		return nil
+	close(c.closeCh)
+	for i := range c.resolvers {
+		c.resolvers[i].Close()
 	}
+	return nil
+}
 
-	if len(resp.Answer) == 0 {
-		return nil
-	}
+func (c *xdnsClient) LocalAddr() net.Addr { return &net.UDPAddr{IP: []byte{0, 0, 0, 0}} }
 
-	for _, answer := range resp.Answer {
-		var ok bool
-		for _, domain := range domains {
-			_, ok = answer.Name.TrimSuffix(domain)
-			if ok {
-				break
-			}
-		}
-		if !ok {
-			return nil
-		}
-	}
+func (c *xdnsClient) SetDeadline(t time.Time) error { return errors.New("not support") }
 
-	return decodeResponsePayload(resp.Answer)
+func (c *xdnsClient) SetReadDeadline(t time.Time) error { return errors.New("not support") }
+
+func (c *xdnsClient) SetWriteDeadline(t time.Time) error { return errors.New("not support") }
+
+type ClientID [8]byte
+
+func NewClientID() ClientID {
+	var id ClientID
+	common.Must2(rand.Read(id[:]))
+	id[0] &= 0xFC
+	return id
+}
+
+func ClientIDFromRaw(id [8]byte) ClientID {
+	id[0] &= 0xFC
+	return id
+}
+
+func ClientIDFromAddr(addr *net.UDPAddr) ClientID {
+	return ClientID(addr.IP[8:])
+}
+
+func (id ClientID) Addr() *net.UDPAddr {
+	var ip [16]byte
+	ip[0] = 0xFD
+	copy(ip[8:], id[:])
+	return &net.UDPAddr{IP: ip[:]}
 }

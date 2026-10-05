@@ -19,98 +19,18 @@ var (
 	hysteriaUserSink       *protocol.MemoryUser
 )
 
-func TestPooledServerUDPStateCleared(t *testing.T) {
-	reader := newPooledUDPReader(bytes.NewReader(nil))
-	reader.message = UDPMessage{Addr: "example.com:443", Data: []byte("payload")}
-	fragment := UDPMessage{PacketID: 1, FragID: 0, FragCount: 2, Data: []byte("retained")}
-	if reader.df.storeClonedFragment(&fragment) {
-		t.Fatal("incomplete fragment unexpectedly completed")
-	}
-	reader.firstBuf = buf.FromBytes([]byte("first"))
-	reader.link = transport.Link{Reader: reader, Writer: buf.NewWriter(io.Discard)}
-	reader.serverWriter.writer = io.Discard
-	reader.serverWriter.addr = "retained.example:443"
-	reader.serverWriter.defaultHeaderLength = 17
-	reader.serverWriter.managedDomain = "retained.example"
-	reader.serverWriter.managedDomainPort = 443
-	reader.serverWriter.managedHeaderLength = 18
-	reader.serverWriter.managedIPv4 = [4]byte{192, 0, 2, 1}
-	reader.serverWriter.managedIPv4Port = 53
-	reader.serverWriter.managedIPv4Header = 19
-	releasePooledUDPReader(reader)
-
-	reused := newPooledUDPReader(bytes.NewReader(nil))
-	defer releasePooledUDPReader(reused)
-	if reused.firstBuf != nil || reused.message.Addr != "" || len(reused.message.Data) != 0 || len(reused.df.frags) != 0 || reused.df.storage != nil || reused.df.used != 0 || reused.link.Reader != nil || reused.link.Writer != nil || reused.serverWriter.writer != nil || reused.serverWriter.addr != "" || reused.serverWriter.defaultHeaderLength != 0 || reused.serverWriter.managedDomain != "" || reused.serverWriter.managedHeaderLength != 0 || reused.serverWriter.managedIPv4Header != 0 {
-		t.Fatalf("pooled UDP reader retained state: first=%v message=%+v fragments=%d", reused.firstBuf, reused.message, len(reused.df.frags))
-	}
-}
-
-func TestPooledServerUDPIOAllocationBudget(t *testing.T) {
-	source := bytes.NewReader(nil)
-	allocations := testing.AllocsPerRun(1000, func() {
-		reader := newPooledUDPReader(source)
-		writer := &reader.serverWriter
-		writer.writer = io.Discard
-		writer.addr = "example.com:443"
-		reader.link.Reader = reader
-		reader.link.Writer = writer
-		hysteriaServerLinkSink = &reader.link
-		releasePooledUDPReader(reader)
-	})
-	if allocations > 1 {
-		t.Fatalf("pooled Hysteria server UDP I/O allocations = %.0f, want at most one cold-pool allocation", allocations)
-	}
-}
-
+// BenchmarkServerUDPIOSetup measures the per-session link the server hands to
+// the dispatcher. It is allocated per session because the link outlives
+// Server.Process; see server_link_lifetime_test.go.
 func BenchmarkServerUDPIOSetup(b *testing.B) {
 	source := bytes.NewReader(nil)
-	b.Run("current", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			hysteriaServerLinkSink = &transport.Link{
-				Reader: &UDPReader{reader: source},
-				Writer: &UDPWriter{writer: io.Discard, addr: "example.com:443"},
-			}
+	b.ReportAllocs()
+	for b.Loop() {
+		hysteriaServerLinkSink = &transport.Link{
+			Reader: &UDPReader{reader: source},
+			Writer: &UDPWriter{writer: io.Discard, addr: "example.com:443"},
 		}
-	})
-	b.Run("separate-link", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			reader := newPooledUDPReader(source)
-			writer := newPooledUDPWriter(io.Discard, "example.com:443")
-			// transport.Link is allocated per connection rather than pooled: it
-			// escapes into the outbound handler for the connection's lifetime,
-			// so recycling it cannot be shown safe.
-			hysteriaServerLinkSink = &transport.Link{Reader: reader, Writer: writer}
-			releasePooledUDPWriter(writer)
-			releasePooledUDPReader(reader)
-		}
-	})
-	b.Run("pooled", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			reader := newPooledUDPReader(source)
-			writer := newPooledUDPWriter(io.Discard, "example.com:443")
-			reader.link.Reader = reader
-			reader.link.Writer = writer
-			hysteriaServerLinkSink = &reader.link
-			releasePooledUDPWriter(writer)
-			releasePooledUDPReader(reader)
-		}
-	})
-	b.Run("embedded-writer", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			reader := newPooledUDPReader(source)
-			reader.serverWriter.writer = io.Discard
-			reader.serverWriter.addr = "example.com:443"
-			reader.link.Reader = reader
-			reader.link.Writer = &reader.serverWriter
-			hysteriaServerLinkSink = &reader.link
-			releasePooledUDPReader(reader)
-		}
-	})
+	}
 }
 
 func BenchmarkAnonymousServerUser(b *testing.B) {
@@ -162,64 +82,13 @@ func BenchmarkServerPolicyForLevelZero(b *testing.B) {
 	})
 }
 
-func pooledServerTCPIOCycle(readerSource *bytes.Reader, request *serverTCPRequest) error {
-	wireWriter := buf.NewPooledWriter(io.Discard)
-	if err := writeTCPResponseOK(wireWriter.(io.Writer)); err != nil {
-		return err
-	}
-	reader := buf.NewPooledReader(readerSource)
-	request.link.Reader = reader
-	request.link.Writer = wireWriter
-	hysteriaServerLinkSink = &request.link
-	request.link = transport.Link{}
-	buf.ReleasePooledReader(reader)
-	buf.ReleasePooledWriter(wireWriter)
-	return nil
-}
-
-func TestPooledServerTCPIOAllocationBudget(t *testing.T) {
-	readerSource := bytes.NewReader(nil)
-	request := new(serverTCPRequest)
-	allocations := testing.AllocsPerRun(1000, func() {
-		if err := pooledServerTCPIOCycle(readerSource, request); err != nil {
-			panic(err)
-		}
-	})
-	if allocations > 1 {
-		t.Fatalf("pooled Hysteria server TCP I/O allocations = %.0f, want at most one cold-pool allocation", allocations)
-	}
-}
-
 func BenchmarkServerTCPIOSetup(b *testing.B) {
 	readerSource := bytes.NewReader(nil)
-	b.Run("current", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			writer := buf.NewBufferedWriter(buf.NewWriter(io.Discard))
-			if err := writeTCPResponseOK(writer); err != nil {
-				b.Fatal(err)
-			}
-			if err := writer.SetBuffered(false); err != nil {
-				b.Fatal(err)
-			}
-			hysteriaServerLinkSink = &transport.Link{Reader: buf.NewReader(readerSource), Writer: writer}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := writeTCPResponseOK(io.Discard); err != nil {
+			b.Fatal(err)
 		}
-	})
-	b.Run("pooled", func(b *testing.B) {
-		request := new(serverTCPRequest)
-		b.ReportAllocs()
-		for b.Loop() {
-			wireWriter := buf.NewPooledWriter(io.Discard)
-			if err := writeTCPResponseOK(wireWriter.(io.Writer)); err != nil {
-				b.Fatal(err)
-			}
-			reader := buf.NewPooledReader(readerSource)
-			request.link.Reader = reader
-			request.link.Writer = wireWriter
-			hysteriaServerLinkSink = &request.link
-			request.link = transport.Link{}
-			buf.ReleasePooledReader(reader)
-			buf.ReleasePooledWriter(wireWriter)
-		}
-	})
+		hysteriaServerLinkSink = &transport.Link{Reader: buf.NewReader(readerSource), Writer: &serverStreamWriter{writer: buf.NewWriter(io.Discard)}}
+	}
 }

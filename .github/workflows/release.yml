@@ -94,7 +94,8 @@ jobs:
         run: |
           mkdir -p build_assets
           COMMID=$(git describe --always --dirty)
-          go build -o build_assets/xray -trimpath -buildvcs=false -gcflags="all=-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" -v ./main
+          # http2legacy keeps x/net's HTTP/2 connection pool (XTLS/Xray-core#6797).
+          go build -tags http2legacy -o build_assets/xray -trimpath -buildvcs=false -gcflags="all=-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" -v ./main
 
       - name: Restore Geodat Cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

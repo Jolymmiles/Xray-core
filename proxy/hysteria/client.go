@@ -7,7 +7,6 @@ import (
 	go_errors "errors"
 	"io"
 	"math/rand"
-	"sync"
 
 	"github.com/apernet/quic-go"
 	"github.com/apernet/quic-go/quicvarint"
@@ -66,7 +65,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 
 	conn, err := dialer.Dial(hysteria.ContextWithDatagram(ctx, target.Network == net.Network_UDP), c.server.Destination)
 	if err != nil {
-		return errors.New("failed to find an available destination").AtWarning().Base(err)
+		return errors.New("failed to find an available destination").Base(err)
 	}
 	defer conn.Close()
 	errors.LogInfo(ctx, "tunneling request to ", target, " via ", target.Network, ":", c.server.Destination.NetAddr())
@@ -186,41 +185,6 @@ type UDPWriter struct {
 	managedIPv4Port     net.Port
 	managedIPv4Header   int
 	buf                 [buf.Size]byte
-}
-
-var udpWriterPool sync.Pool
-
-func newPooledUDPWriter(writer io.Writer, address string) *UDPWriter {
-	pooled, _ := udpWriterPool.Get().(*UDPWriter)
-	if pooled == nil {
-		pooled = new(UDPWriter)
-	}
-	pooled.writer = writer
-	pooled.addr = address
-	pooled.defaultHeaderLength = 0
-	pooled.managedDomain = ""
-	pooled.managedDomainPort = 0
-	pooled.managedHeaderLength = 0
-	pooled.managedIPv4 = [4]byte{}
-	pooled.managedIPv4Port = 0
-	pooled.managedIPv4Header = 0
-	return pooled
-}
-
-func releasePooledUDPWriter(writer *UDPWriter) {
-	if writer == nil {
-		return
-	}
-	writer.writer = nil
-	writer.addr = ""
-	writer.defaultHeaderLength = 0
-	writer.managedDomain = ""
-	writer.managedDomainPort = 0
-	writer.managedHeaderLength = 0
-	writer.managedIPv4 = [4]byte{}
-	writer.managedIPv4Port = 0
-	writer.managedIPv4Header = 0
-	udpWriterPool.Put(writer)
 }
 
 func (w *UDPWriter) SendMessage(msg *UDPMessage) error {
@@ -463,49 +427,8 @@ type UDPReader struct {
 	lastDomain     string
 	lastDomainPort net.Port
 	lastAddress    string
-	serverWriter   UDPWriter
-	link           transport.Link
 	buf            [hysteria.MaxDatagramFrameSize]byte
 	message        UDPMessage
-}
-
-var udpReaderPool sync.Pool
-
-func newPooledUDPReader(reader io.Reader) *UDPReader {
-	pooled, _ := udpReaderPool.Get().(*UDPReader)
-	if pooled == nil {
-		pooled = new(UDPReader)
-	}
-	pooled.reader = reader
-	return pooled
-}
-
-func releasePooledUDPReader(reader *UDPReader) {
-	if reader == nil {
-		return
-	}
-	if reader.firstBuf != nil {
-		reader.firstBuf.Release()
-	}
-	reader.reader = nil
-	reader.firstBuf = nil
-	reader.lastDomain = ""
-	reader.lastDomainPort = 0
-	reader.lastAddress = ""
-	reader.serverWriter.writer = nil
-	reader.serverWriter.addr = ""
-	reader.serverWriter.defaultHeaderLength = 0
-	reader.serverWriter.managedDomain = ""
-	reader.serverWriter.managedDomainPort = 0
-	reader.serverWriter.managedHeaderLength = 0
-	reader.serverWriter.managedIPv4 = [4]byte{}
-	reader.serverWriter.managedIPv4Port = 0
-	reader.serverWriter.managedIPv4Header = 0
-	reader.link = transport.Link{}
-	reader.message = UDPMessage{}
-	reader.df.reset()
-	reader.df = Defragger{}
-	udpReaderPool.Put(reader)
 }
 
 func (r *UDPReader) serverPacketDestination(destination udpPacketDestination) net.Destination {
