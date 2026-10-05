@@ -39,6 +39,12 @@ test, or compatibility gates defined here.
   that side of the gate rejects nobody. Do not reintroduce upstream's implicit
   `26.3.27` minimum. Covered by `infra/conf/reality_clientver_test.go` and
   `transport/internet/reality/clientver_test.go`.
+- The REALITY server runs from the in-tree module copy `third_party/reality`
+  (a `replace` in `go.mod`). A Client Hello that offers X25519MLKEM768 in
+  neither `supported_groups` nor `key_share` authenticates through its single
+  X25519 key share; hellos that offer the hybrid group keep upstream's rules.
+  `third_party/reality/FORK.md` lists every fork change and the update
+  procedure. Covered by `transport/internet/reality/keyshare_test.go`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.

@@ -164,6 +164,7 @@ func main() {
 		if strings.HasSuffix(filename, ".go") &&
 			!strings.HasSuffix(filename, ".pb.go") &&
 			!strings.Contains(dir, filepath.Join("testing", "mocks")) &&
+			!strings.Contains(dir, "third_party") && // vendored modules keep upstream formatting
 			!strings.Contains(path, filepath.Join("main", "distro", "all", "all.go")) {
 			jobs <- path
 		}
