@@ -297,6 +297,7 @@ func TestMphMatcherGroupMatchFirst(t *testing.T) {
 		t.Fatal("MatchFirst matched unrelated domain")
 	}
 }
+
 func TestMphMatcherGroupRandom(t *testing.T) {
 	inputs := []string{""} // All strings over "ab." up to 7 bytes
 	for i := 0; len(inputs[i]) < 7; i++ {
