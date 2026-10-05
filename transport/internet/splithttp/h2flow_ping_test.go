@@ -122,3 +122,27 @@ func TestFlowQueueShrink(t *testing.T) {
 		t.Fatalf("shrank to %d, below what the reader takes per empty round trip", w.cap)
 	}
 }
+
+func TestFlowFloorConfirmed(t *testing.T) {
+	ms := time.Millisecond
+	now := time.Unix(100, 0)
+	for _, tc := range []struct {
+		name         string
+		ping, kernel time.Duration
+		want         bool
+	}{
+		{"direct", 300 * ms, 150 * ms, true},
+		{"direct, no PING yet", 0, 150 * ms, true},
+		{"TCP proxy in front", 150 * ms, ms, false},
+		{"no kernel view", 150 * ms, 0, false},
+	} {
+		c := &flowConn{rttBase: tc.ping}
+		if tc.kernel > 0 {
+			c.tcp, c.kAt, c.kOK = fakeRawConn{}, now, true
+			c.kstat = tcpStats{rtt: tc.kernel, minRTT: tc.kernel}
+		}
+		if got := c.floorConfirmed(now); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

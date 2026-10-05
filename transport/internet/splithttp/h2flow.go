@@ -388,11 +388,25 @@ func (c *flowConn) kernelStats(now time.Time) bool {
 // is kept.
 func (c *flowConn) pingFloor(now time.Time) time.Duration {
 	floor := c.rttBase
-	if c.kernelStats(now) && c.kstat.minRTT < floor && 4*c.kstat.minRTT >= floor {
+	if c.floorConfirmed(now) && c.kstat.minRTT < floor {
 		floor = c.kstat.minRTT
 	}
 	return floor
 }
+
+// floorConfirmed reports whether the kernel vouches for the round trip of the
+// empty path: it has a min_rtt for this socket that is not far below what the
+// PINGs show, so no TCP proxy sits in front.
+func (c *flowConn) floorConfirmed(now time.Time) bool {
+	return c.kernelStats(now) && (c.rttBase == 0 || 4*c.kstat.minRTT >= c.rttBase)
+}
+
+// Without a confirmed floor the PING-seen queue cannot be told from the round
+// trip, so windows that the queue hold guards stay where Go keeps them.
+const (
+	flowUnconfirmedUp   = 1 << 20
+	flowUnconfirmedDown = 4 << 20
+)
 
 // pingQueueing is queueing for what the kernel cannot see: the backlog of a
 // client's upload, or of a download towards a client this side dialed from.
@@ -895,8 +909,13 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		switch {
-		case q == 2 && c.client:
-			c.queueShrink(&s.down, now, c.down.init)
+		case c.client:
+			if q == 2 {
+				c.queueShrink(&s.down, now, c.down.init)
+			}
+			if !c.floorConfirmed(now) {
+				s.down.cap = min(s.down.cap, flowUnconfirmedDown)
+			}
 		case q == 2 && now.Sub(s.down.qAt) >= c.currentRTT():
 			s.down.qAt = now
 			s.down.cap = max(c.down.init, s.down.cap/4*3)
@@ -995,6 +1014,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, q > 0)
 		if q == 2 {
 			c.queueShrink(&s.up, now, c.up.init)
+		}
+		if !c.floorConfirmed(now) {
+			s.up.cap = min(s.up.cap, flowUnconfirmedUp)
 		}
 		c.upLearned.note(now, c.up.init, s.up.cap)
 		rel := c.upRelease(s)
