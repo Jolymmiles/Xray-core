@@ -162,6 +162,7 @@ type ServerWorker struct {
 	done           *done.Instance
 	timer          *time.Ticker
 	finishOnce     sync.Once
+	keepAliveStop  chan struct{}
 }
 
 func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.Link) (*ServerWorker, error) {
@@ -189,6 +190,7 @@ func newServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 		inbound.CanSpliceCopy = 3
 		if conn, ok := stat.TryUnwrapStatsConn(inbound.Conn).(muxKeepAliveConn); ok {
 			if _, to := conn.MuxKeepAlive(); to > 0 {
+				worker.keepAliveStop = make(chan struct{})
 				go worker.keepAlive(conn)
 			}
 		}
@@ -215,8 +217,18 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 // exited" while monitor still Interrupted the link afterward. Callers waiting
 // on done (DispatchLink) then Release()'d pooled link.Reader under that
 // Interrupt. Contract now: done/WaitClosed ⇒ link is no longer touched.
+//
+// The KeepAlive loop is told to stop first; once it sees stop it starts no
+// write. finish does not wait for it: a KeepAlive write already stuck on a
+// link it cannot interrupt, such as a VLESS writer whose client stopped
+// reading, would hold shutdown for as long as the stalled connection. Such a
+// write ends with an error once the connection closes, like a session's End
+// frame.
 func (w *ServerWorker) finish() {
 	w.finishOnce.Do(func() {
+		if w.keepAliveStop != nil {
+			close(w.keepAliveStop)
+		}
 		w.sessionManager.close()
 		w.responseSink.close()
 		common.Interrupt(w.link.Writer)
@@ -270,7 +282,8 @@ func roll(from, to int32) int {
 // keepAlive sends the KeepAlive frame every client already discards, so that a
 // downlink whose sessions are all quiet is not taken for idle on the way. It
 // only pokes a downlink that has actually fallen silent, and only a transport
-// that asks for it gets one, so others gain no pattern.
+// that asks for it gets one, so others gain no pattern. finish stops it; it
+// starts no write once it has seen stop.
 func (w *ServerWorker) keepAlive(conn muxKeepAliveConn) {
 	from, to := conn.MuxKeepAlive()
 	if from < 1 {
@@ -284,7 +297,7 @@ func (w *ServerWorker) keepAlive(conn muxKeepAliveConn) {
 			return
 		}
 		select {
-		case <-w.done.Wait():
+		case <-w.keepAliveStop:
 			return
 		case <-time.After(wait):
 		}
@@ -305,6 +318,14 @@ func (w *ServerWorker) writeKeepAlive(conn muxKeepAliveConn) bool {
 	if padding > 0 {
 		common.Must2(serial.WriteUint16(b, uint16(padding)))
 		common.Must2(rand.Read(b.Extend(int32(padding))))
+	}
+	// Check stop as late as possible: a write the loop has not started by
+	// the time finish signals stop never starts.
+	select {
+	case <-w.keepAliveStop:
+		b.Release()
+		return false
+	default:
 	}
 	return w.link.Writer.WriteMultiBuffer(buf.MultiBuffer{b}) == nil
 }

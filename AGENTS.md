@@ -52,6 +52,13 @@ test, or compatibility gates defined here.
   (XTLS/Xray-core#6797). Covered by
   `transport/internet/splithttp/http2_dial_test.go` and
   `testing/release/build_contract_test.go`.
+- XHTTP inbounds accept Mux.Cool TCP sessions; upstream (XTLS/Xray-core#4128)
+  limits them to pure XUDP. In packet-up and stream-up the server can poke an
+  idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
+  and `muxKeepAliveBytes`, off by default); stream-one is never poked. Fields
+  30 and 31 of the splithttp `Config` message are fork-owned: renumber them if
+  upstream claims those numbers. Covered by `common/mux/server_test.go` and
+  `common/singmux/xhttp_muxcool_integration_test.go`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
