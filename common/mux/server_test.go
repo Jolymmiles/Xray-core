@@ -1,13 +1,18 @@
 package mux_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
@@ -120,5 +125,127 @@ func TestRegressionOutboundLeak(t *testing.T) {
 
 	if outbounds[0].Target.Address != nil {
 		t.Error("outbound target got leaked: ", outbounds[0].Target.String())
+	}
+}
+
+// keepAliveConn asks for a KeepAlive and reports its downlink as long silent,
+// so that a worker pokes it at once.
+type keepAliveConn struct {
+	net.Conn
+	bytesFrom, bytesTo int32
+}
+
+func (c keepAliveConn) MuxKeepAlive() (int32, int32)      { return 1, 1 }
+func (c keepAliveConn) MuxKeepAliveBytes() (int32, int32) { return c.bytesFrom, c.bytesTo }
+func (c keepAliveConn) DownlinkIdle() time.Duration       { return time.Hour }
+
+func TestServerWorkerKeepAlive(t *testing.T) {
+	for _, padding := range [][2]int32{{0, 0}, {50, 400}, {10000, 20000}} {
+		uplink, downlink := newLinkPair()
+		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{
+			Conn: keepAliveConn{bytesFrom: padding[0], bytesTo: padding[1]},
+		})
+		worker, err := mux.NewServerWorker(ctx, &TestDispatcher{}, uplink)
+		common.Must(err)
+		defer worker.Close()
+
+		mb, err := downlink.Reader.ReadMultiBuffer()
+		common.Must(err)
+		if mb.Len() > buf.Size {
+			t.Fatal(padding, " frame does not fit one buffer: ", mb.Len())
+		}
+
+		reader := &buf.MultiBufferContainer{MultiBuffer: mb}
+		var meta mux.FrameMetadata
+		common.Must(meta.Unmarshal(reader, false))
+		if meta.SessionStatus != mux.SessionStatusKeepAlive {
+			t.Fatal(padding, " unexpected status: ", meta.SessionStatus)
+		}
+		if got := meta.Option.Has(mux.OptionData); got != (padding[1] > 0) {
+			t.Fatal(padding, " unexpected data flag: ", got)
+		}
+	}
+}
+
+// busyConn asks for a KeepAlive but never reports its downlink as silent, and
+// tells each time the worker checks.
+type busyConn struct {
+	net.Conn
+	checked chan struct{}
+}
+
+func (c busyConn) MuxKeepAlive() (int32, int32)      { return 1, 1 }
+func (c busyConn) MuxKeepAliveBytes() (int32, int32) { return 0, 0 }
+func (c busyConn) DownlinkIdle() time.Duration {
+	select {
+	case c.checked <- struct{}{}:
+	default:
+	}
+	return 0
+}
+
+func TestServerWorkerKeepAliveStopsWithWorker(t *testing.T) {
+	uplink, _ := newLinkPair()
+	conn := busyConn{checked: make(chan struct{}, 1)}
+	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Conn: conn})
+	worker, err := mux.NewServerWorker(ctx, &TestDispatcher{}, uplink)
+	common.Must(err)
+
+	<-conn.checked
+	common.Must(worker.Close())
+	select {
+	case <-conn.checked: // a check that was already under way
+	default:
+	}
+	select {
+	case <-conn.checked:
+		t.Fatal("KeepAlive loop still runs after the worker closed")
+	case <-time.After(2500 * time.Millisecond):
+	}
+}
+
+func TestClientWorkerSkipsKeepAlivePadding(t *testing.T) {
+	upReader, upWriter := pipe.New(pipe.WithoutSizeLimit())
+	downReader, downWriter := pipe.New(pipe.WithoutSizeLimit())
+	worker, err := mux.NewClientWorker(transport.Link{Reader: downReader, Writer: upWriter}, mux.ClientStrategy{})
+	common.Must(err)
+	defer worker.Close()
+
+	appReader, appWriter := pipe.New(pipe.WithoutSizeLimit())
+	respReader, respWriter := pipe.New(pipe.WithoutSizeLimit())
+	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+		Target: net.TCPDestination(net.DomainAddress("example.com"), 80),
+	}})
+	if !worker.Dispatch(ctx, &transport.Link{Reader: appReader, Writer: respWriter}) {
+		t.Fatal("dispatch failed")
+	}
+	common.Must(appWriter.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("hi"))}))
+
+	var opened mux.FrameMetadata
+	common.Must(opened.Unmarshal(&buf.BufferedReader{Reader: upReader}, false))
+	if opened.SessionStatus != mux.SessionStatusNew {
+		t.Fatal("unexpected first frame: ", opened.SessionStatus)
+	}
+
+	// Padding as the server sends it, followed by data for the open session.
+	for _, padding := range []int{1, 300, 1024} {
+		b := buf.New()
+		meta := mux.FrameMetadata{SessionStatus: mux.SessionStatusKeepAlive}
+		meta.Option.Set(mux.OptionData)
+		common.Must(meta.WriteTo(b))
+		common.Must2(serial.WriteUint16(b, uint16(padding)))
+		common.Must2(rand.Read(b.Extend(int32(padding))))
+		common.Must(downWriter.WriteMultiBuffer(buf.MultiBuffer{b}))
+	}
+	data := mux.NewResponseWriter(opened.SessionID, downWriter, protocol.TransferTypeStream)
+	common.Must(data.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("hello"))}))
+
+	mb, err := respReader.ReadMultiBuffer()
+	common.Must(err)
+	got := make([]byte, mb.Len())
+	mb.Copy(got)
+	buf.ReleaseMulti(mb)
+	if !bytes.Equal(got, []byte("hello")) {
+		t.Fatalf("session got %q after KeepAlive padding, want %q", got, "hello")
 	}
 }
