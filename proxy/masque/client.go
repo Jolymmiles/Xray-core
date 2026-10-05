@@ -250,9 +250,13 @@ type tunnel struct {
 	conn      stat.Connection
 	dev       tun.Device
 	tnet      *wireguard.Net
+	icmp      chan []byte
 	done      chan struct{}
 	closeOnce sync.Once
 }
+
+// tunnelICMPQueueSize bounds the ICMP replies waiting for the local stack.
+const tunnelICMPQueueSize = 16
 
 func newTunnel(conn stat.Connection, local []netip.Addr, remoteDNS []netip.Addr) (*tunnel, error) {
 	var dns []netip.Addr
@@ -270,15 +274,21 @@ func newTunnel(conn stat.Connection, local []netip.Addr, remoteDNS []netip.Addr)
 	if err != nil {
 		return nil, err
 	}
+	return startTunnel(conn, dev, tnet), nil
+}
+
+func startTunnel(conn stat.Connection, dev tun.Device, tnet *wireguard.Net) *tunnel {
 	t := &tunnel{
 		conn: conn,
 		dev:  dev,
 		tnet: tnet,
+		icmp: make(chan []byte, tunnelICMPQueueSize),
 		done: make(chan struct{}),
 	}
 	go t.readFromTunnel()
 	go t.writeToTunnel()
-	return t, nil
+	go t.writeICMP()
+	return t
 }
 
 func (t *tunnel) readFromTunnel() {
@@ -307,8 +317,26 @@ func (t *tunnel) writeToTunnel() {
 		if _, err := t.conn.Write(bufs[0][:sizes[0]]); err != nil {
 			var ptb *masque.PacketTooBigError
 			if go_errors.As(err, &ptb) {
-				go t.dev.Write([][]byte{ptb.ICMP}, 0)
+				// One writer delivers the replies; ICMP is best effort, so a
+				// full queue drops the reply instead of spawning a goroutine.
+				select {
+				case t.icmp <- ptb.ICMP:
+				default:
+				}
 			}
+		}
+	}
+}
+
+// writeICMP delivers ICMP replies to the local stack outside the packet loop,
+// which must keep reading the device the stack may be waiting on.
+func (t *tunnel) writeICMP() {
+	for {
+		select {
+		case packet := <-t.icmp:
+			t.dev.Write([][]byte{packet}, 0)
+		case <-t.done:
+			return
 		}
 	}
 }

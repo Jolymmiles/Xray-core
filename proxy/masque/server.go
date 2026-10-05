@@ -84,9 +84,28 @@ func (t *serverTunnel) send(b *buf.Buffer) bool {
 	}
 	select {
 	case t.queue <- b:
+		// close may have run after the done check above. Whoever sees done
+		// closed releases what is queued, so no packet outlives the tunnel.
+		select {
+		case <-t.done:
+			t.drain()
+		default:
+		}
 		return true
 	default:
 		return false
+	}
+}
+
+// drain releases packets left in the queue of a closed tunnel.
+func (t *serverTunnel) drain() {
+	for {
+		select {
+		case b := <-t.queue:
+			b.Release()
+		default:
+			return
+		}
 	}
 }
 
@@ -478,6 +497,7 @@ func (s *Server) writeToTunnel(t *serverTunnel) {
 				s.dev.Write([][]byte{ptb.ICMP}, 0)
 			}
 		case <-t.done:
+			t.drain()
 			return
 		}
 	}
