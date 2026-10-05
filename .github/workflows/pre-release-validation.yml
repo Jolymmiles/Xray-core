@@ -58,6 +58,8 @@ jobs:
     permissions:
       contents: read
     env:
+      # Test what ships: release builds keep x/net's HTTP/2 pool (XTLS/Xray-core#6797).
+      GOFLAGS: -tags=http2legacy
       XRAY_E2E_YT_INTERFACE: yt
       XRAY_E2E_YT_IPV6: fd00:7872:6179::1
       XRAY_STRUCTURAL_SOAK_SECONDS: 1800

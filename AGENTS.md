@@ -45,6 +45,13 @@ test, or compatibility gates defined here.
   X25519 key share; hellos that offer the hybrid group keep upstream's rules.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
+- Every shipped and release-tested build uses Go 1.27.1 (`go.mod`) and
+  `-tags http2legacy`. Without the tag, Go 1.27's x/net HTTP/2 client dials
+  once per request while a TLS handshake hangs, defeating XHTTP
+  `xmux.maxConnections` and producing connection bursts that censors block on
+  (XTLS/Xray-core#6797). Covered by
+  `transport/internet/splithttp/http2_dial_test.go` and
+  `testing/release/build_contract_test.go`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
@@ -153,6 +160,8 @@ gain a permanent regression test before the fix.
 ## Required test tiers
 
 Run the narrowest applicable tier after every edit, then expand before handoff.
+Export `GOFLAGS=-tags=http2legacy` first so tests, and the binaries they build,
+match the release.
 
 ### VLESS TCP and REALITY
 
@@ -198,8 +207,9 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 
 ## Linux server and network gates
 
-- Build Linux/amd64 with `CGO_ENABLED=0`, `GOAMD64=v1`, `-trimpath`, and the
-  release linker flags. Verify `file`, `sha256sum`, and `go version -m`.
+- Build Linux/amd64 with `CGO_ENABLED=0`, `GOAMD64=v1`, `-trimpath`,
+  `-tags http2legacy`, and the release linker flags. Verify `file`,
+  `sha256sum`, and `go version -m`.
 - For load work, test TLS/no-flow, TLS/Vision, REALITY/no-flow, and
   REALITY/Vision independently. Record throughput, p50/p95/p99 latency, CPU,
   RSS, GC, goroutines, threads, and file descriptors.

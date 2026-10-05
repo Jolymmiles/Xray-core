@@ -10,6 +10,10 @@ standard | linux) ;;
 	;;
 esac
 
+# Every build and test below matches the release: http2legacy keeps x/net's
+# HTTP/2 connection pool (XTLS/Xray-core#6797).
+export GOFLAGS="${GOFLAGS:+${GOFLAGS} }-tags=http2legacy"
+
 GOFUMPT_VERSION=v0.11.0
 if ! command -v gofumpt >/dev/null 2>&1 || [[ "$(gofumpt -version 2>/dev/null)" != "${GOFUMPT_VERSION} "* ]]; then
 	go install "mvdan.cc/gofumpt@${GOFUMPT_VERSION}"
