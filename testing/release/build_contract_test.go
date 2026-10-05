@@ -48,6 +48,8 @@ func TestExplicitBuildTagsKeepHTTP2Legacy(t *testing.T) {
 	for _, path := range []string{
 		"testing/release/structural_presence.sh",
 		"testing/scenarios/common_coverage.go",
+		"testing/coverage/coverall",
+		"common/singmux/TESTING.md",
 	} {
 		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 		if err != nil {

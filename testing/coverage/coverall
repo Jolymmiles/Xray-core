@@ -12,7 +12,7 @@ function test_package {
   DEP=${DEP}$DIR
   RND_NAME=$(openssl rand -hex 16)
   COV_PROFILE=${XRAY_COV}/${RND_NAME}.out
-  go test -tags "json coverage" -coverprofile=${COV_PROFILE} -coverpkg=$DEP $DIR || FAIL=1
+  go test -tags "json coverage http2legacy" -coverprofile=${COV_PROFILE} -coverpkg=$DEP $DIR || FAIL=1
 }
 
 rm -rf ${XRAY_OUT}
