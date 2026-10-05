@@ -173,22 +173,6 @@ func TestNewWriterPreservesStreamCounter(t *testing.T) {
 	}
 }
 
-func TestNewPooledWriterPreservesStreamCounter(t *testing.T) {
-	counter := new(statsapp.Counter)
-	connection := &transportstat.CounterConnection{
-		Connection:   new(benchmarkStreamConn),
-		WriteCounter: counter,
-	}
-	writer := NewPooledWriter(connection)
-	if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes([]byte("payload"))}); err != nil {
-		t.Fatal(err)
-	}
-	ReleasePooledWriter(writer)
-	if got := counter.Value(); got != 7 {
-		t.Fatalf("write counter = %d, want 7", got)
-	}
-}
-
 func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
 	underlying := new(recordingMultiBufferWriter)
 	writer := NewBufferedWriter(underlying)
@@ -471,14 +455,13 @@ func BenchmarkPrefixedBufferedSequentialWriter(b *testing.B) {
 
 	for b.Loop() {
 		underlying := &SequentialWriter{Writer: io.Discard}
-		writer, err := NewPooledBufferedWriterWithPrefix(underlying, header)
+		writer, err := NewBufferedWriterWithPrefix(underlying, header)
 		if err != nil {
 			b.Fatal(err)
 		}
 		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
 			b.Fatal(err)
 		}
-		writer.Release()
 	}
 }
 
@@ -487,25 +470,5 @@ func BenchmarkNewStreamWriter(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		writerBenchmarkSink = NewWriter(connection)
-	}
-}
-
-func BenchmarkPooledVLESSResponseWriterSetup(b *testing.B) {
-	connection := new(benchmarkStreamConn)
-	payload := make([]byte, 1400)
-	header := []byte{0, 0}
-	b.ReportAllocs()
-	b.SetBytes(int64(len(header) + len(payload)))
-	for b.Loop() {
-		underlying := NewPooledWriter(connection)
-		writer, err := NewPooledBufferedWriterWithPrefix(underlying, header)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if err := writer.WriteMultiBuffer(MultiBuffer{FromBytes(payload)}); err != nil {
-			b.Fatal(err)
-		}
-		writer.Release()
-		ReleasePooledWriter(underlying)
 	}
 }
