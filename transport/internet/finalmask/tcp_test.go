@@ -22,14 +22,12 @@ func mustSendRecvTcp(
 ) {
 	t.Helper()
 
-	waitCh := make(chan error)
+	// The writer reports to the test goroutine: t.Fatal must not run here.
+	writeErr := make(chan error, 1)
 
 	go func() {
 		_, err := from.Write(msg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		close(waitCh)
+		writeErr <- err
 	}()
 
 	buf := make([]byte, 1024)
@@ -46,7 +44,9 @@ func mustSendRecvTcp(
 		t.Fatalf("unexpected data %q", buf[:n])
 	}
 
-	<-waitCh
+	if err := <-writeErr; err != nil {
+		t.Fatal(err)
+	}
 }
 
 type layerMaskTcp struct {
