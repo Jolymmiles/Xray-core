@@ -41,26 +41,6 @@ func BenchmarkFinalRuleDirectIPv4(b *testing.B) {
 	}
 }
 
-func BenchmarkDisabledFreedomDialLog(b *testing.B) {
-	ctx := context.Background()
-	destination := net.TCPDestination(net.IPv4Address([4]byte{192, 0, 2, 1}), 443)
-	b.ReportAllocs()
-	for b.Loop() {
-		logFreedomDialDestination(ctx, destination)
-	}
-}
-
-func TestDisabledFreedomDialLogAllocationBudget(t *testing.T) {
-	ctx := context.Background()
-	destination := net.TCPDestination(net.IPv4Address([4]byte{192, 0, 2, 1}), 443)
-	allocations := testing.AllocsPerRun(1000, func() {
-		logFreedomDialDestination(ctx, destination)
-	})
-	if allocations != 0 {
-		t.Fatalf("disabled Freedom dial log allocations = %.0f, want 0", allocations)
-	}
-}
-
 func BenchmarkDisabledFreedomConnectionOpenedLog(b *testing.B) {
 	client, server := stdnet.Pipe()
 	b.Cleanup(func() {

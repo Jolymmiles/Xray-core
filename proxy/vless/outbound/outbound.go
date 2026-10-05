@@ -71,7 +71,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	}
 	server, err := protocol.NewServerSpecFromPB(config.Vnext)
 	if err != nil {
-		return nil, errors.New("failed to get server spec").Base(err).AtError()
+		return nil, errors.New("failed to get server spec").Base(err)
 	}
 
 	v := core.MustFromContext(ctx)
@@ -91,7 +91,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		}
 		handler.encryption = &encryption.ClientInstance{}
 		if err := handler.encryption.Init(nfsPKeysBytes, a.XorMode, a.Seconds, a.Padding); err != nil {
-			return nil, errors.New("failed to use encryption").Base(err).AtError()
+			return nil, errors.New("failed to use encryption").Base(err)
 		}
 	}
 
@@ -104,7 +104,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		if sc := a.Reverse.Sniffing; sc != nil && sc.Enabled {
 			request, err := proxymanConfig.BuildSniffingRequest(sc)
 			if err != nil {
-				return nil, errors.New("failed to build reverse sniffing request").Base(err).AtError()
+				return nil, errors.New("failed to build reverse sniffing request").Base(err)
 			}
 			rvsCtx = session.ContextWithContent(rvsCtx, &session.Content{
 				SniffingRequest: request,
@@ -144,7 +144,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 	if !ob.Target.IsValid() && ob.Target.Address.String() != "v1.rvs.cool" {
-		return errors.New("target not specified").AtError()
+		return errors.New("target not specified")
 	}
 	ob.Name = "vless"
 
@@ -173,7 +173,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		for {
 			connTime := <-h.preConns
 			if connTime == nil {
-				return errors.New("closed handler").AtWarning()
+				return errors.New("closed handler")
 			}
 			if time.Now().Before(connTime.Expire) {
 				conn = connTime.Conn
@@ -192,12 +192,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			}
 			return nil
 		}); err != nil {
-			return errors.New("failed to find an available destination").Base(err).AtWarning()
+			return errors.New("failed to find an available destination").Base(err)
 		}
 	}
 	defer conn.Close()
-
-	ob.Conn = conn // for Vision's pre-connect
 
 	iConn := stat.TryUnwrapStatsConn(conn)
 	target := ob.Target
@@ -206,7 +204,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	if h.encryption != nil {
 		var err error
 		if conn, err = h.encryption.Handshake(conn); err != nil {
-			return errors.New("ML-KEM-768 handshake failed").Base(err).AtInfo()
+			return errors.New("ML-KEM-768 handshake failed").Base(err)
 		}
 	}
 
@@ -220,7 +218,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			command = protocol.RequestCommandMux
 		case "v1.rvs.cool":
 			if target.Network != net.Network_Unknown {
-				return errors.New("nice try baby").AtError()
+				return errors.New("nice try baby")
 			}
 			command = protocol.RequestCommandRvs
 		}
@@ -307,7 +305,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 		bufferWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
 		if err := encoding.EncodeRequestHeader(bufferWriter, request, requestAddons); err != nil {
-			return errors.New("failed to encode request header").Base(err).AtWarning()
+			return errors.New("failed to encode request header").Base(err)
 		}
 
 		// default: serverWriter := bufferWriter
@@ -337,7 +335,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 		// Flush; bufferWriter.WriteMultiBuffer now is bufferWriter.writer.WriteMultiBuffer
 		if err := bufferWriter.SetBuffered(false); err != nil {
-			return errors.New("failed to write A request payload").Base(err).AtWarning()
+			return errors.New("failed to write A request payload").Base(err)
 		}
 
 		if requestAddons.Flow == vless.XRV {
@@ -347,7 +345,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 		err := buf.Copy(clientReader, serverWriter, buf.UpdateActivity(timer))
 		if err != nil {
-			return errors.New("failed to transfer request payload").Base(err).AtInfo()
+			return errors.New("failed to transfer request payload").Base(err)
 		}
 
 		// Indicates the end of request payload.
@@ -362,7 +360,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 		responseAddons, err := encoding.DecodeResponseHeader(conn, request)
 		if err != nil {
-			return errors.New("failed to decode response header").Base(err).AtInfo()
+			return errors.New("failed to decode response header").Base(err)
 		}
 
 		// default: serverReader := buf.NewReader(conn)
@@ -386,7 +384,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 
 		if err != nil {
-			return errors.New("failed to transfer response payload").Base(err).AtInfo()
+			return errors.New("failed to transfer response payload").Base(err)
 		}
 
 		return nil

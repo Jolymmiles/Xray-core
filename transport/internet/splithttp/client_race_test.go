@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/signal/done"
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
@@ -18,7 +19,7 @@ func (*waitReadCloserTestReader) Close() error { return nil }
 
 func TestWaitReadCloserPublishesReaderBeforeConcurrentRead(t *testing.T) {
 	for range 1000 {
-		waiter := &WaitReadCloser{Wait: make(chan struct{})}
+		waiter := &WaitReadCloser{wait: done.New()}
 		reader := &waitReadCloserTestReader{Reader: bytes.NewReader([]byte{'x'})}
 		start := make(chan struct{})
 		var group sync.WaitGroup

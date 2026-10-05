@@ -24,7 +24,7 @@ func hysteriaTestSettings(t *testing.T) *internet.MemoryStreamConfig {
 			Certificate:          []*tls.Certificate{tls.ParseCertificate(certificate)},
 			PinnedPeerCertSha256: [][]byte{certificateHash[:]},
 		},
-		QuicParams: &internet.QuicParams{DisableChromeParrot: true, UdpHop: &internet.UdpHop{}},
+		QuicParams: &internet.QuicParams{DisableChromeParrot: true},
 	}
 }
 

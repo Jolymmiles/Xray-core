@@ -53,7 +53,7 @@ func (m *ClientManager) dispatch(ctx context.Context, link *transport.Link, rvs 
 		}
 	}
 
-	return errors.New("unable to find an available mux client").AtWarning()
+	return errors.New("unable to find an available mux client")
 }
 
 type WorkerPicker interface {

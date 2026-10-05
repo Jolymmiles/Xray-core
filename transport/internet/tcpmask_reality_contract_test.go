@@ -17,14 +17,14 @@ import (
 
 // TestTcpmaskProxyRealityContractChain drives the exact production composition
 // of transport/internet/tcp.ListenTCP: the system listener carries PROXY
-// handling, the capture layer wraps it, and TcpmaskManager wraps both before
+// handling, the capture layer wraps it, and FinalMask wraps both before
 // any connection reaches reality.Server. Every built-in mask that can be
 // constructed from public config must keep the accepted connection satisfying
 // reality.CloseWriteConn, with half-close delivering FIN to the peer.
 func TestTcpmaskProxyRealityContractChain(t *testing.T) {
 	rows := []struct {
 		name string
-		mask finalmask.Tcpmask
+		mask finalmask.TCPMask
 	}{
 		{name: "fragment", mask: &fragment.Config{}},
 		{name: "sudoku", mask: &sudoku.Config{Password: "tcpmask-contract-secret", Ascii: "prefer_entropy"}},
@@ -40,8 +40,8 @@ func TestTcpmaskProxyRealityContractChain(t *testing.T) {
 				t.Fatal(err)
 			}
 			hubView := CapturePhysicalPeerListener(base) // mirrors tcp.ListenTCP
-			manager := finalmask.NewTcpmaskManager([]finalmask.Tcpmask{row.mask})
-			listener, err := manager.WrapListener(hubView)
+			listen := func(context.Context, stdnet.Addr) (stdnet.Listener, error) { return hubView, nil }
+			listener, err := finalmask.NewFinalMask([]finalmask.TCPMask{row.mask}, nil, nil, listen, nil, nil).Listen(context.Background(), hubView.Addr())
 			if err != nil {
 				t.Fatal(err)
 			}
