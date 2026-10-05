@@ -4,7 +4,7 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
@@ -59,12 +59,26 @@ func ToMemoryStreamConfig(s *StreamConfig) (*MemoryStreamConfig, error) {
 		var udpMasks []finalmask.UDPMask
 
 		for i := range s.Tcpmasks {
-			instance := common.Must2(s.Tcpmasks[i].GetInstance())
-			tcpMasks = append(tcpMasks, instance.(finalmask.TCPMask))
+			instance, err := s.Tcpmasks[i].GetInstance()
+			if err != nil {
+				return nil, errors.New("invalid TCP mask ", i).Base(err)
+			}
+			mask, ok := instance.(finalmask.TCPMask)
+			if !ok {
+				return nil, errors.New("TCP mask ", i, " (", s.Tcpmasks[i].Type, ") does not mask TCP")
+			}
+			tcpMasks = append(tcpMasks, mask)
 		}
 		for i := range s.Udpmasks {
-			instance := common.Must2(s.Udpmasks[i].GetInstance())
-			udpMasks = append(udpMasks, instance.(finalmask.UDPMask))
+			instance, err := s.Udpmasks[i].GetInstance()
+			if err != nil {
+				return nil, errors.New("invalid UDP mask ", i).Base(err)
+			}
+			mask, ok := instance.(finalmask.UDPMask)
+			if !ok {
+				return nil, errors.New("UDP mask ", i, " (", s.Udpmasks[i].Type, ") does not mask UDP")
+			}
+			udpMasks = append(udpMasks, mask)
 		}
 
 		dialTCP := func(ctx context.Context, dest net.Destination) (net.Conn, error) {
