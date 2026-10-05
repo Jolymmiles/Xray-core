@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"io"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
@@ -202,6 +206,103 @@ func TestServerWorkerKeepAliveStopsWithWorker(t *testing.T) {
 		t.Fatal("KeepAlive loop still runs after the worker closed")
 	case <-time.After(2500 * time.Millisecond):
 	}
+}
+
+// pausedConn reports its downlink as long silent, but holds each check until
+// the test releases it, so that a test can close the worker in between.
+type pausedConn struct {
+	net.Conn
+	checking chan struct{}
+	resume   chan struct{}
+}
+
+func (c pausedConn) MuxKeepAlive() (int32, int32)      { return 1, 1 }
+func (c pausedConn) MuxKeepAliveBytes() (int32, int32) { return 0, 0 }
+func (c pausedConn) DownlinkIdle() time.Duration {
+	c.checking <- struct{}{}
+	<-c.resume
+	return time.Hour
+}
+
+// linkWriter accepts writes the way a VLESS link writer does: it cannot be
+// interrupted. With writing set, it holds each write until release closes.
+type linkWriter struct {
+	writes  atomic.Int32
+	writing chan struct{}
+	release chan struct{}
+}
+
+func (w *linkWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	buf.ReleaseMulti(mb)
+	w.writes.Add(1)
+	if w.writing != nil {
+		w.writing <- struct{}{}
+		<-w.release
+	}
+	return nil
+}
+
+// idleReader is an uplink that sends nothing and, like a connection, keeps
+// reading through Interrupt; the test ends it by closing eof.
+type idleReader struct{ eof chan struct{} }
+
+func (r idleReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	<-r.eof
+	return nil, io.EOF
+}
+
+// discardLogs handles records in place. The default logger starts a goroutine
+// that waits on channels created outside a synctest bubble.
+type discardLogs struct{}
+
+func (discardLogs) Handle(log.Message) {}
+
+// A worker that is closing must not get a KeepAlive frame, even when the
+// loop was already checking the downlink as Close began.
+func TestServerWorkerKeepAliveSkipsClosingWorker(t *testing.T) {
+	log.RegisterHandler(discardLogs{})
+	synctest.Test(t, func(t *testing.T) {
+		reader := idleReader{eof: make(chan struct{})}
+		defer close(reader.eof)
+		writer := &linkWriter{}
+		conn := pausedConn{checking: make(chan struct{}), resume: make(chan struct{})}
+		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Conn: conn})
+		worker, err := mux.NewServerWorker(ctx, &TestDispatcher{}, &transport.Link{Reader: reader, Writer: writer})
+		common.Must(err)
+
+		<-conn.checking
+		go worker.Close()
+		synctest.Wait()
+		close(conn.resume)
+		<-worker.WaitClosed()
+		synctest.Wait()
+		if n := writer.writes.Load(); n != 0 {
+			t.Fatalf("KeepAlive wrote %d frame(s) to a worker that was closing", n)
+		}
+	})
+}
+
+// WaitClosed promises that the link is no longer used, so Close must outlast
+// a KeepAlive write that is still on its way to a link it cannot interrupt.
+func TestServerWorkerCloseWaitsForKeepAliveWrite(t *testing.T) {
+	log.RegisterHandler(discardLogs{})
+	synctest.Test(t, func(t *testing.T) {
+		reader := idleReader{eof: make(chan struct{})}
+		defer close(reader.eof)
+		writer := &linkWriter{writing: make(chan struct{}), release: make(chan struct{})}
+		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Conn: keepAliveConn{}})
+		worker, err := mux.NewServerWorker(ctx, &TestDispatcher{}, &transport.Link{Reader: reader, Writer: writer})
+		common.Must(err)
+
+		<-writer.writing
+		go worker.Close()
+		synctest.Wait()
+		if worker.Closed() {
+			t.Error("worker reported closed while a KeepAlive write still used the link")
+		}
+		close(writer.release)
+		<-worker.WaitClosed()
+	})
 }
 
 func TestClientWorkerSkipsKeepAlivePadding(t *testing.T) {
