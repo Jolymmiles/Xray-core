@@ -159,13 +159,7 @@ func main() {
 			return nil
 		}
 
-		dir := filepath.Dir(path)
-		filename := filepath.Base(path)
-		if strings.HasSuffix(filename, ".go") &&
-			!strings.HasSuffix(filename, ".pb.go") &&
-			!strings.Contains(dir, filepath.Join("testing", "mocks")) &&
-			!strings.Contains(dir, "third_party") && // vendored modules keep upstream formatting
-			!strings.Contains(path, filepath.Join("main", "distro", "all", "all.go")) {
+		if isFormatTarget(pwd, path) {
 			jobs <- path
 		}
 
@@ -198,6 +192,29 @@ func main() {
 			fmt.Println("All Go source file format check has been passed.")
 		}
 	}
+}
+
+// isFormatTarget reports whether the Go file at path, found under pwd, is
+// checked and formatted.
+func isFormatTarget(pwd, path string) bool {
+	dir := filepath.Dir(path)
+	filename := filepath.Base(path)
+	return strings.HasSuffix(filename, ".go") &&
+		!strings.HasSuffix(filename, ".pb.go") &&
+		!strings.Contains(dir, filepath.Join("testing", "mocks")) &&
+		!isVendored(pwd, path) &&
+		!strings.Contains(path, filepath.Join("main", "distro", "all", "all.go"))
+}
+
+// isVendored reports whether path lies in the repository's top-level
+// third_party tree, whose vendored modules keep their upstream formatting.
+func isVendored(pwd, path string) bool {
+	relative, err := filepath.Rel(pwd, path)
+	if err != nil {
+		return false
+	}
+	first, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
+	return first == "third_party"
 }
 
 // diff algorithm copied from mvdan.cc/gofumpt/internal/govendor/diff
