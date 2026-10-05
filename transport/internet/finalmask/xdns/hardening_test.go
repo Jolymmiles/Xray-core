@@ -348,7 +348,11 @@ func TestTCPResolverCloseInterruptsStalledSend(t *testing.T) {
 		defer close(sent)
 		resolver.Send([]byte("query"))
 	}()
-	<-dialer.write
+	select {
+	case <-dialer.write:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send never reached Write")
+	}
 
 	closed := make(chan struct{})
 	go func() {
@@ -453,7 +457,11 @@ func TestUDPResolverCloseInterruptsStalledSend(t *testing.T) {
 		defer close(sent)
 		resolver.Send([]byte("query"))
 	}()
-	<-conn.writing
+	select {
+	case <-conn.writing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send never reached WriteTo")
+	}
 
 	closed := make(chan struct{})
 	go func() {
