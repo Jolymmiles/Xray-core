@@ -344,9 +344,18 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 			"settings": map[string]any{"auth": "noauth", "udp": true, "ip": "127.0.0.1"},
 		}}
 		var settings map[string]any
+		var sockopt map[string]any
 		if carrier == "vless" {
+			vlessAddress := serverAddress
+			if ip := net.ParseIP(serverAddress); ip != nil && !ip.IsLoopback() && !ip.IsPrivate() {
+				// Xray refuses plaintext VLESS to a public IP; reach the same
+				// address through a hosts-mapped name so the source stays put.
+				vlessAddress = "presence.e2e.test"
+				config["dns"] = map[string]any{"hosts": map[string]any{vlessAddress: serverAddress}}
+				sockopt = map[string]any{"domainStrategy": "UseIPv4"}
+			}
 			settings = map[string]any{"vnext": []any{map[string]any{
-				"address": serverAddress, "port": serverPort,
+				"address": vlessAddress, "port": serverPort,
 				"users": []any{map[string]any{"id": testUUID, "encryption": "none"}},
 			}}}
 		} else {
@@ -361,6 +370,9 @@ func xrayConfig(t *testing.T, server bool, carrier string, serverPort, socksPort
 		}
 		if carrier == "trojan" {
 			outbound["streamSettings"] = xrayTLSSettings(false, certificate, "")
+		}
+		if sockopt != nil {
+			outbound["streamSettings"] = map[string]any{"sockopt": sockopt}
 		}
 		config["outbounds"] = []any{outbound}
 	}
