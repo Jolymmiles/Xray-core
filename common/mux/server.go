@@ -221,8 +221,10 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 // Interrupt. Contract now: done/WaitClosed ⇒ link is no longer touched.
 //
 // The KeepAlive loop is told to stop first and joined after the link is
-// interrupted, like the XUDP response sink: a KeepAlive write still under way
-// ends before done, and none starts once finish has begun.
+// interrupted, like the XUDP response sink: once the loop sees stop it starts
+// no write, and a KeepAlive write still under way ends before done. Holding a
+// lock across the write instead would make finish wait before it interrupts
+// the link, which a full pipe could block.
 func (w *ServerWorker) finish() {
 	w.finishOnce.Do(func() {
 		if w.keepAliveStop != nil {
