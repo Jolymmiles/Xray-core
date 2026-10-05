@@ -108,25 +108,47 @@ type discardConn struct {
 
 func (discardConn) Write(p []byte) (int, error) { return 0, errors.New("tunnel closed") }
 
-// Closing a tunnel must release the packets still queued for it.
+// Closing a tunnel must release the packets still queued for it, also when
+// Process returns before it starts the tunnel's writer.
 func TestServerTunnelReleasesQueuedPacketsOnClose(t *testing.T) {
-	server := &Server{dev: newStubDevice(0)}
 	tunnel := newServerTunnel(discardConn{}, nil)
+	queued := make([]*buf.Buffer, 0, tunnelQueueSize)
 	for range tunnelQueueSize {
 		packet := buf.New()
 		packet.Extend(20)
 		if !tunnel.send(packet) {
 			t.Fatal("queue refused a packet before close")
 		}
+		queued = append(queued, packet)
 	}
 	tunnel.close()
-	server.writeToTunnel(tunnel)
-	if queued := len(tunnel.queue); queued != 0 {
-		t.Fatalf("%d packets stayed queued after the tunnel closed", queued)
+	if left := len(tunnel.queue); left != 0 {
+		t.Fatalf("%d packets stayed queued after the tunnel closed", left)
+	}
+	for i, packet := range queued {
+		if packet.Len() != 0 {
+			t.Fatalf("queued packet %d was not released", i)
+		}
 	}
 	late := buf.New()
 	defer late.Release()
 	if tunnel.send(late) {
 		t.Fatal("closed tunnel accepted a packet")
+	}
+}
+
+// The writer releases what it finds queued when the tunnel closes under it.
+func TestServerTunnelWriterDrainsOnClose(t *testing.T) {
+	server := &Server{dev: newStubDevice(0)}
+	tunnel := newServerTunnel(discardConn{}, nil)
+	for range tunnelQueueSize {
+		packet := buf.New()
+		packet.Extend(20)
+		tunnel.send(packet)
+	}
+	close(tunnel.done)
+	server.writeToTunnel(tunnel)
+	if left := len(tunnel.queue); left != 0 {
+		t.Fatalf("%d packets stayed queued after the writer exited", left)
 	}
 }

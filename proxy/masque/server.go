@@ -136,6 +136,9 @@ func (t *serverTunnel) close() {
 	for conn := range conns {
 		conn.Close()
 	}
+	// Process may return before it starts the writer, so close releases the
+	// queue itself; the writer and late senders drain whatever follows.
+	t.drain()
 }
 
 func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
