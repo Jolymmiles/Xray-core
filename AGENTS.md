@@ -106,7 +106,9 @@ gain a permanent regression test before the fix.
 
 ## Go implementation standards
 
-- Run `gofmt` on every changed Go file.
+- Run `gofmt` on every changed Go file. Vendored modules under `third_party/`
+  keep their upstream bytes; only the fork-owned files listed in their
+  `FORK.md` follow this rule.
 - Use descriptive names, early returns, narrow helpers, and the simplest
   implementation that preserves the protocol.
 - Add context to errors at subsystem boundaries. Never swallow an error that
