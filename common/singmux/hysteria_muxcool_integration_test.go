@@ -48,15 +48,17 @@ func TestHysteriaMuxCoolServerSurvivesCarrierTeardown(t *testing.T) {
 
 		// Keep several Mux.Cool sessions open on the carrier, then stop the
 		// client so the server tears the carrier down under live sessions.
-		var release sync.WaitGroup
-		release.Add(1)
+		// Held callbacks are released on every exit path, including t.Fatal.
+		release := make(chan struct{})
+		releaseHeld := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(releaseHeld)
 		echoed := make(chan struct{}, heldStreams)
 		errs := make(chan error, heldStreams)
 		for range heldStreams {
 			go func() {
 				errs <- runSOCKSTCPWithCallback(socksPort, tcpEcho, func() {
 					echoed <- struct{}{}
-					release.Wait()
+					<-release
 				})
 			}()
 		}
@@ -65,7 +67,7 @@ func TestHysteriaMuxCoolServerSurvivesCarrierTeardown(t *testing.T) {
 			case <-echoed:
 				held++
 			case err := <-errs:
-				release.Done()
+				releaseHeld()
 				t.Fatalf("cycle %d: held stream failed before carrier teardown: %v (server exited: %t)", cycle, err, serverExited(server))
 			}
 		}
@@ -78,7 +80,7 @@ func TestHysteriaMuxCoolServerSurvivesCarrierTeardown(t *testing.T) {
 		case <-time.After(clientTimeout):
 			t.Fatalf("cycle %d: client did not exit after interrupt", cycle)
 		}
-		release.Done()
+		releaseHeld()
 		for range heldStreams {
 			<-errs
 		}
