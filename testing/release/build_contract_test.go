@@ -1,8 +1,10 @@
 package release
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +32,31 @@ func TestReleaseBuildsUseGo1271AndHTTP2Legacy(t *testing.T) {
 		{"testing/release/structural_presence.sh", []string{"-tags=http2legacy"}},
 	} {
 		assertFileContains(t, filepath.Join(root, filepath.FromSlash(check.path)), check.required)
+	}
+}
+
+// An explicit -tags flag replaces the tags in GOFLAGS instead of adding to
+// them, so every Xray build or test command that names its own tags must
+// list http2legacy too. Interop peers such as sing-box are built as their
+// users build them and are not covered here.
+func TestExplicitBuildTagsKeepHTTP2Legacy(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("source path unavailable")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
+	for _, path := range []string{
+		"testing/release/structural_presence.sh",
+		"testing/scenarios/common_coverage.go",
+	} {
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for number, line := range strings.Split(string(content), "\n") {
+			if strings.Contains(line, "-tags") && !strings.Contains(line, "http2legacy") {
+				t.Errorf("%s:%d sets tags without http2legacy: %s", path, number+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }

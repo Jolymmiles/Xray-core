@@ -161,7 +161,8 @@ gain a permanent regression test before the fix.
 
 Run the narrowest applicable tier after every edit, then expand before handoff.
 Export `GOFLAGS=-tags=http2legacy` first so tests, and the binaries they build,
-match the release.
+match the release. An explicit `-tags` replaces the tags in `GOFLAGS`, so add
+`http2legacy` to it.
 
 ### VLESS TCP and REALITY
 
@@ -174,7 +175,7 @@ go test -gcflags=all=-d=checkptr=2 \
   ./transport/internet/reality ./proxy ./proxy/vless/inbound \
   ./proxy/vless/outbound -count=1
 go vet ./transport/internet/reality ./proxy ./proxy/vless/...
-go test -tags integration ./common/singmux \
+go test -tags 'integration http2legacy' ./common/singmux \
   -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
 ```
 
@@ -187,7 +188,7 @@ The process gate is 3 clients × 2 security modes × 2 flow modes × 3 runs:
 go test ./common/singmux/... ./common/mux ./app/proxyman/outbound ./infra/conf
 go test -race ./common/singmux/... ./common/mux
 go test -cover ./common/singmux/internal/mplsmux
-go test -tags integration ./common/singmux \
+go test -tags 'integration http2legacy' ./common/singmux \
   -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
 ```
 
