@@ -156,6 +156,19 @@ SOCKS port as proof that its provider has finished starting.
 go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
 ```
 
+The XHTTP Mux.Cool gate runs an Xray client with Mux.Cool over XHTTP (TLS,
+HTTP/2) in packet-up, stream-up, and stream-one against an Xray server, with
+the server's idle-downlink KeepAlive on and off. Each mode echoes eight
+concurrent sessions byte for byte, then keeps one session quiet across three
+KeepAlive intervals and echoes on it again. A counting relay between client
+and server must see KeepAlive frames during that silence only when the option
+is on and the mode has a downlink response of its own. Only Xray clients speak
+Mux.Cool; sing-box and Mihomo are covered by the SMUX matrices above.
+
+```sh
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestXHTTPMuxCoolProcess$' -count=1 -v
+```
+
 The matching connection-latency benchmark keeps one Xray client and server
 process alive per mode and opens a new VLESS connection for every operation.
 Use a fixed iteration count on macOS: adaptive multi-second runs can exhaust
