@@ -205,3 +205,38 @@ func FuzzSniffQUIC(f *testing.F) {
 		}
 	})
 }
+
+// BenchmarkSniffQUIC sniffs captured first flights. Each iteration sniffs a
+// fresh copy, as the dispatcher sniffs each flow once.
+func BenchmarkSniffQUIC(b *testing.B) {
+	read := func(prefix string, n int) []byte {
+		var flow []byte
+		for i := range n {
+			datagram, err := os.ReadFile(filepath.Join("testdata", prefix+"-"+strconv.Itoa(i)+".bin"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			flow = append(flow, datagram...)
+		}
+		return flow
+	}
+	for _, bench := range []struct {
+		name string
+		flow []byte
+	}{
+		{"ngtcp2 one datagram", read("quic-ngtcp2-1.11", 1)},
+		{"Chrome two datagrams", read("quic-chrome153", 2)},
+		{"Firefox two padded datagrams", read("quic-firefox153esr", 2)},
+	} {
+		b.Run(bench.name, func(b *testing.B) {
+			flow := make([]byte, len(bench.flow))
+			b.ReportAllocs()
+			for b.Loop() {
+				copy(flow, bench.flow)
+				if _, err := quic.SniffQUIC(flow); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
