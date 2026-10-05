@@ -111,11 +111,15 @@ func (r *UDPResolver) Read(p []byte) (n int, err error) {
 
 func (r *UDPResolver) Send(p []byte) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if err := r.dial(); err != nil {
+		r.mu.Unlock()
 		return
 	}
-	_, _ = r.conn.WriteTo(p, r.udpAddr.Load())
+	conn := r.conn
+	r.mu.Unlock()
+	// Write outside mu: a conn behind dialerProxy can block until Close
+	// closes it, and Close needs mu to reach it.
+	_, _ = conn.WriteTo(p, r.udpAddr.Load())
 }
 
 func (r *UDPResolver) Close() {

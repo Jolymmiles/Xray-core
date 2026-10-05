@@ -372,15 +372,18 @@ func TestTCPResolverRedialPublishesAddressSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resolver.Close()
 	_ = (<-dialer.peers).Close()
+
+	var drains sync.WaitGroup
+	draining := make(chan struct{})
 	go func() {
+		defer close(draining)
 		for peer := range dialer.peers {
-			go func() { _, _ = io.Copy(io.Discard, peer) }()
+			drains.Go(func() { _, _ = io.Copy(io.Discard, peer) })
 		}
 	}()
-
 	stop := make(chan struct{})
+	stopReading := sync.OnceFunc(func() { close(stop) })
 	reading := make(chan struct{})
 	go func() {
 		defer close(reading)
@@ -393,6 +396,16 @@ func TestTCPResolverRedialPublishesAddressSafely(t *testing.T) {
 			}
 		}
 	}()
+	// Closing the resolver closes the client ends, which ends every drain;
+	// no dial can follow, so the peers channel can be closed.
+	t.Cleanup(func() {
+		stopReading()
+		<-reading
+		resolver.Close()
+		close(dialer.peers)
+		<-draining
+		drains.Wait()
+	})
 
 	deadline := time.Now().Add(5 * time.Second)
 	for dialer.dialCount() < 2 {
@@ -401,9 +414,56 @@ func TestTCPResolverRedialPublishesAddressSafely(t *testing.T) {
 		}
 		resolver.Send([]byte("query"))
 	}
-	close(stop)
+	stopReading()
 	<-reading
 	if got := resolver.Addr(); got == nil || got.Port != 5302 {
 		t.Fatalf("Addr after redial = %v, want port 5302", got)
 	}
+}
+
+// stallingPacketConn blocks every write until it is closed, as a pipe-backed
+// conn behind dialerProxy does when the downstream stops reading.
+type stallingPacketConn struct {
+	*blockingPacketConn
+	writing chan struct{}
+}
+
+func (c *stallingPacketConn) WriteTo([]byte, net.Addr) (int, error) {
+	select {
+	case c.writing <- struct{}{}:
+	default:
+	}
+	<-c.closed
+	return 0, io.ErrClosedPipe
+}
+
+func TestUDPResolverCloseInterruptsStalledSend(t *testing.T) {
+	conn := &stallingPacketConn{blockingPacketConn: newBlockingPacketConn(), writing: make(chan struct{}, 1)}
+	t.Cleanup(func() { _ = conn.Close() })
+	dialer := &finalmask.Dialer{DialUDP: func(net.Destination) (net.Conn, error) {
+		return &net.PacketConnWrapper{PacketConn: conn, Dest: &net.UDPAddr{IP: net.IP{192, 0, 2, 53}, Port: 53}}, nil
+	}}
+	resolver, err := NewUDPResolver(&ResolverProto{Type: "udp", Addr: "192.0.2.53:53"}, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		resolver.Send([]byte("query"))
+	}()
+	<-conn.writing
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		resolver.Close()
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked behind a Send stalled in WriteTo")
+	}
+	<-sent
 }
