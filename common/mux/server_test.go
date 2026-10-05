@@ -257,10 +257,17 @@ type discardLogs struct{}
 
 func (discardLogs) Handle(log.Message) {}
 
+// quietLogs discards log records for the rest of the test and then restores
+// the default handler that common/log registers at init.
+func quietLogs(t *testing.T) {
+	log.RegisterHandler(discardLogs{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+}
+
 // A worker that is closing must not get a KeepAlive frame, even when the
 // loop was already checking the downlink as Close began.
 func TestServerWorkerKeepAliveSkipsClosingWorker(t *testing.T) {
-	log.RegisterHandler(discardLogs{})
+	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
 		reader := idleReader{eof: make(chan struct{})}
 		defer close(reader.eof)
@@ -286,7 +293,7 @@ func TestServerWorkerKeepAliveSkipsClosingWorker(t *testing.T) {
 // interrupt, such as a VLESS writer whose client stopped reading: shutdown
 // would then last as long as the stalled connection.
 func TestServerWorkerCloseDoesNotWaitForStuckKeepAliveWrite(t *testing.T) {
-	log.RegisterHandler(discardLogs{})
+	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
 		reader := idleReader{eof: make(chan struct{})}
 		defer close(reader.eof)
