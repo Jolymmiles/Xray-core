@@ -37,6 +37,13 @@ func newServer(dispatcher routing.Dispatcher) *Server {
 	}
 }
 
+// isMuxCoolDestination reports whether dest opens a Mux.Cool carrier. Clients
+// always carry Mux.Cool over TCP; a packet link must not start a worker whose
+// session handlers outlive the packet session.
+func isMuxCoolDestination(dest net.Destination) bool {
+	return dest.Network == net.Network_TCP && dest.Address == muxCoolAddress
+}
+
 // NewServer creates a new mux.Server.
 func NewServer(ctx context.Context) *Server {
 	s := &Server{}
@@ -65,7 +72,7 @@ func (s *Server) Dispatch(ctx context.Context, dest net.Destination) (*transport
 	if singmux.IsDestination(dest) {
 		return s.dispatchSMUX(ctx), nil
 	}
-	if dest.Address != muxCoolAddress {
+	if !isMuxCoolDestination(dest) {
 		return s.dispatcher.Dispatch(ctx, dest)
 	}
 
@@ -109,7 +116,7 @@ func (s *Server) DispatchLink(ctx context.Context, dest net.Destination, link *t
 		)
 		return s.smux.NewConnection(ctx, conn)
 	}
-	if dest.Address != muxCoolAddress {
+	if !isMuxCoolDestination(dest) {
 		return s.dispatcher.DispatchLink(ctx, dest, link)
 	}
 	worker, err := newServerWorker(ctx, s.dispatcher, link, s.runtime, false)
