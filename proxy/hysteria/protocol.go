@@ -14,7 +14,6 @@ import (
 	corebuf "github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 	xnet "github.com/xtls/xray-core/common/net"
-	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet/hysteria"
 )
 
@@ -40,7 +39,6 @@ type serverTCPRequest struct {
 	varint      [8]byte
 	address     serverTCPAddress
 	destination xnet.Destination
-	link        transport.Link
 }
 
 type serverTCPAddress struct {
@@ -103,7 +101,6 @@ func releaseServerTCPRequest(request *serverTCPRequest) {
 		return
 	}
 	request.destination = xnet.Destination{}
-	request.link = transport.Link{}
 	request.address.family = 0
 	request.address.length = 0
 	request.address.ip = [16]byte{}
