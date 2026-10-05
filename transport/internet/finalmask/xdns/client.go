@@ -16,6 +16,11 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
+var (
+	enqueueBlockWindow = 20 * time.Millisecond
+	errQueueFull       = errors.New("xdns send queue full")
+)
+
 const (
 	initPollDelay       = 500 * time.Millisecond
 	maxPollDelay        = 10 * time.Second
@@ -331,9 +336,10 @@ func (c *xdnsClient) send() {
 	ticker := time.NewTicker(initPollDelay)
 	defer ticker.Stop()
 	delay := initPollDelay
-	p := []byte(nil)
 	timeout := false
 	for {
+		// Only a packet from sendCh carries data; polls are empty.
+		var p []byte
 		select {
 		case <-c.closeCh:
 			return
@@ -395,9 +401,18 @@ func (c *xdnsClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	copy(b, p)
 	select {
 	case c.sendCh <- b:
+		return len(p), nil
 	default:
 	}
-	return len(p), nil
+	// Absorb a short burst, then report the loss instead of hiding it.
+	timer := time.NewTimer(enqueueBlockWindow)
+	defer timer.Stop()
+	select {
+	case c.sendCh <- b:
+		return len(p), nil
+	case <-timer.C:
+		return 0, errQueueFull
+	}
 }
 
 func (c *xdnsClient) Close() error {

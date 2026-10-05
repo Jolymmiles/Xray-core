@@ -175,7 +175,7 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 		c.decref(msg, addr)
 		return
 	}
-	if TypeMap_[decoded[0]&3] != uint16(msg.Questions[0].Type) || (decoded[8]&0x3F != 3 && decoded[8]&0x3F != 8) || (decoded[8]&0x3F == 3 && n < 9+3+1) || (decoded[8]&0x3F == 8 && n != 9+8) {
+	if TypeMap_[decoded[0]&3] != uint16(msg.Questions[0].Type) || (decoded[8]&0x3F != 3 && decoded[8]&0x3F != 8) || (decoded[8]&0x3F == 3 && n < 9+3+1) || (decoded[8]&0xC0 == 0xC0 && n < 9+3+3+1) || (decoded[8]&0x3F == 8 && n != 9+8) {
 		msg.Header.Response = true
 		msg.Header.Authoritative = true
 		msg.Header.RCode = dnsmessage.RCodeSuccess

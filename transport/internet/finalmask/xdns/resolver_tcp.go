@@ -124,8 +124,14 @@ func (r *TCPResolver) Send(p []byte) {
 	if r.dial() != nil {
 		return
 	}
-	_ = binary.Write(r.conn, binary.BigEndian, len(p))
-	_, _ = r.conn.Write(p)
+	// DNS over TCP prefixes each message with its length (RFC 1035 4.2.2).
+	frame := make([]byte, 2+len(p))
+	binary.BigEndian.PutUint16(frame, uint16(len(p)))
+	copy(frame[2:], p)
+	if _, err := r.conn.Write(frame); err != nil {
+		// recv sees the closed conn and resets it, so the next Send redials.
+		_ = r.conn.Close()
+	}
 }
 
 func (r *TCPResolver) Close() {
