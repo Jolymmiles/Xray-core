@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/xtls/xray-core/common/bytespool"
@@ -55,6 +56,9 @@ const (
 	flowStartWindow  = 256 << 10
 	flowSmallCredit  = 64 << 10
 	flowShrinkAfter  = 3
+	flowKernelEvery  = 20 * time.Millisecond
+	flowQueueHold    = 15 * time.Millisecond
+	flowQueueShrink  = 40 * time.Millisecond
 
 	flowUndecided = 0
 	flowH2        = 1
@@ -72,9 +76,13 @@ func (l flowLimit) enabled() bool {
 // flowEnabled lets XRAY_XHTTP_FLOW=off take the governor out of both roles.
 var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }) != "off"
 
-// flowDefault starts every stream at the initial window HTTP/2 itself
-// defines and lets it grow no further than the peer really granted.
+// flowDefault never lets a window shrink below the initial window HTTP/2
+// itself defines, nor grow beyond what the peer really granted.
 var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
+
+type tcpStats struct {
+	rtt, minRTT time.Duration
+}
 
 type flowListener struct {
 	net.Listener
@@ -204,6 +212,7 @@ type flowWindow struct {
 	prev     int64
 	measured bool
 	ramped   bool
+	qAt      time.Time
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -211,13 +220,13 @@ type flowWindow struct {
 // init, once the reader has kept well under it for flowShrinkAfter round trips.
 // Until the first round trip is measured the cap opens with every credit, and
 // while the reader keeps speeding up it also covers the sender doubling its
-// rate, as Linux receive autotuning does.
-func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32, shrink bool) {
+// rate, as Linux receive autotuning does. hold keeps the cap from growing.
+func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32, shrink, hold bool) {
 	if w.mark.IsZero() {
 		w.mark, w.markBase = now, w.returned
 		return
 	}
-	if !w.measured {
+	if !w.measured && !hold {
 		if open := int64(init) + 2*w.returned; open > int64(w.cap) {
 			w.cap = int32(min(open, int64(limit)))
 		}
@@ -233,6 +242,9 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 	}
 	if !w.ramped && w.prev > 0 {
 		grow += 2 * s * (copied - w.prev) / w.prev
+	}
+	if hold {
+		grow = min(grow, int64(w.cap))
 	}
 	w.prev, w.measured = copied, true
 	w.mark, w.markBase = now, w.returned
@@ -324,10 +336,41 @@ type flowConn struct {
 	settingsSent bool
 	pingReady    bool
 	closed       bool
+
+	tcp   syscall.RawConn
+	kstat tcpStats
+	kAt   time.Time
+	kOK   bool
+}
+
+// queueing tells how far the kernel RTT of this TCP connection has climbed
+// above its own floor: 1 means a queue is building and download windows
+// should not grow, 2 means they should shrink, because more data in flight
+// would only wait in that queue. It compares the socket only with itself, so
+// a TCP proxy in front leaves it quiet; the round trip the windows grow by
+// still comes from the PING, which crosses such a proxy.
+func (c *flowConn) queueing(now time.Time) int {
+	if c.tcp == nil {
+		return 0
+	}
+	if now.Sub(c.kAt) >= flowKernelEvery {
+		c.kAt = now
+		c.kstat, c.kOK = readTCPStats(c.tcp)
+	}
+	if !c.kOK || c.kstat.minRTT <= 0 {
+		return 0
+	}
+	switch q := c.kstat.rtt - c.kstat.minRTT; {
+	case q > max(2*c.kstat.minRTT, flowQueueShrink):
+		return 2
+	case q > max(c.kstat.minRTT, flowQueueHold):
+		return 1
+	}
+	return 0
 }
 
 func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
-	return &flowConn{
+	fc := &flowConn{
 		Conn:        c,
 		up:          up,
 		down:        down,
@@ -337,6 +380,8 @@ func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
 		serverInit:  h2InitWindow,
 		serverShown: h2InitWindow,
 	}
+	fc.tcp = rawTCP(c)
+	return fc
 }
 
 // newFlowClientConn governs the downlink of a connection this side dialed.
@@ -771,7 +816,15 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if inc < flowSmallCredit {
 			c.incremental = true
 		}
-		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental)
+		q := 0
+		if !c.client {
+			q = c.queueing(now)
+		}
+		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
+		if q == 2 && now.Sub(s.down.qAt) >= c.currentRTT() {
+			s.down.qAt = now
+			s.down.cap = max(c.down.init, s.down.cap/4*3)
+		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
 		if rel <= 0 {
@@ -862,7 +915,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		now := time.Now()
 		s.up.returned += inc
-		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true)
+		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, false)
 		c.upLearned.note(now, c.up.init, s.up.cap)
 		rel := c.upRelease(s)
 		if rel <= 0 {
