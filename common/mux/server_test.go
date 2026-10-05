@@ -282,14 +282,16 @@ func TestServerWorkerKeepAliveSkipsClosingWorker(t *testing.T) {
 	})
 }
 
-// WaitClosed promises that the link is no longer used, so Close must outlast
-// a KeepAlive write that is still on its way to a link it cannot interrupt.
-func TestServerWorkerCloseWaitsForKeepAliveWrite(t *testing.T) {
+// Close must not wait for a KeepAlive write stuck on a link it cannot
+// interrupt, such as a VLESS writer whose client stopped reading: shutdown
+// would then last as long as the stalled connection.
+func TestServerWorkerCloseDoesNotWaitForStuckKeepAliveWrite(t *testing.T) {
 	log.RegisterHandler(discardLogs{})
 	synctest.Test(t, func(t *testing.T) {
 		reader := idleReader{eof: make(chan struct{})}
 		defer close(reader.eof)
 		writer := &linkWriter{writing: make(chan struct{}), release: make(chan struct{})}
+		defer close(writer.release)
 		ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Conn: keepAliveConn{}})
 		worker, err := mux.NewServerWorker(ctx, &TestDispatcher{}, &transport.Link{Reader: reader, Writer: writer})
 		common.Must(err)
@@ -297,11 +299,9 @@ func TestServerWorkerCloseWaitsForKeepAliveWrite(t *testing.T) {
 		<-writer.writing
 		go worker.Close()
 		synctest.Wait()
-		if worker.Closed() {
-			t.Error("worker reported closed while a KeepAlive write still used the link")
+		if !worker.Closed() {
+			t.Error("Close is still waiting for a KeepAlive write stuck on the link")
 		}
-		close(writer.release)
-		<-worker.WaitClosed()
 	})
 }
 
