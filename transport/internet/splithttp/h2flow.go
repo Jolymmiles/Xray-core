@@ -214,6 +214,7 @@ type flowWindow struct {
 	measured bool
 	ramped   bool
 	qAt      time.Time
+	qSample  int
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -316,6 +317,9 @@ type flowConn struct {
 	rtt         time.Duration
 	rttPrev     time.Duration
 	rttSince    time.Time
+	rttLast     time.Duration
+	rttBase     time.Duration
+	rttSamples  int
 	pingData    uint64
 	pingSentAt  time.Time
 	lastPing    time.Time
@@ -351,14 +355,7 @@ type flowConn struct {
 // a TCP proxy in front leaves it quiet; the round trip the windows grow by
 // still comes from the PING, which crosses such a proxy.
 func (c *flowConn) queueing(now time.Time) int {
-	if c.tcp == nil {
-		return 0
-	}
-	if now.Sub(c.kAt) >= flowKernelEvery {
-		c.kAt = now
-		c.kstat, c.kOK = readTCPStats(c.tcp)
-	}
-	if !c.kOK || c.kstat.minRTT <= 0 {
+	if !c.kernelStats(now) {
 		return 0
 	}
 	switch q := c.kstat.rtt - c.kstat.minRTT; {
@@ -368,6 +365,72 @@ func (c *flowConn) queueing(now time.Time) int {
 		return 1
 	}
 	return 0
+}
+
+// kernelStats refreshes the kernel's view of this TCP connection and reports
+// whether there is one.
+func (c *flowConn) kernelStats(now time.Time) bool {
+	if c.tcp == nil {
+		return false
+	}
+	if now.Sub(c.kAt) >= flowKernelEvery {
+		c.kAt = now
+		c.kstat, c.kOK = readTCPStats(c.tcp)
+	}
+	return c.kOK && c.kstat.minRTT > 0
+}
+
+// pingFloor is the round trip of the empty path for pingQueueing. The first
+// PING's ACK can already wait behind data the peer pushed while its TCP was
+// still in slow start, so the kernel's min_rtt, taken at the TCP handshake,
+// is preferred. A TCP proxy in front shows the kernel only the hop to the
+// proxy: a min_rtt that far below the PING's means exactly that, and the PING
+// is kept.
+func (c *flowConn) pingFloor(now time.Time) time.Duration {
+	floor := c.rttBase
+	if c.kernelStats(now) && c.kstat.minRTT < floor && 4*c.kstat.minRTT >= floor {
+		floor = c.kstat.minRTT
+	}
+	return floor
+}
+
+// pingQueueing is queueing for what the kernel cannot see: the backlog of a
+// client's upload, or of a download towards a client this side dialed from.
+// A PING's ACK waits behind whatever is queued between the peers, so the last
+// round trip, or the wait for an ACK still due, above the lowest one this
+// connection has seen is that backlog. Like the kernel's min_rtt, the floor
+// is kept for the connection's life: a long transfer keeps the queue full, and
+// a floor that forgot the empty path would rise with it. A PING samples it only
+// once a second, so it reacts at half the queue the kernel signal tolerates.
+func (c *flowConn) pingQueueing(now time.Time) int {
+	if c.rttBase == 0 {
+		return 0
+	}
+	last := c.rttLast
+	if !c.pingSentAt.IsZero() {
+		last = max(last, now.Sub(c.pingSentAt))
+	}
+	floor := c.pingFloor(now)
+	switch q := last - floor; {
+	case q > max(floor, flowQueueShrink):
+		return 2
+	case q > max(floor/2, flowQueueHold):
+		return 1
+	}
+	return 0
+}
+
+// queueShrink trims a window that keeps a PING-seen queue standing: by a
+// quarter once per PING sample, since a sample stays stale for a second, and
+// never below what the reader takes over a round trip of the empty path, so
+// the path stays full while the queue drains.
+func (c *flowConn) queueShrink(w *flowWindow, now time.Time, init int32) {
+	if w.qSample == c.rttSamples {
+		return
+	}
+	w.qSample = c.rttSamples
+	keep := w.prev * int64(c.pingFloor(now)) / int64(c.currentRTT())
+	w.cap = int32(max(int64(init), int64(w.cap)/4*3, keep))
 }
 
 func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
@@ -590,6 +653,11 @@ func (c *flowConn) currentRTT() time.Duration {
 
 func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 	sample = max(sample, flowMinRTT)
+	c.rttLast = sample
+	c.rttSamples++
+	if c.rttBase == 0 || sample < c.rttBase {
+		c.rttBase = sample
+	}
 	if now.Sub(c.rttSince) >= flowRTTWindow {
 		c.rttPrev, c.rtt, c.rttSince = c.rtt, 0, now
 	}
@@ -599,10 +667,12 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 }
 
 // appendPing adds a PING for the remote peer once a second while streams are
-// open, so the connection knows its round trip.
+// open, so the connection knows its round trip. The first goes out as soon as
+// the connection is up, before data can queue in front of its ACK, so the
+// connection learns the round trip of the empty path.
 func (c *flowConn) appendPing(out []byte) []byte {
 	now := time.Now()
-	if !c.pingReady || len(c.streams) == 0 || now.Sub(c.lastPing) < flowPingInterval ||
+	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
 	}
@@ -817,12 +887,17 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if inc < flowSmallCredit {
 			c.incremental = true
 		}
-		q := 0
-		if !c.client {
+		var q int
+		if c.client {
+			q = c.pingQueueing(now)
+		} else {
 			q = c.queueing(now)
 		}
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
-		if q == 2 && now.Sub(s.down.qAt) >= c.currentRTT() {
+		switch {
+		case q == 2 && c.client:
+			c.queueShrink(&s.down, now, c.down.init)
+		case q == 2 && now.Sub(s.down.qAt) >= c.currentRTT():
 			s.down.qAt = now
 			s.down.cap = max(c.down.init, s.down.cap/4*3)
 		}
@@ -916,7 +991,11 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		now := time.Now()
 		s.up.returned += inc
-		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, false)
+		q := c.pingQueueing(now)
+		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, q > 0)
+		if q == 2 {
+			c.queueShrink(&s.up, now, c.up.init)
+		}
 		c.upLearned.note(now, c.up.init, s.up.cap)
 		rel := c.upRelease(s)
 		if rel <= 0 {
