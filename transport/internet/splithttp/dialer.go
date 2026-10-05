@@ -31,7 +31,6 @@ import (
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
 	"github.com/xtls/xray-core/transport/pipe"
-	"golang.org/x/net/http2"
 )
 
 type dialerConf struct {
@@ -250,17 +249,18 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		if keepAlivePeriod < 0 {
 			keepAlivePeriod = 0
 		}
-		transport = &http2.Transport{
-			DialTLSContext: func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
-				conn, err := dialContext(ctxInner)
-				if err != nil || !flowEnabled {
-					return conn, err
-				}
-				return newFlowClientConn(conn), nil
-			},
-			IdleConnTimeout: net.ConnIdleTimeout,
-			ReadIdleTimeout: keepAlivePeriod,
+		governed := transportConfig.h2FlowOn()
+		h2 := newH2Transport(transportConfig.h2ReceiveConfig(false))
+		h2.DialTLSContext = func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
+			conn, err := dialContext(ctxInner)
+			if err != nil || !governed {
+				return conn, err
+			}
+			return newFlowClientConn(conn), nil
 		}
+		h2.IdleConnTimeout = net.ConnIdleTimeout
+		h2.ReadIdleTimeout = keepAlivePeriod
+		transport = h2
 	} else {
 		httpDialContext := func(ctxInner context.Context, network string, addr string) (net.Conn, error) {
 			return dialContext(ctxInner)

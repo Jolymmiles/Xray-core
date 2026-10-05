@@ -73,8 +73,9 @@ func (l flowLimit) enabled() bool {
 	return l.max > 0
 }
 
-// flowEnabled lets XRAY_XHTTP_FLOW=off take the governor out of both roles.
-var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }) != "off"
+// flowEnabled is the default for XHTTP connections whose "h2Flow" does not
+// say: off unless XRAY_XHTTP_FLOW=on.
+var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }) == "on"
 
 // flowDefault never lets a window shrink below the initial window HTTP/2
 // itself defines, nor grow beyond what the peer really granted.

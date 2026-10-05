@@ -287,10 +287,55 @@ type SplitHTTPConfig struct {
 	ScStreamUpServerSecs Int32Range        `json:"scStreamUpServerSecs"`
 	MuxKeepAliveSecs     Int32Range        `json:"muxKeepAliveSecs"`
 	MuxKeepAliveBytes    Int32Range        `json:"muxKeepAliveBytes"`
+	H2Flow               *H2FlowConfig     `json:"h2Flow"`
 	ServerMaxHeaderBytes int32             `json:"serverMaxHeaderBytes"`
 	Xmux                 XmuxConfig        `json:"xmux"`
 	DownloadSettings     *StreamConfig     `json:"downloadSettings"`
 	Extra                json.RawMessage   `json:"extra"`
+}
+
+// H2FlowConfig tunes HTTP/2 flow control on XHTTP connections over TCP.
+// "enabled" overrides XRAY_XHTTP_FLOW for this inbound or outbound; the
+// windows are what this side grants for data it receives.
+type H2FlowConfig struct {
+	Enabled                    *bool `json:"enabled"`
+	MaxStreamReceiveWindow     int32 `json:"maxStreamReceiveWindow"`
+	MaxConnectionReceiveWindow int32 `json:"maxConnectionReceiveWindow"`
+}
+
+// HTTP/2 windows below the protocol's initial window would stall a stream;
+// above 1 GiB they only invite unbounded buffering.
+const (
+	h2FlowMinWindow = 65535
+	h2FlowMaxWindow = 1 << 30
+)
+
+func (c *H2FlowConfig) Build() (*splithttp.H2FlowConfig, error) {
+	if c == nil {
+		return nil, nil
+	}
+	config := &splithttp.H2FlowConfig{
+		MaxStreamReceiveWindow:     c.MaxStreamReceiveWindow,
+		MaxConnectionReceiveWindow: c.MaxConnectionReceiveWindow,
+	}
+	if c.Enabled != nil {
+		config.Mode = 2
+		if *c.Enabled {
+			config.Mode = 1
+		}
+	}
+	for _, w := range []struct {
+		name string
+		size int32
+	}{
+		{"maxStreamReceiveWindow", c.MaxStreamReceiveWindow},
+		{"maxConnectionReceiveWindow", c.MaxConnectionReceiveWindow},
+	} {
+		if w.size != 0 && (w.size < h2FlowMinWindow || w.size > h2FlowMaxWindow) {
+			return nil, errors.New(`"h2Flow": "`, w.name, `" must be between `, h2FlowMinWindow, " and ", h2FlowMaxWindow)
+		}
+	}
+	return config, nil
 }
 
 type XmuxConfig struct {
@@ -504,11 +549,15 @@ func (c *SplitHTTPConfig) Build() (proto.Message, error) {
 		},
 	}
 
+	var err error
+	if config.H2Flow, err = c.H2Flow.Build(); err != nil {
+		return nil, err
+	}
+
 	if c.DownloadSettings != nil {
 		if c.Mode == "stream-one" {
 			return nil, errors.New(`Can not use "downloadSettings" in "stream-one" mode.`)
 		}
-		var err error
 		if config.DownloadSettings, err = c.DownloadSettings.Build(); err != nil {
 			return nil, errors.New(`Failed to build "downloadSettings".`).Base(err)
 		}

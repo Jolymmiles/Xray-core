@@ -13,6 +13,16 @@ message RangeConfig {
   int32 to = 2;
 }
 
+// H2FlowConfig tunes HTTP/2 flow control on XHTTP connections over TCP.
+message H2FlowConfig {
+  // 0 follows XRAY_XHTTP_FLOW, 1 turns the governor on, 2 turns it off.
+  int32 mode = 1;
+  // Receive windows this side grants: per stream and per connection.
+  // 0 keeps the default.
+  int32 maxStreamReceiveWindow = 2;
+  int32 maxConnectionReceiveWindow = 3;
+}
+
 message XmuxConfig {
   RangeConfig maxConcurrency = 1;
   RangeConfig maxConnections = 2;
@@ -54,4 +64,5 @@ message Config {
   RangeConfig sessionIDLength = 29;
   RangeConfig muxKeepAliveSecs = 30;
   RangeConfig muxKeepAliveBytes = 31;
+  H2FlowConfig h2Flow = 32;
 }

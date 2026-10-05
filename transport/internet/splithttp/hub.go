@@ -590,8 +590,9 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			MaxHeaderBytes:    l.config.GetNormalizedServerMaxHeaderBytes(),
 			Protocols:         protocols,
 			ConnContext:       internet.ContextWithPhysicalPeer,
+			HTTP2:             l.config.h2ReceiveConfig(true),
 		}
-		if flowEnabled {
+		if l.config.h2FlowOn() {
 			l.listener = &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault}
 		}
 		go func() {
