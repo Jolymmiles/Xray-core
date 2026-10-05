@@ -20,12 +20,12 @@ to a pinned Xray server version predating SMUX half-close negotiation. Every
 command is wrapped by the NetBird/Mihomo service guard.
 
 The fallback test needs commit
-`d8a67242bb255b23ddc92338ac8bc98d66b45088` in the local Git object database to
+`5016b0d43d367b939390e302d852551e28c370bb` in the local Git object database to
 build its legacy server. Use a full-history checkout (`fetch-depth: 0` in CI),
 or fetch that commit explicitly before running the test:
 
 ```sh
-git fetch origin d8a67242bb255b23ddc92338ac8bc98d66b45088
+git fetch origin 5016b0d43d367b939390e302d852551e28c370bb
 ```
 
 Alternatively, set `XRAY_LEGACY_SMUX_E2E_BIN` to an existing Xray binary built
@@ -329,7 +329,7 @@ go test -tags 'integration stress performance http2legacy' ./common/singmux \
 ```
 
 `TestCandidatePerformanceAgainstPreviousRelease` builds immutable
-`v26.8.25-1457` (`b7bdfb03fa582cd691197593cc853f6ea209d04f`) and the
+`v26.8.25-1457` (`163ac98d810cdc1667c1011540e498c6a954ee70`) and the
 candidate, keeps an identical candidate Xray SMUX client on both sides, warms
 both servers, and measures nine alternating full-duplex rounds. On Linux it
 fails above 10% median duration regression, 64 MiB RSS, 16 threads, or 8

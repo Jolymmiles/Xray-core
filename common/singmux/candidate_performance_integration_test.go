@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	candidatePerformanceRevision = "b7bdfb03fa582cd691197593cc853f6ea209d04f" // v26.8.25-1457
+	candidatePerformanceRevision = "163ac98d810cdc1667c1011540e498c6a954ee70" // v26.8.25-1457
 	candidatePerformanceLabel    = "v26.8.25-1457"
 )
 

@@ -74,7 +74,7 @@ jobs:
       - name: Checkout pinned sing-box interop client
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: Jolymmiles/sing-box
+          repository: SagerNet/sing-box
           ref: 46f00de9aa060ab989353953051268c7c4745664
           path: .interop/sing-box
           persist-credentials: false
@@ -82,7 +82,7 @@ jobs:
       - name: Checkout pinned Mihomo interop client
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: Jolymmiles/mihomo
+          repository: MetaCubeX/mihomo
           ref: 2e1394a7cf4c2d25ac6290a05ee0e21f786073de
           path: .interop/mihomo
           persist-credentials: false

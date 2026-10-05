@@ -31,7 +31,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const reverseCompatibilityRevision = "816ae65180cc8e8ac6bac76ffcdbc561e93ebb7d" // v26.8.15
+const reverseCompatibilityRevision = "745404174339d5360fc912abb0710103baf00d69" // v26.8.15
 
 func TestReverseVersionSkew(t *testing.T) {
 	if testing.Short() {

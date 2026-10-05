@@ -74,7 +74,7 @@ func runNegotiatedSMUXProcess(t *testing.T, workDir, xray, certificate, privateK
 
 // This is the parent of the commit that introduced negotiated SMUX half-close.
 // It accepts legacy carrier versions 0/1, so an auto client must really fall back.
-const legacySMUXServerRevision = "d8a67242bb255b23ddc92338ac8bc98d66b45088"
+const legacySMUXServerRevision = "5016b0d43d367b939390e302d852551e28c370bb"
 
 func TestSMUXAutoFallbackLegacyXray(t *testing.T) {
 	if testing.Short() {
