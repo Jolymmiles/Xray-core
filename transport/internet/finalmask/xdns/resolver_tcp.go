@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
@@ -15,13 +16,15 @@ type TCPResolver struct {
 	dialer *finalmask.Dialer
 
 	conn    net.Conn
-	tcpAddr *net.TCPAddr
-	udpAddr *net.UDPAddr
+	udpAddr atomic.Pointer[net.UDPAddr]
 
 	readCh  chan []byte
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 	mu      sync.Mutex
+	// writeMu keeps frames whole without holding mu, so Close can interrupt
+	// a write stalled on a peer that stopped reading.
+	writeMu sync.Mutex
 }
 
 func NewTCPResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, error) {
@@ -63,8 +66,8 @@ func (r *TCPResolver) dial() error {
 		return err
 	}
 	r.conn = conn
-	r.tcpAddr = conn.RemoteAddr().(*net.TCPAddr)
-	r.udpAddr = &net.UDPAddr{IP: r.tcpAddr.IP, Port: r.tcpAddr.Port}
+	tcpAddr := conn.RemoteAddr().(*net.TCPAddr)
+	r.udpAddr.Store(&net.UDPAddr{IP: tcpAddr.IP, Port: tcpAddr.Port})
 	r.wg.Add(1)
 	go r.recv(conn)
 	return nil
@@ -101,11 +104,13 @@ func (r *TCPResolver) recv(conn net.Conn) {
 	defer r.mu.Unlock()
 
 	_ = conn.Close()
-	r.conn = nil
+	if r.conn == conn {
+		r.conn = nil
+	}
 }
 
 func (r *TCPResolver) Addr() *net.UDPAddr {
-	return r.udpAddr
+	return r.udpAddr.Load()
 }
 
 func (r *TCPResolver) Read(p []byte) (n int, err error) {
@@ -120,17 +125,23 @@ func (r *TCPResolver) Read(p []byte) (n int, err error) {
 
 func (r *TCPResolver) Send(p []byte) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.dial() != nil {
+		r.mu.Unlock()
 		return
 	}
+	conn := r.conn
+	r.mu.Unlock()
+
 	// DNS over TCP prefixes each message with its length (RFC 1035 4.2.2).
 	frame := make([]byte, 2+len(p))
 	binary.BigEndian.PutUint16(frame, uint16(len(p)))
 	copy(frame[2:], p)
-	if _, err := r.conn.Write(frame); err != nil {
+	r.writeMu.Lock()
+	_, err := conn.Write(frame)
+	r.writeMu.Unlock()
+	if err != nil {
 		// recv sees the closed conn and resets it, so the next Send redials.
-		_ = r.conn.Close()
+		_ = conn.Close()
 	}
 }
 

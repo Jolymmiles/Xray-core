@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
@@ -14,7 +15,7 @@ type UDPResolver struct {
 	dialer *finalmask.Dialer
 
 	conn    net.PacketConn
-	udpAddr *net.UDPAddr
+	udpAddr atomic.Pointer[net.UDPAddr]
 
 	readCh  chan []byte
 	closeCh chan struct{}
@@ -61,7 +62,7 @@ func (r *UDPResolver) dial() error {
 		return err
 	}
 	r.conn = conn.(*net.PacketConnWrapper).PacketConn
-	r.udpAddr = conn.RemoteAddr().(*net.UDPAddr)
+	r.udpAddr.Store(conn.RemoteAddr().(*net.UDPAddr))
 	r.wg.Add(1)
 	go r.recv(conn.(*net.PacketConnWrapper).PacketConn)
 	return nil
@@ -89,11 +90,13 @@ func (r *UDPResolver) recv(conn net.PacketConn) {
 	defer r.mu.Unlock()
 
 	_ = conn.Close()
-	r.conn = nil
+	if r.conn == conn {
+		r.conn = nil
+	}
 }
 
 func (r *UDPResolver) Addr() *net.UDPAddr {
-	return r.udpAddr
+	return r.udpAddr.Load()
 }
 
 func (r *UDPResolver) Read(p []byte) (n int, err error) {
@@ -112,7 +115,7 @@ func (r *UDPResolver) Send(p []byte) {
 	if err := r.dial(); err != nil {
 		return
 	}
-	_, _ = r.conn.WriteTo(p, r.udpAddr)
+	_, _ = r.conn.WriteTo(p, r.udpAddr.Load())
 }
 
 func (r *UDPResolver) Close() {

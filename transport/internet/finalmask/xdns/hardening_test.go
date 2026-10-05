@@ -285,3 +285,125 @@ func (c *trackedPacketConn) isClosed() bool {
 		return false
 	}
 }
+
+// pipeDialer hands out in-memory TCP conns and keeps their peer ends.
+type pipeDialer struct {
+	mu    sync.Mutex
+	dials int
+	peers chan stdnet.Conn
+	write chan struct{}
+}
+
+func newPipeDialer() *pipeDialer {
+	return &pipeDialer{peers: make(chan stdnet.Conn, 8), write: make(chan struct{}, 8)}
+}
+
+func (d *pipeDialer) dialer() *finalmask.Dialer {
+	return &finalmask.Dialer{DialTCP: func(net.Destination) (net.Conn, error) {
+		d.mu.Lock()
+		d.dials++
+		port := 5300 + d.dials
+		d.mu.Unlock()
+		client, peer := stdnet.Pipe()
+		d.peers <- peer
+		return &resolverPipeConn{Conn: client, remote: &stdnet.TCPAddr{IP: stdnet.IP{192, 0, 2, 53}, Port: port}, write: d.write}, nil
+	}}
+}
+
+func (d *pipeDialer) dialCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.dials
+}
+
+type resolverPipeConn struct {
+	stdnet.Conn
+	remote stdnet.Addr
+	write  chan struct{}
+}
+
+func (c *resolverPipeConn) RemoteAddr() stdnet.Addr { return c.remote }
+
+func (c *resolverPipeConn) Write(p []byte) (int, error) {
+	select {
+	case c.write <- struct{}{}:
+	default:
+	}
+	return c.Conn.Write(p)
+}
+
+// A DNS server that stops reading must not keep Close from tearing the
+// resolver down: Close has to interrupt the stalled write.
+func TestTCPResolverCloseInterruptsStalledSend(t *testing.T) {
+	dialer := newPipeDialer()
+	resolver, err := NewTCPResolver(&ResolverProto{Type: "tcp", Addr: "192.0.2.53:53"}, dialer.dialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := <-dialer.peers
+	t.Cleanup(func() { _ = peer.Close() })
+
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		resolver.Send([]byte("query"))
+	}()
+	<-dialer.write
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		resolver.Close()
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked behind a Send stalled on an unread TCP conn")
+	}
+	<-sent
+}
+
+// Addr runs on the client's receive loop while Send may redial after the
+// previous conn failed; the address published by a redial must be read
+// without a data race.
+func TestTCPResolverRedialPublishesAddressSafely(t *testing.T) {
+	dialer := newPipeDialer()
+	resolver, err := NewTCPResolver(&ResolverProto{Type: "tcp", Addr: "192.0.2.53:53"}, dialer.dialer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolver.Close()
+	_ = (<-dialer.peers).Close()
+	go func() {
+		for peer := range dialer.peers {
+			go func() { _, _ = io.Copy(io.Discard, peer) }()
+		}
+	}()
+
+	stop := make(chan struct{})
+	reading := make(chan struct{})
+	go func() {
+		defer close(reading)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = resolver.Addr()
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for dialer.dialCount() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("resolver did not redial after its conn failed")
+		}
+		resolver.Send([]byte("query"))
+	}
+	close(stop)
+	<-reading
+	if got := resolver.Addr(); got == nil || got.Port != 5302 {
+		t.Fatalf("Addr after redial = %v, want port 5302", got)
+	}
+}
