@@ -550,6 +550,13 @@ func (c *flowConn) queueShrink(w *flowWindow, now time.Time, init int32) {
 	w.cap = int32(max(int64(init), int64(w.cap)/4*3, keep))
 }
 
+// NetConn returns the accepted connection, so that code which looks through
+// connection wrappers, for the client's physical address or a PROXY header,
+// still finds it behind the governor.
+func (c *flowConn) NetConn() net.Conn {
+	return c.Conn
+}
+
 func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
 	fc := &flowConn{
 		Conn:        c,
