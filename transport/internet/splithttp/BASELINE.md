@@ -9,15 +9,14 @@ on; with it off, the code below is never in the data path.
 
 ## Source and conditions
 
-- Xray commit: `a6321d10c66f688812075dbb91267ee01e2f91fd` (PR #17 re-review
-  fixes on `bdbac60e`).
+- Xray commit: `bfe16614` (PR #17 re-review fixes on `bdbac60e`).
 - Host: linux/amd64 container, AMD Ryzen 5 5600 (12 threads), Go 1.27.1,
   build tag `http2legacy` as CI and releases build.
 - Benchmark command:
 
   ```sh
   go test -tags http2legacy ./transport/internet/splithttp \
-    -run '^$' -bench 'BenchmarkFlow' -benchtime=2s -count=3
+    -run '^$' -bench 'BenchmarkFlow' -benchtime=2s -count=5
   ```
 
 ## Microbenchmarks
@@ -26,12 +25,12 @@ One MiB of DATA in default-size frames on one stream, plus the credit for it,
 read in 16 KiB buffers (`BenchmarkFlowRead`, client to server) or written in
 16 KiB writes (`BenchmarkFlowWrite`, server to client). "Stock" is the bare
 connection; the replay connection copies or discards, so stock is the cost of
-the copy alone. Medians of three runs:
+the copy alone. Medians of five runs:
 
 | Benchmark | Stock | Governed | Allocations governed |
 | --- | --- | --- | --- |
-| Read, per MiB | 19.6 µs | 58.7 µs (17.9 GB/s) | 65, 1.6 KB |
-| Write, per MiB | 0.16 µs | 192.5 µs (5.4 GB/s) | 65, 1.6 KB |
+| Read, per MiB | 20.1 µs | 59.8 µs (17.5 GB/s) | 65, 1.6 KB |
+| Write, per MiB | 0.17 µs | 203.0 µs (5.2 GB/s) | 65, 1.6 KB |
 
 The governor parses every frame header and rewrites credit, so its cost is
 per frame (64 per MiB), not per byte. All allocations are the slice headers
@@ -76,17 +75,23 @@ Unit tests fix what a peer can observe and what the governor may hold:
 
 ## Network measurements
 
-Linux stand from the PR description: two network namespaces joined by a veth
-pair, netem delay and rate with a queue sized to the bandwidth-delay product,
-server governed, client official Xray; medians of five rounds. Measured on
-`bdbac60e`, before the re-review fixes. Those leave the download path as it
-was but hold the upload connection window at Go's 1 MiB until a reader takes
-data, so the upload rows are to be measured again on this commit.
+Linux stand: two network namespaces joined by a veth pair, netem delay and
+rate with a queue sized to the bandwidth-delay product, TCP buffers up to
+32 MB, server this commit, client official Xray v26.9.30. Medians of five
+rounds; the governor column of the last two rows is from an eight-round run.
+"Stock" is the governor off.
 
 | Scenario | Stock | Governed |
 | --- | --- | --- |
-| Download 100 Mbit/s, RTT 50 ms: PING beside it p50 / p95 | 789 / 1711 ms | 65 / 233 ms |
-| Download through link dips: recovery after the second dip | 6.9 s | 0.7 s |
-| Slow reader: client memory | 118 MB | 38 MB |
-| One upload, 100 Mbit/s, RTT 150 ms: rate / PING | 6.7 MB/s / 153 ms | 10.9 MB/s / 190 ms |
-| 20 uploads into a slow server: PING p95 | 8.0 s | 0.48 s |
+| Download 100 Mbit/s, RTT 50 ms: PING beside it p50 / p95 | 1021 / 2424 ms | 66 / 216 ms |
+| Download beside short requests: PING p50 / p95 | 453 / 875 ms | 65 / 212 ms |
+| One upload, 100 Mbit/s, RTT 300 ms | 3.2 MB/s | 9.5 MB/s |
+| One upload, 50 Mbit/s, RTT 150 ms | 5.7 MB/s | 5.7 MB/s |
+| Uploads into a slow server: PING p50 / p95 | 218 / 7150 ms | 53 / 511 ms |
+| First 3 MB of a new stream, RTT 150 ms ± 20 ms | 3.0 s | 3.7 s |
+
+The last row is bimodal with jitter (runs land near 2.9 s or 4.1 s); the
+build before the re-review fixes measured 3.7 s on the same eight rounds.
+Integrity: byte-exact pattern transfers up and down, direct, behind a TCP
+proxy and with jitter, 65 transfers and 125 MB, no bad bytes, short reads or
+errors.
