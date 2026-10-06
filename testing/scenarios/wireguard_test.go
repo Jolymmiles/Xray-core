@@ -159,8 +159,13 @@ func TestWireguard(t *testing.T) {
 		Outbound: []*core.OutboundHandlerConfig{
 			{
 				ProxySettings: serial.ToTypedMessage(&wireguard.DeviceConfig{
-					IsClient:    true,
-					NoKernelTun: false,
+					IsClient: true,
+					// The tunnel reaches this host's own address. Through a kernel
+					// TUN (used whenever the test has CAP_NET_ADMIN) the decrypted
+					// replies carry a local source address and Linux drops them as
+					// martians; a kernel TUN would also add a device and rewrite
+					// host-wide sysctls. Keep the client in the gVisor stack.
+					NoKernelTun: true,
 					Endpoint:    []string{"10.0.0.2"},
 					Mtu:         1420,
 					SecretKey:   clientPrivate,
