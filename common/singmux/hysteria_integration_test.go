@@ -142,14 +142,3 @@ func hysteriaClientConfig(t *testing.T, binaries e2eBinaries, peer string, serve
 		return "", nil, nil
 	}
 }
-
-func freeUDPPort(t testing.TB) int {
-	t.Helper()
-	connection, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := connection.LocalAddr().(*net.UDPAddr).Port
-	_ = connection.Close()
-	return port
-}
