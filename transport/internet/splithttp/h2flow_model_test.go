@@ -65,7 +65,13 @@ type flowModel struct {
 	steps    int
 	cliConn  int64 // connection window the client believes it has
 	srvConn  int64 // connection window the server really has left
+	resize   bool  // the client changes its initial window now and then
+	changes  int   // mid-connection client window changes applied
+	failed   bool  // the governor gave up the connection
+	lenient  bool  // do not require a give-up; let the invariants judge
 }
+
+var modelWindows = []int64{h2InitWindow, 128 << 10, 256 << 10, 1 << 20, 4 << 20, 16 << 20}
 
 func newFlowModel(t *testing.T, seed uint64, up, down flowLimit, frozen bool) *flowModel {
 	capture := &captureConn{}
@@ -77,9 +83,8 @@ func newFlowModel(t *testing.T, seed uint64, up, down flowLimit, frozen bool) *f
 		cliSees: h2InitWindow, srvSees: h2InitWindow,
 		up: up, down: down,
 	}
-	sizes := []int64{h2InitWindow, 128 << 10, 256 << 10, 1 << 20, 4 << 20, 16 << 20}
-	m.cliInit = sizes[m.rnd.IntN(len(sizes))]
-	m.srvInit = sizes[m.rnd.IntN(len(sizes))]
+	m.cliInit = modelWindows[m.rnd.IntN(len(modelWindows))]
+	m.srvInit = modelWindows[m.rnd.IntN(len(modelWindows))]
 	m.fromClient(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: uint32(m.cliInit)})
 	}, true)
@@ -212,7 +217,10 @@ func (m *flowModel) deliverToClient() {
 			n := int64(f.Length)
 			s.client.recvAvail -= n
 			s.client.buffered += n
-			if s.client.recvAvail < 0 {
+			// A window may be negative after the client lowers its initial
+			// window; only data that lands there overruns it, not an empty
+			// DATA frame that ends the stream.
+			if n > 0 && s.client.recvAvail < 0 {
 				m.t.Fatalf("stream %d: client received %d bytes beyond its window", f.StreamID, -s.client.recvAvail)
 			}
 			if limit := m.limit(f.StreamID, false); limit > 0 && s.client.buffered > limit+16<<10 {
@@ -286,6 +294,45 @@ func (m *flowModel) open() {
 	}, false)
 }
 
+// changeClientWindow announces a new initial window from the client in the
+// middle of the connection. Every stream's real window moves with it, and the
+// server must end up with no more credit than that on any stream it may still
+// send on. Credit the governor already handed out cannot be taken back, so
+// the change can only be expressed while no such stream holds more of it
+// than the new window covers; otherwise the governor must give up.
+func (m *flowModel) changeClientWindow() {
+	next := modelWindows[m.rnd.IntN(len(modelWindows))]
+	expressible := true
+	for _, s := range m.streams {
+		// What the governor forwarded beyond what the client returned.
+		ahead := s.server.sendView - s.client.recvAvail + m.cliInit - m.srvSees
+		if m.down.enabled() && !s.server.done && next < ahead {
+			expressible = false
+		}
+		s.client.recvAvail += next - m.cliInit
+	}
+	m.cliInit = next
+	m.fromClient(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: uint32(next)})
+	}, false)
+	// Adapted to bdbac60e: it has no broken flag; a governor that gives up
+	// releases its state, which sets closed.
+	m.c.mu.Lock()
+	broken := m.c.closed
+	m.c.mu.Unlock()
+	if m.lenient {
+		m.changes++
+		return
+	}
+	if broken == expressible {
+		m.t.Fatalf("client window to %d: governor gave up %v, change expressible %v", next, broken, expressible)
+	}
+	m.failed = !expressible
+	if expressible {
+		m.changes++
+	}
+}
+
 func (m *flowModel) pick() (uint32, *modelStream) {
 	for id, s := range m.streams {
 		return id, s
@@ -354,6 +401,8 @@ func (m *flowModel) step() {
 		s.server.done = true
 		m.fromServer(func(fr *http2.Framer) { fr.WriteData(id, true, nil) })
 		m.maybeForget(id, s)
+	case m.resize && r == 99:
+		m.changeClientWindow()
 	default:
 		m.fromClient(func(fr *http2.Framer) { fr.WritePing(false, [8]byte{1}) }, false)
 		m.fromServer(func(fr *http2.Framer) { fr.WritePing(false, [8]byte{2}) })
@@ -414,7 +463,10 @@ func (m *flowModel) drain() {
 		if !s.client.done && s.client.sendView <= 0 && s.server.buffered == 0 && s.server.unsent < 4<<10 {
 			m.t.Fatalf("stream %d: client stalled with no window after the server drained", id)
 		}
-		if !s.server.done && s.server.sendView <= 0 && s.client.buffered == 0 && s.client.unsent < 4<<10 {
+		// The stall is the governor's only while the client still allows
+		// data: a client that lowered its window below what it holds stalls
+		// the stream with stock HTTP/2 too.
+		if !s.server.done && s.server.sendView <= 0 && s.client.recvAvail > 0 && s.client.buffered == 0 && s.client.unsent < 4<<10 {
 			m.t.Fatalf("stream %d: server stalled with no window after the client drained", id)
 		}
 	}
@@ -433,11 +485,45 @@ func TestFlowModelInvariants(t *testing.T) {
 		{flowLimit{init: 256 << 10, max: 32 << 20}, testDown, true},
 	}
 	for i, l := range limits {
-		t.Run(fmt.Sprintf("limits%d", i), func(t *testing.T) { runModel(t, i, l.up, l.down, l.frozen) })
+		t.Run(fmt.Sprintf("limits%d", i), func(t *testing.T) { runModel(t, i, l.up, l.down, l.frozen, false) })
 	}
 }
 
-func runModel(t *testing.T, i int, up, down flowLimit, frozen bool) {
+// TestFlowModelWindowChanges runs the same model with a client that changes
+// its initial window in the middle of the connection.
+func TestFlowModelWindowChanges(t *testing.T) {
+	for i, l := range []struct{ up, down flowLimit }{
+		{testUp, testDown},
+		{flowLimit{init: h2InitWindow, max: 1 << 20}, flowLimit{init: h2InitWindow, max: 1 << 20}},
+		{flowLimit{init: 1 << 20, max: 32 << 20}, flowLimit{}},
+		{flowLimit{}, flowLimit{init: 512 << 10, max: 2 << 20}},
+	} {
+		t.Run(fmt.Sprintf("limits%d", i), func(t *testing.T) { runModel(t, i, l.up, l.down, false, true) })
+	}
+}
+
+// TestFlowModelWindowChangesLenient (added for bdbac60e) runs the window-change
+// model without requiring the governor to give up an inexpressible change:
+// only the stock invariants judge, i.e. the server never sends beyond the
+// client's real window and no stream stalls after both readers drain.
+func TestFlowModelWindowChangesLenient(t *testing.T) {
+	for i, l := range []struct{ up, down flowLimit }{
+		{testUp, testDown},
+		{flowLimit{init: h2InitWindow, max: 1 << 20}, flowLimit{init: h2InitWindow, max: 1 << 20}},
+		{flowLimit{init: 1 << 20, max: 32 << 20}, flowLimit{}},
+		{flowLimit{}, flowLimit{init: 512 << 10, max: 2 << 20}},
+	} {
+		t.Run(fmt.Sprintf("limits%d", i), func(t *testing.T) {
+			lenientModel = true
+			defer func() { lenientModel = false }()
+			runModel(t, i, l.up, l.down, false, true)
+		})
+	}
+}
+
+var lenientModel bool
+
+func runModel(t *testing.T, i int, up, down flowLimit, frozen, resize bool) {
 	l := struct {
 		up, down flowLimit
 		frozen   bool
@@ -447,13 +533,21 @@ func runModel(t *testing.T, i int, up, down flowLimit, frozen bool) {
 		if testing.Short() {
 			seeds = 8
 		}
+		changes, failures := 0, 0
 		for seed := uint64(0); seed < seeds; seed++ {
 			m := newFlowModel(t, seed*97+uint64(i), l.up, l.down, l.frozen)
-			for n := 0; n < 3000; n++ {
+			m.resize = resize
+			m.lenient = lenientModel
+			for n := 0; n < 3000 && !m.failed; n++ {
 				m.step()
-				if n%500 == 499 {
+				if n%500 == 499 && !m.failed {
 					m.drain()
 				}
+			}
+			changes += m.changes
+			if m.failed {
+				failures++
+				continue
 			}
 			m.drain()
 			m.c.mu.Lock()
@@ -463,6 +557,12 @@ func runModel(t *testing.T, i int, up, down flowLimit, frozen bool) {
 				}
 			}
 			m.c.mu.Unlock()
+		}
+		if resize {
+			if changes == 0 {
+				t.Fatalf("limits %d: no client window change was applied in %d seeds", i, seeds)
+			}
+			t.Logf("limits %d: %d client window changes applied, %d connections given up", i, changes, failures)
 		}
 	}
 }
