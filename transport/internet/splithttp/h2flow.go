@@ -58,11 +58,17 @@ const (
 	flowMinRTT       = time.Millisecond
 	flowLearnHalf    = time.Minute
 	flowStartWindow  = 256 << 10
-	flowSmallCredit  = 64 << 10
-	flowShrinkAfter  = 3
-	flowKernelEvery  = 20 * time.Millisecond
-	flowQueueHold    = 15 * time.Millisecond
-	flowQueueShrink  = 40 * time.Millisecond
+	// flowMaxStreams bounds the streams one connection makes the governor
+	// track; stock HTTP/2 refuses far fewer concurrent ones.
+	flowMaxStreams = 4096
+	// flowConnFloor is the connection window a governed receiver shows
+	// before its readers prove they need more: Go's default.
+	flowConnFloor   = 1 << 20
+	flowSmallCredit = 64 << 10
+	flowShrinkAfter = 3
+	flowKernelEvery = 20 * time.Millisecond
+	flowQueueHold   = 15 * time.Millisecond
+	flowQueueShrink = 40 * time.Millisecond
 
 	flowUndecided = 0
 	flowH2        = 1
@@ -451,16 +457,22 @@ type flowConn struct {
 	rpending []byte
 	prefix   int
 	opened   []uint32
-	toClient []byte
 
 	wmu          sync.Mutex
 	wp           frameParser
 	wqueue       []byte
+	wcredit      map[uint32]int64
 	wpending     atomic.Bool
 	settingsSent bool
 	pingReady    bool
 	closed       bool
 	broken       bool
+
+	// Connection-level window of the upload: DATA the client sent, credit
+	// the server returned on stream 0, and credit handed on to the client.
+	upConnSent      int64
+	upConnReturned  int64
+	upConnForwarded int64
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -586,6 +598,7 @@ func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
 		up:          up,
 		down:        down,
 		streams:     make(map[uint32]*flowStream),
+		wcredit:     make(map[uint32]int64),
 		clientInit:  h2InitWindow,
 		clientShown: h2InitWindow,
 		serverInit:  h2InitWindow,
@@ -633,7 +646,7 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		bytespool.Free(in)
 		if c.isBroken() {
 			c.Close()
-			return 0, errFlowWindow
+			return 0, errFlowGivenUp
 		}
 		m := copy(b, out)
 		if m < len(out) {
@@ -661,8 +674,8 @@ func (c *flowConn) release() {
 func (c *flowConn) releaseLocked() {
 	c.streams = map[uint32]*flowStream{}
 	c.opened = nil
-	c.toClient = nil
 	c.wqueue = nil
+	clear(c.wcredit)
 	c.closed = true
 	if c.guard != nil {
 		c.guard.Stop()
@@ -670,7 +683,8 @@ func (c *flowConn) releaseLocked() {
 }
 
 // giveUp marks the connection for closing at the next read or write and
-// drops its state at once.
+// drops its state at once: the peer lowered its window below the credit
+// already handed on, or opened more streams than the governor tracks.
 func (c *flowConn) giveUp() {
 	c.broken = true
 	c.releaseLocked()
@@ -694,11 +708,10 @@ func (c *flowConn) readFrames(in, out []byte) []byte {
 	}
 	c.mu.Lock()
 	out = c.rp.feed(in, out, (*flowReader)(c))
-	toClient := c.toClient
-	c.toClient = nil
+	credit := len(c.wcredit) > 0
 	c.mu.Unlock()
-	if len(toClient) > 0 {
-		c.injectToClient(toClient)
+	if credit {
+		c.wakeQueue()
 	}
 	return out
 }
@@ -717,7 +730,7 @@ func (c *flowConn) Write(b []byte) (int, error) {
 		bytespool.Free(out)
 		c.wmu.Unlock()
 		c.Close()
-		return 0, errFlowWindow
+		return 0, errFlowGivenUp
 	}
 	err := c.send(out)
 	bytespool.Free(out)
@@ -748,7 +761,7 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 	if c.isBroken() {
 		bytespool.Free(out)
 		c.Close()
-		return 0, errFlowWindow
+		return 0, errFlowGivenUp
 	}
 	err := c.send(out)
 	bytespool.Free(out)
@@ -760,14 +773,37 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 
 // injectToClient queues frames for the client without ever waiting for a
 // write in progress: whoever holds wmu drains the queue after letting go.
+// Only the guard's PING comes this way, and only one is ever queued.
 func (c *flowConn) injectToClient(frames []byte) {
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || len(c.wqueue) > 0 {
 		c.mu.Unlock()
 		return
 	}
 	c.wqueue = append(c.wqueue, frames...)
 	c.mu.Unlock()
+	c.wakeQueue()
+}
+
+// creditClient queues upload credit for the client. Credit for one stream
+// adds up in one entry, and the entry goes with the stream, so the queue
+// never holds more than the streams the governor tracks.
+func (c *flowConn) creditClient(id uint32, n int64) {
+	c.wcredit[id] += n
+}
+
+// queuedLocked appends everything queued for the client.
+func (c *flowConn) queuedLocked(out []byte) []byte {
+	out = append(out, c.wqueue...)
+	c.wqueue = nil
+	for id, n := range c.wcredit {
+		out = appendWindowUpdate(out, id, n)
+	}
+	clear(c.wcredit)
+	return out
+}
+
+func (c *flowConn) wakeQueue() {
 	c.wpending.Store(true)
 	if c.wmu.TryLock() {
 		go func() {
@@ -790,7 +826,7 @@ func (c *flowConn) flushQueueLocked() {
 	c.mu.Lock()
 	var q []byte
 	if c.settingsSent && c.wp.atBoundary() {
-		q, c.wqueue = c.wqueue, nil
+		q = c.queuedLocked(nil)
 	}
 	c.mu.Unlock()
 	if len(q) > 0 {
@@ -818,8 +854,40 @@ func (c *flowConn) stream(id uint32) *flowStream {
 
 func (c *flowConn) finish(id uint32, s *flowStream) {
 	if s.clientDone && s.serverDone {
-		delete(c.streams, id)
+		c.drop(id)
 	}
+}
+
+func (c *flowConn) drop(id uint32) {
+	delete(c.streams, id)
+	delete(c.wcredit, id)
+}
+
+// upConnRelease is how much connection credit the client may be given: no
+// more than the server granted, and no more than keeps the data sent and not
+// yet read under what the streams whose readers return credit may hold, plus
+// flowConnFloor for the rest. Streams nobody reads thus share Go's 1 MiB, as
+// they would without the governor, whatever the server's own window, and
+// slow readers holding their caps leave that room to new streams.
+func (c *flowConn) upConnRelease() int64 {
+	var unread, reading int64
+	for _, s := range c.streams {
+		unread += s.upSent - s.up.returned
+		if s.up.returned > 0 {
+			reading += int64(s.up.cap)
+		}
+	}
+	bank := c.upConnReturned - c.upConnForwarded
+	window := h2InitWindow + c.upConnForwarded - c.upConnSent
+	return min(bank, flowConnFloor+reading-unread-window, h2MaxWindow)
+}
+
+func (c *flowConn) appendUpConnRelease(out []byte) []byte {
+	if rel := c.upConnRelease(); rel > 0 {
+		c.upConnForwarded += rel
+		out = appendWindowUpdate(out, 0, rel)
+	}
+	return out
 }
 
 // currentRTT is the kernel's min_rtt where it vouches for the path, otherwise
@@ -1054,11 +1122,10 @@ func (c *flowConn) changeInitialWindow(payload []byte, l flowLimit, init, shown 
 	return true
 }
 
-// errFlowWindow ends a connection whose peer lowered its window below the
-// credit the governor had already handed on.
-var errFlowWindow = errors.New("http2 flow governor: initial window lowered below forwarded credit")
+// errFlowGivenUp ends a connection the governor gave up, see giveUp.
+var errFlowGivenUp = errors.New("http2 flow governor: connection given up")
 
-// isBroken reports whether the connection has to go, see changeInitialWindow.
+// isBroken reports whether the connection has to go, see giveUp.
 func (c *flowConn) isBroken() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1086,6 +1153,10 @@ func (r *flowReader) frame(f h2Frame) {
 	case h2Headers:
 		s := c.stream(f.stream)
 		if s == nil && f.stream%2 == 1 && !c.closed {
+			if len(c.streams) >= flowMaxStreams {
+				c.giveUp()
+				return
+			}
 			now := time.Now()
 			s = &flowStream{}
 			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
@@ -1098,6 +1169,7 @@ func (r *flowReader) frame(f h2Frame) {
 			c.finish(f.stream, s)
 		}
 	case h2Data:
+		c.upConnSent += int64(f.length)
 		if s := c.stream(f.stream); s != nil {
 			s.upSent += int64(f.length)
 			if f.flags&h2FlagEndStream != 0 {
@@ -1106,7 +1178,7 @@ func (r *flowReader) frame(f h2Frame) {
 			}
 		}
 	case h2RSTStream:
-		delete(c.streams, f.stream)
+		c.drop(f.stream)
 	}
 }
 
@@ -1215,7 +1287,7 @@ func (r *flowReader) boundary(out []byte) []byte {
 		if c.up.enabled() {
 			if rel := c.upRelease(s); rel > 0 {
 				s.upForwarded += rel
-				c.toClient = appendWindowUpdate(c.toClient, id, rel)
+				c.creditClient(id, rel)
 			}
 		}
 	}
@@ -1247,7 +1319,7 @@ func (w *flowWriter) frame(f h2Frame) {
 			c.finish(f.stream, s)
 		}
 	case h2RSTStream:
-		delete(c.streams, f.stream)
+		c.drop(f.stream)
 	}
 }
 
@@ -1283,6 +1355,10 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 	case h2WindowUpdate:
 		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
+		if f.stream == 0 && inc > 0 && c.up.enabled() {
+			c.upConnReturned += inc
+			return c.appendUpConnRelease(out)
+		}
 		s := c.stream(f.stream)
 		if s == nil || inc == 0 || !c.up.enabled() {
 			break
@@ -1306,12 +1382,12 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			s.up.cap = min(s.up.cap, flowUnconfirmedUp)
 		}
 		c.upLearned.note(now, c.up.init, s.up.cap)
-		rel := c.upRelease(s)
-		if rel <= 0 {
-			return out
+		if rel := c.upRelease(s); rel > 0 {
+			s.upForwarded += rel
+			out = appendWindowUpdate(out, f.stream, rel)
 		}
-		s.upForwarded += rel
-		return appendWindowUpdate(out, f.stream, rel)
+		// What the reader took also frees room on the connection.
+		return c.appendUpConnRelease(out)
 	}
 	out = append(out, header...)
 	return append(out, payload...)
@@ -1322,9 +1398,6 @@ func (w *flowWriter) boundary(out []byte) []byte {
 	if c.client || !c.settingsSent {
 		return out
 	}
-	if len(c.wqueue) > 0 {
-		out = append(out, c.wqueue...)
-		c.wqueue = nil
-	}
+	out = c.queuedLocked(out)
 	return c.appendPing(out)
 }

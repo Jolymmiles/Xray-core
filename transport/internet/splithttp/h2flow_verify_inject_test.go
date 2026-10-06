@@ -40,7 +40,7 @@ func TestFlowInjectedWriteFailureIsTerminal(t *testing.T) {
 		t.Fatal("connection still open after the socket took only part of the governor's frames")
 	}
 	h.c.mu.Lock()
-	streams, queued := len(h.c.streams), len(h.c.wqueue)
+	streams, queued := len(h.c.streams), queuedBytes(h.c)
 	h.c.mu.Unlock()
 	if streams != 0 || queued != 0 {
 		t.Fatalf("%d streams and %d queued bytes kept after the connection failed", streams, queued)

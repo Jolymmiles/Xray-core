@@ -269,3 +269,8 @@ func pings(t *testing.T, b []byte) [][8]byte {
 		}
 	}
 }
+
+// queuedBytes is what the governor holds back for the client, as frames.
+func queuedBytes(c *flowConn) int {
+	return len(c.wqueue) + (h2FrameHeader+4)*len(c.wcredit)
+}
