@@ -227,13 +227,24 @@ func (r *Resp) Encode(encoded []byte, data []byte) []byte {
 	return common.Must2(msg.AppendPack(encoded[:0]))
 }
 
+// Decode writes the payload carried by the answers into decoded and returns
+// its length. The caller reslices its buffer with the result, so a payload
+// that does not fit len(decoded) is rejected instead of growing past it.
 func (r *Resp) Decode(decoded []byte) int {
+	limit := len(decoded)
 	decoded = decoded[:0]
+	fits := func(n int) bool {
+		return len(decoded)+n <= limit
+	}
 	msg := r.msg
 	if msg.Questions[0].Type == dnsmessage.TypeTXT {
 		if len(msg.Answers) == 1 && r.domain.IsDomain(msg.Answers[0].Header.Name) && msg.Answers[0].Header.Type == dnsmessage.TypeTXT {
 			for i := range msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT {
-				decoded = append(decoded, msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT[i]...)
+				txt := msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT[i]
+				if !fits(len(txt)) {
+					return 0
+				}
+				decoded = append(decoded, txt...)
 			}
 		}
 		return len(decoded)
@@ -263,10 +274,13 @@ func (r *Resp) Decode(decoded []byte) int {
 		if len(frags) < 1 || len(frags[0]) < 2 || int(frags[0][1]) > len(frags) {
 			return 0
 		}
+		if !fits(len(frags[0]) - 2) {
+			return 0
+		}
 		decoded = append(decoded, frags[0][2:]...)
 		for i := range frags {
 			if i > 0 {
-				if frags[i][0] == frags[i-1][0] {
+				if frags[i][0] == frags[i-1][0] || !fits(len(frags[i])-1) {
 					return 0
 				}
 				decoded = append(decoded, frags[i][1:]...)
