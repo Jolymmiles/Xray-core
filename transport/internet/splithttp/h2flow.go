@@ -11,6 +11,7 @@ import (
 
 	"github.com/xtls/xray-core/common/bytespool"
 	"github.com/xtls/xray-core/common/platform"
+	"golang.org/x/net/http2"
 )
 
 // flowConn sits between a TLS/REALITY connection and the local HTTP/2 stack.
@@ -35,6 +36,7 @@ const (
 	h2Headers      = 0x1
 	h2RSTStream    = 0x3
 	h2Settings     = 0x4
+	h2PushPromise  = 0x5
 	h2Ping         = 0x6
 	h2WindowUpdate = 0x8
 	h2Continuation = 0x9
@@ -47,6 +49,7 @@ const (
 	h2SettingMaxFrameSize      = 0x5
 	h2MinMaxFrameSize          = 16384
 
+	flowPingSlots    = 4
 	flowPingInterval = time.Second
 	flowPingTimeout  = 10 * time.Second
 	flowDefaultRTT   = 200 * time.Millisecond
@@ -104,16 +107,31 @@ type h2Frame struct {
 	length     int
 }
 
+// control reports whether the governor inspects f. Anything malformed by the
+// stock rules, such as SETTINGS or PING off stream 0, passes on byte for
+// byte, so the receiving stack fails it as it would without the governor.
 func (f h2Frame) control() bool {
 	switch f.typ {
 	case h2Settings:
-		return f.length%6 == 0 && f.length <= 16384
+		return f.stream == 0 && f.length%6 == 0 && f.length <= h2MinMaxFrameSize
 	case h2Ping:
-		return f.length == 8
+		return f.stream == 0 && f.length == 8
 	case h2WindowUpdate:
 		return f.length == 4
 	}
 	return false
+}
+
+// validSettings reports whether every value in a SETTINGS payload is one the
+// stock HTTP/2 stack accepts.
+func validSettings(payload []byte) bool {
+	for i := 0; i+6 <= len(payload); i += 6 {
+		s := http2.Setting{ID: http2.SettingID(binary.BigEndian.Uint16(payload[i:])), Val: binary.BigEndian.Uint32(payload[i+2:])}
+		if s.Valid() != nil {
+			return false
+		}
+	}
+	return true
 }
 
 type frameHandler interface {
@@ -167,7 +185,9 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 				stream: binary.BigEndian.Uint32(p.hdr[5:]) & 0x7fffffff,
 				length: int(p.hdr[0])<<16 | int(p.hdr[1])<<8 | int(p.hdr[2]),
 			}
-			if p.f.control() {
+			// Inside a header block nothing but CONTINUATION may come;
+			// whatever does passes on unread for the stack to reject.
+			if !p.inBlock && p.f.control() {
 				p.collect = true
 				if p.f.length == 0 {
 					out = p.finishControl(out, h)
@@ -194,7 +214,7 @@ func (p *frameParser) finishControl(out []byte, h frameHandler) []byte {
 
 func (p *frameParser) done(out []byte, h frameHandler) []byte {
 	switch p.f.typ {
-	case h2Headers, h2Continuation:
+	case h2Headers, h2PushPromise, h2Continuation:
 		p.inBlock = p.f.flags&h2FlagEndHeaders == 0
 	}
 	if p.inBlock {
@@ -418,6 +438,7 @@ type flowConn struct {
 	rttBase     time.Duration
 	rttSamples  int
 	pingData    uint64
+	pings       []flowPing
 	pingSentAt  time.Time
 	lastPing    time.Time
 
@@ -809,23 +830,46 @@ func (c *flowConn) appendPing(out []byte) []byte {
 	return c.appendPingFrame(out)
 }
 
+// flowPing is a PING of ours that has not been answered yet.
+type flowPing struct {
+	data uint64
+	at   time.Time
+}
+
 // appendPingFrame adds a PING carrying fresh random data, as Go's own HTTP/2
-// health checks do, and remembers it to recognize the ACK.
+// health checks do, and remembers it to recognize the ACK. The last
+// flowPingSlots are remembered, so a guard probe sent while a periodic PING
+// is due back does not make that one's ACK look foreign.
 func (c *flowConn) appendPingFrame(out []byte) []byte {
 	c.pingData = rand.Uint64()
+	c.pings = append(c.pings, flowPing{c.pingData, time.Now()})
+	if len(c.pings) > flowPingSlots {
+		c.pings = c.pings[len(c.pings)-flowPingSlots:]
+	}
 	out = append(out, 0, 0, 8, h2Ping, 0, 0, 0, 0, 0)
 	return binary.BigEndian.AppendUint64(out, c.pingData)
 }
 
-// pingAck reports whether a PING ACK answers ours, taking its round trip.
+// pingAck reports whether a PING ACK answers one of ours, taking its round
+// trip.
 func (c *flowConn) pingAck(f h2Frame, payload []byte) bool {
-	if f.flags&h2FlagAck == 0 || binary.BigEndian.Uint64(payload) != c.pingData || c.pingSentAt.IsZero() {
+	if f.flags&h2FlagAck == 0 {
 		return false
 	}
-	now := time.Now()
-	c.sampleRTT(now, now.Sub(c.pingSentAt))
-	c.pingSentAt = time.Time{}
-	return true
+	data := binary.BigEndian.Uint64(payload)
+	for i, p := range c.pings {
+		if p.data != data {
+			continue
+		}
+		c.pings = append(c.pings[:i], c.pings[i+1:]...)
+		now := time.Now()
+		c.sampleRTT(now, now.Sub(p.at))
+		if !c.pingSentAt.After(p.at) {
+			c.pingSentAt = time.Time{}
+		}
+		return true
+	}
+	return false
 }
 
 // flowGuardMin bounds how long a downlink stream may sit with the server out
@@ -988,7 +1032,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	c := (*flowConn)(r)
 	switch f.typ {
 	case h2Settings:
-		if f.flags&h2FlagAck == 0 {
+		if f.flags&h2FlagAck == 0 && validSettings(payload) {
 			if c.down.enabled() {
 				if real, shown, ok := rewriteInitialWindow(payload, c.down.init); ok {
 					c.clientInit, c.clientShown = real, shown
@@ -1116,7 +1160,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	c := (*flowConn)(w)
 	switch f.typ {
 	case h2Settings:
-		if f.flags&h2FlagAck == 0 {
+		if f.flags&h2FlagAck == 0 && validSettings(payload) {
 			if c.up.enabled() {
 				if real, shown, ok := rewriteInitialWindow(payload, c.up.init); ok {
 					c.serverInit, c.serverShown = real, shown

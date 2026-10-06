@@ -206,28 +206,10 @@ func TestFlowMalformedSettingsPassVerbatim(t *testing.T) {
 	}
 }
 
-// TestFlowOversizedSettingsFailClosed sends a SETTINGS frame too long for the
-// governor to inspect, with an initial window at its end. The governor
-// advertises the 16 KiB default frame size, so no conforming peer sends it;
-// handing it on would let the real window reach the stack unrewritten.
-func TestFlowOversizedSettingsFailClosed(t *testing.T) {
-	values := make([][2]uint32, h2MinMaxFrameSize/6)
-	for i := range values {
-		values[i] = [2]uint32{0x1, 4096}
-	}
-	values = append(values, [2]uint32{h2SettingInitialWindowSize, 4 << 20})
-	in := frames(func(fr *http2.Framer) {
-		fr.WriteRawFrame(http2.FrameSettings, 0, 0, settingsPayload(values...))
-	})
-	h := newFlowHarness(t)
-	got := h.fromClientRaw(in)
-	if bytes.Contains(got, in[len(in)-6:]) {
-		t.Fatal("the client's real initial window reached the server unrewritten")
-	}
-	if h.readErr == nil || !h.conn.isClosed() {
-		t.Fatalf("connection still up after an oversized SETTINGS (read error %v)", h.readErr)
-	}
-}
+// An oversized SETTINGS frame passes on as it is: net/http rejects more than
+// 100 settings in one frame, so the real window inside it never takes effect,
+// and the peer sees the stock GOAWAY (TestFlowOversizedSettingsGetStockErrors).
+// Failing the connection in the governor instead would change that answer.
 
 // h2Reaction sends the preface and frames to a server and reports whether it
 // acknowledged the client's SETTINGS, which GOAWAY code it sent, and whether
