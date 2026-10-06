@@ -59,6 +59,14 @@ test, or compatibility gates defined here.
   30 and 31 of the splithttp `Config` message are fork-owned: renumber them if
   upstream claims those numbers. Covered by `common/mux/server_test.go` and
   `common/singmux/xhttp_muxcool_integration_test.go`.
+- XHTTP over HTTP/2 on TCP has an optional flow-control governor
+  (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
+  or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
+  wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
+  fork-owned: renumber it if upstream claims that number.
+  `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
+  Covered by the `h2flow*_test.go` tests and
+  `common/singmux/xhttp_flow_verify_integration_test.go`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
