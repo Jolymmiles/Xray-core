@@ -68,9 +68,11 @@ func NewServer(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 		fragManager: NewFragManager(),
 		sendManager: NewSendManager(),
 
-		readCh:  make(chan packet),
-		recCh:   make(chan *Rec, 255),
-		drCh:    make(chan resp),
+		readCh: make(chan packet),
+		recCh:  make(chan *Rec, 255),
+		// decref never blocks the receive loop; buffer error replies so a
+		// busy writer drops them only when this bounded queue is full.
+		drCh:    make(chan resp, 128),
 		closeCh: make(chan struct{}),
 	}
 	go server.run()

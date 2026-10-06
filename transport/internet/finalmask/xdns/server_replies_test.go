@@ -101,3 +101,43 @@ func TestServerErrorRepliesAreResponses(t *testing.T) {
 		t.Fatalf("duplicate OPT reply = %+v, want a FORMERR response", reply.Header)
 	}
 }
+
+// An authoritative server answers every query. A burst of queries for names
+// outside the tunnel domain must get every NXDOMAIN, not a few: silently
+// dropped replies leave resolvers timing out and set the server apart.
+func TestServerAnswersBurstOfRejectedQueries(t *testing.T) {
+	server := startTestServer(t)
+	conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	const burst = 32
+	for i := range burst {
+		query := testQuery("probe.example.org.", dnsmessage.TypeTXT)
+		query.Header.ID = uint16(i)
+		packed, err := query.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.WriteTo(packed, server); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := make(map[uint16]bool)
+	buf := make([]byte, 4096)
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for len(seen) < burst {
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("answered %d of %d rejected queries: %v", len(seen), burst, err)
+		}
+		var reply dnsmessage.Message
+		if err := reply.Unpack(buf[:n]); err != nil || reply.Header.RCode != dnsmessage.RCodeNameError {
+			t.Fatalf("unexpected reply %+v (%v)", reply.Header, err)
+		}
+		seen[reply.Header.ID] = true
+	}
+}
