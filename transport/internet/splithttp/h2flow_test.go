@@ -755,11 +755,25 @@ func TestFlowChurnLeaves(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// A snapshot can catch a goroutine that is only passing through a lock
+	// under load; one that is stuck shows up in every snapshot.
 	buf := make([]byte, 4<<20)
-	for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
-		if strings.Contains(g, "(*flowConn)") && (strings.Contains(g, "semacquire") || strings.Contains(g, "sync.(*Mutex)")) {
-			t.Fatalf("goroutine stuck in the governor after all requests finished:\n%s", g)
+	stuck := ""
+	for range 3 {
+		stuck = ""
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "(*flowConn)") && (strings.Contains(g, "semacquire") || strings.Contains(g, "sync.(*Mutex)")) {
+				stuck = g
+				break
+			}
 		}
+		if stuck == "" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if stuck != "" {
+		t.Fatalf("goroutine stuck in the governor after all requests finished:\n%s", stuck)
 	}
 	t.Logf("goroutines %d before, %d after (idle server connections included)", before, runtime.NumGoroutine())
 }
