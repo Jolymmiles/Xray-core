@@ -2,6 +2,7 @@ package splithttp
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -459,6 +460,7 @@ type flowConn struct {
 	settingsSent bool
 	pingReady    bool
 	closed       bool
+	broken       bool
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -629,6 +631,10 @@ func (c *flowConn) Read(b []byte) (int, error) {
 			out = c.readFrames(in[:n], b[:0])
 		}
 		bytespool.Free(in)
+		if c.isBroken() {
+			c.Close()
+			return 0, errFlowWindow
+		}
 		m := copy(b, out)
 		if m < len(out) {
 			c.rpending = append([]byte(nil), out[m:]...)
@@ -648,6 +654,11 @@ func (c *flowConn) Close() error {
 // connection object that lingers in some pool does not pin it.
 func (c *flowConn) release() {
 	c.mu.Lock()
+	c.releaseLocked()
+	c.mu.Unlock()
+}
+
+func (c *flowConn) releaseLocked() {
 	c.streams = map[uint32]*flowStream{}
 	c.opened = nil
 	c.toClient = nil
@@ -656,7 +667,13 @@ func (c *flowConn) release() {
 	if c.guard != nil {
 		c.guard.Stop()
 	}
-	c.mu.Unlock()
+}
+
+// giveUp marks the connection for closing at the next read or write and
+// drops its state at once.
+func (c *flowConn) giveUp() {
+	c.broken = true
+	c.releaseLocked()
 }
 
 func (c *flowConn) readFrames(in, out []byte) []byte {
@@ -696,6 +713,12 @@ func (c *flowConn) Write(b []byte) (int, error) {
 	c.wmu.Lock()
 	out := bytespool.Alloc(int32(len(b) + 64))
 	out = c.fromServer(b, out[:0])
+	if c.isBroken() {
+		bytespool.Free(out)
+		c.wmu.Unlock()
+		c.Close()
+		return 0, errFlowWindow
+	}
 	err := c.send(out)
 	bytespool.Free(out)
 	c.wmu.Unlock()
@@ -722,6 +745,11 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 	}
 	out := bytespool.Alloc(int32(len(b) + 64))
 	out = c.readFrames(b, out[:0])
+	if c.isBroken() {
+		bytespool.Free(out)
+		c.Close()
+		return 0, errFlowWindow
+	}
 	err := c.send(out)
 	bytespool.Free(out)
 	if err != nil {
@@ -994,6 +1022,49 @@ func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found
 	return
 }
 
+// changeInitialWindow applies a SETTINGS_INITIAL_WINDOW_SIZE in payload to
+// one direction. The sender moves every open stream by the change of the
+// value it is shown, the receiver by the change of the real one, so credit
+// already forwarded beyond the shown window has to come off the shown value:
+// for each stream shown + forwarded <= real + returned. Where no value is
+// low enough, ok is false and the connection has to go. Streams the sender
+// has finished do not count: nothing more is sent on them.
+func (c *flowConn) changeInitialWindow(payload []byte, l flowLimit, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
+	real, show, found := rewriteInitialWindow(payload, l.init)
+	if !found {
+		return true
+	}
+	for _, s := range c.streams {
+		returned, forwarded, done := credit(s)
+		if done {
+			continue
+		}
+		lim := int64(real) + returned - forwarded
+		if lim < 0 {
+			return false
+		}
+		show = int32(min(int64(show), lim))
+	}
+	for i := 0; i+6 <= len(payload); i += 6 {
+		if binary.BigEndian.Uint16(payload[i:]) == h2SettingInitialWindowSize {
+			binary.BigEndian.PutUint32(payload[i+2:], uint32(show))
+		}
+	}
+	*init, *shown = real, show
+	return true
+}
+
+// errFlowWindow ends a connection whose peer lowered its window below the
+// credit the governor had already handed on.
+var errFlowWindow = errors.New("http2 flow governor: initial window lowered below forwarded credit")
+
+// isBroken reports whether the connection has to go, see changeInitialWindow.
+func (c *flowConn) isBroken() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.broken
+}
+
 // capFrameSize lowers the largest frame the peer is told it may send to the
 // HTTP/2 default. The local stack still takes frames up to what it really
 // allows, but its frame reader keeps a buffer as large as the largest frame
@@ -1044,13 +1115,26 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.down.enabled() {
-				if real, shown, ok := rewriteInitialWindow(payload, c.down.init); ok {
-					c.clientInit, c.clientShown = real, shown
-				}
+			if c.down.enabled() && !c.changeInitialWindow(payload, c.down, &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
+				return s.down.returned, s.downForwarded, s.serverDone
+			}) {
+				c.giveUp()
+				return out
 			}
 			capFrameSize(payload)
 			c.pingReady = c.pingReady || c.client
+			out = append(out, header...)
+			out = append(out, payload...)
+			// A raised window funds credit the receiver no longer owes.
+			if c.down.enabled() {
+				for id, s := range c.streams {
+					if rel := c.downRelease(s); rel > 0 {
+						s.downForwarded += rel
+						out = appendWindowUpdate(out, id, rel)
+					}
+				}
+			}
+			return out
 		}
 	case h2Ping:
 		if !c.client && c.pingAck(f, payload) {
@@ -1172,14 +1256,26 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.up.enabled() {
-				if real, shown, ok := rewriteInitialWindow(payload, c.up.init); ok {
-					c.serverInit, c.serverShown = real, shown
-				}
+			if c.up.enabled() && !c.changeInitialWindow(payload, c.up, &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
+				return s.up.returned, s.upForwarded, s.clientDone
+			}) {
+				c.giveUp()
+				return out
 			}
 			capFrameSize(payload)
 			c.settingsSent = true
 			c.pingReady = c.pingReady || !c.client
+			out = append(out, header...)
+			out = append(out, payload...)
+			if c.up.enabled() {
+				for id, s := range c.streams {
+					if rel := c.upRelease(s); rel > 0 {
+						s.upForwarded += rel
+						out = appendWindowUpdate(out, id, rel)
+					}
+				}
+			}
+			return out
 		}
 	case h2Ping:
 		if c.client && c.pingAck(f, payload) {

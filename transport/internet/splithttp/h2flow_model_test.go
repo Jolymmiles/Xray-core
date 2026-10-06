@@ -321,6 +321,8 @@ func (m *flowModel) changeClientWindow() {
 	broken := m.c.closed
 	m.c.mu.Unlock()
 	if m.lenient {
+		// Giving up is allowed here, but not required.
+		m.failed = broken
 		m.changes++
 		return
 	}
