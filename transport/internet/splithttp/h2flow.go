@@ -215,6 +215,8 @@ type flowWindow struct {
 	ramped   bool
 	qAt      time.Time
 	qSample  int
+	rates    [flowModelRounds]int64
+	rateAt   int
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -262,6 +264,42 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 	default:
 		w.slow = 0
 	}
+}
+
+// Once the kernel vouches for the round trip of the empty path, a ramped
+// window follows a model of the path instead of reacting to queueing: the
+// bandwidth-delay product BBR would estimate, from the fastest the reader took
+// data over the last flowModelRounds round trips, plus a quarter. The quarter
+// lets the reader's rate rise by as much per round trip where there is room,
+// and leaves at most a quarter round trip of queue where there is not.
+const (
+	flowModelRounds      = 10
+	flowModelGainPercent = 125
+	flowModelMinRound    = 20 * time.Millisecond
+)
+
+// model sets the cap from the path model; rtprop is the empty path's round
+// trip.
+func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int32) {
+	round := max(rtprop, flowModelMinRound)
+	if w.rateAt == 0 && w.prev > 0 {
+		// The ramp's last round seeds the filter, so one slow first round
+		// cannot drop a window the reader just showed it fills.
+		w.rates[0] = w.prev * int64(time.Second) / int64(round)
+		w.rateAt = 1
+	}
+	if now.Sub(w.mark) < round {
+		return
+	}
+	w.rates[w.rateAt%flowModelRounds] = (w.returned - w.markBase) * int64(time.Second) / int64(now.Sub(w.mark))
+	w.rateAt++
+	w.mark, w.markBase = now, w.returned
+	var bw int64
+	for _, r := range w.rates {
+		bw = max(bw, r)
+	}
+	target := bw * int64(rtprop) / int64(time.Second) * flowModelGainPercent / 100
+	w.cap = int32(min(max(target, int64(init)), int64(limit)))
 }
 
 // flowLearned remembers the largest cap a stream on this connection needed
@@ -392,6 +430,12 @@ func (c *flowConn) pingFloor(now time.Time) time.Duration {
 		floor = c.kstat.minRTT
 	}
 	return floor
+}
+
+// modelled reports whether windows follow the path model: the kernel vouches
+// for the round trip, as checked against the first PING.
+func (c *flowConn) modelled(now time.Time) bool {
+	return c.rttBase != 0 && c.floorConfirmed(now)
 }
 
 // floorConfirmed reports whether the kernel vouches for the round trip of the
@@ -652,10 +696,14 @@ func (c *flowConn) finish(id uint32, s *flowStream) {
 	}
 }
 
-// currentRTT is the lowest round trip seen over the last one to two windows:
-// PING queues behind data, so anything above the minimum is our own backlog
-// and must not feed back into the caps.
+// currentRTT is the kernel's min_rtt where it vouches for the path, otherwise
+// the lowest PING over the last one to two windows: PING queues behind data,
+// so anything above the minimum is our own backlog and must not feed back into
+// the caps.
 func (c *flowConn) currentRTT() time.Duration {
+	if c.rttBase != 0 && c.kOK && c.kstat.minRTT > 0 && 4*c.kstat.minRTT >= c.rttBase {
+		return c.kstat.minRTT
+	}
 	switch {
 	case c.rtt == 0:
 		return flowDefaultRTT
@@ -683,10 +731,11 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 // appendPing adds a PING for the remote peer once a second while streams are
 // open, so the connection knows its round trip. The first goes out as soon as
 // the connection is up, before data can queue in front of its ACK, so the
-// connection learns the round trip of the empty path.
+// connection learns the round trip of the empty path. Once the kernel vouches
+// for that round trip, no more are needed.
 func (c *flowConn) appendPing(out []byte) []byte {
 	now := time.Now()
-	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || now.Sub(c.lastPing) < flowPingInterval ||
+	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
 	}
@@ -902,12 +951,19 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			c.incremental = true
 		}
 		var q int
-		if c.client {
+		switch {
+		case c.client && c.modelled(now):
+		case c.client:
 			q = c.pingQueueing(now)
-		} else {
+		default:
 			q = c.queueing(now)
 		}
-		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
+		switch {
+		case c.client && c.modelled(now) && s.down.ramped:
+			s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
+		default:
+			s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
+		}
 		switch {
 		case c.client:
 			if q == 2 {
@@ -1010,8 +1066,16 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		now := time.Now()
 		s.up.returned += inc
-		q := c.pingQueueing(now)
-		s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, q > 0)
+		var q int
+		switch {
+		case c.modelled(now) && s.up.ramped:
+			s.up.model(now, c.currentRTT(), c.up.init, c.up.max)
+		case c.modelled(now):
+			s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, false)
+		default:
+			q = c.pingQueueing(now)
+			s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, q > 0)
+		}
 		if q == 2 {
 			c.queueShrink(&s.up, now, c.up.init)
 		}
