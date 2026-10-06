@@ -82,7 +82,7 @@ var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string
 var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
 
 type tcpStats struct {
-	rtt, minRTT time.Duration
+	rtt, minRTT, rttVar time.Duration
 }
 
 type flowListener struct {
@@ -217,6 +217,8 @@ type flowWindow struct {
 	qSample  int
 	rates    [flowModelRounds]int64
 	rateAt   int
+	flat     int
+	piPrev   float64
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -249,6 +251,11 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 	}
 	if hold {
 		grow = min(grow, int64(w.cap))
+	}
+	if w.prev > 0 && 4*copied < 5*w.prev {
+		w.flat++
+	} else {
+		w.flat = 0
 	}
 	w.prev, w.measured = copied, true
 	w.mark, w.markBase = now, w.returned
@@ -300,6 +307,58 @@ func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int3
 	}
 	target := bw * int64(rtprop) / int64(time.Second) * flowModelGainPercent / 100
 	w.cap = int32(min(max(target, int64(init)), int64(limit)))
+}
+
+// Once the reader's rate has grown by less than a quarter for flowFullRounds
+// round trips in a row, the path is full, as BBR judges it, and a download
+// window on a server is held by a PI controller on the queue the kernel sees.
+// The error is a fraction of the setpoint and a step a fraction of the bytes
+// the setpoint holds at the reader's rate, once per round trip, so the loop
+// gain is the controller's own and the same gains fit any bandwidth and RTT.
+const (
+	flowFullRounds = 3
+	flowPIKi       = 0.3
+	flowPIKp       = 0.2
+	flowPIMaxStep  = 0.5
+	flowPIMinSet   = 5 * time.Millisecond
+)
+
+// pi moves the cap once per round trip so that the queue settles at a quarter
+// of the empty path's round trip, or at four times the RTT variance where the
+// path jitters more: the floor is the lowest sample ever, deep in the jitter's
+// tail, while the smoothed RTT sits at its middle, and that gap is no queue. In velocity form it adds Ki
+// times the error and Kp times its change. With the queue under a quarter of
+// the setpoint the cap may also grow by a quarter per round trip, so that it
+// catches up with a path that got faster. A reader that takes less than a
+// quarter of the window per round trip limits itself: the cap does not grow
+// then, and shrinks by a quarter after flowShrinkAfter such rounds.
+func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32) {
+	round := now.Sub(w.mark)
+	if round < max(st.minRTT, flowModelMinRound) {
+		return
+	}
+	copied := w.returned - w.markBase
+	w.mark, w.markBase = now, w.returned
+	set := max(st.minRTT/4, 4*st.rttVar, flowPIMinSet)
+	e := min(max(float64(set-(st.rtt-st.minRTT))/float64(set), -2), 1)
+	held := float64(copied) * float64(set) / float64(round)
+	delta := held * (flowPIKi*e + flowPIKp*(e-w.piPrev))
+	w.piPrev = e
+	cap := float64(w.cap)
+	if e > 0.75 {
+		delta = max(delta, cap/4)
+	}
+	delta = min(max(delta, -flowPIMaxStep*cap), flowPIMaxStep*cap)
+	if 4*copied < int64(w.cap) {
+		delta = min(delta, 0)
+		if w.slow++; w.slow >= flowShrinkAfter {
+			delta = min(delta, -cap/4)
+			w.slow = 0
+		}
+	} else {
+		w.slow = 0
+	}
+	w.cap = int32(min(max(int64(cap+delta), int64(init)), int64(limit)))
 }
 
 // flowLearned remembers the largest cap a stream on this connection needed
@@ -961,6 +1020,12 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		switch {
 		case c.client && c.modelled(now) && s.down.ramped:
 			s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
+		case !c.client && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
+			// Only clients that credit in small steps: one that waits for
+			// half of its own window could be held below that half. Only
+			// where the kernel sees the path: behind a TCP proxy it sees
+			// no queue at all.
+			s.down.pi(now, c.kstat, c.down.init, c.down.max)
 		default:
 			s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		}
