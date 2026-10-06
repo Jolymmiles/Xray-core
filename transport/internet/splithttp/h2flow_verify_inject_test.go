@@ -51,9 +51,10 @@ func TestFlowInjectedWriteFailureIsTerminal(t *testing.T) {
 }
 
 // TestFlowInjectedWriteFailureTearsStream (added for bdbac60e) shows what the
-// client reads when the governor carries on after a short write of its own
-// frames: half a frame, then whatever the server writes next. A stock framer
-// must be able to read that stream frame by frame.
+// client reads after a short write of the governor's own frames. The torn
+// half is already on the wire, so the client sees the connection end inside a
+// frame, as with a stock stack whose socket fails mid-write; nothing the
+// server writes afterwards may follow it.
 func TestFlowInjectedWriteFailureTearsStream(t *testing.T) {
 	h := newFlowHarness(t)
 	h.fromClient(func(fr *http2.Framer) {
@@ -70,14 +71,16 @@ func TestFlowInjectedWriteFailureTearsStream(t *testing.T) {
 	})
 	torn := h.conn.take()
 	next, err := h.fromServerRaw(frames(func(fr *http2.Framer) { fr.WriteData(1, false, []byte("payload")) }))
-	t.Logf("server write after the torn frame: err=%v", err)
+	if err == nil || len(next) > 0 {
+		t.Fatalf("server wrote %d bytes after the torn frame (err=%v)", len(next), err)
+	}
 	wire := append(append(append([]byte(nil), settings...), torn...), next...)
 	t.Logf("client reads %x", wire)
 	fr := http2.NewFramer(nil, bytes.NewReader(wire))
 	fr.SetMaxReadFrameSize(1 << 24)
 	for {
 		f, err := fr.ReadFrame()
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return
 		}
 		if err != nil {

@@ -696,7 +696,7 @@ func (c *flowConn) Write(b []byte) (int, error) {
 	c.wmu.Lock()
 	out := bytespool.Alloc(int32(len(b) + 64))
 	out = c.fromServer(b, out[:0])
-	_, err := c.Conn.Write(out)
+	err := c.send(out)
 	bytespool.Free(out)
 	c.wmu.Unlock()
 	c.drainQueue()
@@ -722,7 +722,7 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 	}
 	out := bytespool.Alloc(int32(len(b) + 64))
 	out = c.readFrames(b, out[:0])
-	_, err := c.Conn.Write(out)
+	err := c.send(out)
 	bytespool.Free(out)
 	if err != nil {
 		return 0, err
@@ -766,8 +766,19 @@ func (c *flowConn) flushQueueLocked() {
 	}
 	c.mu.Unlock()
 	if len(q) > 0 {
-		c.Conn.Write(q)
+		c.send(q)
 	}
+}
+
+// send writes rewritten frames with wmu held. Once any part of them is lost,
+// the peer's next frame would start inside a torn one, so a failed write ends
+// the connection rather than letting later frames follow.
+func (c *flowConn) send(b []byte) error {
+	if _, err := c.Conn.Write(b); err != nil {
+		c.Close()
+		return err
+	}
+	return nil
 }
 
 func (c *flowConn) stream(id uint32) *flowStream {
