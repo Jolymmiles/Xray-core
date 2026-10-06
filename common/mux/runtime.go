@@ -518,28 +518,38 @@ func (s *xudpResponseSink) run() {
 	for {
 		select {
 		case response := <-s.queue:
+			// A response not yet being written when close signals stop is
+			// released unsent.
+			select {
+			case <-s.stop:
+				buf.ReleaseMulti(response.payload)
+				s.drain()
+				return
+			default:
+			}
 			writer := NewResponseWriter(response.id, s.output, protocol.TransferTypePacket)
 			if err := writer.WriteMultiBuffer(response.payload); err != nil {
 				s.markClosed()
 				s.closeOutput()
-				for {
-					select {
-					case response := <-s.queue:
-						buf.ReleaseMulti(response.payload)
-					default:
-						return
-					}
-				}
+				s.drain()
+				return
 			}
 		case <-s.stop:
-			for {
-				select {
-				case response := <-s.queue:
-					buf.ReleaseMulti(response.payload)
-				default:
-					return
-				}
-			}
+			s.drain()
+			return
+		}
+	}
+}
+
+// drain releases the queued responses. Once the sink is marked closed nothing
+// is enqueued, so run and close may both drain; each response is released once.
+func (s *xudpResponseSink) drain() {
+	for {
+		select {
+		case response := <-s.queue:
+			buf.ReleaseMulti(response.payload)
+		default:
+			return
 		}
 	}
 }
@@ -557,10 +567,17 @@ func (s *xudpResponseSink) markClosed() {
 	s.mu.Unlock()
 }
 
+// close stops the sink without waiting for a write already under way. On a
+// link that Interrupt cannot unblock, such as a VLESS writer whose client
+// stopped reading, that write ends only when the connection closes, and the
+// inbound closes the connection only after the worker has finished. Waiting
+// here would hold the worker, and through the shared runtime the whole mux
+// server, for as long as the stalled connection lives. The writer owns the
+// payload under way and releases it when the write returns.
 func (s *xudpResponseSink) close() {
 	s.markClosed()
 	s.closeOutput()
-	<-s.done
+	s.drain()
 	s.runtime.mu.Lock()
 	delete(s.runtime.sinks, s)
 	s.runtime.mu.Unlock()
