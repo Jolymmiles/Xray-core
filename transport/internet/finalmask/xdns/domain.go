@@ -148,8 +148,10 @@ func (d *Domain) Show() string {
 	return fmt.Sprint(d.name, d.cap)
 }
 
+// IsDomain reports whether name is a strict subdomain of d: d must end name
+// at a label boundary, so siblings sharing a suffix do not match.
 func (d *Domain) IsDomain(name dnsmessage.Name) bool {
-	if d.name.Length >= name.Length {
+	if d.name.Length >= name.Length || name.Data[name.Length-d.name.Length-1] != '.' {
 		return false
 	}
 	i := d.name.Length
