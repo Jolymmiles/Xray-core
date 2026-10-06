@@ -11,6 +11,9 @@ import (
 
 const (
 	sendTTL = 4 * time.Second
+	// sendClientCount caps the per-client queues, whose keys come from
+	// unauthenticated queries.
+	sendClientCount = 4096
 )
 
 type Resp struct {
@@ -342,17 +345,31 @@ func (m *SendManager) gc() {
 	}
 }
 
-func (m *SendManager) Push(clientID ClientID, p []byte) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// entry returns the queues of clientID, creating them while fewer than
+// sendClientCount clients are tracked, or nil for a new client beyond that
+// limit. m.mu must be held.
+func (m *SendManager) entry(clientID ClientID) *SendInfo {
 	info := m.m[clientID]
 	if info == nil {
+		if len(m.m) >= sendClientCount {
+			return nil
+		}
 		info = &SendInfo{
 			stash:    make(chan []byte, 1),
 			ch:       make(chan []byte, 128),
 			deadline: time.Now().Add(sendTTL),
 		}
 		m.m[clientID] = info
+	}
+	return info
+}
+
+func (m *SendManager) Push(clientID ClientID, p []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.entry(clientID)
+	if info == nil {
+		return
 	}
 	b := make([]byte, len(p))
 	copy(b, p)
@@ -376,19 +393,17 @@ func (m *SendManager) Stash(clientID ClientID, p []byte) {
 	}
 }
 
-func (m *SendManager) Pop(clientID ClientID) (chan []byte, chan []byte) {
+// Pop returns the queues of clientID and refreshes their deadline. ok is
+// false for a new client beyond sendClientCount.
+func (m *SendManager) Pop(clientID ClientID) (ch chan []byte, stash chan []byte, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	info := m.m[clientID]
+	info := m.entry(clientID)
 	if info == nil {
-		info = &SendInfo{
-			stash: make(chan []byte, 1),
-			ch:    make(chan []byte, 128),
-		}
-		m.m[clientID] = info
+		return nil, nil, false
 	}
 	info.deadline = time.Now().Add(sendTTL)
-	return info.ch, info.stash
+	return info.ch, info.stash, true
 }
 
 func (m *SendManager) Close() {
