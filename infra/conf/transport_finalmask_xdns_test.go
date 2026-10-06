@@ -33,3 +33,29 @@ func TestXDNSMustBeTheLastUDPMask(t *testing.T) {
 		t.Fatal("two xdns masks accepted")
 	}
 }
+
+// Resolver addresses are checked when the configuration is built, not when
+// the client first dials them: a missing host or an out-of-range port must
+// be rejected. From TaiLerV's sync/upstream-2026-10-02 branch, adapted to
+// the addrs schema.
+func TestXDNSBuildValidatesResolverAddresses(t *testing.T) {
+	build := func(addr string) error {
+		var config XDNS
+		raw := `{"domains": [{"names": ["t.example.com"], "types": [16]}], "resolvers": [{"addrs": [` + addr + `]}]}`
+		if err := json.Unmarshal([]byte(raw), &config); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.Build()
+		return err
+	}
+	for _, addr := range []string{`"8.8.8.8"`, `"8.8.8.8:53"`, `"udp://8.8.8.8:5353"`, `"tcp://dns.example:853"`, `"[2001:4860:4860::8888]:53"`} {
+		if err := build(addr); err != nil {
+			t.Errorf("valid resolver %s rejected: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{`""`, `"udp://:53"`, `":53"`, `"8.8.8.8:0"`, `"8.8.8.8:65536"`, `"quic://8.8.8.8"`} {
+		if err := build(addr); err == nil {
+			t.Errorf("invalid resolver %s accepted", addr)
+		}
+	}
+}

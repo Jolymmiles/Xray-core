@@ -857,6 +857,13 @@ func (c *XDNS) Build() (proto.Message, error) {
 			if port == "" {
 				port = "53"
 			}
+			// Reject what would otherwise fail only when the client dials it.
+			if host == "" {
+				return nil, errors.New("xdns resolver address ", c.Resolvers[i].Addrs[j], " has no host")
+			}
+			if p, err := net.PortFromString(port); err != nil || p == 0 {
+				return nil, errors.New("xdns resolver address ", c.Resolvers[i].Addrs[j], " has no valid port")
+			}
 			resolvers = append(resolvers, &xdns.ResolverProto{Type: u.Scheme, Addr: net.JoinHostPort(host, port)})
 		}
 	}
