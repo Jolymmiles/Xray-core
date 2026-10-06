@@ -3,12 +3,14 @@
 package singmux_test
 
 import (
+	"errors"
 	"fmt"
 	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -65,8 +67,12 @@ func freeListenerPort(t testing.TB, ip net.IP, tcp, udp bool) int {
 		if listenerPorts.issued[port] {
 			continue
 		}
-		if lastErr = canListen(ip, port, tcp, udp); lastErr != nil {
-			continue
+		if err := canListen(ip, port, tcp, udp); err != nil {
+			if errors.Is(err, syscall.EADDRINUSE) {
+				lastErr = err
+				continue
+			}
+			t.Fatalf("check listener port %d: %v", port, err)
 		}
 		listenerPorts.issued[port] = true
 		return port
@@ -102,21 +108,21 @@ func listenerPortRange(t testing.TB) (int, int) {
 }
 
 // canListen binds the requested transports on ip:port at the same time and
-// releases them.
-func canListen(ip net.IP, port int, tcp, udp bool) error {
+// releases them; a failure to release counts as a failure.
+func canListen(ip net.IP, port int, tcp, udp bool) (err error) {
 	if udp {
-		connection, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip, Port: port})
-		if err != nil {
-			return err
+		connection, listenErr := net.ListenUDP("udp4", &net.UDPAddr{IP: ip, Port: port})
+		if listenErr != nil {
+			return listenErr
 		}
-		defer connection.Close()
+		defer func() { err = errors.Join(err, connection.Close()) }()
 	}
 	if tcp {
-		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: ip, Port: port})
-		if err != nil {
-			return err
+		listener, listenErr := net.ListenTCP("tcp4", &net.TCPAddr{IP: ip, Port: port})
+		if listenErr != nil {
+			return listenErr
 		}
-		defer listener.Close()
+		defer func() { err = errors.Join(err, listener.Close()) }()
 	}
 	return nil
 }

@@ -24,6 +24,8 @@ func TestFreeTCPUDPPortAvoidsAutomaticSourcePorts(t *testing.T) {
 	}
 }
 
+// A port bound by something else must be skipped by the bind check itself,
+// not only by the allocator's record of the ports it has handed out.
 func TestFreeTCPUDPPortRejectsOccupiedTransport(t *testing.T) {
 	for _, network := range []string{"tcp4", "udp4"} {
 		t.Run(network, func(t *testing.T) {
@@ -42,6 +44,13 @@ func TestFreeTCPUDPPortRejectsOccupiedTransport(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = listener.Close() })
 			}
+			// Make the occupied port the allocator's next candidate, as if
+			// it had never handed it out.
+			first, last := listenerPortRange(t)
+			listenerPorts.Lock()
+			delete(listenerPorts.issued, port)
+			listenerPorts.cursor = (port - first) % (last - first + 1)
+			listenerPorts.Unlock()
 			if got := freeTCPUDPPort(t); got == port {
 				t.Fatalf("selected occupied %s port %d", network, got)
 			}
