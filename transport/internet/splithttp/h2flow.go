@@ -1014,7 +1014,7 @@ func (c *flowConn) armGuard(s *flowStream) {
 // where stuck streams can then be given more room in order with other frames.
 func (c *flowConn) fireGuard() {
 	c.mu.Lock()
-	if c.closed || c.incremental {
+	if c.closed || c.incremental || !c.anyWaiting() {
 		c.mu.Unlock()
 		return
 	}
@@ -1023,6 +1023,17 @@ func (c *flowConn) fireGuard() {
 	ping := c.appendPingFrame(nil)
 	c.mu.Unlock()
 	c.injectToClient(ping)
+}
+
+// anyWaiting reports whether a stream still waits for credit: one that got
+// it since the guard was armed needs no probe.
+func (c *flowConn) anyWaiting() bool {
+	for _, s := range c.streams {
+		if !s.down.waiting.IsZero() {
+			return true
+		}
+	}
+	return false
 }
 
 // unstick grows the cap of every stream that has waited out the guard delay
@@ -1200,6 +1211,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			// A raised window funds credit the receiver no longer owes.
 			if c.down.enabled() {
 				for id, s := range c.streams {
+					if s.serverDone {
+						continue
+					}
 					if rel := c.downRelease(s); rel > 0 {
 						s.downForwarded += rel
 						out = appendWindowUpdate(out, id, rel)
@@ -1284,7 +1298,9 @@ func (r *flowReader) boundary(out []byte) []byte {
 				out = appendWindowUpdate(out, id, rel)
 			}
 		}
-		if c.up.enabled() {
+		// Like the stock server, grant no upload credit to a request that
+		// has already ended.
+		if c.up.enabled() && !s.clientDone {
 			if rel := c.upRelease(s); rel > 0 {
 				s.upForwarded += rel
 				c.creditClient(id, rel)
@@ -1341,6 +1357,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			out = append(out, payload...)
 			if c.up.enabled() {
 				for id, s := range c.streams {
+					if s.clientDone {
+						continue
+					}
 					if rel := c.upRelease(s); rel > 0 {
 						s.upForwarded += rel
 						out = appendWindowUpdate(out, id, rel)
