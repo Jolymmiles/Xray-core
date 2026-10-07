@@ -590,6 +590,16 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			MaxHeaderBytes:    l.config.GetNormalizedServerMaxHeaderBytes(),
 			Protocols:         protocols,
 			ConnContext:       internet.ContextWithPhysicalPeer,
+			HTTP2:             l.config.h2ReceiveConfig(true),
+		}
+		if l.config.h2FlowOn() {
+			fl := &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault}
+			if h2 := l.server.HTTP2; h2 != nil && h2.MaxReceiveBufferPerConnection > 0 {
+				fl.connWindow = int32(min(h2.MaxReceiveBufferPerConnection, h2MaxWindow))
+			} else {
+				fl.connWindow = 1 << 20 // Go's default
+			}
+			l.listener = fl
 		}
 		go func() {
 			if err := l.server.Serve(l.listener); err != nil {
