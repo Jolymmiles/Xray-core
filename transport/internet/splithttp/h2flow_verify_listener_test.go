@@ -254,7 +254,7 @@ func TestFlowConnKeepsOptionalInterfaces(t *testing.T) {
 		inner net.Conn
 	}{{"plain", plain}, {"tls", tlsConn}} {
 		t.Run(tc.name, func(t *testing.T) {
-			var wrapped net.Conn = newFlowConn(tc.inner, flowDefault, flowDefault)
+			wrapped := newFlowConn(tc.inner, flowDefault, flowDefault).wrap()
 			_, innerTLS := tc.inner.(tlsStater)
 			if _, ok := wrapped.(tlsStater); ok != innerTLS {
 				t.Errorf("wrapper reports TLS %v, inner connection %v", ok, innerTLS)
@@ -307,6 +307,7 @@ func TestFlowTLSModeFollowsALPN(t *testing.T) {
 				}
 			}()
 			wrapped := newFlowConn(server, flowDefault, flowDefault)
+			wrapped.wrap()
 			buf := make([]byte, len(h2Preface))
 			if _, err := io.ReadFull(wrapped, buf); err != nil {
 				t.Fatal(err)

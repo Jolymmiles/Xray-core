@@ -1,6 +1,8 @@
 package splithttp
 
 import (
+	"context"
+	gotls "crypto/tls"
 	"encoding/binary"
 	"errors"
 	"math/rand/v2"
@@ -123,7 +125,64 @@ func (l *flowListener) Accept() (net.Conn, error) {
 	if l.connWindow > 0 {
 		fc.upConnGrant, fc.upConnGrantKnown = int64(max(l.connWindow, h2InitWindow)-h2InitWindow), true
 	}
-	return fc, nil
+	return fc.wrap(), nil
+}
+
+// flowTLSConn is the governor over a TLS connection. It shows net/http the
+// TLS state and handshake, so the server treats it as TLS exactly as it would
+// the bare connection: it answers plaintext probes, picks the protocol by
+// ALPN and sends its SETTINGS before the client preface.
+type flowTLSConn struct {
+	*flowConn
+}
+
+func (c flowTLSConn) ConnectionState() gotls.ConnectionState {
+	return c.tlsConn.ConnectionState()
+}
+
+func (c flowTLSConn) HandshakeContext(ctx context.Context) error {
+	err := c.tlsConn.HandshakeContext(ctx)
+	c.followALPN()
+	return err
+}
+
+// wrap returns c as net/http should see it: with the TLS interfaces where
+// the connection under it is TLS.
+func (c *flowConn) wrap() net.Conn {
+	if tc, ok := c.Conn.(*gotls.Conn); ok {
+		c.tlsConn = tc
+		return flowTLSConn{c}
+	}
+	return c
+}
+
+// followALPN settles the mode of a TLS connection once its handshake is
+// done, as net/http does: HTTP/2 only where ALPN picked h2, so the server's
+// SETTINGS, written before the client preface, are governed, and anything
+// else passes untouched even if it looks like a preface.
+func (c *flowConn) followALPN() {
+	if c.tlsConn == nil || c.alpnDone.Load() {
+		return
+	}
+	st := c.tlsConn.ConnectionState()
+	if !st.HandshakeComplete {
+		return
+	}
+	if st.NegotiatedProtocol == "h2" {
+		c.alpnH2.Store(true)
+	} else {
+		c.mode.Store(flowPlain)
+	}
+	c.alpnDone.Store(true)
+}
+
+// CloseWrite lets net/http end the stream after an error response at once,
+// as it does on the bare connection.
+func (c *flowConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 type h2Frame struct {
@@ -447,6 +506,11 @@ type flowConn struct {
 	up, down flowLimit
 	client   bool
 	mode     atomic.Int32
+	// tlsConn is the TLS connection under the governor, if any; alpnH2
+	// says its ALPN picked h2 before the client preface was seen.
+	tlsConn  *gotls.Conn
+	alpnH2   atomic.Bool
+	alpnDone atomic.Bool
 
 	mu          sync.Mutex
 	streams     map[uint32]*flowStream
@@ -653,6 +717,12 @@ func (c *flowConn) Read(b []byte) (int, error) {
 			return c.Conn.Read(b)
 		}
 		n, err := c.Conn.Read(b)
+		if c.tlsConn != nil {
+			c.followALPN()
+			if c.mode.Load() == flowPlain {
+				return n, err
+			}
+		}
 		if ne, ok := err.(net.Error); err != nil && !(ok && ne.Timeout()) {
 			c.release()
 		}
@@ -744,7 +814,7 @@ func (c *flowConn) Write(b []byte) (int, error) {
 	if c.client {
 		return c.writeToServer(b)
 	}
-	if c.mode.Load() != flowH2 {
+	if c.mode.Load() != flowH2 && !c.alpnH2.Load() {
 		return c.Conn.Write(b)
 	}
 	c.wmu.Lock()
