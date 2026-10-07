@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/apernet/quic-go/quicvarint"
@@ -168,6 +169,123 @@ func TestSniffQUICCompletesClientHelloFromLaterPacket(t *testing.T) {
 	}
 	if header.Domain() != serverName {
 		t.Fatalf("SniffQUIC() domain = %q, want %q", header.Domain(), serverName)
+	}
+}
+
+// sniffedDomain returns the server name of a sniffed header, or "" if there
+// is none.
+func sniffedDomain(header *quic.SniffHeader) string {
+	if header == nil {
+		return ""
+	}
+	return header.Domain()
+}
+
+// A CRYPTO frame can repeat stream data an earlier frame carried. Clients
+// repeat the same bytes, but QUIC receivers disagree on which copy counts when
+// the bytes differ: quic-go keeps a copy it has delivered yet lets a longer
+// frame replace one still queued. A client repeating its ClientHello with
+// different bytes could thus be routed by one server name while the
+// destination reads another, so such a flow is not sniffed at all.
+func TestSniffQUICRejectsConflictingCryptoData(t *testing.T) {
+	const serverName = "aaaa.sniff.test"
+	first := quicTLSClientHello(t, serverName)
+	second := quicTLSClientHello(t, "bbbb.sniff.test")
+	if len(first) != len(second) {
+		t.Fatalf("ClientHellos of %d and %d bytes, want equal lengths", len(first), len(second))
+	}
+	nameStart := bytes.Index(first, []byte(serverName))
+	if nameStart < 2 {
+		t.Fatalf("no server name %q in the ClientHello", serverName)
+	}
+	// The host_name with its length, the part the copies differ in.
+	from, to := nameStart-2, nameStart+len(serverName)
+	tests := []struct {
+		name   string
+		flow   []byte
+		domain string // empty when the flow must be rejected
+	}{
+		{"conflicting whole copy", sealInitial(t, reassemblyDestConnID, 0,
+			cryptoFrame{0, first},
+			cryptoFrame{0, second},
+		), ""},
+		{"conflicting partial copy", sealInitial(t, reassemblyDestConnID, 0,
+			cryptoFrame{0, first[:to]},
+			cryptoFrame{0, second},
+		), ""},
+		{"longer conflicting frame over a queued one", sealInitial(t, reassemblyDestConnID, 0,
+			cryptoFrame{from, first[from:to]},
+			cryptoFrame{from, second[from:]},
+			cryptoFrame{0, first[:from]},
+		), ""},
+		{"identical copies", sealInitial(t, reassemblyDestConnID, 0,
+			cryptoFrame{from, first[from:to]},
+			cryptoFrame{from, first[from:]},
+			cryptoFrame{0, first},
+		), serverName},
+		// Every receiver has read the complete ClientHello by the time the
+		// later copy arrives, so that copy cannot change the server name.
+		{"conflicting copy after the ClientHello completed", append(
+			sealInitial(t, reassemblyDestConnID, 0, cryptoFrame{0, first}),
+			sealInitial(t, reassemblyDestConnID, 1, cryptoFrame{0, second})...,
+		), serverName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header, err := quic.SniffQUIC(tt.flow)
+			if tt.domain == "" {
+				if err == nil || errors.Is(err, protocol.ErrProtoNeedMoreData) {
+					t.Fatalf("SniffQUIC() = (%q, %v), want a rejection", sniffedDomain(header), err)
+				}
+				return
+			}
+			if err != nil || header.Domain() != tt.domain {
+				t.Fatalf("SniffQUIC() = (%q, %v), want %q", sniffedDomain(header), err, tt.domain)
+			}
+		})
+	}
+}
+
+// However CRYPTO frames split, reorder and repeat a ClientHello within an
+// Initial packet, the sniffer reads it exactly: identical repeats yield its
+// server name, and one repeated byte that differs rejects the flow. The random
+// fragments reach every alignment of the received-bytes bookkeeping, including
+// the path that handles eight bytes at once.
+func TestSniffQUICReassemblesRandomFragmentsExactly(t *testing.T) {
+	const serverName = "random.sniff.test"
+	hello := quicTLSClientHello(t, serverName)
+	rng := rand.New(rand.NewPCG(0x5eed, 0xc0ffee))
+	randomRange := func(maxLen int) (int, int) {
+		from := rng.IntN(len(hello))
+		return from, min(from+1+rng.IntN(maxLen), len(hello))
+	}
+	for round := range 1000 {
+		var frames []cryptoFrame
+		for start := 0; start < len(hello); {
+			end := min(start+1+rng.IntN(64), len(hello))
+			frames = append(frames, cryptoFrame{start, hello[start:end]})
+			start = end
+		}
+		for range rng.IntN(8) {
+			from, to := randomRange(128)
+			frames = append(frames, cryptoFrame{from, hello[from:to]})
+		}
+		conflict := round%2 == 1
+		if conflict {
+			from, to := randomRange(128)
+			data := bytes.Clone(hello[from:to])
+			data[rng.IntN(len(data))] ^= 0xFF
+			frames = append(frames, cryptoFrame{from, data})
+		}
+		rng.Shuffle(len(frames), func(i, j int) { frames[i], frames[j] = frames[j], frames[i] })
+
+		header, err := quic.SniffQUIC(sealInitial(t, reassemblyDestConnID, 0, frames...))
+		switch {
+		case conflict && (err == nil || errors.Is(err, protocol.ErrProtoNeedMoreData)):
+			t.Fatalf("round %d: a repeated byte that differs was accepted: SniffQUIC() = (%q, %v)", round, sniffedDomain(header), err)
+		case !conflict && (err != nil || header.Domain() != serverName):
+			t.Fatalf("round %d: SniffQUIC() = (%q, %v), want %q", round, sniffedDomain(header), err, serverName)
+		}
 	}
 }
 

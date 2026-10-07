@@ -34,6 +34,8 @@ var (
 	errNotQUICInitial = errors.New("not initial packet")
 	errNotClientHello = errors.New("the CRYPTO stream does not start with a ClientHello")
 	errNoServerName   = errors.New("no server name in the ClientHello")
+
+	errConflictingCrypto = errors.New("CRYPTO frames carry different data at the same offset")
 )
 
 // cryptoStreamCap bounds the CRYPTO stream offsets SniffQUIC keeps. A
@@ -43,10 +45,39 @@ const cryptoStreamCap = 32768
 // receivedBytes records which bytes of the CRYPTO stream have arrived.
 type receivedBytes [cryptoStreamCap / 8]byte
 
-func (r *receivedBytes) mark(from, to int32) {
-	for i := from; i < to; i++ {
-		r[i/8] |= 1 << (i % 8)
+// fill copies data, which starts at offset from of the stream, into stream
+// and marks it received. A byte that has arrived before must arrive unchanged
+// (RFC 9000, Section 2.2): receivers disagree on which copy of differing data
+// counts, so fill reports false instead of choosing one.
+func (r *receivedBytes) fill(stream, data []byte, from int32) bool {
+	for i := int32(0); i < int32(len(data)); {
+		at := from + i
+		if at%8 == 0 && int32(len(data))-i >= 8 {
+			// Eight bytes that all have or all have not arrived yet are
+			// handled at once.
+			switch r[at/8] {
+			case 0x00:
+				copy(stream[i:i+8], data[i:i+8])
+				r[at/8] = 0xFF
+				i += 8
+				continue
+			case 0xFF:
+				if !bytes.Equal(stream[i:i+8], data[i:i+8]) {
+					return false
+				}
+				i += 8
+				continue
+			}
+		}
+		if r[at/8]&(1<<(at%8)) == 0 {
+			r[at/8] |= 1 << (at % 8)
+			stream[i] = data[i]
+		} else if stream[i] != data[i] {
+			return false
+		}
+		i++
 	}
+	return true
 }
 
 // prefix returns the length of the start of the stream received without a
@@ -219,10 +250,16 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 					cryptoDataBuf.Extend(currentCryptoLen - cryptoLen)
 					cryptoLen = currentCryptoLen
 				}
-				if _, err := buffer.Read(cryptoDataBuf.BytesRange(offset, currentCryptoLen)); err != nil { // Field: Crypto Data
+				data, err := buffer.ReadBytes(length) // Field: Crypto Data
+				if err != nil {
 					return nil, io.ErrUnexpectedEOF
 				}
-				received.mark(offset, currentCryptoLen)
+				if !received.fill(cryptoDataBuf.BytesRange(offset, currentCryptoLen), data, offset) {
+					// quic-go keeps a copy it has delivered, yet lets a longer
+					// frame replace one still queued: no server name read here
+					// is sure to be the one the destination reads.
+					return nil, errConflictingCrypto
+				}
 			case 0x1c: // CONNECTION_CLOSE frame, only 0x1c is permitted in initial packet
 				if _, err = readShortQUICVarint(buffer); err != nil { // Field: Error Code
 					return nil, io.ErrUnexpectedEOF
