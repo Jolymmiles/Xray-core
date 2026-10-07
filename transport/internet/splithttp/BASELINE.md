@@ -13,6 +13,12 @@ on; with it off, the code below is never in the data path.
   (re-review fixes on `bdbac60e`), gates re-run on `28392012`; the next
   commit (server shows Go's 1 MiB initial window) changes only the upload
   start and was re-measured on the upload rows, with the same results.
+- Not re-measured since: `4703622c` and `4937e234` (the upload connection
+  window counts unread data from the connection's own counters and leaves
+  finished uploads out), `6807a2e6` (TLS stays visible to net/http) and
+  `7d61adc0` (first PING after the client preface). The upload rows and the
+  slow-server row below may differ on the current tree. Unit, race and
+  process gates were re-run on `7d61adc0`.
 - Host: linux/amd64 container, AMD Ryzen 5 5600 (12 threads), Go 1.27.1,
   build tag `http2legacy` as CI and releases build.
 - Benchmark command:
@@ -48,13 +54,11 @@ MIHOMO_E2E_BIN=/path/to/mihomo SING_BOX_E2E_BIN=/bin/true \
     -run 'TestXHTTPFlowProcess|TestXHTTPMuxCoolProcess' -timeout 30m
 ```
 
-- `TestXHTTPFlowProcess` (Mihomo Meta 1.10.0 from module v1.19.32): eight
-  concurrent 1 MiB echoes and 16 MiB down and up on one session, byte for
-  byte, from Xray and Mihomo clients in stream-up and packet-up, governor on
-  and off: all 8 transfer cases pass. `governor=true/settings` fails: the
-  governed TLS listener sends its SETTINGS only after the client preface
-  (open item, see `h2flow_verify_listener_test.go`).
-- `TestXHTTPMuxCoolProcess`: 6/6 pass.
+- `TestXHTTPFlowProcess` (Mihomo Meta 1.10.0): eight concurrent 1 MiB
+  echoes and 16 MiB down and up on one session, byte for byte, from Xray and
+  Mihomo clients in stream-up and packet-up, governor on and off, plus the
+  SETTINGS each server advertises: all 10 cases pass on `7d61adc0`.
+- `TestXHTTPMuxCoolProcess`: 6/6 pass on `7d61adc0`.
 
 ## Behavior gates
 
@@ -72,15 +76,21 @@ Unit tests fix what a peer can observe and what the governor may hold:
   it (`TestFlowInitialWindow*`, `TestFlowModelWindowChanges`);
 - memory: 32 upload streams nobody reads hold 1 MiB on the connection, as
   stock (`TestFlowServerUnreadPerConnection`); stream churn against a client
-  that stopped reading keeps the credit queue at a few frames and live heap
-  level with stock (`TestFlowInjectedQueueBounded`,
-  `TestFlowInjectedQueueHeapVsStock`).
+  that stopped reading keeps the credit queue at a few frames
+  (`TestFlowInjectedQueueBounded`); bodies a handler has read do not hold
+  the connection window while their responses wait
+  (`TestFlowReadBodiesReleaseConnectionWindow`);
+- TLS probes: plaintext HTTP to the TLS port gets stock's 400, ALPN
+  `http/1.1` is served as HTTP/1.1, the server sends its SETTINGS before the
+  client preface and nothing else until it arrives, and it closes like stock
+  after a 431 (`h2flow_verify_listener_test.go`).
 
 ## Network measurements
 
 Linux stand: two network namespaces joined by a veth pair, netem delay and
 rate with a queue sized to the bandwidth-delay product, TCP buffers up to
-32 MB, server this commit, client official Xray v26.9.30. Medians of five
+32 MB, server `bfe16614` (upload rows `5a8dcf03`), client official Xray
+v26.9.30. Medians of five
 rounds; the governor column of the slow-server row is from an eight-round
 run, the last row from a twelve-round run of both.
 "Stock" is the governor off.
