@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	gotls "crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -382,6 +383,12 @@ func TestFlowListenerSendsOnlySettingsBeforePreface(t *testing.T) {
 			for {
 				frame, err := fr.ReadFrame()
 				if err != nil {
+					// Only the deadline may end the wait: a server that
+					// closes here is not silent.
+					var ne net.Error
+					if !errors.As(err, &ne) || !ne.Timeout() {
+						t.Fatalf("after %v the connection ended before the client preface: %v", sent, err)
+					}
 					break
 				}
 				sent = append(sent, frame.Header().Type)
