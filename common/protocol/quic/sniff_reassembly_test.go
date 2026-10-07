@@ -67,9 +67,30 @@ func hkdfExpandLabel(t *testing.T, secret []byte, label string, length int) []by
 }
 
 // sealInitial builds a protected QUIC v1 client Initial packet for destConnID
-// with packet number pn carrying frames (RFC 9000, Section 17.2.2; RFC 9001,
-// Sections 5.2 to 5.4). It does not share code with the sniffer.
+// with packet number pn carrying frames followed by PADDING (RFC 9000, Section
+// 17.2.2; RFC 9001, Sections 5.2 to 5.4). It does not share code with the
+// sniffer.
 func sealInitial(t *testing.T, destConnID []byte, pn uint32, frames ...cryptoFrame) []byte {
+	t.Helper()
+	payload := appendCryptoFrames(nil, frames...)
+	payload = append(payload, make([]byte, 32)...) // PADDING frames, so a header protection sample exists
+	return sealInitialPayload(t, destConnID, pn, payload)
+}
+
+// appendCryptoFrames appends frames to payload as CRYPTO frames.
+func appendCryptoFrames(payload []byte, frames ...cryptoFrame) []byte {
+	for _, frame := range frames {
+		payload = append(payload, 0x06)
+		payload = quicvarint.Append(payload, uint64(frame.offset))
+		payload = quicvarint.Append(payload, uint64(len(frame.data)))
+		payload = append(payload, frame.data...)
+	}
+	return payload
+}
+
+// sealInitialPayload protects payload, the frames of a QUIC v1 client Initial
+// packet, as it is. The payload must leave a header protection sample.
+func sealInitialPayload(t *testing.T, destConnID []byte, pn uint32, payload []byte) []byte {
 	t.Helper()
 	salt := []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a}
 	initialSecret, err := hkdf.Extract(sha256.New, destConnID, salt)
@@ -90,15 +111,6 @@ func sealInitial(t *testing.T, destConnID []byte, pn uint32, frames ...cryptoFra
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var payload []byte
-	for _, frame := range frames {
-		payload = append(payload, 0x06)
-		payload = quicvarint.Append(payload, uint64(frame.offset))
-		payload = quicvarint.Append(payload, uint64(len(frame.data)))
-		payload = append(payload, frame.data...)
-	}
-	payload = append(payload, make([]byte, 32)...) // PADDING frames, so a header protection sample exists
 
 	const pnLength = 4
 	header := []byte{0xc0 | (pnLength - 1), 0, 0, 0, 1, byte(len(destConnID))}
@@ -179,6 +191,22 @@ func sniffedDomain(header *quic.SniffHeader) string {
 		return ""
 	}
 	return header.Domain()
+}
+
+// A CRYPTO frame may carry no data. When such a frame ended the packet, the
+// sniffer failed reading its empty data at the end of the payload and
+// rejected a ClientHello it had already received completely.
+func TestSniffQUICAcceptsEmptyCryptoFrameAtPacketEnd(t *testing.T) {
+	const serverName = "empty.sniff.test"
+	hello := quicTLSClientHello(t, serverName)
+	payload := appendCryptoFrames(nil, cryptoFrame{0, hello}, cryptoFrame{len(hello), nil})
+	header, err := quic.SniffQUIC(sealInitialPayload(t, reassemblyDestConnID, 0, payload))
+	if err != nil {
+		t.Fatalf("SniffQUIC() error = %v, want %q", err, serverName)
+	}
+	if header.Domain() != serverName {
+		t.Fatalf("SniffQUIC() domain = %q, want %q", header.Domain(), serverName)
+	}
 }
 
 // A CRYPTO frame can repeat stream data an earlier frame carried. Clients
