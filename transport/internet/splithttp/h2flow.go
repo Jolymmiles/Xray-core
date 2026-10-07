@@ -896,7 +896,8 @@ func (c *flowConn) drop(id uint32) {
 func (c *flowConn) upConnRelease() int64 {
 	var reading int64
 	for _, s := range c.streams {
-		if s.up.returned > 0 {
+		// A finished upload needs no room, even while its response waits.
+		if !s.clientDone && s.up.returned > 0 {
 			reading += int64(s.up.cap)
 		}
 	}
