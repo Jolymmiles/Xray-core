@@ -15,7 +15,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -27,7 +26,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -737,85 +735,6 @@ func TestFreeTCPUDPPortCanBindBothTransports(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = tcp.Close()
-}
-
-func freeTCPUDPPort(t testing.TB) int {
-	t.Helper()
-	firstPort, lastPort := 0, 0
-	if runtime.GOOS == "linux" {
-		data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var ephemeralFirst, ephemeralLast int
-		if _, err := fmt.Sscan(string(data), &ephemeralFirst, &ephemeralLast); err != nil || ephemeralFirst < 1 || ephemeralLast > 65535 || ephemeralFirst > ephemeralLast {
-			t.Fatalf("invalid Linux automatic source-port range %q: %v", data, err)
-		}
-		// The reservation is released before the external client starts. Keep
-		// intervening outbound connections from claiming its listener port.
-		firstPort, lastPort = 1024, ephemeralFirst-1
-		if lastPort < firstPort {
-			firstPort, lastPort = max(1024, ephemeralLast+1), 65535
-		}
-		if firstPort > lastPort {
-			t.Fatal("no unprivileged ports outside Linux automatic source-port range")
-		}
-	}
-	for attempt := 0; attempt < 128; attempt++ {
-		port := 0
-		if firstPort != 0 {
-			port = firstPort + attempt%(lastPort-firstPort+1)
-		}
-		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
-		if err != nil {
-			if errors.Is(err, syscall.EADDRINUSE) {
-				continue
-			}
-			t.Fatal(err)
-		}
-		port = udp.LocalAddr().(*net.UDPAddr).Port
-		tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
-		if closeErr := udp.Close(); closeErr != nil {
-			if tcp != nil {
-				_ = tcp.Close()
-			}
-			t.Fatal(closeErr)
-		}
-		if err != nil {
-			if errors.Is(err, syscall.EADDRINUSE) {
-				continue
-			}
-			t.Fatal(err)
-		}
-		if err := tcp.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return port
-	}
-	t.Fatal("no available TCP/UDP listener port after 128 allocation attempts")
-	return 0
-}
-
-func freeWildcardTCPPort(t testing.TB) int {
-	t.Helper()
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4zero})
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	_ = listener.Close()
-	return port
-}
-
-func freeTCPPort(t testing.TB) int {
-	t.Helper()
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	_ = listener.Close()
-	return port
 }
 
 func startTCPEcho(t testing.TB) net.Addr {

@@ -218,10 +218,11 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 // on done (DispatchLink) then Release()'d pooled link.Reader under that
 // Interrupt. Contract now: done/WaitClosed ⇒ link is no longer touched.
 //
-// The KeepAlive loop is told to stop first; once it sees stop it starts no
-// write. finish does not wait for it: a KeepAlive write already stuck on a
-// link it cannot interrupt, such as a VLESS writer whose client stopped
-// reading, would hold shutdown for as long as the stalled connection. Such a
+// The KeepAlive loop and the XUDP response sink are told to stop; once they
+// see stop they start no write. finish does not wait for either: a write
+// already stuck on a link it cannot interrupt, such as a VLESS writer whose
+// client stopped reading, would hold shutdown for as long as the stalled
+// connection, and the inbound closes that connection only after finish. Such a
 // write ends with an error once the connection closes, like a session's End
 // frame.
 func (w *ServerWorker) finish() {

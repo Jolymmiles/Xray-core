@@ -86,7 +86,7 @@ func BenchmarkVLESSTCPProcess(b *testing.B) {
 				b.StopTimer()
 				scenarioDir := b.TempDir()
 				serverPort := freeTCPPort(b)
-				socksPort := freeTCPPort(b)
+				socksPort := freeTCPUDPPort(b)
 				realityTarget := ""
 				if security == "reality" {
 					realityTarget = startRealityCoverServer(b, certificate, privateKey)
@@ -119,7 +119,8 @@ func BenchmarkVLESSTCPProcess(b *testing.B) {
 func runVLESSTCPScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer, security, flow string, tcpEcho net.Addr) {
 	t.Helper()
 	serverPort := freeTCPPort(t)
-	socksPort := freeTCPPort(t)
+	// Mihomo's SOCKS inbound binds the port for both TCP and UDP.
+	socksPort := freeTCPUDPPort(t)
 	scenarioDir := filepath.Join(workDir, strings.NewReplacer("/", "-", "=", "-").Replace(t.Name()))
 	if err := os.MkdirAll(scenarioDir, 0o700); err != nil {
 		t.Fatal(err)
