@@ -295,7 +295,9 @@ func TestFlowSlowUplinkHandlerBounded(t *testing.T) {
 		up   flowLimit
 		max  int64
 	}{
-		{"governed", testUp, int64(testUp.init) + 64<<10},
+		// The client may send the 1 MiB a governed server shows at once;
+		// stock lets the handler fall a whole MiB behind on every round.
+		{"governed", testUp, int64(flowShownUp) + 64<<10},
 		{"stock", flowLimit{}, 0},
 	} {
 		var consumed atomic.Int64

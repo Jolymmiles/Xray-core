@@ -95,3 +95,30 @@ func TestFlowSlowReaderLeavesConnectionRoom(t *testing.T) {
 		t.Fatalf("slow readers holding %d leave %d of connection window for new streams", held, room)
 	}
 }
+
+// TestFlowNoCreditAtStreamOpen checks the upload window a server shows: Go's
+// own 1 MiB, so the client gets no WINDOW_UPDATE the moment a stream opens.
+func TestFlowNoCreditAtStreamOpen(t *testing.T) {
+	h := newFlowHarness(t)
+	h.track()
+	h.fromClient(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
+	})
+	h.fromServer(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 6 << 20})
+	})
+	if h.toClient.init != flowShownUp {
+		t.Fatalf("server SETTINGS show %d, want Go's %d", h.toClient.init, flowShownUp)
+	}
+	before := len(h.toClient.frames)
+	h.fromClient(func(fr *http2.Framer) {
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x82}, EndHeaders: true})
+	})
+	h.sync()
+	h.toClient.receive(t, h.conn.take())
+	for _, f := range h.toClient.frames[before:] {
+		if w, ok := f.(*http2.WindowUpdateFrame); ok && w.StreamID == 1 {
+			t.Fatalf("client got %d of credit as stream 1 opened", w.Increment)
+		}
+	}
+}

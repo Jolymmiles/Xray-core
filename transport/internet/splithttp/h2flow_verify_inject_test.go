@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -16,11 +17,15 @@ import (
 // on.
 func TestFlowInjectedWriteFailureIsTerminal(t *testing.T) {
 	h := newFlowHarness(t)
+	// Since the server shows Go's 1 MiB, the governor credits a new upload
+	// stream at once only when the connection learned a larger window, out
+	// of the 6 MiB a governed server grants.
+	h.c.upLearned = flowLearned{cap: 4 << 20, at: time.Now()}
 	h.fromClient(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
 	})
 	h.fromServer(func(fr *http2.Framer) {
-		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 6 << 20})
 	})
 
 	h.conn.mu.Lock()
@@ -57,11 +62,15 @@ func TestFlowInjectedWriteFailureIsTerminal(t *testing.T) {
 // server writes afterwards may follow it.
 func TestFlowInjectedWriteFailureTearsStream(t *testing.T) {
 	h := newFlowHarness(t)
+	// Since the server shows Go's 1 MiB, the governor credits a new upload
+	// stream at once only when the connection learned a larger window, out
+	// of the 6 MiB a governed server grants.
+	h.c.upLearned = flowLearned{cap: 4 << 20, at: time.Now()}
 	h.fromClient(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
 	})
 	settings := h.fromServer(func(fr *http2.Framer) {
-		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 6 << 20})
 	})
 	h.conn.mu.Lock()
 	h.conn.failNext = true

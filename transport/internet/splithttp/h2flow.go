@@ -91,6 +91,18 @@ var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string
 // itself defines, nor grow beyond what the peer really granted.
 var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
 
+// The initial window each side is shown, where the receiver grants that
+// much. A server shows Go's own 1 MiB, so its SETTINGS carry the stock value
+// and new upload streams need no credit at once; the upload connection
+// window still holds everything nobody reads to 1 MiB. A client keeps the
+// protocol default: when both ends govern the download, a larger value lets
+// the two hold back credit each counts as the other's, and a duplex stream
+// can stall.
+const (
+	flowShownUp   = 1 << 20
+	flowShownDown = h2InitWindow
+)
+
 type tcpStats struct {
 	rtt, minRTT, rttVar time.Duration
 }
@@ -1108,8 +1120,8 @@ func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found
 // for each stream shown + forwarded <= real + returned. Where no value is
 // low enough, ok is false and the connection has to go. Streams the sender
 // has finished do not count: nothing more is sent on them.
-func (c *flowConn) changeInitialWindow(payload []byte, l flowLimit, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
-	real, show, found := rewriteInitialWindow(payload, l.init)
+func (c *flowConn) changeInitialWindow(payload []byte, l flowLimit, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
+	real, show, found := rewriteInitialWindow(payload, max(l.init, start))
 	if !found {
 		return true
 	}
@@ -1198,7 +1210,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.down.enabled() && !c.changeInitialWindow(payload, c.down, &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
+			if c.down.enabled() && !c.changeInitialWindow(payload, c.down, flowShownDown, &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
 				return s.down.returned, s.downForwarded, s.serverDone
 			}) {
 				c.giveUp()
@@ -1344,7 +1356,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.up.enabled() && !c.changeInitialWindow(payload, c.up, &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
+			if c.up.enabled() && !c.changeInitialWindow(payload, c.up, flowShownUp, &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
 				return s.up.returned, s.upForwarded, s.clientDone
 			}) {
 				c.giveUp()

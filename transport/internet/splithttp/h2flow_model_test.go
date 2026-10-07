@@ -261,7 +261,9 @@ func (m *flowModel) limit(id uint32, up bool) int64 {
 	case s == nil:
 		return 0
 	case up && m.up.enabled():
-		return s.peakUp
+		// The client may send the initial window the server shows before
+		// the governor holds anything back.
+		return max(s.peakUp, min(int64(flowShownUp), m.srvInit))
 	case !up && m.down.enabled():
 		return s.peakDown
 	}
