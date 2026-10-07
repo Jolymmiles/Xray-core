@@ -1,6 +1,7 @@
 package xdns
 
 import (
+	"container/list"
 	"sort"
 	"sync"
 	"time"
@@ -297,18 +298,23 @@ type SendInfo struct {
 	stash    chan []byte
 	ch       chan []byte
 	deadline time.Time
+	// elem is the client's place in SendManager.lru.
+	elem *list.Element
 }
 
 type SendManager struct {
-	m  map[ClientID]*SendInfo
-	ch chan struct{}
-	mu sync.Mutex
+	m map[ClientID]*SendInfo
+	// lru orders the tracked clients from most to least recently used.
+	lru *list.List
+	ch  chan struct{}
+	mu  sync.Mutex
 }
 
 func NewSendManager() *SendManager {
 	m := &SendManager{
-		m:  make(map[ClientID]*SendInfo),
-		ch: make(chan struct{}),
+		m:   make(map[ClientID]*SendInfo),
+		lru: list.New(),
+		ch:  make(chan struct{}),
 	}
 	go m.gc()
 	return m
@@ -334,9 +340,7 @@ func (m *SendManager) gc() {
 			m.mu.Lock()
 			for key, info := range m.m {
 				if now.After(info.deadline) {
-					close(info.stash)
-					close(info.ch)
-					delete(m.m, key)
+					m.remove(key, info)
 				}
 			}
 			m.mu.Unlock()
@@ -345,22 +349,39 @@ func (m *SendManager) gc() {
 	}
 }
 
-// entry returns the queues of clientID, creating them while fewer than
-// sendClientCount clients are tracked, or nil for a new client beyond that
-// limit. m.mu must be held.
+// remove closes the queues of clientID and stops tracking it. m.mu must be
+// held.
+func (m *SendManager) remove(clientID ClientID, info *SendInfo) {
+	close(info.stash)
+	close(info.ch)
+	m.lru.Remove(info.elem)
+	delete(m.m, clientID)
+}
+
+// entry returns the queues of clientID, creating them if needed, and marks
+// it the most recently used client. The keys come from unauthenticated
+// queries, so a new client beyond sendClientCount evicts the least recently
+// used one: a flood can churn the table but never lock new clients out.
+// entry returns nil once the manager is closed. m.mu must be held.
 func (m *SendManager) entry(clientID ClientID) *SendInfo {
-	info := m.m[clientID]
-	if info == nil {
-		if len(m.m) >= sendClientCount {
-			return nil
-		}
-		info = &SendInfo{
-			stash:    make(chan []byte, 1),
-			ch:       make(chan []byte, 128),
-			deadline: time.Now().Add(sendTTL),
-		}
-		m.m[clientID] = info
+	if info := m.m[clientID]; info != nil {
+		m.lru.MoveToFront(info.elem)
+		return info
 	}
+	if m.closed() {
+		return nil
+	}
+	if len(m.m) >= sendClientCount {
+		oldest := m.lru.Back().Value.(ClientID)
+		m.remove(oldest, m.m[oldest])
+	}
+	info := &SendInfo{
+		stash:    make(chan []byte, 1),
+		ch:       make(chan []byte, 128),
+		deadline: time.Now().Add(sendTTL),
+	}
+	info.elem = m.lru.PushFront(clientID)
+	m.m[clientID] = info
 	return info
 }
 
@@ -386,6 +407,7 @@ func (m *SendManager) Stash(clientID ClientID, p []byte) {
 	if info == nil {
 		return
 	}
+	m.lru.MoveToFront(info.elem)
 	info.deadline = time.Now().Add(sendTTL)
 	select {
 	case info.stash <- p:
@@ -394,7 +416,7 @@ func (m *SendManager) Stash(clientID ClientID, p []byte) {
 }
 
 // Pop returns the queues of clientID and refreshes their deadline. ok is
-// false for a new client beyond sendClientCount.
+// false once the manager is closed.
 func (m *SendManager) Pop(clientID ClientID) (ch chan []byte, stash chan []byte, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -414,8 +436,6 @@ func (m *SendManager) Close() {
 	}
 	close(m.ch)
 	for key, info := range m.m {
-		close(info.stash)
-		close(info.ch)
-		delete(m.m, key)
+		m.remove(key, info)
 	}
 }

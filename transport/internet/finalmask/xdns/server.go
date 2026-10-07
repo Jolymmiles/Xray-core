@@ -305,7 +305,7 @@ func (c *xdnsServer) send() {
 
 		ch, stash, ok := c.sendManager.Pop(rec.clientID)
 		if !ok {
-			// Too many clients hold queues: answer at once without data.
+			// The queues are closed: answer at once without data.
 			_, _ = c.PacketConn.WriteTo(rec.resp.Encode(buf[:0], nil), rec.addr)
 			continue
 		}
