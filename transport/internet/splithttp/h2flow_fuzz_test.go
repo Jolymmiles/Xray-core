@@ -47,7 +47,7 @@ func FuzzFlowConn(f *testing.F) {
 		c.wmu.Lock()
 		c.wmu.Unlock()
 		c.mu.Lock()
-		streams, queued := len(c.streams), len(c.wqueue)+len(c.toClient)
+		streams, queued := len(c.streams), queuedBytes(c)
 		c.mu.Unlock()
 		if streams > len(fromClient)/h2FrameHeader+1 {
 			t.Fatalf("%d streams tracked from %d input bytes", streams, len(fromClient))

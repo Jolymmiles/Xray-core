@@ -295,7 +295,9 @@ func TestFlowSlowUplinkHandlerBounded(t *testing.T) {
 		up   flowLimit
 		max  int64
 	}{
-		{"governed", testUp, int64(testUp.init) + 64<<10},
+		// The client may send the 1 MiB a governed server shows at once;
+		// stock lets the handler fall a whole MiB behind on every round.
+		{"governed", testUp, int64(flowShownUp) + 64<<10},
 		{"stock", flowLimit{}, 0},
 	} {
 		var consumed atomic.Int64
@@ -316,7 +318,14 @@ func TestFlowSlowUplinkHandlerBounded(t *testing.T) {
 			}
 		}()
 		req, _ := http.NewRequest("POST", "http://x/up", pr)
-		go h2Client(addr).Do(req)
+		client := h2Client(addr)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if resp, err := client.Do(req); err == nil {
+				resp.Body.Close()
+			}
+		}()
 		time.Sleep(3 * time.Second)
 		var unread int64
 		tl.each(func(c *flowConn) {
@@ -327,6 +336,12 @@ func TestFlowSlowUplinkHandlerBounded(t *testing.T) {
 		t.Logf("%s: client wrote %d, handler read %d, gap %d, unread at server %d", tc.name, written.Load(), consumed.Load(), written.Load()-consumed.Load(), unread)
 		close(stop)
 		pw.CloseWithError(io.ErrClosedPipe)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: upload request still running after its body was closed", tc.name)
+		}
+		client.CloseIdleConnections()
 		if tc.max > 0 && unread > tc.max {
 			t.Fatalf("%s: unread at server %d exceeds %d", tc.name, unread, tc.max)
 		}
@@ -735,7 +750,7 @@ func TestFlowChurnLeaves(t *testing.T) {
 		left := 0
 		tl.each(func(c *flowConn) {
 			if !c.closed {
-				left += len(c.streams) + len(c.wqueue) + len(c.opened)
+				left += len(c.streams) + queuedBytes(c) + len(c.opened)
 			}
 		})
 		if left == 0 {

@@ -214,8 +214,8 @@ func checkServerFlowSettings(t *testing.T, port int, governor bool) {
 	values := serverH2Settings(t, port)
 	frame, window := values[h2SettingMaxFrameSize], values[h2SettingInitialWindowSize]
 	switch {
-	case governor && (frame != 16384 || window != 65535):
-		t.Fatalf("governed server advertises max frame size %d and initial window %d, want 16384 and 65535", frame, window)
+	case governor && (frame != 16384 || window != 1<<20):
+		t.Fatalf("governed server advertises max frame size %d and initial window %d, want 16384 and Go's 1048576", frame, window)
 	case !governor && (frame != 1<<20 || window != 1<<20):
 		t.Fatalf("server with XRAY_XHTTP_FLOW=off advertises max frame size %d and initial window %d, want stock 1048576 for both", frame, window)
 	}

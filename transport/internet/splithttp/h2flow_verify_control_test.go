@@ -139,6 +139,10 @@ func TestFlowRecognisesEveryOutstandingPing(t *testing.T) {
 	h := newFlowHarness(t)
 	h.openStream(4 << 20)
 	periodic := governorPing(t, h)
+	// The guard probes only while a stream waits for credit (item E).
+	h.c.mu.Lock()
+	h.c.streams[1].down.waiting = time.Now()
+	h.c.mu.Unlock()
 	h.c.fireGuard()
 	h.sync()
 	probes := pings(t, h.conn.take())

@@ -138,7 +138,9 @@ func TestH2ServerGrantsWindows(t *testing.T) {
 	}{
 		{"governor off, set", &H2FlowConfig{Mode: 2, MaxStreamReceiveWindow: 3 << 20, MaxConnectionReceiveWindow: 5 << 20}, 3 << 20, 5 << 20, false},
 		{"governor off, default", &H2FlowConfig{Mode: 2}, 1 << 20, 1 << 20, false},
-		{"governor on, default", &H2FlowConfig{Mode: 1}, flowServerReceiveWindow, flowServerReceiveWindow, true},
+		// The server grants flowServerReceiveWindow on the connection; the
+		// governor shows Go's default until readers take more.
+		{"governor on, default", &H2FlowConfig{Mode: 1}, flowServerReceiveWindow, flowConnFloor, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port := tcp.PickPort()
