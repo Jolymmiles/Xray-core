@@ -56,14 +56,17 @@ func chromeParrotHandshake(t *testing.T, serverConfig, clientConfig *tls.Config)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	accepted := make(chan error, 1)
+	served := make(chan struct{})
 	go func() {
+		defer close(served)
 		conn, err := listener.Accept(ctx)
-		if err == nil {
-			<-conn.HandshakeComplete()
-			defer conn.CloseWithError(0, "")
-			<-ctx.Done()
-		}
 		accepted <- err
+		if err != nil {
+			return
+		}
+		defer conn.CloseWithError(0, "")
+		<-conn.HandshakeComplete()
+		<-ctx.Done()
 	}()
 
 	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -75,12 +78,16 @@ func chromeParrotHandshake(t *testing.T, serverConfig, clientConfig *tls.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The client completed its handshake, so Accept has returned or is about
+	// to; read its result before cancel, which would make any error look like
+	// the cancellation.
+	if err := <-accepted; err != nil {
+		t.Fatal(err)
+	}
 	state := conn.ConnectionState().TLS
 	_ = conn.CloseWithError(0, "")
 	cancel()
-	if err := <-accepted; err != nil && ctx.Err() == nil {
-		t.Fatal(err)
-	}
+	<-served
 	extensionsMu.Lock()
 	defer extensionsMu.Unlock()
 	return state, extensions
