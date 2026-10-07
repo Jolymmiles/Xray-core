@@ -801,6 +801,9 @@ func (c *flowConn) readFrames(in, out []byte) []byte {
 		c.mode.Store(flowH2)
 	}
 	c.mu.Lock()
+	// A server pings only once the client preface is in: until then stock
+	// sends nothing but its SETTINGS.
+	c.pingReady = c.pingReady || (!c.client && c.settingsSent)
 	out = c.rp.feed(in, out, (*flowReader)(c))
 	credit := len(c.wcredit) > 0
 	c.mu.Unlock()
@@ -1023,7 +1026,7 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 
 // appendPing adds a PING for the remote peer once a second while streams are
 // open, so the connection knows its round trip. The first goes out as soon as
-// the connection is up, before data can queue in front of its ACK, so the
+// both prefaces are through, before data can queue in front of its ACK, so the
 // connection learns the round trip of the empty path. Once the kernel vouches
 // for that round trip, no more are needed.
 func (c *flowConn) appendPing(out []byte) []byte {
@@ -1451,7 +1454,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			}
 			capFrameSize(payload)
 			c.settingsSent = true
-			c.pingReady = c.pingReady || !c.client
+			c.pingReady = c.pingReady || (!c.client && c.mode.Load() == flowH2)
 			out = append(out, header...)
 			out = append(out, payload...)
 			if c.up.enabled() {

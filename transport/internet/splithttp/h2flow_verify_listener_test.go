@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	gotls "crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -346,6 +347,70 @@ func TestFlowListenerSendsSettingsBeforePreface(t *testing.T) {
 			}
 			if _, ok := frame.(*http2.SettingsFrame); !ok {
 				t.Fatalf("first frame %v, want SETTINGS", frame)
+			}
+		})
+	}
+}
+
+// TestFlowListenerSendsOnlySettingsBeforePreface looks at everything a prober
+// gets after TLS with ALPN h2 when it sends nothing more: stock sends its
+// SETTINGS and nothing else, so the governed listener must not add its PING
+// before the client preface. Once the preface is in, the governor still sends
+// its first PING, so it learns the round trip of the empty path.
+func TestFlowListenerSendsOnlySettingsBeforePreface(t *testing.T) {
+	dial := func(t *testing.T, addr string) (net.Conn, *gotls.Conn) {
+		t.Helper()
+		raw, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { raw.Close() })
+		raw.SetDeadline(time.Now().Add(2 * time.Second))
+		tc := gotls.Client(raw, &gotls.Config{ServerName: "localhost", InsecureSkipVerify: true, NextProtos: []string{"h2"}})
+		if err := tc.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		return raw, tc
+	}
+	for _, governed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("governed=%v", governed), func(t *testing.T) {
+			addr := listenGovernedXH(t, governed, false, func(c stat.Connection) { c.Close() })
+
+			raw, tc := dial(t, addr)
+			raw.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			fr := http2.NewFramer(nil, tc)
+			var sent []http2.FrameType
+			for {
+				frame, err := fr.ReadFrame()
+				if err != nil {
+					// Only the deadline may end the wait: a server that
+					// closes here is not silent.
+					var ne net.Error
+					if !errors.As(err, &ne) || !ne.Timeout() {
+						t.Fatalf("after %v the connection ended before the client preface: %v", sent, err)
+					}
+					break
+				}
+				sent = append(sent, frame.Header().Type)
+			}
+			if len(sent) != 1 || sent[0] != http2.FrameSettings {
+				t.Fatalf("before the client preface the server sent %v, want only SETTINGS", sent)
+			}
+
+			if !governed {
+				return
+			}
+			_, tc = dial(t, addr)
+			tc.Write(append([]byte(h2Preface), frames(func(fr *http2.Framer) { fr.WriteSettings() })...))
+			fr = http2.NewFramer(nil, tc)
+			for {
+				frame, err := fr.ReadFrame()
+				if err != nil {
+					t.Fatalf("no PING from the governor after the client preface: %v", err)
+				}
+				if ping, ok := frame.(*http2.PingFrame); ok && !ping.IsAck() {
+					return
+				}
 			}
 		})
 	}
