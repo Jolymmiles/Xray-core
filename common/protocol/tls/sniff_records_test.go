@@ -34,6 +34,8 @@ func fragmentRecords(record []byte, n int) []byte {
 	return records
 }
 
+// ClientHellos captured from Chrome, Firefox and curl yield their server
+// names.
 func TestSniffTLSClientCorpus(t *testing.T) {
 	tests := []struct {
 		file, domain string
@@ -81,6 +83,8 @@ func TestSniffTLSWaitsForRemainingRecords(t *testing.T) {
 	}
 }
 
+// A ClientHello ends with the record that completes it: a record of another
+// type may follow it, but one that interrupts it rejects the stream.
 func TestSniffTLSClientHelloEndsAtItsLastRecord(t *testing.T) {
 	chrome := readTLSCorpus(t, "tls-chrome153.bin")
 	changeCipherSpec := []byte{0x14, 0x03, 0x03, 0x00, 0x01, 0x01}

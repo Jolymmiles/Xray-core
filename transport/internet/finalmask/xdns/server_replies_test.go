@@ -14,6 +14,8 @@ import (
 // The server tests below come from the xdns hardening on TaiLerV's
 // sync/upstream-2026-10-02 branch, adapted to this tree.
 
+// testServerConfig configures a server for the tunnel domain t.example.com
+// that answers TXT queries.
 func testServerConfig() *Config {
 	return &Config{Domains: []*DomainProto{{Name: "t.example.com", LenLimit: 255, LabelLimit: 63, Types: []int32{int32(TypeTXT)}}}}
 }
@@ -62,6 +64,7 @@ func exchange(t *testing.T, server net.Addr, query dnsmessage.Message) (dnsmessa
 	return reply, reply.Unpack(buf[:n])
 }
 
+// testQuery returns a recursive query for name and qtype.
 func testQuery(name string, qtype dnsmessage.Type) dnsmessage.Message {
 	return dnsmessage.Message{
 		Header:    dnsmessage.Header{ID: 0x4242, RecursionDesired: true},
@@ -69,6 +72,8 @@ func testQuery(name string, qtype dnsmessage.Type) dnsmessage.Message {
 	}
 }
 
+// optRecord returns an OPT record for EDNS version with a 1232-byte UDP
+// payload size.
 func optRecord(version uint32) dnsmessage.Resource {
 	return dnsmessage.Resource{
 		Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("."), Type: dnsmessage.TypeOPT, Class: 1232, TTL: version << 16},
@@ -295,6 +300,8 @@ type flakyPacketConn struct {
 	failures atomic.Int32
 }
 
+// ReadFrom fails until the configured number of failures is used up, then
+// reads from the wrapped connection.
 func (c *flakyPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	if c.failures.Add(-1) >= 0 {
 		return 0, nil, errors.New("transient read failure")

@@ -63,6 +63,8 @@ type echOutput struct {
 	serverKeys []byte
 }
 
+// parseECHOutput decodes the base64 ECH config list and server keys that
+// `xray tls ech` prints.
 func parseECHOutput(t *testing.T, stdout string) echOutput {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
@@ -88,6 +90,8 @@ type echConfigFields struct {
 	publicName    string
 }
 
+// parseECHConfigList returns the config ID, maximum name length and public
+// name of each ECHConfig in list (RFC 9849, Section 4).
 func parseECHConfigList(t *testing.T, list []byte) []echConfigFields {
 	t.Helper()
 	s := cryptobyte.String(list)
@@ -157,6 +161,8 @@ func TestECHPicksRandomConfigID(t *testing.T) {
 	}
 }
 
+// An explicit --configId and --maxNameLength end up in the generated
+// ECHConfig.
 func TestECHHonorsConfigIDAndMaxNameLength(t *testing.T) {
 	stdout, stderr, exitCode := runECH(t, "--serverName", "public.example.com", "--configId", "7", "--maxNameLength", "42")
 	if exitCode != 0 {

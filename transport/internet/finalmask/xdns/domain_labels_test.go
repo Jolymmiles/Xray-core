@@ -6,6 +6,8 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
+// testDomain returns the tunnel domain t.example.com with the given query
+// types.
 func testDomain(t *testing.T, types ...uint16) *Domain {
 	t.Helper()
 	domain, err := NewDomain("t.example.com", 255, 63, types, 0)

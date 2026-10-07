@@ -34,6 +34,8 @@ type datagramReader struct {
 	datagrams [][]byte
 }
 
+// ReadMultiBuffer returns the next datagram in a buffer of its own, or io.EOF
+// once all have been read.
 func (r *datagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	if len(r.datagrams) == 0 {
 		return nil, io.EOF
@@ -47,6 +49,8 @@ func (r *datagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	return buf.MultiBuffer{b}, nil
 }
 
+// ReadMultiBufferTimeout returns the next datagram, or buf.ErrReadTimeout once
+// all have been read, like a link that has nothing more to deliver.
 func (r *datagramReader) ReadMultiBufferTimeout(time.Duration) (buf.MultiBuffer, error) {
 	if len(r.datagrams) == 0 {
 		return nil, buf.ErrReadTimeout

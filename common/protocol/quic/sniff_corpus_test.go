@@ -148,6 +148,8 @@ func quicGoFirstFlight(t *testing.T, config *quicgo.Config, serverName string, n
 	return datagrams
 }
 
+// The first flight of a live quic-go client, with QUIC v1, v2 and Chrome
+// parroting, yields its server name.
 func TestSniffQUICGoFirstFlight(t *testing.T) {
 	tests := []struct {
 		name   string

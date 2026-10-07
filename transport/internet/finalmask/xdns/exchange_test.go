@@ -34,6 +34,8 @@ func testDialer() *finalmask.Dialer {
 	}
 }
 
+// closeWithin fails the test if closeFn, the Close of name, does not return
+// within 3 seconds.
 func closeWithin(t *testing.T, name string, closeFn func()) {
 	t.Helper()
 	done := make(chan struct{})
@@ -141,6 +143,8 @@ func startTCPForwarder(t *testing.T, upstream net.Addr) net.Addr {
 	return listener.Addr()
 }
 
+// relayTCPToUDP forwards each length-prefixed query read from conn to
+// upstream over UDP, and writes each reply back to conn with its length.
 func relayTCPToUDP(conn stdnet.Conn, upstream net.Addr) {
 	defer conn.Close()
 	udp, err := stdnet.ListenPacket("udp", "127.0.0.1:0")

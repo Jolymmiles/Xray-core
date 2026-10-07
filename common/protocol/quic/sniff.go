@@ -398,6 +398,9 @@ type initialKeys struct {
 	aead       cipher.AEAD
 }
 
+// newInitialKeys derives the client Initial keys that protect the packets of
+// the connection with destination connection ID destConnID (RFC 9001, Section
+// 5.2; RFC 9369, Section 3.3.1 for QUIC v2).
 func newInitialKeys(s *quicVersionSpec, destConnID []byte) *initialKeys {
 	initialSecret := hkdf.Extract(crypto.SHA256.New, destConnID, s.initialSalt)
 	secret := hkdfExpandLabel(initialSecret, "client in", crypto.SHA256.Size())

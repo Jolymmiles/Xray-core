@@ -7,6 +7,8 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
+// testResponse returns a response to a qtype query for a tunnel name that
+// carries answers.
 func testResponse(t *testing.T, qtype dnsmessage.Type, answers ...dnsmessage.Resource) dnsmessage.Message {
 	t.Helper()
 	name := dnsmessage.MustNewName("aaaa.t.example.com.")

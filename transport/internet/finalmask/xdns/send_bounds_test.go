@@ -9,16 +9,19 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
+// testClientID returns a distinct client ID for each i.
 func testClientID(i int) ClientID {
 	return ClientIDFromRaw([8]byte{0, 0, 0, 0, byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)})
 }
 
+// isTracked reports whether m holds queues for clientID.
 func isTracked(m *SendManager, clientID ClientID) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.m[clientID] != nil
 }
 
+// trackedClients returns how many clients m holds queues for.
 func trackedClients(m *SendManager) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

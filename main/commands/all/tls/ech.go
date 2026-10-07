@@ -209,6 +209,8 @@ func echConfigID(id int) (uint8, error) {
 	return uint8(id), nil
 }
 
+// generateECHKeySet returns an ECHConfig for the public name domain with a
+// fresh X25519 key from crypto/rand, and the key's private bytes.
 func generateECHKeySet(configID uint8, domain string, kem uint16, maxNameLength uint8) (EchConfig, []byte, error) {
 	config := EchConfig{
 		Version:    ExtensionEncryptedClientHello,

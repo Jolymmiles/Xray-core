@@ -55,6 +55,8 @@ type udpRecorder struct {
 	received chan []byte
 }
 
+// startUDPRecorder listens on a loopback UDP port and records every datagram
+// it receives until the test ends.
 func startUDPRecorder(t *testing.T) *udpRecorder {
 	t.Helper()
 	conn, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
@@ -77,6 +79,7 @@ func startUDPRecorder(t *testing.T) *udpRecorder {
 	return recorder
 }
 
+// port returns the UDP port the recorder listens on.
 func (r *udpRecorder) port() int {
 	return r.conn.LocalAddr().(*stdnet.UDPAddr).Port
 }
