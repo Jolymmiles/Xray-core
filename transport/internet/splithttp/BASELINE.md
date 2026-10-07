@@ -78,7 +78,8 @@ Unit tests fix what a peer can observe and what the governor may hold:
 Linux stand: two network namespaces joined by a veth pair, netem delay and
 rate with a queue sized to the bandwidth-delay product, TCP buffers up to
 32 MB, server this commit, client official Xray v26.9.30. Medians of five
-rounds; the governor column of the last two rows is from an eight-round run.
+rounds; the governor column of the slow-server row is from an eight-round
+run, the last row from a twelve-round run of both.
 "Stock" is the governor off.
 
 | Scenario | Stock | Governed |
@@ -88,10 +89,11 @@ rounds; the governor column of the last two rows is from an eight-round run.
 | One upload, 100 Mbit/s, RTT 300 ms | 3.2 MB/s | 9.5 MB/s |
 | One upload, 50 Mbit/s, RTT 150 ms | 5.7 MB/s | 5.7 MB/s |
 | Uploads into a slow server: PING p50 / p95 | 218 / 7150 ms | 53 / 511 ms |
-| First 3 MB of a new stream, RTT 150 ms ± 20 ms | 3.0 s | 3.7 s |
+| First 3 MB of a new stream, RTT 150 ms ± 20 ms | 4.1 s | 4.2 s |
 
-The last row is bimodal with jitter (runs land near 2.9 s or 4.1 s); the
-build before the re-review fixes measured 3.7 s on the same eight rounds.
+The last row is bimodal for every build, stock included: runs land near
+2.9 s or 4.1–5.1 s (7 of 12 slow for stock, 6 of 12 governed), which is TCP
+on the jittered link rather than the window.
 Integrity: byte-exact pattern transfers up and down, direct, behind a TCP
 proxy and with jitter, 65 transfers and 125 MB, no bad bytes, short reads or
 errors.
