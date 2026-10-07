@@ -65,6 +65,10 @@ test, or compatibility gates defined here.
   wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
   fork-owned: renumber it if upstream claims that number.
   `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
+  On a TLS inbound without REALITY the governed listener still answers
+  unauthenticated probes differently from stock (SETTINGS only after the
+  client preface, h2c handling of plaintext requests); REALITY hands such
+  probes to its target before HTTP/2.
   Covered by the `h2flow*_test.go` tests and
   `common/singmux/xhttp_flow_verify_integration_test.go`.
 - The maintained SMUX implementation is the in-tree stack under

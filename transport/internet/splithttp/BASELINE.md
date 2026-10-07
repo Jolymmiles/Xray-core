@@ -9,7 +9,10 @@ on; with it off, the code below is never in the data path.
 
 ## Source and conditions
 
-- Xray commit: `bfe16614` (PR #17 re-review fixes on `bdbac60e`).
+- Revisions, all clean trees: benchmarks and the network rows on `bfe16614`
+  (re-review fixes on `bdbac60e`), gates re-run on `28392012`; the next
+  commit (server shows Go's 1 MiB initial window) changes only the upload
+  start and was re-measured on the upload rows, with the same results.
 - Host: linux/amd64 container, AMD Ryzen 5 5600 (12 threads), Go 1.27.1,
   build tag `http2legacy` as CI and releases build.
 - Benchmark command:
