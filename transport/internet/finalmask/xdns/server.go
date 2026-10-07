@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"golang.org/x/net/dns/dnsmessage"
@@ -19,11 +18,17 @@ const (
 
 	recvBackoffMin = 10 * time.Millisecond
 	recvBackoffMax = time.Second
+
+	// rcodeBadVersion is BADVERS, whose upper bits travel in the OPT record
+	// (RFC 6891).
+	rcodeBadVersion dnsmessage.RCode = 16
 )
 
 type resp struct {
 	msg  dnsmessage.Message
 	addr net.Addr
+	// limit is the length of the query; the reply must not outgrow it.
+	limit int
 }
 
 type Rec struct {
@@ -93,9 +98,38 @@ func (c *xdnsServer) closed() bool {
 	}
 }
 
-func (c *xdnsServer) decref(msg dnsmessage.Message, addr net.Addr) {
+// decref queues the reply to a query the server answers without tunnel data.
+// Like an authoritative server's reply it carries the header, the single
+// question and, when the query used EDNS, the server's own OPT record, which
+// holds the upper bits of rcode. Echoing the query's other records would let
+// a spoofed query draw a reply larger than itself. decref never blocks the
+// receive loop.
+func (c *xdnsServer) decref(query *dnsmessage.Message, rcode dnsmessage.RCode, authoritative bool, limit int, addr net.Addr) {
+	reply := dnsmessage.Message{Header: dnsmessage.Header{
+		ID:               query.Header.ID,
+		Response:         true,
+		OpCode:           query.Header.OpCode,
+		Authoritative:    authoritative,
+		RecursionDesired: query.Header.RecursionDesired,
+		CheckingDisabled: query.Header.CheckingDisabled,
+		RCode:            rcode & 0xF,
+	}}
+	if len(query.Questions) == 1 {
+		reply.Questions = query.Questions
+	}
+	for i := range query.Additionals {
+		if query.Additionals[i].Header.Type != dnsmessage.TypeOPT {
+			continue
+		}
+		var opt dnsmessage.ResourceHeader
+		size := min(max(int(query.Additionals[i].Header.Class), 512), 4096)
+		if err := opt.SetEDNS0(size, rcode, query.Additionals[i].Header.DNSSECAllowed()); err == nil {
+			reply.Additionals = []dnsmessage.Resource{{Header: opt, Body: &dnsmessage.OPTResource{}}}
+		}
+		break
+	}
 	select {
-	case c.drCh <- resp{msg: msg, addr: addr}:
+	case c.drCh <- resp{msg: reply, addr: addr, limit: limit}:
 	default:
 	}
 }
@@ -108,18 +142,17 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 	if msg.Header.Response {
 		return
 	}
+	answer := func(rcode dnsmessage.RCode, authoritative bool) {
+		c.decref(&msg, rcode, authoritative, len(buf), addr)
+	}
 
 	if msg.Header.OpCode != 0 {
-		msg.Header.Response = true
-		msg.Header.RCode = dnsmessage.RCodeNotImplemented
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeNotImplemented, false)
 		return
 	}
 
 	if len(msg.Questions) != 1 {
-		msg.Header.Response = true
-		msg.Header.RCode = dnsmessage.RCodeFormatError
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeFormatError, false)
 		return
 	}
 
@@ -128,19 +161,13 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 	for i := range msg.Additionals {
 		if msg.Additionals[i].Header.Type == dnsmessage.TypeOPT {
 			if opt {
-				msg.Header.Response = true
-				msg.Header.RCode = dnsmessage.RCodeFormatError
-				c.decref(msg, addr)
+				answer(dnsmessage.RCodeFormatError, false)
 				return
 			}
 			opt = true
 			edns0 = uint16(msg.Additionals[i].Header.Class)
 			if ver := (msg.Additionals[i].Header.TTL >> 16) & 0xFF; ver != 0 {
-				// BADVERS: extended RCODE 16 lives in the OPT TTL's top byte.
-				msg.Header.Response = true
-				msg.Header.RCode = dnsmessage.RCodeSuccess
-				msg.Additionals[i].Header.TTL = 1 << 24
-				c.decref(msg, addr)
+				answer(rcodeBadVersion, false)
 				return
 			}
 		}
@@ -163,52 +190,35 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 		}
 	}
 	if domain == nil {
-		msg.Header.Response = true
-		msg.Header.RCode = dnsmessage.RCodeNameError
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeNameError, false)
 		return
 	}
 	if !domain.HasType(uint16(msg.Questions[0].Type)) {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 
 	var decoded [255]byte
 	n := domain.Decode(&decoded, msg.Questions[0].Name)
 	if n < 9 {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 	if TypeMap_[decoded[0]&3] != uint16(msg.Questions[0].Type) || (decoded[8]&0x3F != 3 && decoded[8]&0x3F != 8) || (decoded[8]&0x3F == 3 && n < 9+3+1) || (decoded[8]&0xC0 == 0xC0 && n < 9+3+3+1) || (decoded[8]&0x3F == 8 && n != 9+8) {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 	clientID := ClientIDFromRaw([8]byte(decoded[:8]))
 
 	r := NewResp(msg, domain, edns0)
 	if r == nil {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 	select {
 	case c.recCh <- &Rec{resp: r, clientID: clientID, addr: addr}:
 	default:
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 	}
 
 	if decoded[8]&0x3F == 8 {
@@ -368,7 +378,12 @@ func (c *xdnsServer) dr() {
 		case <-c.closeCh:
 			return
 		case r := <-c.drCh:
-			_, _ = c.PacketConn.WriteTo(common.Must2(r.msg.AppendPack(buf[:0])), r.addr)
+			b, err := r.msg.AppendPack(buf[:0])
+			if err != nil || len(b) > r.limit {
+				errors.LogDebug(context.Background(), r.addr, " reply dropped: ", len(b), " bytes for a ", r.limit, "-byte query, err ", err)
+				continue
+			}
+			_, _ = c.PacketConn.WriteTo(b, r.addr)
 		}
 	}
 }

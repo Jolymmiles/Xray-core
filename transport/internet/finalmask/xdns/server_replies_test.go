@@ -104,6 +104,125 @@ func TestServerErrorRepliesAreResponses(t *testing.T) {
 	}
 }
 
+// amplifyingQuery packs a query by hand: a 253-character question name and
+// srv additional SRV records whose owner and target names point back at it.
+// dnsmessage expands those pointers when it unpacks the query but packs SRV
+// targets without compression, so a reply echoing the records grows several
+// times larger than the query.
+func amplifyingQuery(opcode byte, srv int) []byte {
+	query := []byte{0x42, 0x42, opcode << 3, 0, 0, 1, 0, 0, 0, 0, byte(srv >> 8), byte(srv)}
+	for _, length := range []int{63, 63, 63, 60} {
+		query = append(query, byte(length))
+		for i := range length {
+			query = append(query, 'a'+byte(i%26))
+		}
+	}
+	query = append(query, 0, 0, byte(dnsmessage.TypeTXT), 0, 1)
+	for range srv {
+		query = append(query, 0xC0, 12, 0, byte(dnsmessage.TypeSRV), 0, 1, 0, 0, 0, 60, 0, 8)
+		query = append(query, 0, 0, 0, 0, 0, 80, 0xC0, 12)
+	}
+	return query
+}
+
+// exchangeRaw sends query to the server as is and returns the reply with its
+// length on the wire.
+func exchangeRaw(t *testing.T, server net.Addr, query []byte) (dnsmessage.Message, int) {
+	t.Helper()
+	conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.WriteTo(query, server); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 65536)
+	n, _, err := conn.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("no reply to a %d-byte query: %v", len(query), err)
+	}
+	var reply dnsmessage.Message
+	if err := reply.Unpack(buf[:n]); err != nil {
+		t.Fatal(err)
+	}
+	return reply, n
+}
+
+// A query from an unauthenticated, possibly spoofed address must not draw a
+// reply larger than itself: echoing the query's records turned one 510-byte
+// query into a 3.5 KB reply. An error reply carries the header and the
+// question, as an authoritative server's does.
+func TestServerErrorRepliesDoNotOutgrowQueries(t *testing.T) {
+	server := startTestServer(t)
+	for _, tc := range []struct {
+		name   string
+		opcode byte
+		rcode  dnsmessage.RCode
+	}{
+		{"unsupported opcode", 1, dnsmessage.RCodeNotImplemented},
+		{"name outside the domain", 0, dnsmessage.RCodeNameError},
+	} {
+		query := amplifyingQuery(tc.opcode, 12)
+		reply, n := exchangeRaw(t, server, query)
+		if n > len(query) {
+			t.Errorf("%s: %d-byte query drew a %d-byte reply", tc.name, len(query), n)
+		}
+		if reply.Header.RCode != tc.rcode || len(reply.Questions) != 1 || len(reply.Answers)+len(reply.Authorities)+len(reply.Additionals) != 0 {
+			t.Errorf("%s: reply %+v with %d answers, %d authorities, %d additionals, want only %v and the question",
+				tc.name, reply.Header, len(reply.Answers), len(reply.Authorities), len(reply.Additionals), tc.rcode)
+		}
+	}
+}
+
+// An error reply carries the server's own OPT record, not the one the query
+// sent: the query's EDNS options, extended RCODE and other records stay out,
+// and header bits a query has no business setting are not reflected. DO is
+// copied from a version 0 OPT record only, the one version whose flags the
+// server knows.
+func TestServerErrorRepliesCarryOwnOPTRecord(t *testing.T) {
+	server := startTestServer(t)
+	for _, tc := range []struct {
+		name    string
+		qname   string
+		version uint32
+		extRC   uint32
+		do      bool
+	}{
+		{"unsupported EDNS version", "probe.t.example.com.", 1, 1, false},
+		{"name outside the domain", "probe.example.org.", 0, 0, true},
+	} {
+		query := testQuery(tc.qname, dnsmessage.TypeTXT)
+		query.Header.Truncated = true
+		query.Header.RecursionAvailable = true
+		query.Header.AuthenticData = true
+		opt := optRecord(tc.version)
+		opt.Header.TTL |= 0x7F<<24 | 1<<15
+		opt.Body = &dnsmessage.OPTResource{Options: []dnsmessage.Option{{Code: 3, Data: make([]byte, 64)}}}
+		query.Additionals = []dnsmessage.Resource{
+			{Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("probe.example.org."), Type: dnsmessage.TypeTXT, Class: dnsmessage.ClassINET}, Body: &dnsmessage.TXTResource{TXT: []string{"echo"}}},
+			opt,
+		}
+		reply, err := exchange(t, server, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reply.Header.Truncated || reply.Header.RecursionAvailable || reply.Header.AuthenticData || !reply.Header.RecursionDesired {
+			t.Errorf("%s: reply header %+v reflects the query's flags", tc.name, reply.Header)
+		}
+		if len(reply.Additionals) != 1 || reply.Additionals[0].Header.Type != dnsmessage.TypeOPT {
+			t.Fatalf("%s: reply additionals %+v, want only an OPT record", tc.name, reply.Additionals)
+		}
+		got := reply.Additionals[0]
+		if got.Header.Class != 1232 || got.Header.TTL>>24 != tc.extRC || got.Header.TTL&0xFF0000 != 0 || got.Header.DNSSECAllowed() != tc.do || len(got.Body.(*dnsmessage.OPTResource).Options) != 0 {
+			t.Errorf("%s: reply OPT %+v %+v, want size 1232, extended RCODE %d, version 0, DO %v and no options", tc.name, got.Header, got.Body, tc.extRC, tc.do)
+		}
+	}
+}
+
 // An authoritative server answers every query. A burst of queries for names
 // outside the tunnel domain must get every NXDOMAIN, not a few: silently
 // dropped replies leave resolvers timing out and set the server apart.
