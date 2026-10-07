@@ -110,6 +110,8 @@ type tcpStats struct {
 type flowListener struct {
 	net.Listener
 	up, down flowLimit
+	// connWindow is the connection receive window the local server grants.
+	connWindow int32
 }
 
 func (l *flowListener) Accept() (net.Conn, error) {
@@ -117,7 +119,11 @@ func (l *flowListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newFlowConn(c, l.up, l.down), nil
+	fc := newFlowConn(c, l.up, l.down)
+	if l.connWindow > 0 {
+		fc.upConnGrant, fc.upConnGrantKnown = int64(max(l.connWindow, h2InitWindow)-h2InitWindow), true
+	}
+	return fc, nil
 }
 
 type h2Frame struct {
@@ -485,6 +491,12 @@ type flowConn struct {
 	upConnSent      int64
 	upConnReturned  int64
 	upConnForwarded int64
+	// upConnGrant is the connection window the server grants on top of the
+	// protocol's 65535: its first stream-0 credit, the rest of which is data
+	// a handler read. The listener knows it; without one it is the credit
+	// seen before any DATA.
+	upConnGrant      int64
+	upConnGrantKnown bool
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -882,13 +894,17 @@ func (c *flowConn) drop(id uint32) {
 // they would without the governor, whatever the server's own window, and
 // slow readers holding their caps leave that room to new streams.
 func (c *flowConn) upConnRelease() int64 {
-	var unread, reading int64
+	var reading int64
 	for _, s := range c.streams {
-		unread += s.upSent - s.up.returned
 		if s.up.returned > 0 {
 			reading += int64(s.up.cap)
 		}
 	}
+	// What the server has not read, from the connection's own counters: it
+	// returns connection credit for every byte a handler reads, also on a
+	// request the client has finished, where no stream credit comes back,
+	// so a body read and held while its response waits is not counted.
+	unread := max(c.upConnSent-(c.upConnReturned-c.upConnGrant), 0)
 	bank := c.upConnReturned - c.upConnForwarded
 	window := h2InitWindow + c.upConnForwarded - c.upConnSent
 	return min(bank, flowConnFloor+reading-unread-window, h2MaxWindow)
@@ -1388,6 +1404,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
 		if f.stream == 0 && inc > 0 && c.up.enabled() {
 			c.upConnReturned += inc
+			if !c.upConnGrantKnown && c.upConnSent == 0 {
+				c.upConnGrant += inc
+			}
 			return c.appendUpConnRelease(out)
 		}
 		s := c.stream(f.stream)
