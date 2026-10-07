@@ -166,6 +166,20 @@ func (d *Domain) IsDomain(name dnsmessage.Name) bool {
 	return true
 }
 
+// IsApex reports whether name is d itself, the apex of the zone the server
+// answers for. The apex carries no tunnel data, so IsDomain excludes it.
+func (d *Domain) IsApex(name dnsmessage.Name) bool {
+	if d.name.Length != name.Length {
+		return false
+	}
+	for i := range d.name.Length {
+		if Lower(d.name.Data[i]) != Lower(name.Data[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (d *Domain) HasType(qtype uint16) bool {
 	for i := range d.types {
 		if d.types[i] == qtype {

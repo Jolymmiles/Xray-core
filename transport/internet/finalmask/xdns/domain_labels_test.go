@@ -35,3 +35,21 @@ func TestDomainMatchesWholeLabels(t *testing.T) {
 		}
 	}
 }
+
+// The apex is the domain itself, in any letter case; names below or beside it
+// are not.
+func TestDomainRecognizesItsApex(t *testing.T) {
+	domain := testDomain(t, TypeTXT)
+	for name, want := range map[string]bool{
+		"t.example.com.":      true,
+		"T.EXAMPLE.COM.":      true,
+		"aaaa.t.example.com.": false,
+		"xt.example.com.":     false,
+		"example.com.":        false,
+		"t.example.org.":      false,
+	} {
+		if got := domain.IsApex(dnsmessage.MustNewName(name)); got != want {
+			t.Errorf("IsApex(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

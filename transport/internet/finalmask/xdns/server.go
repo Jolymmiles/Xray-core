@@ -190,6 +190,14 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 		}
 	}
 	if domain == nil {
+		for i := range c.domains {
+			if c.domains[i].IsApex(msg.Questions[0].Name) {
+				// The apex exists like every name in the zone; NXDOMAIN
+				// would deny the whole zone below it (RFC 8020).
+				answer(dnsmessage.RCodeSuccess, true)
+				return
+			}
+		}
 		answer(dnsmessage.RCodeNameError, false)
 		return
 	}

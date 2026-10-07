@@ -223,6 +223,31 @@ func TestServerErrorRepliesCarryOwnOPTRecord(t *testing.T) {
 	}
 }
 
+// The server is the delegated nameserver of its domain, so the zone apex
+// exists: it must get an authoritative answer without data, like any name in
+// the zone, not the NXDOMAIN of a name outside it. NXDOMAIN at the apex would
+// deny the whole zone below it (RFC 8020) and tells one probe apart from an
+// authoritative server.
+func TestServerAnswersZoneApexAuthoritatively(t *testing.T) {
+	server := startTestServer(t)
+	for _, query := range []dnsmessage.Message{
+		testQuery("t.example.com.", dnsmessage.TypeSOA),
+		testQuery("t.example.com.", dnsmessage.TypeNS),
+		testQuery("T.Example.COM.", dnsmessage.TypeTXT),
+		testQuery("t.example.com.", dnsmessage.TypeA),
+		testQuery("probe.t.example.com.", dnsmessage.TypeMX),
+	} {
+		reply, err := exchange(t, server, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := query.Questions[0]
+		if reply.Header.RCode != dnsmessage.RCodeSuccess || !reply.Header.Authoritative || len(reply.Answers) != 0 {
+			t.Errorf("%s %v: reply %+v with %d answers, want an authoritative NOERROR without data", q.Name, q.Type, reply.Header, len(reply.Answers))
+		}
+	}
+}
+
 // An authoritative server answers every query. A burst of queries for names
 // outside the tunnel domain must get every NXDOMAIN, not a few: silently
 // dropped replies leave resolvers timing out and set the server apart.
