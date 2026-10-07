@@ -225,10 +225,11 @@ func serverSettings(t *testing.T, addr string) map[http2.SettingID]uint32 {
 func TestFlowListenerGovernsTLSHTTP2(t *testing.T) {
 	stock := serverSettings(t, listenGovernedXH(t, false, false, func(c stat.Connection) { c.Close() }))
 	governed := serverSettings(t, listenGovernedXH(t, true, false, func(c stat.Connection) { c.Close() }))
-	if stock[http2.SettingMaxFrameSize] == h2MinMaxFrameSize || stock[http2.SettingInitialWindowSize] == h2InitWindow {
+	// Since the server shows Go's initial window, only the frame size tells.
+	if stock[http2.SettingMaxFrameSize] == h2MinMaxFrameSize {
 		t.Fatalf("stock server already advertises the governor's values: %v", stock)
 	}
-	if governed[http2.SettingMaxFrameSize] != h2MinMaxFrameSize || governed[http2.SettingInitialWindowSize] != h2InitWindow {
+	if governed[http2.SettingMaxFrameSize] != h2MinMaxFrameSize || governed[http2.SettingInitialWindowSize] != flowShownUp {
 		t.Fatalf("governed server advertises %v, want the governor's frame size and initial window", governed)
 	}
 }
@@ -381,7 +382,7 @@ func TestFlowListenerGovernsTLSHTTP2AfterPreface(t *testing.T) {
 	stock := read(listenGovernedXH(t, false, false, func(c stat.Connection) { c.Close() }))
 	governed := read(listenGovernedXH(t, true, false, func(c stat.Connection) { c.Close() }))
 	t.Logf("stock %v, governed %v", stock, governed)
-	if governed[http2.SettingMaxFrameSize] != h2MinMaxFrameSize || governed[http2.SettingInitialWindowSize] != h2InitWindow {
+	if governed[http2.SettingMaxFrameSize] != h2MinMaxFrameSize || governed[http2.SettingInitialWindowSize] != flowShownUp {
 		t.Fatalf("governed server advertises %v, want the governor's frame size and initial window", governed)
 	}
 }
