@@ -158,9 +158,16 @@ var (
 	// tagsFlagEndingLine finds a `-tags` flag whose value is not on the same
 	// line, which this scan cannot read.
 	tagsFlagEndingLine = regexp.MustCompile("(?:^|[\\s`\"'(=:])-tags\\s*\\\\?\\s*$")
+	// goTagsFlag starts a Go string literal, interpreted or raw, that opens
+	// with the flag.
+	goTagsFlag = regexp.MustCompile("[\"`]-tags")
 	// goTagsArgument reads an exec argument list: "-tags=VALUE" or "-tags", "VALUE",
-	// and a literal that holds a whole flag: "-tags VALUE".
-	goTagsArgument = regexp.MustCompile(`^"-tags(?:=([^"]*)"|\s+([^"]*)"|"\s*,\s*"([^"]*)")`)
+	// and a literal that holds a whole flag: "-tags VALUE". Either literal may
+	// be a raw string.
+	goTagsArgument = regexp.MustCompile("^[\"`]-tags(?:=([^\"`]*)[\"`]|\\s+([^\"`]*)[\"`]|[\"`]\\s*,\\s*[\"`]([^\"`]*)[\"`])")
+	// goRawTagsInArguments is a raw-string flag followed by another argument.
+	// Any other unreadable raw `-tags` is prose in a comment.
+	goRawTagsInArguments = regexp.MustCompile("^`-tags`\\s*,")
 )
 
 // findTagsWithoutHTTP2Legacy returns the lines of one file that pass a tag
@@ -181,16 +188,13 @@ func findTagsWithoutHTTP2Legacy(path, content string) []tagsHit {
 		}
 	}
 	if strings.HasSuffix(path, ".go") {
-		const argument = `"-tags`
-		for offset := 0; ; {
-			found := strings.Index(content[offset:], argument)
-			if found < 0 {
-				break
-			}
-			start := offset + found
-			offset = start + len(argument)
+		for _, location := range goTagsFlag.FindAllStringIndex(content, -1) {
+			start := location[0]
 			match := goTagsArgument.FindStringSubmatch(content[start:])
-			if match == nil || !listsHTTP2Legacy(match[1]+match[2]+match[3]) {
+			switch {
+			case match != nil && listsHTTP2Legacy(match[1]+match[2]+match[3]):
+			case match == nil && content[start] == '`' && !goRawTagsInArguments.MatchString(content[start:]):
+			default:
 				flagged[1+strings.Count(content[:start], "\n")] = true
 			}
 		}
@@ -247,6 +251,13 @@ func TestFindTagsWithoutHTTP2Legacy(t *testing.T) {
 		{"go exec joined argument without tag", "x.go", `exec.Command("go", "build", "-tags=with_utls", "./x")`, []int{1}},
 		{"go exec non-literal value", "x.go", `exec.Command("go", "build", "-tags", tags, "./x")`, []int{1}},
 		{"go exec joined argument with tag", "x.go", `exec.Command("go", "build", "-tags=http2legacy", "./x")`, nil},
+		{"go exec raw-string arguments without tag", "x.go", "exec.Command(\"go\", \"build\", `-tags`, `integration`, \"./x\")", []int{1}},
+		{"go exec raw-string arguments with tag", "x.go", "exec.Command(\"go\", \"build\", `-tags`, `integration http2legacy`, \"./x\")", nil},
+		{"go exec raw-string flag and quoted value without tag", "x.go", "exec.Command(\"go\", \"build\", `-tags`, \"integration\", \"./x\")", []int{1}},
+		{"go exec quoted flag and raw-string value with tag", "x.go", "exec.Command(\"go\", \"build\", \"-tags\", `integration http2legacy`, \"./x\")", nil},
+		{"go raw-string literal holding flag and value without tag", "x.go", "{`-tags integration`, \"\", false},", []int{1}},
+		{"go exec raw-string flag with non-literal value", "x.go", "exec.Command(\"go\", \"build\", `-tags`, tags, \"./x\")", []int{1}},
+		{"go comment naming the flag", "x.go", "// An explicit `-tags` flag replaces the tags in GOFLAGS.", nil},
 		{"go literal holding flag and value with tag", "x.go", `{"-tags http2legacy", "", false},`, nil},
 		{"go literal holding flag and value without tag", "x.go", `{"-tags integration", "", false},`, []int{1}},
 		{"go argument form is not read outside go files", "doc.md", `"-tags", "coverage"`, nil},
