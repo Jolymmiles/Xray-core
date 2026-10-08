@@ -35,8 +35,8 @@ for asset in geoip.dat geosite.dat; do
 	from="$main/resources/$asset"
 	to="$root/resources/$asset"
 	# The main checkout itself, or a link from an earlier run; --copy replaces
-	# such a link with a copy.
-	if [[ "$from" -ef "$to" ]] && [[ "$mode" == link || ! -L "$to" ]]; then
+	# such a link with a copy. An empty file is missing data, not in place.
+	if [[ "$from" -ef "$to" && -s "$to" ]] && [[ "$mode" == link || ! -L "$to" ]]; then
 		echo "ok      $asset (already in place)"
 		continue
 	fi

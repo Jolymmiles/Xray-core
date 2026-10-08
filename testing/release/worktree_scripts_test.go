@@ -42,6 +42,27 @@ func TestSetupWorktreeFailsWithoutAnyGeodata(t *testing.T) {
 	}
 }
 
+// Empty geodata is missing geodata, also when the script runs in the main
+// checkout itself or the worktree links to an emptied main file.
+func TestSetupWorktreeRejectsEmptyGeodata(t *testing.T) {
+	scratch := newScratchWorktree(t)
+	for _, asset := range geodataAssets {
+		writeScratchFile(t, filepath.Join(scratch.main, "resources", asset), "main geodata", 0o644)
+	}
+	if output, err := scratch.runFrom(t, scratch.worktree, "testing/setup-worktree.sh"); err != nil {
+		t.Fatalf("setup-worktree.sh: %v\n%s", err, output)
+	}
+	for _, asset := range geodataAssets {
+		writeScratchFile(t, filepath.Join(scratch.main, "resources", asset), "", 0o644)
+	}
+	for _, directory := range []string{scratch.main, scratch.worktree} {
+		output, err := scratch.runFrom(t, directory, "testing/setup-worktree.sh")
+		if code := scriptExitCode(t, err); code != 1 || strings.Count(output, "missing ") != 2 {
+			t.Errorf("setup-worktree.sh in %s with empty geodata: exit code %d, want 1 and two missing files:\n%s", directory, code, output)
+		}
+	}
+}
+
 // After a linking run, --copy turns the links into copies. A link left in
 // place loses the data when the main checkout's file goes away.
 func TestSetupWorktreeCopyReplacesExistingLinks(t *testing.T) {
@@ -159,8 +180,14 @@ func newScratchWorktree(t *testing.T) scratchWorktree {
 // returns its combined output. A non-zero exit is returned as the error.
 func (scratch scratchWorktree) run(t *testing.T, script string, args ...string) (string, error) {
 	t.Helper()
+	return scratch.runFrom(t, scratch.worktree, script, args...)
+}
+
+// runFrom is run from directory, the scratch main checkout or worktree.
+func (scratch scratchWorktree) runFrom(t *testing.T, directory, script string, args ...string) (string, error) {
+	t.Helper()
 	command := exec.Command("bash", append([]string{script}, args...)...)
-	command.Dir = scratch.worktree
+	command.Dir = directory
 	command.Env = append(scratch.env, "GATES_LOG_DIR="+scratch.logDir)
 	output, err := command.CombinedOutput()
 	return string(output), err
