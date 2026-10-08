@@ -38,9 +38,9 @@ var (
 	errConflictingCrypto = errors.New("CRYPTO frames carry different data at the same offset")
 )
 
-// cryptoStreamCap bounds the CRYPTO stream offsets SniffQUIC keeps. A
-// ClientHello is far smaller.
-const cryptoStreamCap = 32768
+// cryptoStreamCap bounds the CRYPTO stream offsets SniffQUIC keeps. The
+// stream starts with the ClientHello, which the TLS sniffer bounds the same.
+const cryptoStreamCap = ptls.MaxClientHelloLength
 
 // receivedBytes records which bytes of the CRYPTO stream have arrived.
 type receivedBytes [cryptoStreamCap / 8]byte
@@ -287,14 +287,11 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		// it has arrived; bytes still missing must never be read.
 		receivedLen = received.prefix(receivedLen, cryptoLen)
 		stream := cryptoDataBuf.BytesTo(receivedLen)
-		if len(stream) < 4 {
+		helloLen, ok := ptls.HandshakeMessageLength(stream)
+		if !ok {
 			continue
 		}
-		if stream[0] != 1 {
-			return nil, errNotClientHello
-		}
-		helloLen := 4 + (int(stream[1])<<16 | int(stream[2])<<8 | int(stream[3]))
-		if helloLen > cryptoStreamCap {
+		if stream[0] != 1 || helloLen > cryptoStreamCap {
 			return nil, errNotClientHello
 		}
 		if len(stream) < helloLen {

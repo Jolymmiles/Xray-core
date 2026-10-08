@@ -187,7 +187,7 @@ func SniffTLS(b []byte) (*SniffHeader, error) {
 	}
 
 	hello := b[5 : 5+headerLen]
-	if length, ok := handshakeMessageLength(hello); !ok || length > len(hello) {
+	if length, ok := HandshakeMessageLength(hello); !ok || length > len(hello) {
 		var err error
 		if hello, err = reassembleClientHello(b); err != nil {
 			return nil, err
@@ -200,13 +200,13 @@ func SniffTLS(b []byte) (*SniffHeader, error) {
 	return nil, err
 }
 
-// maxClientHelloLength bounds the ClientHello reassembled from records. The
-// dispatcher caches less than this of a connection.
-const maxClientHelloLength = 32 * 1024
+// MaxClientHelloLength bounds the ClientHello the TLS and QUIC sniffers
+// reassemble. The dispatcher caches less than this of a connection.
+const MaxClientHelloLength = 32 * 1024
 
-// handshakeMessageLength returns the length, header included, of the
+// HandshakeMessageLength returns the length, header included, of the
 // handshake message at the start of b, once its 4-byte header is there.
-func handshakeMessageLength(b []byte) (int, bool) {
+func HandshakeMessageLength(b []byte) (int, bool) {
 	if len(b) < 4 {
 		return 0, false
 	}
@@ -233,8 +233,8 @@ func reassembleClientHello(b []byte) ([]byte, error) {
 		}
 		message = append(message, b[5:5+recordLen]...)
 		b = b[5+recordLen:]
-		if length, ok := handshakeMessageLength(message); ok {
-			if message[0] != 0x01 /* client_hello */ || length > maxClientHelloLength {
+		if length, ok := HandshakeMessageLength(message); ok {
+			if message[0] != 0x01 /* client_hello */ || length > MaxClientHelloLength {
 				return nil, errNotClientHello
 			}
 			if len(message) >= length {
