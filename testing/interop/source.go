@@ -15,51 +15,75 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
-// SourceDir returns the directory holding the Go module of the peer called
-// name (the directory name, such as "sing-box" or "mihomo"). repoRoot is the
-// root of the Xray checkout the test runs from. environment is the variable
-// that overrides the build with a prebuilt binary; it only appears in the
-// error message, the caller applies the override before calling SourceDir.
+// Peer is a client that the interop tests build from its source checkout.
+type Peer struct {
+	Name        string // directory name of the checkout
+	Module      string // module path its go.mod declares
+	Environment string // variable naming a prebuilt binary that replaces the build
+}
+
+// The client peers of the process interoperability tests.
+var (
+	SingBox = Peer{Name: "sing-box", Module: "github.com/sagernet/sing-box", Environment: "SING_BOX_E2E_BIN"}
+	Mihomo  = Peer{Name: "mihomo", Module: "github.com/metacubex/mihomo", Environment: "MIHOMO_E2E_BIN"}
+)
+
+// SourceDir returns the checkout of peer that the tests of the Xray checkout
+// at repoRoot build. The caller applies peer.Environment before calling it;
+// the variable only appears in the error message.
 //
-// Candidates are tried in this order, and the first directory that contains a
-// go.mod wins:
+// A candidate is a directory named peer.Name whose go.mod declares
+// peer.Module. Candidates are tried in this order, and the first one wins:
 //
 //  1. a sibling of repoRoot,
-//  2. a sibling of repoRoot's parent,
-//  3. a sibling of the main checkout (the parent of the git common directory),
+//  2. a sibling of the main checkout (the parent of the git common directory),
+//  3. a sibling of repoRoot's parent,
 //  4. a sibling of the main checkout's parent.
 //
-// Candidates 3 and 4 only exist when git can name the main checkout. If no
-// candidate qualifies, the error lists every path tried.
-func SourceDir(repoRoot, name, environment string) (string, error) {
+// The direct siblings come first, so a worktree in a shared directory such as
+// /tmp does not pick up whatever checkout sits beside that directory before the
+// peer beside the main checkout. Candidates 2 and 4 only exist when git can
+// name the main checkout. If no candidate qualifies, the error lists every
+// path tried and why it was skipped.
+func SourceDir(repoRoot string, peer Peer) (string, error) {
 	mainRoot, mainErr := mainCheckout(repoRoot)
-	candidates := sourceCandidates(repoRoot, mainRoot, name)
+	candidates := sourceCandidates(repoRoot, mainRoot, peer.Name)
+	skipped := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		if isGoModule(candidate) {
+		module, err := modulePath(candidate)
+		switch {
+		case err != nil:
+			skipped = append(skipped, fmt.Sprintf("%s: %v", candidate, err))
+		case module != peer.Module:
+			skipped = append(skipped, fmt.Sprintf("%s: module %s, want %s", candidate, module, peer.Module))
+		default:
 			return candidate, nil
 		}
 	}
-	return "", notFoundError(name, environment, candidates, mainErr)
+	return "", notFoundError(peer, skipped, mainErr)
 }
 
 // sourceCandidates lists the directories SourceDir tries, in order and
 // without duplicates. mainRoot is empty when the main checkout is unknown.
 func sourceCandidates(repoRoot, mainRoot, name string) []string {
-	var roots []string
+	var parents, grandparents []string
 	for _, root := range []string{repoRoot, mainRoot} {
 		if root == "" {
 			continue
 		}
 		parent := filepath.Dir(root)
-		roots = append(roots, parent, filepath.Dir(parent))
+		parents = append(parents, parent)
+		grandparents = append(grandparents, filepath.Dir(parent))
 	}
 	var candidates []string
 	seen := make(map[string]bool)
-	for _, root := range roots {
+	for _, root := range append(parents, grandparents...) {
 		candidate := filepath.Join(root, name)
 		if !seen[candidate] {
 			seen[candidate] = true
@@ -119,21 +143,44 @@ func withoutRepositoryVariables(environment []string) []string {
 	return kept
 }
 
-func isGoModule(directory string) bool {
-	info, err := os.Stat(filepath.Join(directory, "go.mod"))
-	return err == nil && info.Mode().IsRegular()
+// moduleDirective reads the module path of a go.mod, quoted or not.
+var moduleDirective = regexp.MustCompile("(?m)^[ \\t]*module[ \\t]+(\"[^\"\\n]*\"|`[^`\\n]*`|[^\\s/]\\S*)")
+
+// modulePath returns the module path the go.mod in directory declares.
+func modulePath(directory string) (string, error) {
+	path := filepath.Join(directory, "go.mod")
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", errors.New("no go.mod")
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("go.mod is not a regular file")
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read go.mod: %w", err)
+	}
+	match := moduleDirective.FindSubmatch(content)
+	if match == nil {
+		return "", errors.New("go.mod declares no module")
+	}
+	module := string(match[1])
+	if unquoted, err := strconv.Unquote(module); err == nil {
+		module = unquoted
+	}
+	return module, nil
 }
 
-func notFoundError(name, environment string, candidates []string, mainErr error) error {
+func notFoundError(peer Peer, skipped []string, mainErr error) error {
 	var message strings.Builder
-	fmt.Fprintf(&message, "%s source not found (no directory with a go.mod at any of these paths):\n", name)
-	for _, candidate := range candidates {
-		fmt.Fprintf(&message, "  %s\n", candidate)
+	fmt.Fprintf(&message, "%s source not found (no directory whose go.mod declares %s):\n", peer.Name, peer.Module)
+	for _, reason := range skipped {
+		fmt.Fprintf(&message, "  %s\n", reason)
 	}
 	if mainErr != nil {
 		fmt.Fprintf(&message, "main checkout lookup failed: %v\n", mainErr)
 	}
-	fmt.Fprintf(&message, "Clone %s to one of those paths, or set %s to a prebuilt %s binary", name, environment, name)
+	fmt.Fprintf(&message, "Clone %s to one of those paths, or set %s to a prebuilt %s binary", peer.Name, peer.Environment, peer.Name)
 	message.WriteString(" (XRAY_E2E_BIN, SING_BOX_E2E_BIN and MIHOMO_E2E_BIN each replace one build).")
 	return errors.New(message.String())
 }

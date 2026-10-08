@@ -323,7 +323,7 @@ func buildMKCPMihomoE2EBinary(t *testing.T, workDir string) string {
 		return existing
 	}
 
-	repository, err := interop.SourceDir(mkcpRepositoryRoot(t), "mihomo", "MIHOMO_E2E_BIN")
+	repository, err := interop.SourceDir(mkcpRepositoryRoot(t), interop.Mihomo)
 	if err != nil {
 		t.Fatal(err)
 	}

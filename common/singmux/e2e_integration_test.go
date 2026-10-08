@@ -188,25 +188,25 @@ func buildE2EBinaries(t *testing.T, workDir string) e2eBinaries {
 	}
 	return e2eBinaries{
 		xray:    buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main"),
-		singBox: buildPeerE2EBinary(t, "SING_BOX_E2E_BIN", "sing-box", filepath.Join(workDir, "sing-box"), xrayRoot, "./cmd/sing-box", "-tags=with_utls,with_quic"),
-		mihomo:  buildPeerE2EBinary(t, "MIHOMO_E2E_BIN", "mihomo", filepath.Join(workDir, "mihomo"), xrayRoot, "."),
+		singBox: buildPeerE2EBinary(t, interop.SingBox, filepath.Join(workDir, "sing-box"), xrayRoot, "./cmd/sing-box", "-tags=with_utls,with_quic"),
+		mihomo:  buildPeerE2EBinary(t, interop.Mihomo, filepath.Join(workDir, "mihomo"), xrayRoot, "."),
 	}
 }
 
 // buildPeerE2EBinary builds a client peer from its source tree, which
 // interop.SourceDir finds next to this checkout or next to the main checkout
-// when the tests run from a linked worktree. The environment variable names a
-// prebuilt binary that replaces the build and the source lookup.
-func buildPeerE2EBinary(t testing.TB, environment, peer, output, xrayRoot, target string, buildOptions ...string) string {
+// when the tests run from a linked worktree. peer.Environment names a prebuilt
+// binary that replaces the build and the source lookup.
+func buildPeerE2EBinary(t testing.TB, peer interop.Peer, output, xrayRoot, target string, buildOptions ...string) string {
 	t.Helper()
-	if existing := os.Getenv(environment); existing != "" {
+	if existing := os.Getenv(peer.Environment); existing != "" {
 		return existing
 	}
-	directory, err := interop.SourceDir(xrayRoot, peer, environment)
+	directory, err := interop.SourceDir(xrayRoot, peer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return buildE2EBinary(t, environment, output, directory, target, buildOptions...)
+	return buildE2EBinary(t, peer.Environment, output, directory, target, buildOptions...)
 }
 
 func buildE2EBinary(t testing.TB, environment, output, directory, target string, buildOptions ...string) string {

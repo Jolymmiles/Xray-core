@@ -16,7 +16,7 @@ func TestSourceCandidatesOrderAndDeduplication(t *testing.T) {
 		want               []string
 	}{
 		{"no main checkout", "/dev/Xray-core", "", []string{"/dev/sing-box", "/sing-box"}},
-		{"linked worktree", "/tmp/wt/deep/Xray-core", "/dev/Xray-core", []string{"/tmp/wt/deep/sing-box", "/tmp/wt/sing-box", "/dev/sing-box", "/sing-box"}},
+		{"linked worktree", "/tmp/wt/deep/Xray-core", "/dev/Xray-core", []string{"/tmp/wt/deep/sing-box", "/dev/sing-box", "/tmp/wt/sing-box", "/sing-box"}},
 		{"main checkout is the repo", "/dev/Xray-core", "/dev/Xray-core", []string{"/dev/sing-box", "/sing-box"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -36,10 +36,10 @@ func TestSourceDirFindsMainCheckoutSiblingFromLinkedWorktree(t *testing.T) {
 	root := hermeticGit(t)
 	mainCheckout, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "elsewhere", "deep", "worktree"))
 	peer := filepath.Join(root, "dev", "mihomo")
-	writeModule(t, peer)
+	writeModule(t, peer, Mihomo.Module)
 
 	for _, from := range []string{worktree, mainCheckout} {
-		got, err := SourceDir(from, "mihomo", "MIHOMO_E2E_BIN")
+		got, err := SourceDir(from, Mihomo)
 		if err != nil {
 			t.Fatalf("from %s: %v", from, err)
 		}
@@ -53,14 +53,46 @@ func TestSourceDirIgnoresInheritedRepositoryVariables(t *testing.T) {
 	root := hermeticGit(t)
 	_, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "elsewhere", "deep", "worktree"))
 	peer := filepath.Join(root, "dev", "mihomo")
-	writeModule(t, peer)
+	writeModule(t, peer, Mihomo.Module)
 	other := filepath.Join(root, "other", "repo")
 	mustMkdir(t, other)
 	git(t, other, "init", "--quiet")
 	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
 	t.Setenv("GIT_WORK_TREE", other)
 
-	got, err := SourceDir(worktree, "mihomo", "MIHOMO_E2E_BIN")
+	got, err := SourceDir(worktree, Mihomo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameDir(t, got, peer)
+}
+
+// A worktree under a shared directory such as /tmp must not pick up whatever
+// checkout sits beside that directory before the peer beside the main
+// checkout.
+func TestSourceDirPrefersMainCheckoutPeerOverWorktreeAncestor(t *testing.T) {
+	root := hermeticGit(t)
+	_, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "tmp", "review", "pr1"))
+	writeModule(t, filepath.Join(root, "tmp", "sing-box"), SingBox.Module)
+	peer := filepath.Join(root, "dev", "sing-box")
+	writeModule(t, peer, SingBox.Module)
+
+	got, err := SourceDir(worktree, SingBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameDir(t, got, peer)
+}
+
+// A directory with the peer's name but another module is not the peer.
+func TestSourceDirSkipsAForeignModule(t *testing.T) {
+	root := hermeticGit(t)
+	_, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "wt", "Xray-core"))
+	writeModule(t, filepath.Join(root, "wt", "mihomo"), "example.invalid/not-mihomo")
+	peer := filepath.Join(root, "dev", "mihomo")
+	writeModule(t, peer, Mihomo.Module)
+
+	got, err := SourceDir(worktree, Mihomo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +102,11 @@ func TestSourceDirIgnoresInheritedRepositoryVariables(t *testing.T) {
 func TestSourceDirPrefersTheWorktreesOwnNeighbour(t *testing.T) {
 	root := hermeticGit(t)
 	_, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "wt", "Xray-core"))
-	writeModule(t, filepath.Join(root, "dev", "sing-box"))
+	writeModule(t, filepath.Join(root, "dev", "sing-box"), SingBox.Module)
 	local := filepath.Join(root, "wt", "sing-box")
-	writeModule(t, local)
+	writeModule(t, local, SingBox.Module)
 
-	got, err := SourceDir(worktree, "sing-box", "SING_BOX_E2E_BIN")
+	got, err := SourceDir(worktree, SingBox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +119,9 @@ func TestSourceDirSkipsDirectoriesWithoutGoModule(t *testing.T) {
 	mustMkdir(t, repo)
 	mustMkdir(t, filepath.Join(root, "dev", "mihomo"))
 	real := filepath.Join(root, "mihomo")
-	writeModule(t, real)
+	writeModule(t, real, Mihomo.Module)
 
-	got, err := SourceDir(repo, "mihomo", "MIHOMO_E2E_BIN")
+	got, err := SourceDir(repo, Mihomo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +132,9 @@ func TestSourceDirNotFoundNamesEnvironmentAndEveryPathTried(t *testing.T) {
 	root := hermeticGit(t)
 	repo := filepath.Join(root, "dev", "Xray-core")
 	mustMkdir(t, repo)
+	writeModule(t, filepath.Join(root, "sing-box"), "example.invalid/not-sing-box")
 
-	_, err := SourceDir(repo, "sing-box", "SING_BOX_E2E_BIN")
+	_, err := SourceDir(repo, SingBox)
 	if err == nil {
 		t.Fatal("SourceDir succeeded without any sing-box source")
 	}
@@ -111,7 +144,7 @@ func TestSourceDirNotFoundNamesEnvironmentAndEveryPathTried(t *testing.T) {
 		"MIHOMO_E2E_BIN",
 		"XRAY_E2E_BIN",
 		filepath.Join(root, "dev", "sing-box"),
-		filepath.Join(root, "sing-box"),
+		filepath.Join(root, "sing-box") + ": module example.invalid/not-sing-box, want github.com/sagernet/sing-box",
 		"main checkout lookup failed",
 	} {
 		if !strings.Contains(message, want) {
@@ -166,10 +199,10 @@ func mustMkdir(t *testing.T, directory string) {
 	}
 }
 
-func writeModule(t *testing.T, directory string) {
+func writeModule(t *testing.T, directory, module string) {
 	t.Helper()
 	mustMkdir(t, directory)
-	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte("module example.invalid/peer\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte("module "+module+"\n\ngo 1.24\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

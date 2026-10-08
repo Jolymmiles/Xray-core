@@ -355,14 +355,15 @@ record diagnostics only and cannot satisfy the release gate.
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
 
 Without those variables the harness builds the sing-box and Mihomo clients from
-source. `testing/interop` looks for a `sing-box` or `mihomo` directory with a
-`go.mod` next to the checkout, next to its parent, and then the same two places
-around the main checkout (found through `git rev-parse --git-common-dir`), so a
-linked worktree anywhere on disk needs no variables when the main checkout has
-the peers beside it. If nothing is found, the failure lists every path tried and
-the variables to set. Run `testing/setup-worktree.sh` in a fresh worktree to
-link the gitignored `resources/geo{ip,site}.dat` the `infra/conf` tests read,
-and `testing/gates.sh <tier>` to run the tiers in this document and in
+source. `testing/interop` looks for a `sing-box` or `mihomo` directory whose
+`go.mod` declares the client's module: next to the checkout, next to the main
+checkout (found through `git rev-parse --git-common-dir`), and then next to
+the parents of both. A linked worktree anywhere on disk therefore needs no
+variables when the main checkout has the peers beside it. If nothing is found,
+the failure lists every path tried, why it was skipped, and the variables to
+set. Run `testing/setup-worktree.sh` in a fresh worktree to link the
+gitignored `resources/geo{ip,site}.dat` the `infra/conf` tests read, and
+`testing/gates.sh <tier>` to run the tiers in this document and in
 `AGENTS.md` with the release tags, explicit timeouts and one log per tier.
 
 On Linux, the mux interoperability client's shared TCP/UDP listener port is
