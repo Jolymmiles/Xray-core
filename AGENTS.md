@@ -90,6 +90,8 @@ gain a permanent regression test before the fix.
   only the files it reports that you changed. It skips `third_party/`, whose
   vendored modules keep their upstream bytes; only the fork-owned files listed
   in a module's `FORK.md` follow this rule.
+- Use descriptive names, early returns, narrow helpers, and the simplest
+  implementation that preserves the protocol.
 - Add context to errors at subsystem boundaries. Never swallow an error that
   affects connection correctness, cleanup, or test evidence.
 - Make connection, listener, buffer, timer, goroutine, and process ownership

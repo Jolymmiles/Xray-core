@@ -39,7 +39,9 @@ Append one line per finding: `DISPOSITION R<r>-<n>: fixed in <sha> | rejected: <
 
 ## Writing to the PR
 
-Orchestrator only. `gh pr edit` fails on the Projects (classic) deprecation; patch through the API (syntax from `gh api --help`, not run during authoring):
+Orchestrator only. A review or comment posted on GitHub carries the findings, each with the reproduction needed to act on it: a failing input, a negative control, a benchmark table behind a request. The list of gates you re-ran goes in the report to the maintainer, never in the PR (maintainer decision 2026-10-07).
+
+`gh pr edit` fails on the Projects (classic) deprecation; patch through the API (syntax from `gh api --help`, not run during authoring):
 
 ```sh
 gh api -X PATCH repos/Jolymmiles/Xray-core/pulls/<N> -F body=@/tmp/review/pr<N>-body.md

@@ -25,7 +25,7 @@ mkdir -p /tmp/review/pr<N>-<HEAD7>/resources
 cp "$MAIN"/resources/geo{ip,site}.dat /tmp/review/pr<N>-<HEAD7>/resources/
 ```
 
-`geoip.dat`/`geosite.dat` are gitignored; without them `infra/conf` tests panic. Fetching by SHA also works for fork PR heads.
+`geoip.dat`/`geosite.dat` are gitignored; without them `infra/conf` tests panic. They are copied, not set up with `testing/setup-worktree.sh`, because a PR head may predate that script. Fetching by SHA also works for fork PR heads.
 
 Each Bash call restarts in the original directory, so write `cd /tmp/review/pr<N>-<HEAD7> && export GOFLAGS=-tags=http2legacy && ...` every time; a bare command runs in the live checkout.
 
@@ -87,7 +87,7 @@ Pointers only; the commands live in the cited places. Always `export GOFLAGS=-ta
 | any Go change | `go run ./infra/vformat/main.go -mode check -pwd ./`; `go vet` on changed packages; `-race` when goroutines, pools or locks change; `-gcflags=all=-d=checkptr=2` when `unsafe` or reflection changes; `git diff --check <BASE>...<HEAD> -- . ':!third_party'` |
 | docs only | every cited path exists (`git ls-files`) and every cited command runs |
 
-Process matrices need the sing-box and Mihomo clients. Export `SING_BOX_E2E_BIN` and `MIHOMO_E2E_BIN` (and `XRAY_E2E_BIN` for a prebuilt Xray); they override source discovery in `buildE2EBinaries` (`common/singmux/e2e_integration_test.go`). Prebuilt copies may sit in `/tmp/xray-merge/bin/{sing-box,mihomo}`, sources in `/work/ai-projects/{sing-box,mihomo}`. A matrix that did not run is `NOT RUN` and a blocker, never a skip or a pass.
+Process matrices need the sing-box and Mihomo clients. A head that contains `testing/interop` builds them from sources beside the checkout or beside the main checkout, so the pinned worktree needs no variables. An older head looks only beside the pinned worktree and fails there: build both clients from `$(dirname "$MAIN")/sing-box` and `$(dirname "$MAIN")/mihomo` the way `buildE2EBinaries` (`common/singmux/e2e_integration_test.go`) builds them, and export `SING_BOX_E2E_BIN` and `MIHOMO_E2E_BIN`. `XRAY_E2E_BIN` replaces the Xray build. A matrix that did not run is `NOT RUN` and a blocker, never a skip or a pass.
 
 ## Report
 
