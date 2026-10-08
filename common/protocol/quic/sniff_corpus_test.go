@@ -20,7 +20,7 @@ import (
 
 // readCorpus returns the first n datagrams of a capture in testdata; see
 // testdata/PROVENANCE.md.
-func readCorpus(t *testing.T, prefix string, n int) [][]byte {
+func readCorpus(t testing.TB, prefix string, n int) [][]byte {
 	t.Helper()
 	datagrams := make([][]byte, n)
 	for i := range datagrams {
@@ -191,11 +191,7 @@ func TestSniffQUICSkipsDatagramTails(t *testing.T) {
 // neither panic nor write to them.
 func FuzzSniffQUIC(f *testing.F) {
 	for _, prefix := range []string{"quic-chrome153", "quic-firefox153esr", "quic-curl8.14-openssl3.5"} {
-		for i := range 2 {
-			datagram, err := os.ReadFile(filepath.Join("testdata", prefix+"-"+strconv.Itoa(i)+".bin"))
-			if err != nil {
-				f.Fatal(err)
-			}
+		for _, datagram := range readCorpus(f, prefix, 2) {
 			f.Add(datagram)
 		}
 	}
@@ -212,15 +208,7 @@ func FuzzSniffQUIC(f *testing.F) {
 // fresh copy, as the dispatcher sniffs each flow once.
 func BenchmarkSniffQUIC(b *testing.B) {
 	read := func(prefix string, n int) []byte {
-		var flow []byte
-		for i := range n {
-			datagram, err := os.ReadFile(filepath.Join("testdata", prefix+"-"+strconv.Itoa(i)+".bin"))
-			if err != nil {
-				b.Fatal(err)
-			}
-			flow = append(flow, datagram...)
-		}
-		return flow
+		return bytes.Join(readCorpus(b, prefix, n), nil)
 	}
 	for _, bench := range []struct {
 		name string

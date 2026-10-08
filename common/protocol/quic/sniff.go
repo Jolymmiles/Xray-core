@@ -152,44 +152,45 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	packetBuf := buf.NewWithSize(int32(len(b)))
 	defer packetBuf.Release()
 
-	// The connection sniffed is the one of the first Initial packet, which
-	// must decrypt or the flow is rejected. A flow can carry Initial packets
-	// of other connections after it, which are skipped.
-	var conn *initialKeys
+	// sniffed holds the Initial keys of the connection sniffed: the one of
+	// the first Initial packet, which must decrypt or the flow is rejected. A
+	// flow can carry Initial packets of other connections after it, which are
+	// skipped.
+	var sniffed *initialKeys
 
 	// Parse QUIC packets
 	for len(b) > 0 {
 		hdr, err := parseLongHeader(b)
 		if err != nil {
-			if conn == nil {
+			if sniffed == nil {
 				return nil, err
 			}
 			// What follows the last packet of a datagram is not a packet: Firefox
 			// pads with zeros there. b keeps no datagram boundaries, so resume
 			// at the next Initial packet of the connection.
-			if b = conn.nextInitial(b); b == nil {
+			if b = sniffed.nextInitial(b); b == nil {
 				break
 			}
 			continue
 		}
 		packet := b[:hdr.pnOffset+hdr.packetLen]
 		b = b[len(packet):]
-		if !hdr.initial || conn != nil && !conn.protects(hdr) { // Only Initial packets of the connection carry its ClientHello
+		if !hdr.initial || sniffed != nil && !sniffed.protects(hdr) { // Only Initial packets of the connection carry its ClientHello
 			continue
 		}
 
-		keys := conn
+		keys := sniffed
 		if keys == nil {
 			keys = newInitialKeys(hdr.spec, hdr.destConnID)
 		}
 		decrypted, err := keys.open(packet, hdr.pnOffset, packetBuf)
 		if err != nil {
-			if conn == nil {
+			if sniffed == nil {
 				return nil, err
 			}
 			continue
 		}
-		conn = keys
+		sniffed = keys
 
 		buffer := buf.FromBytes(decrypted)
 		for !buffer.IsEmpty() {
