@@ -22,7 +22,8 @@
 
 # Local AI/agent state
 /.agents/
-/.claude/
+/.claude/*
+!/.claude/skills/
 /.codex/
 /.factory/
 /.pi/
