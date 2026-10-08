@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"fmt"
+	stdnet "net"
 	"testing"
 	"time"
 
@@ -13,7 +14,9 @@ import (
 
 // TestVLESSOverKCPOverXDNS runs a real Xray client and server with the xdns
 // UDP mask under mKCP. The client reaches the server only through DNS queries
-// sent to the resolver address, here the server itself. From TaiLerV's
+// sent to the resolver address, here the server itself. The VLESS address is
+// a socket that never answers, so the traffic gets through only if xdns
+// carries it, and nothing may reach that socket. From TaiLerV's
 // sync/upstream-2026-10-02 branch (df84824f), adapted to the names/addrs
 // schema.
 func TestVLESSOverKCPOverXDNS(t *testing.T) {
@@ -21,6 +24,9 @@ func TestVLESSOverKCPOverXDNS(t *testing.T) {
 	dest, err := tcpServer.Start()
 	common.Must(err)
 	defer tcpServer.Close()
+	unanswered, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
+	common.Must(err)
+	defer unanswered.Close()
 
 	id := uuid.New().String()
 	serverPort := udp.PickPort()
@@ -54,7 +60,7 @@ func TestVLESSOverKCPOverXDNS(t *testing.T) {
 					"resolvers": [{"addrs": ["udp://127.0.0.1:%d"]}]
 				}}]}}
 		}]
-	}`, clientPort, dest.Port, serverPort, id, kcp, domain, serverPort))
+	}`, clientPort, dest.Port, unanswered.LocalAddr().(*stdnet.UDPAddr).Port, id, kcp, domain, serverPort))
 
 	servers, err := InitializeServerConfigs(serverConfig, clientConfig)
 	common.Must(err)
@@ -64,5 +70,9 @@ func TestVLESSOverKCPOverXDNS(t *testing.T) {
 		if err := testTCPConn(clientPort, 4096, 30*time.Second)(); err != nil {
 			t.Fatalf("connection %d through xdns: %v", i, err)
 		}
+	}
+	common.Must(unanswered.SetReadDeadline(time.Now().Add(100 * time.Millisecond)))
+	if n, _, err := unanswered.ReadFrom(make([]byte, 2048)); err == nil {
+		t.Fatalf("a %d-byte datagram reached the VLESS address around xdns", n)
 	}
 }
