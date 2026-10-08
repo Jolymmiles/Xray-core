@@ -38,15 +38,16 @@ for asset in geoip.dat geosite.dat; do
 		echo "ok      $asset (already in place)"
 		continue
 	fi
+	# Keep a worktree's own non-empty copy, even when the main checkout has
+	# none; replace anything else, including empty files and dangling or stale
+	# symlinks.
+	if [[ -s "$to" && ! -L "$to" ]]; then
+		echo "ok      $asset (kept the existing file)"
+		continue
+	fi
 	if [[ ! -s "$from" ]]; then
 		echo "missing $from; place the file there once, this script does not download it" >&2
 		failed=1
-		continue
-	fi
-	# Keep a worktree's own non-empty copy; replace anything else, including
-	# empty files and dangling or stale symlinks.
-	if [[ -s "$to" && ! -L "$to" ]]; then
-		echo "ok      $asset (kept the existing file)"
 		continue
 	fi
 	if [[ "$mode" == copy ]]; then

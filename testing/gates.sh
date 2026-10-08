@@ -35,17 +35,35 @@ if (($# == 0)); then
 	exit 2
 fi
 
+# Read the arguments first: help and a mistyped tier need no test setup.
+tiers=()
+for argument in "$@"; do
+	case "$argument" in
+	unit | vless | smux | xhttp | race) tiers+=("$argument") ;;
+	all) tiers+=(unit vless smux xhttp) ;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		echo "unknown tier: $argument" >&2
+		usage
+		exit 2
+		;;
+	esac
+done
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # An explicit tags flag on a go command replaces the tags in GOFLAGS, so every
 # command below that names its own tags lists http2legacy as well.
 export GOFLAGS=-tags=http2legacy
 
-log_dir="${GATES_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/xray-gates.XXXXXX")}"
-mkdir -p "$log_dir"
-
 # The geodata the infra/conf tests read is gitignored; a fresh worktree lacks it.
 testing/setup-worktree.sh >/dev/null
+
+log_dir="${GATES_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/xray-gates.XXXXXX")}"
+mkdir -p "$log_dir"
 
 tier_log=
 failed_steps=()
@@ -105,23 +123,6 @@ tier_race() {
 	race_smux
 	race_xhttp
 }
-
-tiers=()
-for argument in "$@"; do
-	case "$argument" in
-	unit | vless | smux | xhttp | race) tiers+=("$argument") ;;
-	all) tiers+=(unit vless smux xhttp) ;;
-	-h | --help)
-		usage
-		exit 0
-		;;
-	*)
-		echo "unknown tier: $argument" >&2
-		usage
-		exit 2
-		;;
-	esac
-done
 
 echo "logs: $log_dir"
 echo "GOFLAGS=$GOFLAGS"
