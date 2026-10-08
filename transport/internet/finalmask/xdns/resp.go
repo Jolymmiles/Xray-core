@@ -227,13 +227,22 @@ func (r *Resp) Encode(encoded []byte, data []byte) []byte {
 	return common.Must2(msg.AppendPack(encoded[:0]))
 }
 
+// Decode reassembles the payload carried by the response into decoded and
+// returns its length. The response comes from an unauthenticated peer, and name
+// compression lets a datagram decode to more bytes than it occupies, so the
+// payload is never allowed to outgrow cap(decoded): one that does not fit, like
+// a malformed one, yields 0.
 func (r *Resp) Decode(decoded []byte) int {
 	decoded = decoded[:0]
 	msg := r.msg
 	if msg.Questions[0].Type == dnsmessage.TypeTXT {
 		if len(msg.Answers) == 1 && r.domain.IsDomain(msg.Answers[0].Header.Name) && msg.Answers[0].Header.Type == dnsmessage.TypeTXT {
 			for i := range msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT {
-				decoded = append(decoded, msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT[i]...)
+				txt := msg.Answers[0].Body.(*dnsmessage.TXTResource).TXT[i]
+				if len(txt) > cap(decoded)-len(decoded) {
+					return 0
+				}
+				decoded = append(decoded, txt...)
 			}
 		}
 		return len(decoded)
@@ -261,6 +270,13 @@ func (r *Resp) Decode(decoded []byte) int {
 			return frags[i][0] < frags[j][0]
 		})
 		if len(frags) < 1 || len(frags[0]) < 2 || int(frags[0][1]) > len(frags) {
+			return 0
+		}
+		total := len(frags[0]) - 2
+		for i := 1; i < len(frags); i++ {
+			total += len(frags[i]) - 1
+		}
+		if total > cap(decoded) {
 			return 0
 		}
 		decoded = append(decoded, frags[0][2:]...)

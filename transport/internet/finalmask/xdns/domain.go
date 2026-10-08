@@ -79,10 +79,24 @@ type Domain struct {
 	lenMax int
 }
 
-func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns0 uint16) (*Domain, error) {
-	if strings.Contains(domain, "..") {
-		return nil, errors.New("invalid domain")
+// absoluteASCIIName converts a configured domain, with or without a trailing
+// dot and possibly internationalised, into the absolute ASCII name that is
+// packed into queries. Every label must be non-empty and fit a DNS label, or
+// the client could not pack its first poll.
+func absoluteASCIIName(domain string) (dnsmessage.Name, error) {
+	ascii, err := idna.ToASCII(strings.TrimSuffix(domain, "."))
+	if err != nil {
+		return dnsmessage.Name{}, err
 	}
+	for _, label := range strings.Split(ascii, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return dnsmessage.Name{}, errors.New("invalid domain")
+		}
+	}
+	return dnsmessage.NewName(ascii + ".")
+}
+
+func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns0 uint16) (*Domain, error) {
 	if lenLimit < 0 || lenLimit > 255 {
 		return nil, errors.New("lenLimit < 0 || lenLimit > 255")
 	}
@@ -103,13 +117,7 @@ func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns
 		return nil, errors.New("edns0 != 0 && (edns0 < 512 || edns0 > 4096)")
 	}
 
-	ascii, err := idna.ToASCII(domain)
-	if err != nil {
-		return nil, err
-	}
-	ascii = strings.Trim(ascii, ".")
-
-	name, err := dnsmessage.NewName(domain + ".")
+	name, err := absoluteASCIIName(domain)
 	if err != nil {
 		return nil, err
 	}
