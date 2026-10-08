@@ -183,6 +183,66 @@ func TestServerErrorRepliesDoNotOutgrowQueries(t *testing.T) {
 	}
 }
 
+// compressedQuestionQueries returns out-of-zone TXT queries packed by hand
+// whose only question name is compressed against bytes that hold no earlier
+// name, which RFC 1035, Section 4.1.4 does not allow: one points back into a
+// label of the name itself, the others into the header. dnsmessage follows
+// those pointers, so the question unpacks to a name longer than its bytes in
+// the query. Resolvers do not send such queries; a prober can.
+func compressedQuestionQueries() map[string][]byte {
+	header := func(additionals byte) []byte {
+		return []byte{0x42, 0x42, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, additionals}
+	}
+	question := func(query []byte, name ...byte) []byte {
+		return append(append(query, name...), 0, byte(dnsmessage.TypeTXT), 0, 1)
+	}
+	opt := func(query []byte, version byte) []byte {
+		return append(query, 0, 0, byte(dnsmessage.TypeOPT), 0x04, 0xD0, 0, version, 0, 0, 0, 0)
+	}
+	// From offset 13 the name reads as the label "x" and the root.
+	intoOwnLabel := question(header(0), 4, 1, 'x', 0, 'y', 0xC0, 13)
+	// From offset 5, QDCOUNT's low byte, the header reads as a one-byte label
+	// and the root.
+	intoHeader := question(header(0), 0xC0, 5)
+	return map[string][]byte{
+		"pointer into its own label":                           intoOwnLabel,
+		"pointer into the header":                              intoHeader,
+		"pointer into the header with EDNS":                    opt(question(header(1), 0xC0, 5), 0),
+		"pointer into the header with an unknown EDNS version": opt(question(header(1), 0xC0, 5), 1),
+	}
+}
+
+// A query that parses gets an answer, even when its question uses malformed
+// compression and the reply carrying the expanded question would outgrow the
+// query. The size limit stays: the answer is a FORMERR without the question,
+// with the server's OPT record when the query has one, its extended RCODE
+// bits cleared.
+func TestServerAnswersMalformedCompressionWithFormatError(t *testing.T) {
+	server := startTestServer(t)
+	for name, query := range compressedQuestionQueries() {
+		reply, n := exchangeRaw(t, server, query)
+		if n > len(query) {
+			t.Errorf("%s: %d-byte query drew a %d-byte reply", name, len(query), n)
+		}
+		header := reply.Header
+		if !header.Response || header.ID != 0x4242 || header.RCode != dnsmessage.RCodeFormatError || header.Authoritative || !header.RecursionDesired {
+			t.Errorf("%s: reply header %+v, want a non-authoritative FORMERR response to query 0x4242 with RD", name, header)
+		}
+		if len(reply.Questions)+len(reply.Answers)+len(reply.Authorities) != 0 {
+			t.Errorf("%s: reply carries %d questions, %d answers and %d authorities, want none", name, len(reply.Questions), len(reply.Answers), len(reply.Authorities))
+		}
+		hasOPT := len(query) > 12 && query[11] == 1
+		switch {
+		case !hasOPT && len(reply.Additionals) != 0:
+			t.Errorf("%s: reply additionals %+v, want none", name, reply.Additionals)
+		case hasOPT && (len(reply.Additionals) != 1 || reply.Additionals[0].Header.Type != dnsmessage.TypeOPT):
+			t.Errorf("%s: reply additionals %+v, want only an OPT record", name, reply.Additionals)
+		case hasOPT && (reply.Additionals[0].Header.Class != 1232 || reply.Additionals[0].Header.TTL>>16 != 0):
+			t.Errorf("%s: reply OPT %+v, want size 1232, extended RCODE 0 and version 0", name, reply.Additionals[0].Header)
+		}
+	}
+}
+
 // An error reply carries the server's own OPT record, not the one the query
 // sent: the query's EDNS options, extended RCODE and other records stay out,
 // and header bits a query has no business setting are not reflected. DO is

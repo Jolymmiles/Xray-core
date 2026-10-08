@@ -102,10 +102,11 @@ func (c *xdnsServer) closed() bool {
 // The reply carries only the header, the single question and, when the query
 // used EDNS, an OPT record of the server's, which holds the upper bits of
 // rcode: echoing the query's other records would let a spoofed query draw a
-// reply larger than itself. It is not a full authoritative answer: there is
-// no SOA in the authority section, and the OPT payload size mirrors the
-// query's. queueReply never blocks the receive loop, so the reply is dropped when
-// the reply queue is full.
+// reply larger than itself; a reply that would still outgrow the query is
+// sent as a FORMERR without the question. It is not a full authoritative
+// answer: there is no SOA in the authority section, and the OPT payload size
+// mirrors the query's. queueReply never blocks the receive loop, so the reply
+// is dropped when the reply queue is full.
 func (c *xdnsServer) queueReply(query *dnsmessage.Message, rcode dnsmessage.RCode, authoritative bool, limit int, addr net.Addr) {
 	reply := dnsmessage.Message{Header: dnsmessage.Header{
 		ID:               query.Header.ID,
@@ -390,12 +391,39 @@ func (c *xdnsServer) dr() {
 		case r := <-c.drCh:
 			b, err := r.msg.AppendPack(buf[:0])
 			if err != nil || len(b) > r.limit {
-				errors.LogDebug(context.Background(), r.addr, " reply dropped: ", len(b), " bytes for a ", r.limit, "-byte query, err ", err)
-				continue
+				// Unpack expands compressed names, so a question compressed
+				// against bytes that hold no earlier name packs longer than
+				// it was in the query. Answer such a query too, without the
+				// question.
+				formErr := formatError(&r.msg)
+				if b, err = formErr.AppendPack(buf[:0]); err != nil || len(b) > r.limit {
+					errors.LogDebug(context.Background(), r.addr, " reply dropped: ", len(b), " bytes for a ", r.limit, "-byte query, err ", err)
+					continue
+				}
 			}
 			_, _ = c.PacketConn.WriteTo(b, r.addr)
 		}
 	}
+}
+
+// formatError returns the FORMERR sent in place of reply when reply does not
+// fit within its query. It keeps the header, which no longer claims
+// authority, and reply's OPT record with the upper rcode bits cleared (RFC
+// 6891, Section 6.1.3), but drops the question. At 12 bytes, or 23 with the
+// OPT record, it fits every query that parses.
+func formatError(reply *dnsmessage.Message) dnsmessage.Message {
+	formErr := dnsmessage.Message{Header: reply.Header}
+	formErr.Header.RCode = dnsmessage.RCodeFormatError
+	formErr.Header.Authoritative = false
+	for _, additional := range reply.Additionals {
+		if additional.Header.Type == dnsmessage.TypeOPT {
+			opt := additional.Header
+			opt.TTL &^= 0xFF << 24
+			formErr.Additionals = []dnsmessage.Resource{{Header: opt, Body: &dnsmessage.OPTResource{}}}
+			break
+		}
+	}
+	return formErr
 }
 
 func (c *xdnsServer) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
