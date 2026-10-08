@@ -21,14 +21,20 @@ import (
 
 // runECH runs `xray tls ech args...` in a child copy of this test binary, since
 // the command exits the process on errors, and returns its output and exit code.
+// A child that does not finish within a minute is killed and fails the test.
 func runECH(t *testing.T, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	command := exec.Command(os.Args[0], "-test.run=^TestECHCommandProcess$")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestECHCommandProcess$")
 	command.Env = append(os.Environ(), "XRAY_TEST_ECH_ARGS="+strings.Join(args, "\n"))
 	var out, errOut bytes.Buffer
 	command.Stdout = &out
 	command.Stderr = &errOut
 	err := command.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("`xray tls ech %s` did not finish within a minute: %v", strings.Join(args, " "), err)
+	}
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
