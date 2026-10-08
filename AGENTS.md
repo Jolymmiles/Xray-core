@@ -33,11 +33,13 @@ test, or compatibility gates defined here.
   language. Keep code, identifiers, commit messages, and repository
   documentation in English unless an existing file establishes otherwise.
 
-## Fork behavior and releases
+## Fork behavior, review, and releases
 
 - Before changing REALITY, XHTTP, mux, build tags or the Go version, or when
   syncing upstream, read `docs/FORK.md`: the intentional deviations from
   upstream and the tests that guard each.
+- Review of a PR or branch, and launching or collecting review rounds,
+  follows `.claude/skills/xray-pr-review/SKILL.md`.
 - Release work (gates, stamp, `Pre-release Validation`, tag, publish) follows
   `.claude/skills/release/SKILL.md` and starts only when the maintainer asks.
 

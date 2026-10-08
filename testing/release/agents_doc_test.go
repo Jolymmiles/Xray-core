@@ -1,7 +1,9 @@
 package release
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -16,6 +18,10 @@ var agentDocs = []string{
 	"AGENTS.md",
 	"docs/FORK.md",
 	".claude/skills/release/SKILL.md",
+	".claude/skills/xray-pr-review/SKILL.md",
+	".claude/skills/xray-pr-review/GH.md",
+	".claude/skills/xray-pr-review/ORCHESTRATOR.md",
+	"docs/agents/issue-tracker.md",
 }
 
 var (
@@ -113,7 +119,7 @@ func TestAgentDocPathsExist(t *testing.T) {
 				if !ok {
 					continue
 				}
-				if !repoPathExists(t, root, path) {
+				if !repoPathExists(t, root, path) && !gitIgnores(t, root, path) {
 					t.Errorf("%s:%d names `%s`, which does not exist in the repository", doc, lineNumber, match[1])
 				}
 			}
@@ -127,6 +133,7 @@ func TestAgentsDocPointsToMovedDocuments(t *testing.T) {
 	root := repositoryRoot(t)
 	assertFileContains(t, filepath.Join(root, "AGENTS.md"), []string{
 		"`.claude/skills/release/SKILL.md`",
+		"`.claude/skills/xray-pr-review/SKILL.md`",
 		"`docs/FORK.md`",
 	})
 }
@@ -142,6 +149,24 @@ func topLevelEntries(t *testing.T, root string) map[string]bool {
 		names[entry.Name()] = true
 	}
 	return names
+}
+
+// gitIgnores reports whether git ignores path. Agent documents name local
+// assets such as resources/geoip.dat that a fresh checkout lacks on purpose;
+// they are not missing repository material.
+func gitIgnores(t *testing.T, root, path string) bool {
+	t.Helper()
+	err := exec.Command("git", "-C", root, "check-ignore", "-q", "--", path).Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return false
+	default:
+		t.Fatalf("git check-ignore %s: %v", path, err)
+		return false
+	}
 }
 
 func repoPathExists(t *testing.T, root, path string) bool {
