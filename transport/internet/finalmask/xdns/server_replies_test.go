@@ -320,6 +320,7 @@ func TestServerKeepsReadingAfterTransientError(t *testing.T) {
 	flaky.failures.Store(2)
 	server, err := NewServer(testServerConfig(), flaky)
 	if err != nil {
+		_ = raw.Close()
 		t.Fatal(err)
 	}
 	defer server.Close()
