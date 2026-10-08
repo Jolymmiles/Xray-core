@@ -164,7 +164,10 @@ func TestWireguard(t *testing.T) {
 					// TUN (used whenever the test has CAP_NET_ADMIN) the decrypted
 					// replies carry a local source address and Linux drops them as
 					// martians; a kernel TUN would also add a device and rewrite
-					// host-wide sysctls. Keep the client in the gVisor stack.
+					// host-wide sysctls. Keep the client in the gVisor stack. This
+					// gives up coverage: run as root, the suite no longer tests the
+					// kernel TUN client path. A variant in its own network namespace
+					// might restore it; none exists yet.
 					NoKernelTun: true,
 					Endpoint:    []string{"10.0.0.2"},
 					Mtu:         1420,
