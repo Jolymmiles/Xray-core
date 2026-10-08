@@ -51,7 +51,8 @@ func closeWithin(t *testing.T, name string, closeFn func()) {
 }
 
 // runExchange sends rounds of datagrams from client to server and back,
-// checking that each one arrives exactly once, then closes both sides.
+// checking that each one arrives exactly once, then checks that both sides
+// close. Callers close them in cleanup too, which also covers a failed check.
 func runExchange(t *testing.T, client, server net.PacketConn, rounds int) {
 	t.Helper()
 	serverDone := make(chan error, 1)
@@ -109,16 +110,19 @@ func TestUDPResolverExchangeAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = raw.Close() })
 	server, err := NewServer(testServerConfig(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = server.Close() })
 	clientConfig := testServerConfig()
 	clientConfig.Resolvers = []*ResolverProto{{Type: "udp", Addr: raw.LocalAddr().String()}}
 	client, err := NewClient(clientConfig, testDialer())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = client.Close() })
 	runExchange(t, client, server, 5)
 }
 
@@ -190,10 +194,12 @@ func TestTCPResolverExchange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = raw.Close() })
 	server, err := NewServer(testServerConfig(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = server.Close() })
 	forwarder := startTCPForwarder(t, raw.LocalAddr())
 	clientConfig := testServerConfig()
 	clientConfig.Resolvers = []*ResolverProto{{Type: "tcp", Addr: forwarder.String()}}
@@ -201,5 +207,6 @@ func TestTCPResolverExchange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = client.Close() })
 	runExchange(t, client, server, 5)
 }
