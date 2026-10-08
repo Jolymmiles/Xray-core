@@ -3,9 +3,10 @@
 # common/singmux/TESTING.md and in transport/internet/splithttp/BASELINE.md.
 #
 # Every command runs with GOFLAGS=-tags=http2legacy (the tag every release is
-# built with) and an explicit -timeout. A tier's output goes to one log; the
-# script prints one line per step and a pass/fail table at the end, and exits
-# non-zero if any tier failed. Failing steps do not stop the tier.
+# built with) and an explicit -timeout; a command those documents list keeps
+# the timeout they give it. A tier's output goes to one log; the script prints
+# one line per step and a pass/fail table at the end, and exits non-zero if any
+# tier failed. Failing steps do not stop the tier.
 #
 # The interop peers (sing-box, Mihomo) are found by the test harness next to
 # the checkout or next to the main checkout, so a worktree needs no
@@ -83,8 +84,8 @@ step() {
 }
 
 # Steps shared by a tier and by the race tier.
-race_vless() { step "race vless" go test -race ./transport/internet/reality ./proxy ./proxy/vless/... -count=1 -timeout 30m; }
-race_smux() { step "race smux" go test -race ./common/singmux/... ./common/mux -count=1 -timeout 30m; }
+race_vless() { step "race vless" go test -race ./transport/internet/reality ./proxy ./proxy/vless/... -count=1 -timeout 300s; }
+race_smux() { step "race smux" go test -race ./common/singmux/... ./common/mux -count=1 -timeout 300s; }
 race_xhttp() { step "race splithttp" go test -race ./transport/internet/splithttp -count=1 -timeout 30m; }
 
 tier_unit() {
@@ -94,19 +95,19 @@ tier_unit() {
 }
 
 tier_vless() {
-	step "test" go test ./transport/internet/reality ./proxy ./proxy/vless/... ./infra/conf -count=1 -timeout 30m
+	step "test" go test ./transport/internet/reality ./proxy ./proxy/vless/... ./infra/conf -count=1 -timeout 300s
 	race_vless
-	step "checkptr" go test -gcflags=all=-d=checkptr=2 ./transport/internet/reality ./proxy ./proxy/vless/inbound ./proxy/vless/outbound -count=1 -timeout 30m
+	step "checkptr" go test -gcflags=all=-d=checkptr=2 ./transport/internet/reality ./proxy ./proxy/vless/inbound ./proxy/vless/outbound -count=1 -timeout 300s
 	step "vet" go vet ./transport/internet/reality ./proxy ./proxy/vless/...
-	step "process matrix (36 cells)" go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -timeout 60m -v
+	step "process matrix (36 cells)" go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -timeout 20m -v
 }
 
 tier_smux() {
-	step "test" go test ./common/singmux/... ./common/mux ./app/proxyman/inbound ./app/proxyman/outbound ./infra/conf -count=1 -timeout 30m
+	step "test" go test ./common/singmux/... ./common/mux ./app/proxyman/inbound ./app/proxyman/outbound ./infra/conf -count=1 -timeout 300s
 	race_smux
-	step "checkptr" go test -gcflags=all=-d=checkptr=2 ./common/singmux ./app/proxyman/inbound -count=1 -timeout 30m
-	step "coverage mplsmux" go test -cover ./common/singmux/internal/mplsmux -count=1 -timeout 10m
-	step "process matrix (24 cells)" go test -tags 'integration http2legacy' ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -timeout 60m -v
+	step "checkptr" go test -gcflags=all=-d=checkptr=2 ./common/singmux ./app/proxyman/inbound -count=1 -timeout 300s
+	step "coverage mplsmux" go test -cover ./common/singmux/internal/mplsmux -count=1 -timeout 300s
+	step "process matrix (24 cells)" go test -tags 'integration http2legacy' ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -timeout 20m -v
 }
 
 tier_xhttp() {
