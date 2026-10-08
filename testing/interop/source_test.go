@@ -47,6 +47,26 @@ func TestSourceDirFindsMainCheckoutSiblingFromLinkedWorktree(t *testing.T) {
 	}
 }
 
+// A git hook exports GIT_DIR and its companions to the commands it runs. The
+// lookup must still resolve the main checkout that repoRoot belongs to.
+func TestSourceDirIgnoresInheritedRepositoryVariables(t *testing.T) {
+	root := hermeticGit(t)
+	_, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "elsewhere", "deep", "worktree"))
+	peer := filepath.Join(root, "dev", "mihomo")
+	writeModule(t, peer)
+	other := filepath.Join(root, "other", "repo")
+	mustMkdir(t, other)
+	git(t, other, "init", "--quiet")
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+
+	got, err := SourceDir(worktree, "mihomo", "MIHOMO_E2E_BIN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameDir(t, got, peer)
+}
+
 func TestSourceDirPrefersTheWorktreesOwnNeighbour(t *testing.T) {
 	root := hermeticGit(t)
 	_, worktree := newRepoWithWorktree(t, filepath.Join(root, "dev", "Xray-core"), filepath.Join(root, "wt", "Xray-core"))
@@ -108,7 +128,7 @@ func hermeticGit(t *testing.T) string {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
-	for _, name := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"} {
+	for _, name := range repositoryVariables {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)

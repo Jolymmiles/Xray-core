@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -73,6 +74,7 @@ func sourceCandidates(repoRoot, mainRoot, name string) []string {
 // is the checkout that owns the shared .git directory.
 func mainCheckout(repoRoot string) (string, error) {
 	command := exec.Command("git", "-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	command.Env = withoutRepositoryVariables(os.Environ())
 	output, err := command.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -86,6 +88,35 @@ func mainCheckout(repoRoot string) (string, error) {
 		return "", fmt.Errorf("git common directory %q is not <checkout>/.git", commonDir)
 	}
 	return filepath.Dir(commonDir), nil
+}
+
+// repositoryVariables name a repository regardless of `git -C`, and a git hook
+// exports them to the commands it runs. They are the location variables that
+// `git rev-parse --local-env-vars` lists.
+var repositoryVariables = []string{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_DIR",
+	"GIT_GRAFT_FILE",
+	"GIT_IMPLICIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_NO_REPLACE_OBJECTS",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_PREFIX",
+	"GIT_REPLACE_REF_BASE",
+	"GIT_SHALLOW_FILE",
+	"GIT_WORK_TREE",
+}
+
+func withoutRepositoryVariables(environment []string) []string {
+	kept := make([]string, 0, len(environment))
+	for _, variable := range environment {
+		name, _, _ := strings.Cut(variable, "=")
+		if !slices.Contains(repositoryVariables, name) {
+			kept = append(kept, variable)
+		}
+	}
+	return kept
 }
 
 func isGoModule(directory string) bool {
