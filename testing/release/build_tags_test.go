@@ -3,13 +3,17 @@ package release
 import (
 	"bytes"
 	"fmt"
+	"go/scanner"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -27,7 +31,7 @@ const requiredBuildTag = "http2legacy"
 // a newly added file.
 func TestExplicitBuildTagsKeepHTTP2Legacy(t *testing.T) {
 	root := repositoryRoot(t)
-	exemptionHits := make([]int, len(tagsExemptions))
+	var hits []fileTagsHit
 	for _, path := range trackedFiles(t, root) {
 		if tagsSkippedTree(path) {
 			continue
@@ -37,21 +41,15 @@ func TestExplicitBuildTagsKeepHTTP2Legacy(t *testing.T) {
 			continue
 		}
 		for _, hit := range findTagsWithoutHTTP2Legacy(path, content) {
-			if index := matchTagsExemption(path, hit.text); index >= 0 {
-				exemptionHits[index]++
-				continue
-			}
-			t.Errorf("%s:%d sets tags without %s: %s", path, hit.line, requiredBuildTag, hit.text)
+			hits = append(hits, fileTagsHit{path: path, tagsHit: hit})
 		}
 	}
-	for index, exemption := range tagsExemptions {
-		switch {
-		case exemptionHits[index] == 0:
-			t.Errorf("stale exemption: %s %q matched nothing; remove it (%s)", exemption.path, exemption.contains, exemption.reason)
-		case exemption.count > 0 && exemptionHits[index] != exemption.count:
-			t.Errorf("exemption %s %q covers %d lines, want exactly %d; new lines must list %s (%s)",
-				exemption.path, exemption.contains, exemptionHits[index], exemption.count, requiredBuildTag, exemption.reason)
-		}
+	violations, stale := applyTagsExemptions(hits, tagsExemptions)
+	for _, hit := range violations {
+		t.Errorf("%s:%d sets tags without %s: %s", hit.path, hit.line, requiredBuildTag, hit.text)
+	}
+	for _, message := range stale {
+		t.Errorf("stale exemption %s; update tagsExemptions", message)
 	}
 }
 
@@ -62,67 +60,104 @@ var tagsSkippedTrees = []struct{ prefix, reason string }{
 	{"testing/release/build_tags_test.go", "scanner test cases"},
 }
 
-// tagsExemption allows known lines that name tags without http2legacy.
-// Every entry must still match at least one line, and an entry with count set
-// must match exactly that many, so an exemption cannot hide a new violation.
+// tagsExemption allows known lines of one file that name tags without
+// http2legacy. It lists each line's exact text, trimmed of surrounding
+// space, once per occurrence. An edited or added line is therefore a
+// violation, and a listed line that no longer appears makes the entry stale.
 type tagsExemption struct {
-	path     string // repository file path, or a directory prefix ending in "/"
-	contains string // substring of the offending line; empty exempts every hit under path
-	count    int    // exact number of covered lines; 0 means at least one
-	reason   string
+	path   string
+	reason string
+	lines  []string
 }
 
 var tagsExemptions = []tagsExemption{
 	// Interop peers are built the way their users build them. They are not Xray
 	// builds, and http2legacy is an Xray build tag.
 	{
-		path:     ".github/workflows/pre-release-validation.yml",
-		contains: "with_utls,with_quic",
-		count:    1,
-		reason:   "builds the sing-box interop peer",
+		path:   ".github/workflows/pre-release-validation.yml",
+		reason: "builds the sing-box interop peer",
+		lines: []string{
+			`go -C .interop/sing-box build -trimpath -tags=with_utls,with_quic -o "$RUNNER_TEMP/sing-box" ./cmd/sing-box`,
+		},
 	},
 	{
-		path:     "common/singmux/e2e_integration_test.go",
-		contains: "with_utls,with_quic",
-		count:    1,
-		reason:   "builds the sing-box interop peer",
+		path:   "common/singmux/e2e_integration_test.go",
+		reason: "builds the sing-box interop peer",
+		lines: []string{
+			`singBox: buildPeerE2EBinary(t, interop.SingBox, filepath.Join(workDir, "sing-box"), xrayRoot, "./cmd/sing-box", "-tags=with_utls,with_quic"),`,
+		},
 	},
 
 	// Historical records. http2legacy joined the build on 2026-10-05
 	// (b98f8a0a), and every command below is dated before it. Each one
 	// records what a past run executed, so adding the tag would claim a run
-	// that never happened. The counts are exact: a new command written into
-	// one of these files after the cutover must list http2legacy, and a
-	// command that is removed or fixed must lower its count.
+	// that never happened. A command written into one of these files after the
+	// cutover must list http2legacy.
 	{
 		path:   "common/log/BASELINE.md",
-		count:  2,
 		reason: "gate commands recorded for the 2026-07-19 log change",
+		lines: []string{
+			`go test -tags integration ./common/singmux \`,
+			`go test -tags integration ./common/singmux \`,
+		},
 	},
 	{
 		path:   "common/singmux/BASELINE.md",
-		count:  5,
 		reason: "benchmark, stress, kernel and performance commands recorded between 2026-07-21 and 2026-09-05",
+		lines: []string{
+			`go test -tags 'integration stress' ./common/singmux \`,
+			`go test -timeout=45m -tags "integration stress" ./common/singmux \`,
+			`CGO_ENABLED=0 go test -c -tags 'integration brutalkernel' \`,
+			`go test -timeout=45m -tags 'integration stress' ./common/singmux \`,
+			"`go test -tags 'integration stress performance' ./common/singmux",
+		},
 	},
 	{
 		path:   "proxy/vless/BASELINE.md",
-		count:  3,
 		reason: "benchmark and process-regression commands recorded on 2026-07-18 and 2026-08-25",
+		lines: []string{
+			`GOTOOLCHAIN=auto go test -tags integration ./common/singmux \`,
+			`GOTOOLCHAIN=auto go test -tags integration ./common/singmux \`,
+			`go test -tags integration ./common/singmux -run '^$' \`,
+		},
 	},
 	{
 		path:   "docs/audits/2026-09-04-fork-audit.md",
-		count:  8,
 		reason: "dated audit; commands are the ones that audit ran",
+		lines: []string{
+			`go vet -tags integration,stress,performance ./common/singmux ./testing/release`,
+			`go test -tags integration ./common/singmux \`,
+			`go test -tags integration ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v`,
+			`go test -tags integration ./common/singmux \`,
+			`go test -tags integration ./common/singmux -run '^TestRemnaNodeConfigProcessE2E$' -count=1 -v`,
+			`go test -tags integration ./testing/scenarios -run '^TestReverseVersionSkew$' -count=1 -v`,
+			`go test -tags integration,stress ./common/singmux \`,
+			`go test -tags integration,stress ./common/singmux \`,
+		},
 	},
 	{
 		path:   "docs/audits/2026-09-05-review-followup.md",
-		count:  10,
 		reason: "dated audit follow-up; commands are the ones it ran",
+		lines: []string{
+			`go test -tags integration ./common/singmux -run '^TestAwaitStatsOnlineIPs' -count=1`,
+			`go test -race -tags integration ./common/singmux -run '^TestAwaitStatsOnlineIPs' -count=1`,
+			`go vet -tags integration,stress,performance ./common/singmux`,
+			`go test -tags integration ./common/singmux \`,
+			`go test -tags integration ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v`,
+			`go test -tags integration ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v`,
+			`go vet -tags integration ./main ./proxy/mtproxy`,
+			`go test -tags integration ./proxy/mtproxy \`,
+			`go test -race -tags integration ./proxy/mtproxy -run '^TestMTProxySubprocess$' -count=1 -v`,
+			`go test -gcflags=all=-d=checkptr=2 -tags integration ./proxy/mtproxy \`,
+		},
 	},
 	{
 		path:   "docs/superpowers/plans/2026-08-11-smux-brutal-server.md",
-		count:  2,
 		reason: "dated implementation plan; commands are the ones the plan listed",
+		lines: []string{
+			`go test -tags integration ./common/singmux -run '^TestSMUXProcessInteropMatrix$' -count=1 -v`,
+			`go test -tags integration ./common/singmux -run '^TestH2MUXProcessInteropMatrix$' -count=1 -v`,
+		},
 	},
 }
 
@@ -135,19 +170,54 @@ func tagsSkippedTree(path string) bool {
 	return false
 }
 
-func matchTagsExemption(path, text string) int {
-	for index, exemption := range tagsExemptions {
-		inPath := path == exemption.path || (strings.HasSuffix(exemption.path, "/") && strings.HasPrefix(path, exemption.path))
-		if inPath && strings.Contains(text, exemption.contains) {
-			return index
-		}
-	}
-	return -1
-}
-
 type tagsHit struct {
 	line int
 	text string
+}
+
+type fileTagsHit struct {
+	path string
+	tagsHit
+}
+
+// applyTagsExemptions returns the hits no exemption line covers, and one
+// message per exempted line that was found fewer times than listed.
+func applyTagsExemptions(hits []fileTagsHit, exemptions []tagsExemption) ([]fileTagsHit, []string) {
+	type exemptLine struct{ path, text string }
+	remaining := make(map[exemptLine]int)
+	for _, exemption := range exemptions {
+		for _, line := range exemption.lines {
+			remaining[exemptLine{exemption.path, line}]++
+		}
+	}
+	var violations []fileTagsHit
+	for _, hit := range hits {
+		key := exemptLine{hit.path, hit.text}
+		if remaining[key] > 0 {
+			remaining[key]--
+			continue
+		}
+		violations = append(violations, hit)
+	}
+	var stale []string
+	for _, exemption := range exemptions {
+		reported := make(map[string]bool)
+		for _, line := range exemption.lines {
+			missing := remaining[exemptLine{exemption.path, line}]
+			if missing == 0 || reported[line] {
+				continue
+			}
+			reported[line] = true
+			listed := 0
+			for _, other := range exemption.lines {
+				if other == line {
+					listed++
+				}
+			}
+			stale = append(stale, fmt.Sprintf("%s: %q listed %d times, found %d (%s)", exemption.path, line, listed, listed-missing, exemption.reason))
+		}
+	}
+	return violations, stale
 }
 
 var (
@@ -158,21 +228,12 @@ var (
 	// tagsFlagEndingLine finds a `-tags` flag whose value is not on the same
 	// line, which this scan cannot read.
 	tagsFlagEndingLine = regexp.MustCompile("(?:^|[\\s`\"'(=:])-tags\\s*\\\\?\\s*$")
-	// goTagsFlag starts a Go string literal, interpreted or raw, that opens
-	// with the flag.
-	goTagsFlag = regexp.MustCompile("[\"`]-tags")
-	// goTagsArgument reads an exec argument list: "-tags=VALUE" or "-tags", "VALUE",
-	// and a literal that holds a whole flag: "-tags VALUE". Either literal may
-	// be a raw string.
-	goTagsArgument = regexp.MustCompile("^[\"`]-tags(?:=([^\"`]*)[\"`]|\\s+([^\"`]*)[\"`]|[\"`]\\s*,\\s*[\"`]([^\"`]*)[\"`])")
-	// goRawTagsInArguments is a raw-string flag followed by another argument.
-	// Any other unreadable raw `-tags` is prose in a comment.
-	goRawTagsInArguments = regexp.MustCompile("^`-tags`\\s*,")
 )
 
 // findTagsWithoutHTTP2Legacy returns the lines of one file that pass a tag
 // list without http2legacy, or a tag list it cannot read. Go files are also
-// checked for exec'd go commands that pass "-tags" as separate arguments.
+// read token by token for exec'd go commands that pass the flag as a string
+// literal.
 func findTagsWithoutHTTP2Legacy(path, content string) []tagsHit {
 	lines := strings.Split(content, "\n")
 	flagged := map[int]bool{}
@@ -182,21 +243,14 @@ func findTagsWithoutHTTP2Legacy(path, content string) []tagsHit {
 			continue
 		}
 		for _, match := range tagsFlagWithValue.FindAllStringSubmatch(line, -1) {
-			if !listsHTTP2Legacy(match[1]) {
+			if !slices.Contains(tagsOfValue(match[1]), requiredBuildTag) {
 				flagged[index+1] = true
 			}
 		}
 	}
 	if strings.HasSuffix(path, ".go") {
-		for _, location := range goTagsFlag.FindAllStringIndex(content, -1) {
-			start := location[0]
-			match := goTagsArgument.FindStringSubmatch(content[start:])
-			switch {
-			case match != nil && listsHTTP2Legacy(match[1]+match[2]+match[3]):
-			case match == nil && content[start] == '`' && !goRawTagsInArguments.MatchString(content[start:]):
-			default:
-				flagged[1+strings.Count(content[:start], "\n")] = true
-			}
+		for _, line := range goTagsWithoutHTTP2Legacy(content) {
+			flagged[line] = true
 		}
 	}
 	numbers := make([]int, 0, len(flagged))
@@ -211,17 +265,105 @@ func findTagsWithoutHTTP2Legacy(path, content string) []tagsHit {
 	return hits
 }
 
-func listsHTTP2Legacy(value string) bool {
-	tags := strings.FieldsFunc(strings.Trim(value, `"'`), func(r rune) bool {
+// tagsOfValue splits a -tags value found in text. A quoted value is one shell
+// word and is read as written. An unquoted value may run into a shell `;` or
+// the `)` that closes $(...), which are not part of its last tag. Any other
+// trailing character stays in the tag: `go build -tags http2legacy.` builds
+// without http2legacy, so prose wraps such a flag in backticks.
+func tagsOfValue(value string) []string {
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+		return splitTags(value[1 : len(value)-1])
+	}
+	return splitTags(strings.TrimRight(value, ";)"))
+}
+
+func splitTags(list string) []string {
+	return strings.FieldsFunc(list, func(r rune) bool {
 		return r == ',' || unicode.IsSpace(r)
 	})
-	for _, tag := range tags {
-		// Prose may end the tag list with punctuation: "built with -tags http2legacy."
-		if strings.TrimRight(tag, ".;:)") == requiredBuildTag {
-			return true
+}
+
+// goTagsWithoutHTTP2Legacy reads Go source token by token and returns the
+// lines of string literals, interpreted or raw, that give a go command a tag
+// list without http2legacy: "-tags=VALUE", "-tags VALUE", or "-tags" whose
+// value is the next argument. A next argument that is not a string literal
+// cannot be read and is reported. Comments are not tokens, so prose that
+// names the flag is never read as an argument.
+func goTagsWithoutHTTP2Legacy(content string) []int {
+	if !strings.Contains(content, "-tags") {
+		return nil
+	}
+	fileSet := token.NewFileSet()
+	file := fileSet.AddFile("", fileSet.Base(), len(content))
+	var source scanner.Scanner
+	source.Init(file, []byte(content), nil, 0)
+	scan := func() (int, token.Token, string) {
+		position, kind, literal := source.Scan()
+		return fileSet.Position(position).Line, kind, literal
+	}
+	stringValue := func(kind token.Token, literal string) (string, bool) {
+		if kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(literal)
+		return value, err == nil
+	}
+	var lines []int
+	for {
+		line, kind, literal := scan()
+		if kind == token.EOF {
+			return lines
+		}
+		text, ok := stringValue(kind, literal)
+		if !ok {
+			continue
+		}
+		var list string
+		if rest, found := strings.CutPrefix(text, "-tags"); !found {
+			continue
+		} else if value, isJoined := strings.CutPrefix(rest, "="); isJoined {
+			list = value
+		} else if rest != "" && unicode.IsSpace(rune(rest[0])) {
+			list = rest
+		} else if rest == "" {
+			_, separator, _ := scan()
+			_, valueKind, valueLiteral := scan()
+			value, readable := stringValue(valueKind, valueLiteral)
+			if separator != token.COMMA || !readable {
+				lines = append(lines, line)
+				continue
+			}
+			list = value
+		} else {
+			continue // another flag, such as -tagsfoo
+		}
+		if !slices.Contains(splitTags(list), requiredBuildTag) {
+			lines = append(lines, line)
 		}
 	}
-	return false
+}
+
+// An exemption covers the exact lines it lists, each as often as listed. A
+// historical command replaced by a new one without http2legacy is a new
+// violation, and a listed line that no longer appears is a stale exemption.
+func TestApplyTagsExemptions(t *testing.T) {
+	exemptions := []tagsExemption{{path: "doc.md", lines: []string{"go test -tags a ./x", "go test -tags a ./x"}, reason: "old"}}
+	hits := []fileTagsHit{
+		{path: "doc.md", tagsHit: tagsHit{line: 1, text: "go test -tags a ./x"}},
+		{path: "doc.md", tagsHit: tagsHit{line: 2, text: "go test -tags b ./x"}},
+		{path: "other.md", tagsHit: tagsHit{line: 3, text: "go test -tags a ./x"}},
+	}
+	violations, stale := applyTagsExemptions(hits, exemptions)
+	var got []string
+	for _, hit := range violations {
+		got = append(got, fmt.Sprintf("%s:%d", hit.path, hit.line))
+	}
+	if want := []string{"doc.md:2", "other.md:3"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("violations = %v, want %v", got, want)
+	}
+	if want := []string{`doc.md: "go test -tags a ./x" listed 2 times, found 1 (old)`}; !reflect.DeepEqual(stale, want) {
+		t.Errorf("stale = %q, want %q", stale, want)
+	}
 }
 
 func TestFindTagsWithoutHTTP2Legacy(t *testing.T) {
@@ -237,7 +379,11 @@ func TestFindTagsWithoutHTTP2Legacy(t *testing.T) {
 		{"comma list with tag", "doc.md", "go test -tags=integration,http2legacy ./x", nil},
 		{"comma list without tag", "doc.md", "go test -tags integration,stress ./x", []int{1}},
 		{"tag as substring only", "doc.md", "go test -tags=http2legacy_off ./x", []int{1}},
-		{"prose ending the tag list with a period", "doc.md", "Builds use -tags http2legacy. Without it", nil},
+		{"prose with the flag in backticks before a period", "doc.md", "Builds use `-tags http2legacy`. Without it", nil},
+		{"unquoted tag with a period is another tag", "run.sh", "go build -tags http2legacy. ./x", []int{1}},
+		{"quoted tag list ending with punctuation", "run.sh", "go test -tags 'integration http2legacy.' ./x\ngo test -tags 'http2legacy;' ./x\ngo test -tags \"http2legacy)\" ./x", []int{1, 2, 3}},
+		{"shell separator after an unquoted list", "run.sh", "go build -tags http2legacy; echo built", nil},
+		{"command substitution closing after an unquoted list", "run.sh", "version=$(go list -tags http2legacy)", nil},
 		{"prose naming another tag with a period", "doc.md", "Builds use -tags integration. Without it", []int{1}},
 		{"goflags in yaml", "ci.yml", "  GOFLAGS: -tags=http2legacy\n", nil},
 		{"goflags in shell", "run.sh", `export GOFLAGS="${GOFLAGS:+${GOFLAGS} }-tags=http2legacy"`, nil},
@@ -258,6 +404,10 @@ func TestFindTagsWithoutHTTP2Legacy(t *testing.T) {
 		{"go raw-string literal holding flag and value without tag", "x.go", "{`-tags integration`, \"\", false},", []int{1}},
 		{"go exec raw-string flag with non-literal value", "x.go", "exec.Command(\"go\", \"build\", `-tags`, tags, \"./x\")", []int{1}},
 		{"go comment naming the flag", "x.go", "// An explicit `-tags` flag replaces the tags in GOFLAGS.", nil},
+		{"go comment quoting the flag", "x.go", "// The \"-tags\" flag replaces GOFLAGS.", nil},
+		{"go exec raw-string flag with a comment before its value", "x.go", "exec.Command(\"go\", \"test\", `-tags` /* why */, `integration`, \"./x\")", []int{1}},
+		{"go exec quoted flag with a comment before its value", "x.go", "exec.Command(\"go\", \"test\", \"-tags\", // why\n\t\"integration http2legacy\", \"./x\")", nil},
+		{"go exec quoted tag value ending with punctuation", "x.go", `exec.Command("go", "build", "-tags", "integration http2legacy.", "./x")`, []int{1}},
 		{"go literal holding flag and value with tag", "x.go", `{"-tags http2legacy", "", false},`, nil},
 		{"go literal holding flag and value without tag", "x.go", `{"-tags integration", "", false},`, []int{1}},
 		{"go argument form is not read outside go files", "doc.md", `"-tags", "coverage"`, nil},

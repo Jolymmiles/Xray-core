@@ -7,7 +7,7 @@ import (
 )
 
 // Every shipped or release-tested binary is built with Go 1.27.1 and
-// -tags http2legacy. Without the tag, Go 1.27's x/net http2.Transport dials
+// `-tags http2legacy`. Without the tag, Go 1.27's x/net http2.Transport dials
 // once per request while a TLS handshake hangs, which defeats XHTTP's
 // xmux.maxConnections and produces the connection bursts censors block on
 // (XTLS/Xray-core#6797).
