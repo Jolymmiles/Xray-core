@@ -11,7 +11,7 @@ The round prompt gives: PR number, `base`, `head`, `delta`, `ledger`, `focus`, `
 
 - The PR is read-only: no edits, commits, pushes, stashes, `checkout`/`switch`/`reset` in a live checkout, no PR comments, reviews, labels or merges. `gh` calls are GET-only.
 - Never call `link_pull_request`, `watch_pull_request` or `unwatch_pull_request`. Only the orchestrator watches; a reviewer that watches multiplies wake-ups.
-- Writes go to `/tmp/review/` only: ledger, pinned worktree, logs, repro files. A repro test may live in your pinned worktree; copy it to `/tmp/review/pr<N>-repro/` and cite that path.
+- Writes go to `/tmp/review/` only: ledger, pinned worktree, logs, repro files. A repro test may live in your pinned worktree; copy it to `/tmp/review/pr<N>-repro/` and cite that path. The exception is git's own metadata: `git fetch` and `git worktree add` in step 1 add objects and a worktree entry to the shared git directory. They create no branch and touch no other checkout.
 
 ## 1. Pin a worktree
 

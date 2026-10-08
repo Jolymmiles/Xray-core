@@ -53,9 +53,11 @@ stop at the first failed completion criterion.
    `check-proto`: protobuf headers must match `core/config.pb.go`
    (`protoc-gen-go v1.36.11`, `protoc v6.33.5`); regenerate with that toolchain through
    `go run ./infra/vprotogen`. `testing/release/structural_presence.sh standard` is the
-   full local entrypoint. Completion: every applicable gate is green or a real external
-   failure is recorded as such. A gate fix lands before the stamp, so no stamp is spent
-   on a candidate that still changes.
+   full local entrypoint. Completion: every applicable gate is green. Only a test that
+   contacts an external service may instead have its failure recorded exactly
+   (`AGENTS.md` "Repository-wide"); a failed process-matrix cell, race, vet or checkptr
+   run blocks the stamp until a clean rerun passes. A gate fix lands before the stamp,
+   so no stamp is spent on a candidate that still changes.
 
 4. **Stamp.** Take the current UTC stamp and edit `core/core.go` (`Version_x/y/z`,
    `versionHHMM`) and `core/version_test.go` to the same string. Commit
