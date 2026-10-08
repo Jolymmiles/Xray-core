@@ -93,9 +93,10 @@ func chromeParrotHandshake(t *testing.T, serverConfig, clientConfig *tls.Config)
 	return state, extensions
 }
 
-// Hysteria 2.13.0 parrots Chrome 154, whose ClientHello carries the
-// trust_anchors extension (draft-ietf-tls-trust-anchor-ids). A parrot without
-// it no longer matches the browser it imitates.
+// The Chrome parrot of the apernet/quic-go version Hysteria 2.13.0 pins
+// offers the trust_anchors extension (draft-ietf-tls-trust-anchor-ids), which
+// the previous version did not. This pins that the extension is offered; it
+// does not compare the whole ClientHello with a capture of Chrome.
 func TestChromeParrotClientHelloOffersTrustAnchors(t *testing.T) {
 	const extensionTrustAnchors = 0xca34
 	_, extensions := chromeParrotHandshake(t, &tls.Config{}, &tls.Config{ServerName: "localhost"})

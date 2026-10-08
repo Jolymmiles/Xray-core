@@ -159,8 +159,8 @@ func exchangeRaw(t *testing.T, server net.Addr, query []byte) (dnsmessage.Messag
 
 // A query from an unauthenticated, possibly spoofed address must not draw a
 // reply larger than itself: echoing the query's records turned one 510-byte
-// query into a 3.5 KB reply. An error reply carries the header and the
-// question, as an authoritative server's does.
+// query into a 3.5 KB reply. An error reply carries only the header and the
+// question.
 func TestServerErrorRepliesDoNotOutgrowQueries(t *testing.T) {
 	server := startTestServer(t)
 	for _, tc := range []struct {
@@ -254,8 +254,9 @@ func TestServerAnswersZoneApexAuthoritatively(t *testing.T) {
 }
 
 // An authoritative server answers every query. A burst of queries for names
-// outside the tunnel domain must get every NXDOMAIN, not a few: silently
-// dropped replies leave resolvers timing out and set the server apart.
+// outside the tunnel domain that fits the 128-slot reply queue must get every
+// NXDOMAIN, not a few: silently dropped replies leave resolvers timing out and
+// set the server apart. A burst beyond the queue still loses replies.
 func TestServerAnswersBurstOfRejectedQueries(t *testing.T) {
 	server := startTestServer(t)
 	conn, err := stdnet.ListenPacket("udp", "127.0.0.1:0")

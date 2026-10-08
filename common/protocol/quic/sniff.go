@@ -152,9 +152,9 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	packetBuf := buf.NewWithSize(int32(len(b)))
 	defer packetBuf.Release()
 
-	// The connection sniffed is the one of the first Initial packet that
-	// decrypts. A flow can carry Initial packets of other connections, which
-	// are skipped.
+	// The connection sniffed is the one of the first Initial packet, which
+	// must decrypt or the flow is rejected. A flow can carry Initial packets
+	// of other connections after it, which are skipped.
 	var conn *initialKeys
 
 	// Parse QUIC packets

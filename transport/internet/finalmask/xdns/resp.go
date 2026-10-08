@@ -361,8 +361,11 @@ func (m *SendManager) remove(clientID ClientID, info *SendInfo) {
 // entry returns the queues of clientID, creating them if needed, and marks
 // it the most recently used client. The keys come from unauthenticated
 // queries, so a new client beyond sendClientCount evicts the least recently
-// used one: a flood can churn the table but never lock new clients out.
-// entry returns nil once the manager is closed. m.mu must be held.
+// used one: a flood can churn the table but never lock new clients out. The
+// cost is that sendClientCount IDs brought in between two polls of a client
+// evict it, dropping up to 128 downlink packets queued for it; the table no
+// longer grows without bound instead. entry returns nil once the manager is
+// closed. m.mu must be held.
 func (m *SendManager) entry(clientID ClientID) *SendInfo {
 	if info := m.m[clientID]; info != nil {
 		m.lru.MoveToFront(info.elem)

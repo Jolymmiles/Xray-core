@@ -99,11 +99,13 @@ func (c *xdnsServer) closed() bool {
 }
 
 // decref queues the reply to a query the server answers without tunnel data.
-// Like an authoritative server's reply it carries the header, the single
-// question and, when the query used EDNS, the server's own OPT record, which
-// holds the upper bits of rcode. Echoing the query's other records would let
-// a spoofed query draw a reply larger than itself. decref never blocks the
-// receive loop.
+// The reply carries only the header, the single question and, when the query
+// used EDNS, an OPT record of the server's, which holds the upper bits of
+// rcode: echoing the query's other records would let a spoofed query draw a
+// reply larger than itself. It is not a full authoritative answer: there is
+// no SOA in the authority section, and the OPT payload size mirrors the
+// query's. decref never blocks the receive loop, so the reply is dropped when
+// the reply queue is full.
 func (c *xdnsServer) decref(query *dnsmessage.Message, rcode dnsmessage.RCode, authoritative bool, limit int, addr net.Addr) {
 	reply := dnsmessage.Message{Header: dnsmessage.Header{
 		ID:               query.Header.ID,
