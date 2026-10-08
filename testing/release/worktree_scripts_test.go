@@ -15,9 +15,11 @@ import (
 
 // A worktree that holds its own geodata is ready even when the main checkout
 // has none. Failing it here stops every gates.sh tier before any test runs.
+var geodataAssets = []string{"geoip.dat", "geosite.dat"}
+
 func TestSetupWorktreeKeepsOwnGeodataWithoutMainCopy(t *testing.T) {
 	scratch := newScratchWorktree(t)
-	for _, asset := range []string{"geoip.dat", "geosite.dat"} {
+	for _, asset := range geodataAssets {
 		writeScratchFile(t, filepath.Join(scratch.worktree, "resources", asset), "local geodata", 0o644)
 	}
 	output, err := scratch.run(t, "testing/setup-worktree.sh")
@@ -37,6 +39,34 @@ func TestSetupWorktreeFailsWithoutAnyGeodata(t *testing.T) {
 	}
 	if missing := strings.Count(output, "missing "); missing != 2 {
 		t.Fatalf("setup-worktree.sh reported %d missing files, want 2:\n%s", missing, output)
+	}
+}
+
+// After a linking run, --copy turns the links into copies. A link left in
+// place loses the data when the main checkout's file goes away.
+func TestSetupWorktreeCopyReplacesExistingLinks(t *testing.T) {
+	scratch := newScratchWorktree(t)
+	for _, asset := range geodataAssets {
+		writeScratchFile(t, filepath.Join(scratch.main, "resources", asset), "main geodata", 0o644)
+	}
+	for _, args := range [][]string{nil, {"--copy"}} {
+		if output, err := scratch.run(t, "testing/setup-worktree.sh", args...); err != nil {
+			t.Fatalf("setup-worktree.sh %v: %v\n%s", args, err, output)
+		}
+	}
+	for _, asset := range geodataAssets {
+		path := filepath.Join(scratch.worktree, "resources", asset)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.Mode().IsRegular() {
+			t.Errorf("%s has mode %v after --copy, want a regular file", path, info.Mode())
+			continue
+		}
+		if content, err := os.ReadFile(path); err != nil || string(content) != "main geodata" {
+			t.Errorf("%s = %q (%v), want the main checkout's content", path, content, err)
+		}
 	}
 }
 
@@ -63,7 +93,27 @@ func TestGatesReadsArgumentsBeforeSetup(t *testing.T) {
 	}
 }
 
+// A tier named twice, directly and through "all", runs once; a second run
+// would truncate the first run's log.
+func TestGatesRunsEachTierOnce(t *testing.T) {
+	scratch := newScratchWorktree(t)
+	scratch.useFakeGo(t)
+	for _, asset := range geodataAssets {
+		writeScratchFile(t, filepath.Join(scratch.worktree, "resources", asset), "local geodata", 0o644)
+	}
+	output, err := scratch.run(t, "testing/gates.sh", "unit", "all", "unit")
+	if err != nil {
+		t.Fatalf("gates.sh unit all unit: %v\n%s", err, output)
+	}
+	for _, tier := range []string{"unit", "vless", "smux", "xhttp"} {
+		if runs := strings.Count(output, "== "+tier+"\n"); runs != 1 {
+			t.Errorf("tier %s ran %d times, want 1:\n%s", tier, runs, output)
+		}
+	}
+}
+
 type scratchWorktree struct {
+	main     string
 	worktree string
 	logDir   string // GATES_LOG_DIR for gates.sh; not created by the test
 	env      []string
@@ -84,6 +134,7 @@ func newScratchWorktree(t *testing.T) scratchWorktree {
 	writeScratchFile(t, filepath.Join(mainCheckout, ".gitignore"), "/resources/*.dat\n", 0o644)
 
 	scratch := scratchWorktree{
+		main:     mainCheckout,
 		worktree: filepath.Join(base, "worktree"),
 		logDir:   filepath.Join(base, "logs"),
 		env:      isolatedGitEnv(),
@@ -113,6 +164,21 @@ func (scratch scratchWorktree) run(t *testing.T, script string, args ...string) 
 	command.Env = append(scratch.env, "GATES_LOG_DIR="+scratch.logDir)
 	output, err := command.CombinedOutput()
 	return string(output), err
+}
+
+// useFakeGo puts first on PATH a go command that only prints its arguments,
+// so gates.sh walks every step of a tier without building or testing.
+func (scratch *scratchWorktree) useFakeGo(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	writeScratchFile(t, filepath.Join(bin, "go"), "#!/bin/sh\necho \"fake go $*\"\n", 0o755)
+	for index, variable := range scratch.env {
+		if path, ok := strings.CutPrefix(variable, "PATH="); ok {
+			scratch.env[index] = "PATH=" + bin + string(os.PathListSeparator) + path
+			return
+		}
+	}
+	scratch.env = append(scratch.env, "PATH="+bin)
 }
 
 // isolatedGitEnv keeps the caller's git configuration and repository

@@ -34,7 +34,9 @@ failed=0
 for asset in geoip.dat geosite.dat; do
 	from="$main/resources/$asset"
 	to="$root/resources/$asset"
-	if [[ "$from" -ef "$to" ]]; then
+	# The main checkout itself, or a link from an earlier run; --copy replaces
+	# such a link with a copy.
+	if [[ "$from" -ef "$to" ]] && [[ "$mode" == link || ! -L "$to" ]]; then
 		echo "ok      $asset (already in place)"
 		continue
 	fi

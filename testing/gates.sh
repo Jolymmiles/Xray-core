@@ -38,10 +38,23 @@ fi
 
 # Read the arguments first: help and a mistyped tier need no test setup.
 tiers=()
+# add_tier <tier>...: queue each tier once; a second run would truncate the
+# first run's log.
+add_tier() {
+	local tier queued
+	for tier in "$@"; do
+		for queued in ${tiers[@]+"${tiers[@]}"}; do
+			if [[ "$queued" == "$tier" ]]; then
+				continue 2
+			fi
+		done
+		tiers+=("$tier")
+	done
+}
 for argument in "$@"; do
 	case "$argument" in
-	unit | vless | smux | xhttp | race) tiers+=("$argument") ;;
-	all) tiers+=(unit vless smux xhttp) ;;
+	unit | vless | smux | xhttp | race) add_tier "$argument" ;;
+	all) add_tier unit vless smux xhttp ;;
 	-h | --help)
 		usage
 		exit 0
