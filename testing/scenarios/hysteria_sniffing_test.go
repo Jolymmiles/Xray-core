@@ -84,9 +84,46 @@ func (r *udpRecorder) port() int {
 	return r.conn.LocalAddr().(*stdnet.UDPAddr).Port
 }
 
+// readinessProbe is the payload of the datagrams waitForUDPTunnel sends. It
+// is not QUIC, so the server routes it to direct.
+var readinessProbe = []byte("xray scenario readiness probe")
+
+// waitForUDPTunnel sends probes through the client from a socket of their
+// own until one reaches direct: the client then listens, and its Hysteria
+// connection carries UDP to the server and on. A probe is sent every 100ms
+// for up to 20s.
+func waitForUDPTunnel(t *testing.T, clientPort int, direct *udpRecorder) {
+	t.Helper()
+	probe, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	client := &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: clientPort}
+	resend := time.NewTicker(100 * time.Millisecond)
+	defer resend.Stop()
+	deadline := time.After(20 * time.Second)
+	for {
+		if _, err := probe.WriteToUDP(readinessProbe, client); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case got := <-direct.received:
+			if !bytes.Equal(got, readinessProbe) {
+				t.Fatalf("a %d-byte datagram that is not a probe reached direct", len(got))
+			}
+			return
+		case <-resend.C:
+		case <-deadline:
+			t.Fatal("no probe crossed the tunnel within 20s")
+		}
+	}
+}
+
 // startQUICSniffingTunnel starts an Xray client that forwards UDP from the
 // returned port to direct through an Xray Hysteria server. The server sniffs
-// QUIC and routes flows whose server name ends in .sniff.test to sniffed.
+// QUIC and routes flows whose server name ends in .sniff.test to sniffed. It
+// returns once a probe has crossed the tunnel.
 func startQUICSniffingTunnel(t *testing.T) (clientPort int, direct, sniffed *udpRecorder) {
 	t.Helper()
 	direct = startUDPRecorder(t)
@@ -134,13 +171,17 @@ func startQUICSniffingTunnel(t *testing.T) (clientPort int, direct, sniffed *udp
 	servers, err := InitializeServerConfigs(serverConfig, clientConfig)
 	common.Must(err)
 	t.Cleanup(func() { CloseAllServers(servers) })
+	waitForUDPTunnel(t, clientPort, direct)
 	return clientPort, direct, sniffed
 }
 
 // Hysteria 2.13.0 made sniffing find the server name of QUIC clients whose
 // ClientHello spans several packets, so that domain rules apply to their
 // traffic. Through an Xray Hysteria server that sniffs QUIC, each client's
-// first flight must be routed by its server name and arrive unmodified.
+// first flight must be routed by its server name and arrive unmodified. The
+// flight is sent once, from a fresh socket, after a probe has crossed the
+// tunnel, so a first flight that gets dropped fails the test instead of
+// being sent again.
 func TestHysteriaRoutesQUICBySniffedServerName(t *testing.T) {
 	for _, flow := range []struct {
 		name, prefix string
@@ -177,6 +218,9 @@ func TestHysteriaRoutesQUICBySniffedServerName(t *testing.T) {
 				case got := <-sniffed.received:
 					viaSniffed = append(viaSniffed, got)
 				case got := <-direct.received:
+					if bytes.Equal(got, readinessProbe) {
+						continue // a probe that arrived after the first one
+					}
 					viaDirect = append(viaDirect, got)
 				case <-deadline:
 					break receive
