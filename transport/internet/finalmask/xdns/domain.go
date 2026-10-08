@@ -154,26 +154,21 @@ func (d *Domain) IsDomain(name dnsmessage.Name) bool {
 	if d.name.Length >= name.Length || name.Data[name.Length-d.name.Length-1] != '.' {
 		return false
 	}
-	i := d.name.Length
-	j := name.Length
-	for i > 0 {
-		i--
-		j--
-		if Lower(d.name.Data[i]) != Lower(name.Data[j]) {
-			return false
-		}
-	}
-	return true
+	return d.endsName(name)
 }
 
 // IsApex reports whether name is d itself, the apex of the zone the server
 // answers for. The apex carries no tunnel data, so IsDomain excludes it.
 func (d *Domain) IsApex(name dnsmessage.Name) bool {
-	if d.name.Length != name.Length {
-		return false
-	}
+	return d.name.Length == name.Length && d.endsName(name)
+}
+
+// endsName reports whether name ends with d's name, ignoring ASCII case. name
+// must be at least as long as d's name.
+func (d *Domain) endsName(name dnsmessage.Name) bool {
+	offset := name.Length - d.name.Length
 	for i := range d.name.Length {
-		if Lower(d.name.Data[i]) != Lower(name.Data[i]) {
+		if Lower(d.name.Data[i]) != Lower(name.Data[offset+i]) {
 			return false
 		}
 	}

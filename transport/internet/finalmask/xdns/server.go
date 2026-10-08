@@ -80,7 +80,7 @@ func NewServer(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 
 		readCh: make(chan packet),
 		recCh:  make(chan *Rec, 255),
-		// decref never blocks the receive loop; buffer error replies so a
+		// queueReply never blocks the receive loop; buffer error replies so a
 		// busy writer drops them only when this bounded queue is full.
 		drCh:    make(chan resp, 128),
 		closeCh: make(chan struct{}),
@@ -98,15 +98,15 @@ func (c *xdnsServer) closed() bool {
 	}
 }
 
-// decref queues the reply to a query the server answers without tunnel data.
+// queueReply queues the reply to a query the server answers without tunnel data.
 // The reply carries only the header, the single question and, when the query
 // used EDNS, an OPT record of the server's, which holds the upper bits of
 // rcode: echoing the query's other records would let a spoofed query draw a
 // reply larger than itself. It is not a full authoritative answer: there is
 // no SOA in the authority section, and the OPT payload size mirrors the
-// query's. decref never blocks the receive loop, so the reply is dropped when
+// query's. queueReply never blocks the receive loop, so the reply is dropped when
 // the reply queue is full.
-func (c *xdnsServer) decref(query *dnsmessage.Message, rcode dnsmessage.RCode, authoritative bool, limit int, addr net.Addr) {
+func (c *xdnsServer) queueReply(query *dnsmessage.Message, rcode dnsmessage.RCode, authoritative bool, limit int, addr net.Addr) {
 	reply := dnsmessage.Message{Header: dnsmessage.Header{
 		ID:               query.Header.ID,
 		Response:         true,
@@ -145,7 +145,7 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 		return
 	}
 	answer := func(rcode dnsmessage.RCode, authoritative bool) {
-		c.decref(&msg, rcode, authoritative, len(buf), addr)
+		c.queueReply(&msg, rcode, authoritative, len(buf), addr)
 	}
 
 	if msg.Header.OpCode != 0 {
