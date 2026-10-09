@@ -53,8 +53,9 @@ func TestExplicitBuildTagsKeepHTTP2Legacy(t *testing.T) {
 	}
 }
 
-// tagsSkippedTrees are not scanned at all.
-var tagsSkippedTrees = []struct{ prefix, reason string }{
+// tagsSkippedTrees are not scanned at all. A path ending in a slash skips its
+// whole tree; any other path skips that one file.
+var tagsSkippedTrees = []struct{ path, reason string }{
 	{"third_party/", "vendored modules keep their upstream bytes (see third_party/reality/FORK.md)"},
 	// The scanner's own fixtures contain deliberate violations.
 	{"testing/release/build_tags_test.go", "scanner test cases"},
@@ -163,7 +164,7 @@ var tagsExemptions = []tagsExemption{
 
 func tagsSkippedTree(path string) bool {
 	for _, tree := range tagsSkippedTrees {
-		if strings.HasPrefix(path, tree.prefix) {
+		if path == tree.path || strings.HasSuffix(tree.path, "/") && strings.HasPrefix(path, tree.path) {
 			return true
 		}
 	}
@@ -287,19 +288,28 @@ func splitTags(list string) []string {
 // lines of string literals, interpreted or raw, that give a go command a tag
 // list without http2legacy: "-tags=VALUE", "-tags VALUE", or "-tags" whose
 // value is the next argument. A next argument that is not a string literal
-// cannot be read and is reported. Comments are not tokens, so prose that
-// names the flag is never read as an argument.
+// cannot be read and is reported, and so is a literal that an expression such
+// as + extends. Comments are not tokens, so prose that names the flag is never
+// read as an argument. Every file is scanned: an escape such as "\x2dtags"
+// spells the flag without its bytes appearing in the source.
 func goTagsWithoutHTTP2Legacy(content string) []int {
-	if !strings.Contains(content, "-tags") {
-		return nil
-	}
 	fileSet := token.NewFileSet()
 	file := fileSet.AddFile("", fileSet.Base(), len(content))
 	var source scanner.Scanner
 	source.Init(file, []byte(content), nil, 0)
 	scan := func() (int, token.Token, string) {
 		position, kind, literal := source.Scan()
-		return fileSet.Position(position).Line, kind, literal
+		// Physical lines: a //line directive must not move a hit off the
+		// source line it is reported and exempted by.
+		return fileSet.PositionFor(position, false).Line, kind, literal
+	}
+	// argumentEnds reports whether a token ends the argument a literal began.
+	argumentEnds := func(kind token.Token) bool {
+		switch kind {
+		case token.COMMA, token.RPAREN, token.RBRACK, token.RBRACE, token.COLON, token.SEMICOLON, token.EOF:
+			return true
+		}
+		return false
 	}
 	stringValue := func(kind token.Token, literal string) (string, bool) {
 		if kind != token.STRING {
@@ -337,8 +347,24 @@ func goTagsWithoutHTTP2Legacy(content string) []int {
 		} else {
 			continue // another flag, such as -tagsfoo
 		}
-		if !slices.Contains(splitTags(list), requiredBuildTag) {
+		_, next, _ := scan()
+		if !argumentEnds(next) || !slices.Contains(splitTags(list), requiredBuildTag) {
 			lines = append(lines, line)
+		}
+	}
+}
+
+// A skipped file is skipped by its exact path; only an entry ending in a
+// slash skips a whole tree.
+func TestTagsSkippedTree(t *testing.T) {
+	for path, want := range map[string]bool{
+		"third_party/reality/tls.go":            true,
+		"testing/release/build_tags_test.go":    true,
+		"testing/release/build_tags_test.go.sh": false,
+		"testing/release/agents_doc_test.go":    false,
+	} {
+		if got := tagsSkippedTree(path); got != want {
+			t.Errorf("tagsSkippedTree(%q) = %v, want %v", path, got, want)
 		}
 	}
 }
@@ -410,6 +436,15 @@ func TestFindTagsWithoutHTTP2Legacy(t *testing.T) {
 		{"go exec quoted tag value ending with punctuation", "x.go", `exec.Command("go", "build", "-tags", "integration http2legacy.", "./x")`, []int{1}},
 		{"go literal holding flag and value with tag", "x.go", `{"-tags http2legacy", "", false},`, nil},
 		{"go literal holding flag and value without tag", "x.go", `{"-tags integration", "", false},`, []int{1}},
+		{"go exec escaped flag without tag", "x.go", `exec.Command("go", "test", "\x2dtags", "integration", "./x")`, []int{1}},
+		{"go exec tag value extended by an expression", "x.go", `exec.Command("go", "test", "-tags", "http2legacy"+".", "./x")`, []int{1}},
+		{"go exec joined argument extended by an expression", "x.go", `exec.Command("go", "test", "-tags=http2legacy"+".", "./x")`, []int{1}},
+		{"go literal holding flag and value extended by an expression", "x.go", `{"-tags http2legacy"+".", "", false},`, []int{1}},
+		{"go slice ending with the tag value", "x.go", `args := []string{"-tags", "http2legacy"}`, nil},
+		{"go constant holding the joined flag", "x.go", "const flag = \"-tags=http2legacy\"\nconst other = flag", nil},
+		{"go joined flag ending the file", "x.go", `const flag = "-tags=http2legacy"`, nil},
+		{"go line directive does not move reported lines", "x.go", "package p\n//line generated.go:999\nvar c = exec.Command(\"go\", \"test\", \"-tags\", \"integration\", \"./x\")\n", []int{3}},
+		{"go comment with a tag list is read like prose", "x.go", "// Run it with go test -tags integration ./x", []int{1}},
 		{"go argument form is not read outside go files", "doc.md", `"-tags", "coverage"`, nil},
 		{"no tags at all", "run.sh", "go test ./...", nil},
 	} {
