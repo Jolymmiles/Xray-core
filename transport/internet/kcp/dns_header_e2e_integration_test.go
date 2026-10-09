@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -89,6 +90,33 @@ func TestMKCPDNSHeaderProcessE2E(t *testing.T) {
 	})
 }
 
+// A datagram the relay cannot forward is reported as a problem, so a failed
+// traffic check names the send error rather than only a SOCKS timeout.
+func TestMKCPDNSHeaderRelayReportsSendErrors(t *testing.T) {
+	// Linux rejects a send to port 0 with EINVAL.
+	server := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+	relay := startMKCPDNSHeaderRelay(t, server, "t.example.")
+	client, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: relay.port()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	query := []byte{0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 't', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0, 0, 1, 0, 1}
+	if _, err := client.Write(query); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-relay.problemc:
+	case <-time.After(5 * time.Second):
+		t.Fatal("relay did not report the datagram it failed to forward to port 0")
+	}
+	problems := relay.takeProblems()
+	if len(problems) != 1 || !strings.Contains(problems[0], "invalid argument") {
+		t.Fatalf("relay problems = %q, want one send error", problems)
+	}
+}
+
 func setMKCPDNSHeader(config map[string]any, direction, domain string) {
 	endpoint := config[direction].([]any)[0].(map[string]any)
 	endpoint["streamSettings"].(map[string]any)["finalmask"] = map[string]any{
@@ -106,13 +134,15 @@ type mkcpDNSHeaderRelay struct {
 	listener *net.UDPConn
 	server   *net.UDPAddr
 	name     string
+	problemc chan struct{} // gets a token, without blocking, for each problem
 
 	mu        sync.Mutex
 	closed    bool
 	upstreams map[string]*net.UDPConn
 	toServer  int
 	toClient  int
-	malformed []string
+	problems  []string
+	dropped   int
 	wg        sync.WaitGroup
 }
 
@@ -126,6 +156,7 @@ func startMKCPDNSHeaderRelay(t *testing.T, server *net.UDPAddr, name string) *mk
 		listener:  listener,
 		server:    server,
 		name:      name,
+		problemc:  make(chan struct{}, 1),
 		upstreams: make(map[string]*net.UDPConn),
 	}
 	relay.wg.Add(1)
@@ -139,6 +170,11 @@ func startMKCPDNSHeaderRelay(t *testing.T, server *net.UDPAddr, name string) *mk
 		}
 		relay.mu.Unlock()
 		relay.wg.Wait()
+		// Problems that verify did not take, as when the traffic check stops
+		// early, are likely the cause of the failure.
+		for _, problem := range relay.takeProblems() {
+			t.Error(problem)
+		}
 	})
 	return relay
 }
@@ -158,9 +194,11 @@ func (r *mkcpDNSHeaderRelay) serveClients() {
 		r.inspect("client -> server", buffer[:n])
 		upstream := r.upstream(client)
 		if upstream == nil {
-			return
+			continue
 		}
-		_, _ = upstream.WriteToUDP(buffer[:n], r.server)
+		if _, err := upstream.WriteToUDP(buffer[:n], r.server); err != nil {
+			r.fail("forward a datagram from %s to %s: %v", client, r.server, err)
+		}
 	}
 }
 
@@ -175,7 +213,7 @@ func (r *mkcpDNSHeaderRelay) upstream(client *net.UDPAddr) *net.UDPConn {
 	}
 	upstream, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
-		r.malformed = append(r.malformed, fmt.Sprintf("open upstream socket for %s: %v", client, err))
+		r.addProblemLocked(fmt.Sprintf("open upstream socket for %s: %v", client, err))
 		return nil
 	}
 	r.upstreams[client.String()] = upstream
@@ -193,7 +231,9 @@ func (r *mkcpDNSHeaderRelay) serveServer(upstream *net.UDPConn, client *net.UDPA
 			return
 		}
 		r.inspect("server -> client", buffer[:n])
-		_, _ = r.listener.WriteToUDP(buffer[:n], client)
+		if _, err := r.listener.WriteToUDP(buffer[:n], client); err != nil {
+			r.fail("forward a datagram from %s to %s: %v", r.server, client, err)
+		}
 	}
 }
 
@@ -215,22 +255,55 @@ func (r *mkcpDNSHeaderRelay) inspect(direction string, datagram []byte) {
 	if err == nil && !header.Response && question.Name.String() == r.name && question.Type == dnsmessage.TypeA && question.Class == dnsmessage.ClassINET {
 		return
 	}
-	if len(r.malformed) < 5 {
-		r.malformed = append(r.malformed, fmt.Sprintf("%s datagram %x does not start with a query for %s A IN: question %v, error %v", direction, datagram[:min(len(datagram), 48)], r.name, question, err))
+	r.addProblemLocked(fmt.Sprintf("%s datagram %x does not start with a query for %s A IN: question %v, error %v", direction, datagram[:min(len(datagram), 48)], r.name, question, err))
+}
+
+// fail records a problem unless the relay is shutting down, when its sockets
+// fail by design.
+func (r *mkcpDNSHeaderRelay) fail(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		r.addProblemLocked(fmt.Sprintf(format, args...))
 	}
+}
+
+func (r *mkcpDNSHeaderRelay) addProblemLocked(problem string) {
+	if len(r.problems) < 5 {
+		r.problems = append(r.problems, problem)
+	} else {
+		r.dropped++
+	}
+	select {
+	case r.problemc <- struct{}{}:
+	default:
+	}
+}
+
+// takeProblems returns the problems recorded since the last call.
+func (r *mkcpDNSHeaderRelay) takeProblems() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	problems := r.problems
+	if r.dropped > 0 {
+		problems = append(problems, fmt.Sprintf("and %d more relay problems", r.dropped))
+	}
+	r.problems, r.dropped = nil, 0
+	return problems
 }
 
 func (r *mkcpDNSHeaderRelay) verify(t *testing.T) {
 	t.Helper()
+	problems := r.takeProblems()
+	for _, problem := range problems {
+		t.Error(problem)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, malformed := range r.malformed {
-		t.Error(malformed)
-	}
 	if r.toServer == 0 || r.toClient == 0 {
 		t.Errorf("relayed %d client and %d server datagrams, want both directions", r.toServer, r.toClient)
 	}
-	if len(r.malformed) == 0 {
+	if len(problems) == 0 {
 		t.Logf("relayed %d client and %d server datagrams, each starting with a query for %s A IN", r.toServer, r.toClient, r.name)
 	}
 }
