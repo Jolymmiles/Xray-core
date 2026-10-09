@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/xtls/xray-core/common"
@@ -84,5 +85,41 @@ func TestFakeDNSThenOthersSniffsQUICDatagramsApart(t *testing.T) {
 			domain = result.Domain()
 		}
 		t.Fatalf("sniffed %q (%v), want ngtcp2.sniff.test", domain, err)
+	}
+}
+
+// The dispatcher hands the QUIC sniffer each datagram whole and apart, however
+// long, longer than quic-go reads one included: Chrome's first two datagrams
+// padded to 1498 bytes, or their packets coalesced in one datagram.
+func TestSniffQUICKeepsLongDatagramsWhole(t *testing.T) {
+	chrome := readQUICCorpus(t, "quic-chrome153", 2)
+	padded := func(datagram []byte, size int) []byte {
+		return append(bytes.Clone(datagram), make([]byte, size-len(datagram))...)
+	}
+	tests := []struct {
+		name      string
+		datagrams [][]byte
+	}{
+		{"two datagrams padded to 1498 bytes", [][]byte{padded(chrome[0], 1498), padded(chrome[1], 1498)}},
+		{"one datagram with the packets of both", [][]byte{bytes.Join(chrome, nil)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := newCachedReader(&datagramReader{datagrams: slices.Clone(tt.datagrams)})
+			ctx := snifferContext()
+			result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
+			if err != nil || result.Protocol() != "quic" || result.Domain() != "chrome.sniff.test" {
+				t.Fatalf("sniff() = (%v, %v), want quic chrome.sniff.test", result, err)
+			}
+			lent := reader.Datagrams()
+			if len(lent) != len(tt.datagrams) {
+				t.Fatalf("the cached reader lends %d datagrams, want %d", len(lent), len(tt.datagrams))
+			}
+			for i := range lent {
+				if !bytes.Equal(lent[i], tt.datagrams[i]) {
+					t.Fatalf("datagram %d is lent as %d bytes, want its %d bytes unchanged", i, len(lent[i]), len(tt.datagrams[i]))
+				}
+			}
+		})
 	}
 }
