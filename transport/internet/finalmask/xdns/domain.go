@@ -79,10 +79,30 @@ type Domain struct {
 	lenMax int
 }
 
-func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns0 uint16) (*Domain, error) {
-	if strings.Contains(domain, "..") {
-		return nil, errors.New("invalid domain")
+// absoluteASCIIName converts a configured domain, with or without a trailing
+// dot and possibly internationalised, into the absolute ASCII name that is
+// packed into queries. Every label must be non-empty and fit a DNS label, or
+// the client could not pack its first poll.
+func absoluteASCIIName(domain string) (dnsmessage.Name, error) {
+	ascii, err := idna.ToASCII(strings.TrimSuffix(domain, "."))
+	if err != nil {
+		return dnsmessage.Name{}, err
 	}
+	for _, label := range strings.Split(ascii, ".") {
+		if len(label) == 0 {
+			return dnsmessage.Name{}, errors.New("empty label")
+		}
+		if len(label) > 63 {
+			return dnsmessage.Name{}, fmt.Errorf("label %q is longer than 63 bytes", label)
+		}
+	}
+	if len(ascii)+1 > 255 {
+		return dnsmessage.Name{}, fmt.Errorf("ASCII name of %d bytes is longer than 255 bytes", len(ascii)+1)
+	}
+	return dnsmessage.NewName(ascii + ".")
+}
+
+func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns0 uint16) (*Domain, error) {
 	if lenLimit < 0 || lenLimit > 255 {
 		return nil, errors.New("lenLimit < 0 || lenLimit > 255")
 	}
@@ -103,19 +123,13 @@ func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns
 		return nil, errors.New("edns0 != 0 && (edns0 < 512 || edns0 > 4096)")
 	}
 
-	ascii, err := idna.ToASCII(domain)
+	name, err := absoluteASCIIName(domain)
 	if err != nil {
-		return nil, err
-	}
-	ascii = strings.Trim(ascii, ".")
-
-	name, err := dnsmessage.NewName(domain + ".")
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid domain %q: %w", domain, err)
 	}
 
 	if lenLimit < int(name.Length)+1 {
-		return nil, errors.New("lenLimit < int(name.Length)+1")
+		return nil, fmt.Errorf("domain %q needs a lenLimit of at least %d, got lenLimit %d", domain, int(name.Length)+1, lenLimit)
 	}
 	n := (lenLimit - int(name.Length) - 1) / (labelLimit + 1)
 	left := (lenLimit - int(name.Length) - 1) % (labelLimit + 1)
@@ -125,7 +139,7 @@ func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns
 	}
 	cap := table[total]
 	if cap < 17 {
-		return nil, errors.New("cap < 17")
+		return nil, fmt.Errorf("domain %q leaves room for %d bytes of data per query with lenLimit %d and labelLimit %d, fewer than 17", domain, cap, lenLimit, labelLimit)
 	}
 	total = table_[cap]
 	lenMax := int(name.Length) + 1 + total + total/labelLimit
