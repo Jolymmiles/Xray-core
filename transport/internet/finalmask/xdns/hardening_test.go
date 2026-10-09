@@ -656,6 +656,31 @@ func TestNewDomainRejectsNamesThatCannotBePacked(t *testing.T) {
 	}
 }
 
+// The other errors that depend on the name also name it and say what is
+// wrong. An internationalised name can fit in UTF-8 and outgrow 255 bytes
+// only in punycode, so the length is the one of the ASCII form; and a name
+// can leave too little of lenLimit for the data a query carries.
+func TestNewDomainLimitErrorsNameTheDomain(t *testing.T) {
+	for _, tc := range []struct {
+		configured string
+		lenLimit   int
+		want       string
+	}{
+		{strings.Repeat("aü.", 30) + "example", 255, "longer than 255 bytes"},
+		{"t.example", 5, "lenLimit 5"},
+		{"t.example", 20, "fewer than 17"},
+	} {
+		_, err := NewDomain(tc.configured, tc.lenLimit, 63, []uint16{TypeTXT}, 0)
+		if err == nil {
+			t.Errorf("NewDomain(%q) with lenLimit %d succeeded, want an error", tc.configured, tc.lenLimit)
+			continue
+		}
+		if quoted := fmt.Sprintf("%q", tc.configured); !strings.Contains(err.Error(), quoted) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("NewDomain(%q) with lenLimit %d: error %q, want it to name the domain and say %q", tc.configured, tc.lenLimit, err, tc.want)
+		}
+	}
+}
+
 // A reply to an unsupported EDNS request must still be a response: with QR
 // clear the datagram is another query, which no resolver would answer with and
 // which tells a prober this is not a stock DNS server.

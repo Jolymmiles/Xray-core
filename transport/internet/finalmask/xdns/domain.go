@@ -96,6 +96,9 @@ func absoluteASCIIName(domain string) (dnsmessage.Name, error) {
 			return dnsmessage.Name{}, fmt.Errorf("label %q is longer than 63 bytes", label)
 		}
 	}
+	if len(ascii)+1 > 255 {
+		return dnsmessage.Name{}, fmt.Errorf("ASCII name of %d bytes is longer than 255 bytes", len(ascii)+1)
+	}
 	return dnsmessage.NewName(ascii + ".")
 }
 
@@ -126,7 +129,7 @@ func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns
 	}
 
 	if lenLimit < int(name.Length)+1 {
-		return nil, errors.New("lenLimit < int(name.Length)+1")
+		return nil, fmt.Errorf("domain %q needs a lenLimit of at least %d, got lenLimit %d", domain, int(name.Length)+1, lenLimit)
 	}
 	n := (lenLimit - int(name.Length) - 1) / (labelLimit + 1)
 	left := (lenLimit - int(name.Length) - 1) % (labelLimit + 1)
@@ -136,7 +139,7 @@ func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns
 	}
 	cap := table[total]
 	if cap < 17 {
-		return nil, errors.New("cap < 17")
+		return nil, fmt.Errorf("domain %q leaves room for %d bytes of data per query with lenLimit %d and labelLimit %d, fewer than 17", domain, cap, lenLimit, labelLimit)
 	}
 	total = table_[cap]
 	lenMax := int(name.Length) + 1 + total + total/labelLimit
