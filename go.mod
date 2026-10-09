@@ -25,11 +25,11 @@ require (
 	github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0
 	go.yaml.in/yaml/v3 v3.0.5
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.0
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842
-	golang.org/x/net v0.59.0
-	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/net v0.61.0
+	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.49.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	golang.zx2c4.com/wireguard/windows v1.1.1
@@ -53,9 +53,9 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

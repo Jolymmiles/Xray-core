@@ -17,10 +17,13 @@ guard it.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
-  `-tags http2legacy`. Without the tag, Go 1.27's x/net HTTP/2 client dials
-  once per request while a TLS handshake hangs, defeating XHTTP
-  `xmux.maxConnections` and producing connection bursts that censors block on
-  (XTLS/Xray-core#6797). Covered by
+  `-tags http2legacy`. Under Go 1.27 x/net's HTTP/2 client wraps net/http.
+  Before x/net v0.60.0 the wrapper dialed once per waiting request while a
+  TLS handshake hung, defeating XHTTP `xmux.maxConnections`
+  (XTLS/Xray-core#6797). v0.60.0 coalesces those dials again, but when a
+  connection resets right after its handshake net/http redials at once, one
+  connection after another, while x/net's own pool waits 1 to 32 seconds
+  between retries. Censors can act on both connection patterns. Covered by
   `transport/internet/splithttp/http2_dial_test.go` and
   `testing/release/build_contract_test.go`.
 - XHTTP inbounds accept Mux.Cool TCP sessions; upstream (XTLS/Xray-core#4128)
