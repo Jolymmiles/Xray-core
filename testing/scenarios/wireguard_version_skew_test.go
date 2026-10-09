@@ -124,8 +124,12 @@ func wireGuardVersionSkewConfigs(destination net.Destination, hostIP netip.Addr,
 		}},
 		Outbound: []*core.OutboundHandlerConfig{{
 			SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{StreamSettings: &internet.StreamConfig{ProtocolName: "udp"}}),
+			// The gVisor stack keeps replies from this host's own address out of
+			// kernel martian filtering; see TestWireguard. The client's stack does
+			// not change the WireGuard wire format, and TestWireguardKernelTun
+			// covers the kernel TUN client.
 			ProxySettings: serial.ToTypedMessage(&wireguard.DeviceConfig{
-				IsClient: true, NoKernelTun: false, Endpoint: []string{"10.0.0.2"}, Mtu: 1420, SecretKey: clientPrivate,
+				IsClient: true, NoKernelTun: true, Endpoint: []string{"10.0.0.2"}, Mtu: 1420, SecretKey: clientPrivate,
 				Peers: []*wireguard.PeerConfig{{Endpoint: hostIP.String() + ":" + serverPort.String(), PublicKey: serverPublic, AllowedIps: []string{"0.0.0.0/0", "::0/0"}}},
 			}),
 		}},

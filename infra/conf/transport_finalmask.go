@@ -854,8 +854,18 @@ func (c *XDNS) Build() (proto.Message, error) {
 			var host, port string
 			host = u.Hostname()
 			port = u.Port()
+			// An address without a host, like ":53", reaches the resolver on
+			// this machine; one with neither host nor port names nothing.
+			if host == "" && port == "" {
+				return nil, errors.New("xdns resolver address ", c.Resolvers[i].Addrs[j], " is empty")
+			}
 			if port == "" {
 				port = "53"
+			}
+			// A port the client could never dial is rejected here rather than
+			// when the client first dials it.
+			if p, err := net.PortFromString(port); err != nil || p == 0 {
+				return nil, errors.New("xdns resolver address ", c.Resolvers[i].Addrs[j], " has no valid port")
 			}
 			resolvers = append(resolvers, &xdns.ResolverProto{Type: u.Scheme, Addr: net.JoinHostPort(host, port)})
 		}

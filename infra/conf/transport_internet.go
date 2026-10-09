@@ -234,7 +234,12 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 			}
 			config.Tcpmasks = append(config.Tcpmasks, serial.ToTypedMessage(u))
 		}
-		for _, mask := range c.FinalMask.Udp {
+		for i, mask := range c.FinalMask.Udp {
+			// xdns reads and writes plain DNS on the wire, so it has to be
+			// the innermost UDP mask, which is the last entry.
+			if strings.EqualFold(mask.Type, "xdns") && i != len(c.FinalMask.Udp)-1 {
+				return nil, errors.New(`the "xdns" UDP mask must be the last entry of finalmask.udp`)
+			}
 			u, err := mask.Build(false)
 			if err != nil {
 				return nil, errors.New("failed to build mask with type ", mask.Type).Base(err)

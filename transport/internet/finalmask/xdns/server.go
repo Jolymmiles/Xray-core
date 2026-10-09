@@ -2,11 +2,12 @@ package xdns
 
 import (
 	"context"
+	goerrors "errors"
 	"io"
+	stdnet "net"
 	"sync"
 	"time"
 
-	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"golang.org/x/net/dns/dnsmessage"
@@ -14,11 +15,20 @@ import (
 
 const (
 	maxResponseDelay = time.Second
+
+	recvBackoffMin = 10 * time.Millisecond
+	recvBackoffMax = time.Second
+
+	// rcodeBadVersion is BADVERS, whose upper bits travel in the OPT record
+	// (RFC 6891).
+	rcodeBadVersion dnsmessage.RCode = 16
 )
 
 type resp struct {
 	msg  dnsmessage.Message
 	addr net.Addr
+	// limit is the length of the query; the reply must not outgrow it.
+	limit int
 }
 
 type Rec struct {
@@ -68,9 +78,11 @@ func NewServer(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 		fragManager: NewFragManager(),
 		sendManager: NewSendManager(),
 
-		readCh:  make(chan packet),
-		recCh:   make(chan *Rec, 255),
-		drCh:    make(chan resp),
+		readCh: make(chan packet),
+		recCh:  make(chan *Rec, 255),
+		// queueReply never blocks the receive loop; buffer error replies so a
+		// busy writer drops them only when this bounded queue is full.
+		drCh:    make(chan resp, 128),
 		closeCh: make(chan struct{}),
 	}
 	go server.run()
@@ -86,9 +98,41 @@ func (c *xdnsServer) closed() bool {
 	}
 }
 
-func (c *xdnsServer) decref(msg dnsmessage.Message, addr net.Addr) {
+// queueReply queues the reply to a query the server answers without tunnel data.
+// The reply carries only the header, the single question and, when the query
+// used EDNS, an OPT record of the server's, which holds the upper bits of
+// rcode: echoing the query's other records would let a spoofed query draw a
+// reply larger than itself; a reply that would still outgrow the query is
+// sent as a FORMERR without the question. It is not a full authoritative
+// answer: there is no SOA in the authority section, and the OPT payload size
+// mirrors the query's. queueReply never blocks the receive loop, so the reply
+// is dropped when the reply queue is full.
+func (c *xdnsServer) queueReply(query *dnsmessage.Message, rcode dnsmessage.RCode, authoritative bool, limit int, addr net.Addr) {
+	reply := dnsmessage.Message{Header: dnsmessage.Header{
+		ID:               query.Header.ID,
+		Response:         true,
+		OpCode:           query.Header.OpCode,
+		Authoritative:    authoritative,
+		RecursionDesired: query.Header.RecursionDesired,
+		CheckingDisabled: query.Header.CheckingDisabled,
+		RCode:            rcode & 0xF,
+	}}
+	if len(query.Questions) == 1 {
+		reply.Questions = query.Questions
+	}
+	for i := range query.Additionals {
+		if query.Additionals[i].Header.Type != dnsmessage.TypeOPT {
+			continue
+		}
+		var opt dnsmessage.ResourceHeader
+		size := min(max(int(query.Additionals[i].Header.Class), 512), 4096)
+		if err := opt.SetEDNS0(size, rcode, query.Additionals[i].Header.DNSSECAllowed()); err == nil {
+			reply.Additionals = []dnsmessage.Resource{{Header: opt, Body: &dnsmessage.OPTResource{}}}
+		}
+		break
+	}
 	select {
-	case c.drCh <- resp{msg: msg, addr: addr}:
+	case c.drCh <- resp{msg: reply, addr: addr, limit: limit}:
 	default:
 	}
 }
@@ -101,18 +145,17 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 	if msg.Header.Response {
 		return
 	}
+	answer := func(rcode dnsmessage.RCode, authoritative bool) {
+		c.queueReply(&msg, rcode, authoritative, len(buf), addr)
+	}
 
 	if msg.Header.OpCode != 0 {
-		msg.Header.Response = true
-		msg.Header.RCode = dnsmessage.RCodeNotImplemented
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeNotImplemented, false)
 		return
 	}
 
 	if len(msg.Questions) != 1 {
-		msg.Header.Response = true
-		msg.Header.RCode = dnsmessage.RCodeFormatError
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeFormatError, false)
 		return
 	}
 
@@ -121,18 +164,13 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 	for i := range msg.Additionals {
 		if msg.Additionals[i].Header.Type == dnsmessage.TypeOPT {
 			if opt {
-				msg.Header.Response = true
-				msg.Header.RCode = dnsmessage.RCodeFormatError
-				c.decref(msg, addr)
+				answer(dnsmessage.RCodeFormatError, false)
 				return
 			}
 			opt = true
 			edns0 = uint16(msg.Additionals[i].Header.Class)
 			if ver := (msg.Additionals[i].Header.TTL >> 16) & 0xFF; ver != 0 {
-				msg.Header.Response = true
-				msg.Header.RCode = dnsmessage.RCodeSuccess
-				msg.Additionals[i].Header.TTL = 1 << 24
-				c.decref(msg, addr)
+				answer(rcodeBadVersion, false)
 				return
 			}
 		}
@@ -155,52 +193,43 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 		}
 	}
 	if domain == nil {
-		msg.Header.Response = true
-		msg.Header.RCode = dnsmessage.RCodeNameError
-		c.decref(msg, addr)
+		for i := range c.domains {
+			if c.domains[i].IsApex(msg.Questions[0].Name) {
+				// The apex exists like every name in the zone; NXDOMAIN
+				// would deny the whole zone below it (RFC 8020).
+				answer(dnsmessage.RCodeSuccess, true)
+				return
+			}
+		}
+		answer(dnsmessage.RCodeNameError, false)
 		return
 	}
 	if !domain.HasType(uint16(msg.Questions[0].Type)) {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 
 	var decoded [255]byte
 	n := domain.Decode(&decoded, msg.Questions[0].Name)
 	if n < 9 {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 	if TypeMap_[decoded[0]&3] != uint16(msg.Questions[0].Type) || (decoded[8]&0x3F != 3 && decoded[8]&0x3F != 8) || (decoded[8]&0x3F == 3 && n < 9+3+1) || (decoded[8]&0xC0 == 0xC0 && n < 9+3+3+1) || (decoded[8]&0x3F == 8 && n != 9+8) {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 	clientID := ClientIDFromRaw([8]byte(decoded[:8]))
 
 	r := NewResp(msg, domain, edns0)
 	if r == nil {
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 		return
 	}
 	select {
 	case c.recCh <- &Rec{resp: r, clientID: clientID, addr: addr}:
 	default:
-		msg.Header.Response = true
-		msg.Header.Authoritative = true
-		msg.Header.RCode = dnsmessage.RCodeSuccess
-		c.decref(msg, addr)
+		answer(dnsmessage.RCodeSuccess, true)
 	}
 
 	if decoded[8]&0x3F == 8 {
@@ -252,15 +281,25 @@ func (c *xdnsServer) recv() {
 	defer c.wg.Done()
 
 	var buf [512]byte
+	backoff := time.Duration(0)
 	for {
 		n, addr, err := c.PacketConn.ReadFrom(buf[:])
 		if err != nil {
-			if c.closed() {
+			if c.closed() || goerrors.Is(err, stdnet.ErrClosed) {
 				return
 			}
-			errors.LogErrorInner(context.Background(), err, "recv err")
-			return
+			// One failed read must not stop the server; back off so a
+			// persistent error cannot spin a core.
+			backoff = min(max(2*backoff, recvBackoffMin), recvBackoffMax)
+			errors.LogWarningInner(context.Background(), err, "recv err, retrying in ", backoff)
+			select {
+			case <-c.closeCh:
+				return
+			case <-time.After(backoff):
+			}
+			continue
 		}
+		backoff = 0
 		c.read(buf[:n], addr)
 	}
 }
@@ -285,7 +324,12 @@ func (c *xdnsServer) send() {
 			}
 		}
 
-		ch, stash := c.sendManager.Pop(rec.clientID)
+		ch, stash, ok := c.sendManager.Pop(rec.clientID)
+		if !ok {
+			// The queues are closed: answer at once without data.
+			_, _ = c.PacketConn.WriteTo(rec.resp.Encode(buf[:0], nil), rec.addr)
+			continue
+		}
 		left := rec.resp.cap
 		timer.Reset(maxResponseDelay)
 		var ps [][]byte
@@ -345,9 +389,41 @@ func (c *xdnsServer) dr() {
 		case <-c.closeCh:
 			return
 		case r := <-c.drCh:
-			_, _ = c.PacketConn.WriteTo(common.Must2(r.msg.AppendPack(buf[:0])), r.addr)
+			b, err := r.msg.AppendPack(buf[:0])
+			if err != nil || len(b) > r.limit {
+				// Unpack expands compressed names, so a question compressed
+				// against bytes that hold no earlier name packs longer than
+				// it was in the query. Answer such a query too, without the
+				// question.
+				formErr := formatError(&r.msg)
+				if b, err = formErr.AppendPack(buf[:0]); err != nil || len(b) > r.limit {
+					errors.LogDebug(context.Background(), r.addr, " reply dropped: ", len(b), " bytes for a ", r.limit, "-byte query, err ", err)
+					continue
+				}
+			}
+			_, _ = c.PacketConn.WriteTo(b, r.addr)
 		}
 	}
+}
+
+// formatError returns the FORMERR sent in place of reply when reply does not
+// fit within its query. It keeps the header, which no longer claims
+// authority, and reply's OPT record with the upper rcode bits cleared (RFC
+// 6891, Section 6.1.3), but drops the question. At 12 bytes, or 23 with the
+// OPT record, it fits every query that parses.
+func formatError(reply *dnsmessage.Message) dnsmessage.Message {
+	formErr := dnsmessage.Message{Header: reply.Header}
+	formErr.Header.RCode = dnsmessage.RCodeFormatError
+	formErr.Header.Authoritative = false
+	for _, additional := range reply.Additionals {
+		if additional.Header.Type == dnsmessage.TypeOPT {
+			opt := additional.Header
+			opt.TTL &^= 0xFF << 24
+			formErr.Additionals = []dnsmessage.Resource{{Header: opt, Body: &dnsmessage.OPTResource{}}}
+			break
+		}
+	}
+	return formErr
 }
 
 func (c *xdnsServer) ReadFrom(p []byte) (n int, addr net.Addr, err error) {

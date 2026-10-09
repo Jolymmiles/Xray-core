@@ -253,10 +253,10 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 				transport.TLSClientConfig.InsecureSkipVerify = true
 			}
 		case "", "unix":
-			path := u.Path
-			if path == "" {
-				return nil, errors.New("empty unix socket path")
+			if err := validateUnixMasqueradeURL(u); err != nil {
+				return nil, err
 			}
+			path := u.Path
 			u = &url.URL{Scheme: "http", Host: "localhost"}
 			dialer := &net.Dialer{Timeout: 30 * time.Second}
 			transport = transport.Clone()
@@ -390,6 +390,28 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 
 func init() {
 	common.Must(internet.RegisterTransportListener(protocolName, Listen))
+}
+
+// validateUnixMasqueradeURL accepts the masquerade proxy URLs Hysteria 2.12.2
+// maps to a Unix socket: unix:///path or an absolute path without a scheme.
+func validateUnixMasqueradeURL(u *url.URL) error {
+	switch {
+	case u.Scheme == "" && u.Path != "" && !strings.HasPrefix(u.Path, "/"):
+		return errors.New("unknown masquerade proxy scheme")
+	case u.Opaque != "":
+		return errors.New("invalid unix socket URL: path must be absolute")
+	case u.User != nil:
+		return errors.New("invalid unix socket URL: userinfo is not supported")
+	case u.Host != "":
+		return errors.New("invalid unix socket URL: host must be empty")
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return errors.New("invalid unix socket URL: query and fragment are not supported")
+	case u.Path == "":
+		return errors.New("empty unix socket path")
+	case !strings.HasPrefix(u.Path, "/"):
+		return errors.New("invalid unix socket URL: path must be absolute")
+	}
+	return nil
 }
 
 const (
