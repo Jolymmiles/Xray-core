@@ -16,7 +16,7 @@ guard it.
   X25519 key share; hellos that offer the hybrid group keep upstream's rules.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
-- Every shipped and release-tested build uses Go 1.27.1 (`go.mod`) and
+- Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
   `-tags http2legacy`. Without the tag, Go 1.27's x/net HTTP/2 client dials
   once per request while a TLS handshake hangs, defeating XHTTP
   `xmux.maxConnections` and producing connection bursts that censors block on
