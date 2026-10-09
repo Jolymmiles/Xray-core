@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"io"
+	"math/bits"
 
 	"github.com/apernet/quic-go/quicvarint"
 	"github.com/xtls/xray-core/common"
@@ -42,7 +43,8 @@ var (
 // stream starts with the ClientHello, which the TLS sniffer bounds the same.
 const cryptoStreamCap = ptls.MaxClientHelloLength
 
-// receivedBytes records which bytes of the CRYPTO stream have arrived.
+// receivedBytes records which bytes of the CRYPTO stream have arrived: bit
+// at%8 of byte at/8 is set once the byte at offset at has.
 type receivedBytes [cryptoStreamCap / 8]byte
 
 // fill copies data, which starts at offset from of the stream, into stream
@@ -50,43 +52,80 @@ type receivedBytes [cryptoStreamCap / 8]byte
 // (RFC 9000, Section 2.2): receivers disagree on which copy of differing data
 // counts, so fill reports false instead of choosing one.
 func (r *receivedBytes) fill(stream, data []byte, from int32) bool {
-	for i := int32(0); i < int32(len(data)); {
-		at := from + i
-		if at%8 == 0 && int32(len(data))-i >= 8 {
-			// Eight bytes that all have or all have not arrived yet are
-			// handled at once.
+	end := from + int32(len(data))
+	for at := from; at < end; {
+		i := at - from
+		// A whole bitmap byte that is clear or set starts a run of at least
+		// eight bytes that have or have not arrived: find where it ends 64
+		// bits at a time, and compare or copy it at once.
+		if at%8 == 0 && end-at >= 8 {
 			switch r[at/8] {
 			case 0x00:
-				copy(stream[i:i+8], data[i:i+8])
-				r[at/8] = 0xFF
-				i += 8
+				to := r.runEnd(at, end, false)
+				copy(stream[i:to-from], data[i:to-from])
+				r.mark(at, to)
+				at = to
 				continue
 			case 0xFF:
-				if !bytes.Equal(stream[i:i+8], data[i:i+8]) {
+				to := r.runEnd(at, end, true)
+				if !bytes.Equal(stream[i:to-from], data[i:to-from]) {
 					return false
 				}
-				i += 8
+				at = to
 				continue
 			}
 		}
-		if r[at/8]&(1<<(at%8)) == 0 {
-			r[at/8] |= 1 << (at % 8)
+		// Elsewhere, in short frames and runs, one byte at a time costs less
+		// than finding where its run ends.
+		bit := byte(1) << (at % 8)
+		if r[at/8]&bit == 0 {
+			r[at/8] |= bit
 			stream[i] = data[i]
 		} else if stream[i] != data[i] {
 			return false
 		}
-		i++
+		at++
 	}
 	return true
+}
+
+// runEnd returns where the run of bytes starting at offset at ends, up to
+// end: the run of bytes that have arrived if received is true, or of bytes
+// that have not if it is false. It reads the bitmap 64 bits at a time.
+func (r *receivedBytes) runEnd(at, end int32, received bool) int32 {
+	var flip uint64
+	if received {
+		flip = ^uint64(0)
+	}
+	for at < end {
+		word := at / 64
+		// The bits of the bytes that end the run are set.
+		w := (binary.LittleEndian.Uint64(r[word*8:]) ^ flip) >> (at % 64)
+		if w != 0 {
+			return min(at+int32(bits.TrailingZeros64(w)), end)
+		}
+		at = (word + 1) * 64
+	}
+	return end
+}
+
+// mark records the bytes from offset from up to offset to as received.
+func (r *receivedBytes) mark(from, to int32) {
+	for ; from < to && from%8 != 0; from++ {
+		r[from/8] |= 1 << (from % 8)
+	}
+	for ; to-from >= 8; from += 8 {
+		r[from/8] = 0xFF
+	}
+	for ; from < to; from++ {
+		r[from/8] |= 1 << (from % 8)
+	}
 }
 
 // prefix returns the length of the start of the stream received without a
 // gap, continuing from known, a length already received, up to end.
 func (r *receivedBytes) prefix(known, end int32) int32 {
-	for known < end && r[known/8]&(1<<(known%8)) != 0 {
-		known++
-	}
-	return known
+	return r.runEnd(known, end, true)
 }
 
 type quicVersionSpec struct {
