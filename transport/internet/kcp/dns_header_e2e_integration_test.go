@@ -4,6 +4,7 @@ package kcp_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -36,7 +37,15 @@ func TestMKCPDNSHeaderProcessE2E(t *testing.T) {
 		setMKCPDNSHeader(config, "inbounds", "t.example.")
 		path := filepath.Join(t.TempDir(), "server.json")
 		writeMKCPConfig(t, path, config)
-		output, err := exec.Command(xray, "run", "-test", "-config", path).CombinedOutput()
+		const deadline = 20 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		command := exec.CommandContext(ctx, xray, "run", "-test", "-config", path)
+		command.WaitDelay = time.Second
+		output, err := command.CombinedOutput()
+		if ctx.Err() != nil {
+			t.Fatalf("xray run -test did not finish within %s:\n%s", deadline, output)
+		}
 		if err == nil {
 			t.Fatalf("xray run -test accepted the dns header domain t.example.:\n%s", output)
 		}
