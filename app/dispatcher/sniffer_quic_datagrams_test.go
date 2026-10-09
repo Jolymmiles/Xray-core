@@ -39,9 +39,11 @@ func TestSniffQUICIgnoresInitialDatagramsBelow1200Bytes(t *testing.T) {
 		domain    string // empty when a server has no complete ClientHello
 	}{
 		{"short datagram with a whole ClientHello, then another connection", [][]byte{
-			withoutPadding(t, aioquic, 673), ngtcp2}, "ngtcp2.sniff.test"},
+			withoutPadding(t, aioquic, 673), ngtcp2,
+		}, "ngtcp2.sniff.test"},
 		{"short datagram with the start of the ClientHello, then its end", [][]byte{
-			withoutPadding(t, firefox[0], 259), firefox[1]}, ""},
+			withoutPadding(t, firefox[0], 259), firefox[1],
+		}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

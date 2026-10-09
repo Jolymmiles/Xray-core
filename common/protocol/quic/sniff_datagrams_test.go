@@ -173,27 +173,38 @@ func TestSniffQUICDatagramsFollowServerReceiveRules(t *testing.T) {
 		want      outcome
 	}{
 		{"short first datagram with a whole ClientHello, then another connection", [][]byte{
-			whole, padTo1200(theirs)}, outcome{domain: otherName}},
+			whole, padTo1200(theirs),
+		}, outcome{domain: otherName}},
 		{"first datagram of 1199 bytes", [][]byte{
-			padTo(whole, 1199), padTo1200(theirs)}, outcome{domain: otherName}},
+			padTo(whole, 1199), padTo1200(theirs),
+		}, outcome{domain: otherName}},
 		{"first datagram of 1200 bytes", [][]byte{
-			padTo(whole, 1200), padTo1200(theirs)}, outcome{domain: "small.sniff.test"}},
+			padTo(whole, 1200), padTo1200(theirs),
+		}, outcome{domain: "small.sniff.test"}},
 		{"short first datagram with the start of the ClientHello", [][]byte{
-			ours(0, 0), padTo1200(slices.Concat(ours(1, 1), ours(2, 2)))}, outcome{class: needMore}},
+			ours(0, 0), padTo1200(slices.Concat(ours(1, 1), ours(2, 2))),
+		}, outcome{class: needMore}},
 		{"packet after junk in a datagram", [][]byte{
-			padTo1200(slices.Concat(ours(0, 0), junk, ours(1, 1))), padTo1200(ours(2, 2))}, outcome{class: needMore}},
+			padTo1200(slices.Concat(ours(0, 0), junk, ours(1, 1))), padTo1200(ours(2, 2)),
+		}, outcome{class: needMore}},
 		{"coalesced packet of another connection before one of ours", [][]byte{
-			padTo1200(slices.Concat(ours(0, 0), theirs, ours(1, 1))), padTo1200(ours(2, 2))}, outcome{class: needMore}},
+			padTo1200(slices.Concat(ours(0, 0), theirs, ours(1, 1))), padTo1200(ours(2, 2)),
+		}, outcome{class: needMore}},
 		{"datagram whose first packet is another connection's", [][]byte{
-			padTo1200(ours(0, 0)), padTo1200(slices.Concat(theirs, ours(1, 1))), padTo1200(ours(2, 2))}, outcome{class: needMore}},
+			padTo1200(ours(0, 0)), padTo1200(slices.Concat(theirs, ours(1, 1))), padTo1200(ours(2, 2)),
+		}, outcome{class: needMore}},
 		{"packet running into the next datagram", [][]byte{
-			slices.Concat(paddedOurs(0, 0), split[:40]), padTo1200(split[40:]), padTo1200(ours(2, 2))}, outcome{class: needMore}},
+			slices.Concat(paddedOurs(0, 0), split[:40]), padTo1200(split[40:]), padTo1200(ours(2, 2)),
+		}, outcome{class: needMore}},
 		{"short datagram of the connection once started", [][]byte{
-			padTo1200(ours(0, 0)), ours(1, 1), padTo1200(ours(2, 2))}, outcome{class: shortDatagram}},
+			padTo1200(ours(0, 0)), ours(1, 1), padTo1200(ours(2, 2)),
+		}, outcome{class: shortDatagram}},
 		{"short datagram repeating a packet number", [][]byte{
-			padTo1200(ours(0, 0)), ours(0, 0), padTo1200(slices.Concat(ours(1, 1), ours(2, 2)))}, outcome{domain: name}},
+			padTo1200(ours(0, 0)), ours(0, 0), padTo1200(slices.Concat(ours(1, 1), ours(2, 2))),
+		}, outcome{domain: name}},
 		{"0-RTT packet coalesced between Initial packets", [][]byte{
-			padTo1200(slices.Concat(ours(0, 0), zeroRTTPacket(reassemblyDestConnID), ours(1, 1))), padTo1200(ours(2, 2))}, outcome{domain: name}},
+			padTo1200(slices.Concat(ours(0, 0), zeroRTTPacket(reassemblyDestConnID), ours(1, 1))), padTo1200(ours(2, 2)),
+		}, outcome{domain: name}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
