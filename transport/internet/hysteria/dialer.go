@@ -17,6 +17,7 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
+	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"github.com/xtls/xray-core/transport/internet/hysteria/congestion"
@@ -28,6 +29,8 @@ import (
 type client struct {
 	sync.Mutex
 
+	instance     *core.Instance
+	forced       bool
 	dest         net.Destination
 	config       *Config
 	tlsConfig    *gotls.Config
@@ -64,11 +67,14 @@ func (c *client) close() {
 }
 
 func (c *client) dial(ctx context.Context) error {
-	status := c.status()
-	if status == StatusActive {
-		return nil
+	if c.forced {
+		return errors.New("client is closed")
 	}
-	if status == StatusInactive {
+
+	switch c.status() {
+	case StatusActive:
+		return nil
+	case StatusInactive:
 		c.close()
 	}
 
@@ -251,9 +257,12 @@ func (c *client) udp(ctx context.Context) (stat.Connection, error) {
 	return c.udpSM.udp()
 }
 
-func (c *client) clean() {
+func (c *client) clean(force bool) {
 	c.Lock()
-	if c.status() == StatusInactive {
+	if force {
+		c.forced = true
+	}
+	if status := c.status(); force && status != StatusNull || status == StatusInactive {
 		c.close()
 	}
 	c.Unlock()
@@ -267,16 +276,39 @@ type dialerConf struct {
 type clientManager struct {
 	sync.RWMutex
 	m map[dialerConf]*client
+
+	// cleaning, when a test sets it, runs under the manager lock before
+	// cleanOnce cleans each client.
+	cleaning func(*client)
 }
 
 func (m *clientManager) clean() {
 	ticker := time.NewTicker(idleCleanupInterval)
 	for range ticker.C {
-		m.RLock()
-		for _, c := range m.m {
-			c.clean()
+		m.cleanOnce()
+	}
+}
+
+func (m *clientManager) cleanOnce() {
+	var forced []dialerConf
+
+	m.RLock()
+	for k, c := range m.m {
+		if m.cleaning != nil {
+			m.cleaning(c)
 		}
-		m.RUnlock()
+		force := c.instance != nil && !c.instance.IsRunning()
+		c.clean(force)
+		if force {
+			forced = append(forced, k)
+		}
+	}
+	m.RUnlock()
+
+	for i := range forced {
+		m.Lock()
+		delete(m.m, forced[i])
+		m.Unlock()
 	}
 }
 
@@ -291,9 +323,6 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		return nil, errors.New("tls config is nil")
 	}
 
-	datagram := DatagramFromContext(ctx)
-	dest.Network = net.Network_UDP
-
 	initmanager.Do(func() {
 		manager = &clientManager{
 			m: make(map[dialerConf]*client),
@@ -301,15 +330,25 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		go manager.clean()
 	})
 
-	manager.RLock()
-	c := manager.m[dialerConf{dest, streamSettings}]
-	manager.RUnlock()
+	return manager.dial(ctx, dest, streamSettings, tlsConfig)
+}
+
+func (m *clientManager) dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig, tlsConfig *tls.Config) (stat.Connection, error) {
+	datagram := DatagramFromContext(ctx)
+	dest.Network = net.Network_UDP
+
+	dialerConfKey := dialerConf{dest, streamSettings}
+
+	m.RLock()
+	c := m.m[dialerConfKey]
+	m.RUnlock()
 
 	if c == nil {
-		manager.Lock()
-		c = manager.m[dialerConf{dest, streamSettings}]
+		m.Lock()
+		c = m.m[dialerConfKey]
 		if c == nil {
 			c = &client{
+				instance:     core.FromContext(ctx),
 				dest:         dest,
 				config:       streamSettings.ProtocolSettings.(*Config),
 				tlsConfig:    tlsConfig.GetTLSConfig(tls.WithDestination(dest)),
@@ -317,9 +356,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 				finalMask:    streamSettings.FinalMask,
 				quicParams:   streamSettings.QuicParams,
 			}
-			manager.m[dialerConf{dest, streamSettings}] = c
+			m.m[dialerConfKey] = c
 		}
-		manager.Unlock()
+		m.Unlock()
 	}
 
 	if datagram {
