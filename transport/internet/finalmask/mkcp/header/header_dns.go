@@ -60,16 +60,15 @@ func checkDomainName(domain string) error {
 	return checkASCIIName(domain)
 }
 
-// nonASCIIError suggests the punycode form that IDNA lookups put on the wire,
-// or says why there is none.
+// punycodeProfile maps a name the way IDNA lookups do (case, width, Unicode
+// full stops, normalisation) and, like checkASCIIName, refuses no character
+// or hyphen placement, so "BÜ_CHER．example" becomes "xn--b_cher-3ya.example".
+var punycodeProfile = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.ValidateLabels(false))
+
+// nonASCIIError suggests the punycode form of the name the operator wrote, or
+// says why there is none.
 func nonASCIIError(domain string) error {
-	name := strings.TrimSuffix(domain, ".")
-	ascii, err := idna.Lookup.ToASCII(name)
-	if err != nil {
-		// Lookup refuses names such as "bü_cher.example" that the lenient
-		// profile still encodes.
-		ascii, err = idna.Punycode.ToASCII(name)
-	}
+	ascii, err := punycodeProfile.ToASCII(strings.TrimSuffix(domain, "."))
 	if err != nil {
 		return fmt.Errorf("non-ASCII name with no punycode form: %w", err)
 	}
