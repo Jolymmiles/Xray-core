@@ -60,15 +60,26 @@ func checkDomainName(domain string) error {
 	return checkASCIIName(domain)
 }
 
-// nonASCIIError suggests the punycode form that IDNA lookups put on the wire.
+// nonASCIIError suggests the punycode form that IDNA lookups put on the wire,
+// or says why there is none.
 func nonASCIIError(domain string) error {
-	ascii, err := idna.Lookup.ToASCII(strings.TrimSuffix(domain, "."))
-	if err != nil || checkASCIIName(ascii) != nil {
-		return errors.New("non-ASCII name; write its punycode form")
+	name := strings.TrimSuffix(domain, ".")
+	ascii, err := idna.Lookup.ToASCII(name)
+	if err != nil {
+		// Lookup refuses names such as "bü_cher.example" that the lenient
+		// profile still encodes.
+		ascii, err = idna.Punycode.ToASCII(name)
+	}
+	if err != nil {
+		return fmt.Errorf("non-ASCII name with no punycode form: %w", err)
+	}
+	if err := checkASCIIName(ascii); err != nil {
+		return fmt.Errorf("non-ASCII name whose punycode form %q is invalid: %w", ascii, err)
 	}
 	return fmt.Errorf("non-ASCII name; write its punycode form %q", ascii)
 }
 
+// checkASCIIName is checkDomainName for a name without non-ASCII bytes.
 func checkASCIIName(domain string) error {
 	if strings.Contains(domain, `\`) {
 		return errors.New("backslash escapes are not supported")
