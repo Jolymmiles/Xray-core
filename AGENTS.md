@@ -22,80 +22,44 @@ test, or compatibility gates defined here.
 - Preserve protocol interoperability. In process interoperability, stress,
   reconnect, and performance tests, Xray is the only proxy-server implementation.
   Run one Xray server per topology and vary the client between Xray, sing-box,
-  and Mihomo for changed VLESS, Trojan, REALITY, Vision, or mux paths. Performance comparisons use baseline
-  and candidate Xray server versions. External-server and reversed-role
-  topologies are outside these gates.
+  and Mihomo for changed VLESS, Trojan, REALITY, Vision, or mux paths. Performance
+  comparisons use baseline and candidate Xray server versions. External-server
+  and reversed-role topologies are outside these gates.
+- Only Xray code changes. A sing-box or Mihomo interop break is fixed on the
+  Xray side, never by patching those clients.
 - Prefer simple, reviewable changes. Do not mix several speculative
   optimizations into one pass.
 - Communicate with the maintainer in Russian unless they request another
   language. Keep code, identifiers, commit messages, and repository
   documentation in English unless an existing file establishes otherwise.
 
-## Intentional fork behavior
+## Fork behavior, review, and releases
 
-- REALITY client-version bounds are operator-configurable and carry no built-in
-  default. `minClientVer` and `maxClientVer` are parsed and reach the REALITY
-  handshake when the operator sets them; when either is omitted it stays nil and
-  that side of the gate rejects nobody. Do not reintroduce upstream's implicit
-  `26.3.27` minimum. Covered by `infra/conf/reality_clientver_test.go` and
-  `transport/internet/reality/clientver_test.go`.
-- The REALITY server runs from the in-tree module copy `third_party/reality`
-  (a `replace` in `go.mod`). A Client Hello that offers X25519MLKEM768 in
-  neither `supported_groups` nor `key_share` authenticates through its single
-  X25519 key share; hellos that offer the hybrid group keep upstream's rules.
-  `third_party/reality/FORK.md` lists every fork change and the update
-  procedure. Covered by `transport/internet/reality/keyshare_test.go`.
-- Every shipped and release-tested build uses Go 1.27.1 (`go.mod`) and
-  `-tags http2legacy`. Without the tag, Go 1.27's x/net HTTP/2 client dials
-  once per request while a TLS handshake hangs, defeating XHTTP
-  `xmux.maxConnections` and producing connection bursts that censors block on
-  (XTLS/Xray-core#6797). Covered by
-  `transport/internet/splithttp/http2_dial_test.go` and
-  `testing/release/build_contract_test.go`.
-- XHTTP inbounds accept Mux.Cool TCP sessions; upstream (XTLS/Xray-core#4128)
-  limits them to pure XUDP. In packet-up and stream-up the server can poke an
-  idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
-  and `muxKeepAliveBytes`, off by default); stream-one is never poked. Fields
-  30 and 31 of the splithttp `Config` message are fork-owned: renumber them if
-  upstream claims those numbers. Covered by `common/mux/server_test.go` and
-  `common/singmux/xhttp_muxcool_integration_test.go`.
-- XHTTP over HTTP/2 on TCP has an optional flow-control governor
-  (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
-  or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
-  wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
-  fork-owned: renumber it if upstream claims that number.
-  `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
-  Covered by the `h2flow*_test.go` tests and
-  `common/singmux/xhttp_flow_verify_integration_test.go`.
-- The maintained SMUX implementation is the in-tree stack under
-  `common/singmux`. Mux-related production code must not directly import
-  SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
-- Preserve MPL-2.0 notices and provenance for MPL-derived code. Do not copy GPL
-  files into this repository. A rewrite must be behavior-driven and must not
-  silently change the wire protocol.
-- SMUX is the active mux scope. Do not add YAMUX or H2MUX work unless the
-  maintainer explicitly requests it.
+- Before changing REALITY, XHTTP, mux, build tags or the Go version, or when
+  syncing upstream, read `docs/FORK.md`: the intentional deviations from
+  upstream and the tests that guard each.
+- Review of a PR or branch, and launching or collecting review rounds,
+  follows `.claude/skills/xray-pr-review/SKILL.md`.
+- Release work (gates, stamp, `Pre-release Validation`, tag, publish) follows
+  `.claude/skills/release/SKILL.md` and starts only when the maintainer asks.
 
 ## Before changing code
 
-1. Read `git status --short` and the relevant recent commits. Assume unrelated
-   tracked and untracked changes belong to the maintainer.
+1. Read `git status --short` and the relevant recent commits.
 2. Read the package tests, protocol specification, baseline, and testing guide
    before modifying a protocol or performance path.
 3. State the exact server path, invariant, acceptance check, and bounded work
    item. One measured hot spot or one behavior change is a normal pass.
-4. Record a reproducible baseline before optimizing. Include the command,
-   source revision/dirty state, Go version, host OS/architecture, and multiple
-   samples.
+4. Before optimizing, record the baseline as "Performance workflow" requires.
 
 Relevant documents:
 
-- `proxy/vless/TESTING.md` — VLESS TCP TLS/REALITY server release methodology.
 - `proxy/vless/BASELINE.md` — VLESS behavior and performance baselines.
 - `common/singmux/SPEC.md` and `common/singmux/ENGINE_SPEC.md` — SMUX protocol
   and engine contracts.
-- `common/singmux/TESTING.md` and `common/singmux/BASELINE.md` — SMUX release
-  gates and measurements.
+- `common/singmux/TESTING.md` and `common/singmux/BASELINE.md` — SMUX and VLESS
+  TCP TLS/REALITY process gates, the release gate entrypoint
+  (`testing/release/structural_presence.sh`), and measurements.
 
 ## Mandatory TDD workflow
 
@@ -121,9 +85,11 @@ gain a permanent regression test before the fix.
 
 ## Go implementation standards
 
-- Run `gofmt` on every changed Go file. Vendored modules under `third_party/`
-  keep their upstream bytes; only the fork-owned files listed in their
-  `FORK.md` follow this rule.
+- Check formatting with `go run ./infra/vformat/main.go -mode check -pwd ./`.
+  It is gofumpt-based and is the CI check; `gofmt` alone misses its rules. Fix
+  only the files it reports that you changed. It skips `third_party/`, whose
+  vendored modules keep their upstream bytes; only the fork-owned files listed
+  in a module's `FORK.md` follow this rule.
 - Use descriptive names, early returns, narrow helpers, and the simplest
   implementation that preserves the protocol.
 - Add context to errors at subsystem boundaries. Never swallow an error that
@@ -162,8 +128,10 @@ gain a permanent regression test before the fix.
   spot is not accepted.
 - Keep an isolated microbenchmark for the changed primitive and a process-level
   benchmark or stress test for the server path.
-- Run at least five samples; use medians and inspect variance. Compare the same
-  commit conditions, Go version, CPU governor, host load, and kernel settings.
+- Record a reproducible baseline: command, source revision/dirty state, Go
+  version, host OS/architecture. Run at least five samples; use medians and
+  inspect variance. Compare the same commit conditions, Go version, CPU
+  governor, host load, and kernel settings.
 - Do not infer a nanosecond improvement from a millisecond TLS/REALITY process
   benchmark. Use the process result as a regression gate and the isolated
   benchmark as proof of the local change.
@@ -181,19 +149,31 @@ Export `GOFLAGS=-tags=http2legacy` first so tests, and the binaries they build,
 match the release. An explicit `-tags` replaces the tags in `GOFLAGS`, so add
 `http2legacy` to it.
 
+Give every `go test` an explicit `-timeout`; a hang otherwise costs 5-10
+minutes. While iterating, add `-short` where the package supports it (the
+`transport/internet/splithttp` suite takes about 200 s, and its slowest tests
+skip under `testing.Short()`). Handoff runs the tiers below without `-short`.
+
+In a fresh worktree run `testing/setup-worktree.sh` once: it links the
+gitignored `resources/geo{ip,site}.dat` that `infra/conf` tests need.
+`testing/gates.sh <unit|vless|smux|xhttp|race>` runs a tier below with these
+flags and keeps a log per tier. Process matrices find sing-box and Mihomo next
+to the checkout or the main checkout, or through `SING_BOX_E2E_BIN` and
+`MIHOMO_E2E_BIN`; a matrix that cannot run is a blocker, not a skip.
+
 ### VLESS TCP and REALITY
 
 ```sh
 go test ./transport/internet/reality ./proxy ./proxy/vless/... ./infra/conf \
-  -count=1
+  -count=1 -timeout 300s
 go test -race ./transport/internet/reality ./proxy ./proxy/vless/... \
-  -count=1
+  -count=1 -timeout 300s
 go test -gcflags=all=-d=checkptr=2 \
   ./transport/internet/reality ./proxy ./proxy/vless/inbound \
-  ./proxy/vless/outbound -count=1
+  ./proxy/vless/outbound -count=1 -timeout 300s
 go vet ./transport/internet/reality ./proxy ./proxy/vless/...
 go test -tags 'integration http2legacy' ./common/singmux \
-  -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
+  -run '^TestVLESSTCPProcessMatrix/' -count=3 -timeout 20m -v
 ```
 
 The process gate is 3 clients × 2 security modes × 2 flow modes × 3 runs:
@@ -202,11 +182,12 @@ The process gate is 3 clients × 2 security modes × 2 flow modes × 3 runs:
 ### SMUX
 
 ```sh
-go test ./common/singmux/... ./common/mux ./app/proxyman/outbound ./infra/conf
-go test -race ./common/singmux/... ./common/mux
-go test -cover ./common/singmux/internal/mplsmux
+go test ./common/singmux/... ./common/mux ./app/proxyman/outbound ./infra/conf \
+  -timeout 300s
+go test -race ./common/singmux/... ./common/mux -timeout 300s
+go test -cover ./common/singmux/internal/mplsmux -timeout 300s
 go test -tags 'integration http2legacy' ./common/singmux \
-  -run '^TestSMUXProcessInteropMatrix$' -count=1 -v
+  -run '^TestSMUXProcessInteropMatrix$' -count=1 -timeout 20m -v
 ```
 
 The SMUX process matrix is 3 clients × 2 carriers × 2 payload networks ×
@@ -217,9 +198,9 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 
 ### Repository-wide
 
-- Run `go test ./... -count=1` when the scope justifies it. Some upstream tests
-  contact external services; report an external failure exactly and do not
-  classify it as success or hide it with retries.
+- Run `go test ./... -count=1 -timeout 2h` when the scope justifies it. Some
+  upstream tests contact external services; report an external failure exactly
+  and do not classify it as success or hide it with retries.
 - A known unrelated warning/failure is not authority to add another. Record
   the existing evidence and keep all changed packages green.
 
@@ -236,7 +217,9 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 - Capture Linux interface and TCP counters before and after; never clear them.
   Fail on unexplained positive deltas in errors, drops, CRC/frame/FIFO/carrier
   errors, collisions, link flaps, retransmits, or resets.
-- Use `proxy/vless/TESTING.md` as the authoritative VLESS release checklist.
+- The authoritative VLESS and SMUX release gate is
+  `testing/release/structural_presence.sh`, documented in
+  `common/singmux/TESTING.md`.
 
 ## E2E and benchmark hygiene
 
@@ -265,9 +248,12 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 
 - Search the existing tree before adding a dependency. Prefer the standard
   library and existing internal packages.
-- Do not add a third-party mux dependency or copy GPL mux source.
+- Do not add a third-party mux dependency, import SagerNet, MetaCubeX, Hashicorp,
+  or another mux implementation from mux production code, or copy GPL source
+  into this repository.
 - For permitted MPL-derived code, preserve the original license notices and
-  record provenance. Keep later rewrites independently reviewable.
+  record provenance. A rewrite is behavior-driven, does not silently change
+  the wire protocol, and stays independently reviewable.
 - Run the dependency-ban tests whenever mux imports or `go.mod` change.
 - Do not update unrelated dependencies during a protocol or performance pass.
 
@@ -279,79 +265,20 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
   name list, and staged statistics before committing.
 - Commit only when explicitly requested. Use a focused imperative subject such
   as `perf(vless): ...`, `fix(reality): ...`, or `test(singmux): ...`.
+- Name branches with a `fix/`, `feat/`, `perf/`, `test/`, `docs/`, `chore/`,
+  `ci/`, or `build/` prefix. Never push a tool- or host-prefixed name.
+- Pass `-R Jolymmiles/Xray-core` to every `gh` command; the default repository
+  is upstream XTLS.
+- Contributor PRs come from sibling forks of XTLS, so pushing to their
+  branches returns 403 even with maintainer edits enabled. Push the fix to an
+  `origin` branch and open a follow-up PR.
+- An upstream sync is its own PR. Merging upstream ports fork regression tests
+  onto rewritten code instead of deleting them.
+- Every PR gets an independent review before merge.
 - Do not commit build artifacts, temporary profiles, logs, local IDE state,
   `.codex`, graph output, or unrelated documentation.
 - Never amend, rebase, force-push, or discard maintainer work without explicit
   authorization.
-
-## Release workflow and format
-
-This fork stamps each release as UTC `year.month.day-HHMM`. That string is
-the panel version, the git tag, and the GitHub release name.
-
-### Version identity
-
-- Take the current UTC date and time. Write it as `YY.M.D-HHMM` with a
-  hyphen before the time so the string is valid semver. Example: 25 Aug 2026
-  14:57 UTC → `26.8.25-1457`.
-- Put year, month, and day in `Version_x`, `Version_y`, and `Version_z`.
-  Put `HHMM` in `versionHHMM`. `core.Version()` must return
-  `fmt.Sprintf("%v.%v.%v-%04d", Version_x, Version_y, Version_z, versionHHMM)`.
-- The git tag is `v` plus that string (`v26.8.25-1457`). The GitHub release
-  title is `Xray-core v26.8.25-1457`. Panel output, tag, and title must match.
-- REALITY still sends the three numeric bytes `Version_x/y/z`. Time is
-  display-only.
-- One canonical release per stamp. Public release text is English. Publish on
-  `origin` (`Jolymmiles/Xray-core`), not upstream. Pass `-R Jolymmiles/Xray-core`
-  to `gh` so the default XTLS repo is not used.
-
-### Cut a release
-
-1. Fetch `origin` and `upstream` including tags. Merge the reviewed branch
-   plus latest `origin/main` and `upstream/main` into canonical `main`.
-   If upstream already tagged the same `vYY.M.D` triple, resolve that
-   collision before tagging. Completion: `git rev-parse main` is the release
-   commit and includes upstream.
-2. Stamp `core/core.go` to the current UTC `YY.M.D-HHMM`. Update
-   `core/version_test.go` to the same string. Commit the bump. Completion:
-   `core.Version()` and `xray version` print that string, and
-   `TestVersionFollowsYearMonthDayHHMM` is green.
-3. Run the applicable unit, race, vet, checkptr, interoperability, Linux
-   build, and Tests and Checkings gates, including `check-proto`. Protobuf
-   headers must match `core/config.pb.go` (`protoc-gen-go v1.36.11`,
-   `protoc v6.33.5`); regenerate with that toolchain via
-   `go run ./infra/vprotogen` after installing those tools. Completion:
-   targeted gates are green or a real external failure is recorded as such.
-4. Push `main`, then create an annotated tag `vYY.M.D-HHMM` and push the
-   tag. Completion: `origin/main`, the tag commit, and `HEAD` are the same
-   SHA.
-5. Create the GitHub Release from that tag with title
-   `Xray-core vYY.M.D-HHMM` and let `.github/workflows/release.yml` upload
-   assets. Completion: every required matrix job is green and the ZIP plus
-   `.dgst` files are on the release. Do not upload replacement binaries by
-   hand.
-
-Do not move a published tag unless the maintainer explicitly authorizes
-rewriting it. If they ask to replace a release, delete the GitHub release and
-its tag, then cut a new stamp from current UTC rather than reusing the old
-HHMM.
-
-Release notes must be substantive, not just links or an autogenerated commit
-list:
-
-1. `## Highlights` — the user-visible outcome and the most important changes.
-2. `## Fork fixes` — correctness, security, performance, and regression fixes
-   maintained by this fork, including root cause and impact where useful.
-3. `## Upstream changes` — the upstream version merged and its relevant
-   user-visible changes.
-4. `## Compatibility notes` — intentional fork behavior, configuration or
-   protocol implications, and upgrade concerns.
-5. `## Validation` — the meaningful tests and release gates that passed.
-
-Keep the notes concise but specific. Name affected protocols and subsystems,
-explain what was fixed, and state any intentional behavior that differs from
-upstream. Never describe an unverified performance or reliability claim as
-established fact.
 
 ## Definition of done
 

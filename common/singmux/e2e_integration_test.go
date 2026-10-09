@@ -30,6 +30,7 @@ import (
 	"time"
 
 	statscommand "github.com/xtls/xray-core/app/stats/command"
+	"github.com/xtls/xray-core/testing/interop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -185,15 +186,27 @@ func buildE2EBinaries(t *testing.T, workDir string) e2eBinaries {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coresRoot := filepath.Dir(xrayRoot)
-	if _, err := os.Stat(filepath.Join(coresRoot, "sing-box")); err != nil {
-		coresRoot = filepath.Dir(coresRoot)
-	}
 	return e2eBinaries{
 		xray:    buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main"),
-		singBox: buildE2EBinary(t, "SING_BOX_E2E_BIN", filepath.Join(workDir, "sing-box"), filepath.Join(coresRoot, "sing-box"), "./cmd/sing-box", "-tags=with_utls,with_quic"),
-		mihomo:  buildE2EBinary(t, "MIHOMO_E2E_BIN", filepath.Join(workDir, "mihomo"), filepath.Join(coresRoot, "mihomo"), "."),
+		singBox: buildPeerE2EBinary(t, interop.SingBox, filepath.Join(workDir, "sing-box"), xrayRoot, "./cmd/sing-box", "-tags=with_utls,with_quic"),
+		mihomo:  buildPeerE2EBinary(t, interop.Mihomo, filepath.Join(workDir, "mihomo"), xrayRoot, "."),
 	}
+}
+
+// buildPeerE2EBinary builds a client peer from its source tree, which
+// interop.SourceDir finds next to this checkout or next to the main checkout
+// when the tests run from a linked worktree. peer.Environment names a prebuilt
+// binary that replaces the build and the source lookup.
+func buildPeerE2EBinary(t testing.TB, peer interop.Peer, output, xrayRoot, target string, buildOptions ...string) string {
+	t.Helper()
+	if existing := os.Getenv(peer.Environment); existing != "" {
+		return existing
+	}
+	directory, err := interop.SourceDir(xrayRoot, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildE2EBinary(t, peer.Environment, output, directory, target, buildOptions...)
 }
 
 func buildE2EBinary(t testing.TB, environment, output, directory, target string, buildOptions ...string) string {

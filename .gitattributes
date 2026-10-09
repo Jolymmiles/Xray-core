@@ -1,0 +1,11 @@
+# third_party/ holds modules copied verbatim from their upstream, and their
+# bytes must stay identical to upstream (see third_party/reality/FORK.md).
+# Upstream style (trailing spaces, mixed indentation) is not ours to change, so
+# `git diff --check` must not report it as a whitespace error.
+third_party/** -whitespace
+
+# Files the fork owns inside a vendored tree follow the repository rules, so
+# whitespace checks stay on for them. Keep this list in step with the "Fork
+# changes" section of each FORK.md.
+third_party/reality/FORK.md whitespace
+third_party/reality/fork_keyshare.go whitespace

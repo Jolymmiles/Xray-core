@@ -354,6 +354,18 @@ record diagnostics only and cannot satisfy the release gate.
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
 
+Without those variables the harness builds the sing-box and Mihomo clients from
+source. `testing/interop` looks for a `sing-box` or `mihomo` directory whose
+`go.mod` declares the client's module: next to the checkout, next to the main
+checkout (found through `git rev-parse --git-common-dir`), and then next to
+the parents of both. A linked worktree anywhere on disk therefore needs no
+variables when the main checkout has the peers beside it. If nothing is found,
+the failure lists every path tried, why it was skipped, and the variables to
+set. Run `testing/setup-worktree.sh` in a fresh worktree to link the
+gitignored `resources/geo{ip,site}.dat` the `infra/conf` tests read, and
+`testing/gates.sh <tier>` to run the tiers in this document and in
+`AGENTS.md` with the release tags, explicit timeouts and one log per tier.
+
 On Linux, the mux interoperability client's shared TCP/UDP listener port is
 selected outside `/proc/sys/net/ipv4/ip_local_port_range`. The temporary port
 reservation must close before an external client can bind; excluding automatic
