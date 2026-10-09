@@ -186,9 +186,60 @@ func SniffTLS(b []byte) (*SniffHeader, error) {
 		return nil, common.ErrNoClue
 	}
 
-	domain, err := readClientHelloServerName(b[5 : 5+headerLen])
+	hello := b[5 : 5+headerLen]
+	if length, ok := HandshakeMessageLength(hello); !ok || length > len(hello) {
+		var err error
+		if hello, err = reassembleClientHello(b); err != nil {
+			return nil, err
+		}
+	}
+	domain, err := readClientHelloServerName(hello)
 	if err == nil {
 		return &SniffHeader{domain: domain}, nil
 	}
 	return nil, err
+}
+
+// MaxClientHelloLength bounds the ClientHello the TLS and QUIC sniffers
+// reassemble. The dispatcher caches less than this of a connection.
+const MaxClientHelloLength = 32 * 1024
+
+// HandshakeMessageLength returns the length, header included, of the
+// handshake message at the start of b, once its 4-byte header is there.
+func HandshakeMessageLength(b []byte) (int, bool) {
+	if len(b) < 4 {
+		return 0, false
+	}
+	return 4 + (int(b[1])<<16 | int(b[2])<<8 | int(b[3])), true
+}
+
+// reassembleClientHello returns the ClientHello carried by the handshake
+// records at the start of b when it does not fit the first one: a client may
+// fragment it across records (RFC 8446, Section 5.1), as Xray's fragment mask
+// does.
+func reassembleClientHello(b []byte) ([]byte, error) {
+	var message []byte
+	for {
+		if len(b) < 5 {
+			return nil, protocol.ErrProtoNeedMoreData
+		}
+		if b[0] != 0x16 /* TLS Handshake */ || !IsValidTLSVersion(b[1], b[2]) {
+			// Another record interrupted the ClientHello.
+			return nil, errNotClientHello
+		}
+		recordLen := int(binary.BigEndian.Uint16(b[3:5]))
+		if 5+recordLen > len(b) {
+			return nil, protocol.ErrProtoNeedMoreData
+		}
+		message = append(message, b[5:5+recordLen]...)
+		b = b[5+recordLen:]
+		if length, ok := HandshakeMessageLength(message); ok {
+			if message[0] != 0x01 /* client_hello */ || length > MaxClientHelloLength {
+				return nil, errNotClientHello
+			}
+			if len(message) >= length {
+				return message[:length], nil
+			}
+		}
+	}
 }

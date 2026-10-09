@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/xtls/xray-core/app/policy"
 	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -80,6 +81,100 @@ func TestHttpConformance(t *testing.T) {
 		if string(content) != "Home" {
 			t.Fatal("body: ", string(content))
 		}
+	}
+}
+
+// Hysteria 2.12.3 fixed its HTTP proxy cutting plain HTTP transfers off after
+// a fixed 10-second client timeout. The Xray HTTP inbound bounds a plain HTTP
+// exchange only by inactivity: the response below streams for longer than the
+// handshake, uplink-only and downlink-only timeouts, with gaps longer than
+// each of them, and must arrive whole.
+func TestHttpPlainResponseOutlivesProxyTimeouts(t *testing.T) {
+	chunks := []string{"first-", "second-", "third"}
+	const gap = 1500 * time.Millisecond
+	httpServerPort := tcp.PickPort()
+	httpServer := &v2httptest.Server{
+		Port: httpServerPort,
+		PathHandler: map[string]http.HandlerFunc{
+			"/slow": func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				for i, chunk := range chunks {
+					if i > 0 {
+						time.Sleep(gap)
+					}
+					if _, err := io.WriteString(w, chunk); err != nil {
+						return
+					}
+					w.(http.Flusher).Flush()
+				}
+			},
+		},
+	}
+	_, err := httpServer.Start()
+	common.Must(err)
+	defer httpServer.Close()
+
+	serverPort := tcp.PickPort()
+	serverConfig := &core.Config{
+		App: []*serial.TypedMessage{
+			serial.ToTypedMessage(&policy.Config{
+				Level: map[uint32]*policy.Policy{
+					0: {Timeout: &policy.Policy_Timeout{
+						Handshake:      &policy.Second{Value: 1},
+						ConnectionIdle: &policy.Second{Value: 30},
+						UplinkOnly:     &policy.Second{Value: 1},
+						DownlinkOnly:   &policy.Second{Value: 1},
+					}},
+				},
+			}),
+		},
+		Inbound: []*core.InboundHandlerConfig{
+			{
+				ReceiverSettings: serial.ToTypedMessage(&proxyman.ReceiverConfig{
+					PortList: &net.PortList{Range: []*net.PortRange{net.SinglePortRange(serverPort)}},
+					Listen:   net.NewIPOrDomain(net.LocalHostIP),
+				}),
+				ProxySettings: serial.ToTypedMessage(&v2http.ServerConfig{}),
+			},
+		},
+		Outbound: []*core.OutboundHandlerConfig{
+			{
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{
+					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
+				}),
+			},
+		},
+	}
+
+	servers, err := InitializeServerConfigs(serverConfig)
+	common.Must(err)
+	defer CloseAllServers(servers)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				return url.Parse("http://127.0.0.1:" + serverPort.String())
+			},
+		},
+		Timeout: 30 * time.Second,
+	}
+	start := time.Now()
+	resp, err := client.Get("http://127.0.0.1:" + httpServerPort.String() + "/slow")
+	common.Must(err)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatal("status: ", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("plain HTTP body cut off after %v: %v (got %q)", time.Since(start), err, body)
+	}
+	if want := strings.Join(chunks, ""); string(body) != want {
+		t.Fatalf("body = %q after %v, want %q", body, time.Since(start), want)
+	}
+	if elapsed := time.Since(start); elapsed < 2*gap {
+		t.Fatalf("the response took %v, less than the gaps that must outlive the proxy timeouts", elapsed)
 	}
 }
 

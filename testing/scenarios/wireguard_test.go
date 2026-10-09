@@ -33,7 +33,21 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// TestWireguard keeps the client in the gVisor stack. The tunnel reaches this
+// host's own address: through a kernel TUN, used whenever the test has
+// CAP_NET_ADMIN, the decrypted replies carry a local source address that Linux
+// drops as martians, and the TUN would add a device and rewrite sysctls of the
+// host's network namespace. TestWireguardKernelTun covers the kernel TUN
+// client in a network namespace of its own.
 func TestWireguard(t *testing.T) {
+	runWireguardScenario(t, true, nil)
+}
+
+// runWireguardScenario tunnels TCP from a WireGuard client to a WireGuard
+// server, both Xray processes, and on to an echo server on this host's own
+// address. clientNoKernelTun selects the client's network stack, and
+// whileConnected, when set, runs after the traffic while both are still up.
+func runWireguardScenario(t *testing.T, clientNoKernelTun bool, whileConnected func(*testing.T)) {
 	tcpServer := tcp.Server{
 		MsgProcessor: xor,
 		Listen:       net.AnyIP,
@@ -160,7 +174,7 @@ func TestWireguard(t *testing.T) {
 			{
 				ProxySettings: serial.ToTypedMessage(&wireguard.DeviceConfig{
 					IsClient:    true,
-					NoKernelTun: false,
+					NoKernelTun: clientNoKernelTun,
 					Endpoint:    []string{"10.0.0.2"},
 					Mtu:         1420,
 					SecretKey:   clientPrivate,
@@ -229,5 +243,8 @@ func TestWireguard(t *testing.T) {
 	}
 	if err := errg.Wait(); err != nil {
 		t.Error(err)
+	}
+	if whileConnected != nil {
+		whileConnected(t)
 	}
 }
