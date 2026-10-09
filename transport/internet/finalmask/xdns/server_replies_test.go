@@ -84,7 +84,8 @@ func optRecord(version uint32) dnsmessage.Resource {
 // Error replies must be marked as responses like any DNS server's: an
 // unsupported EDNS version gets BADVERS and a second OPT record FORMERR. A
 // reply that still looks like a query sets the server apart from every DNS
-// server a prober compares it with.
+// server a prober compares it with. The FORMERR carries one OPT record, not
+// the query's two: a message may hold only one (RFC 6891, Section 6.1.1).
 func TestServerErrorRepliesAreResponses(t *testing.T) {
 	server := startTestServer(t)
 
@@ -104,8 +105,8 @@ func TestServerErrorRepliesAreResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reply.Header.Response || reply.Header.RCode != dnsmessage.RCodeFormatError {
-		t.Fatalf("duplicate OPT reply = %+v, want a FORMERR response", reply.Header)
+	if !reply.Header.Response || reply.Header.RCode != dnsmessage.RCodeFormatError || len(reply.Additionals) != 1 || reply.Additionals[0].Header.Type != dnsmessage.TypeOPT {
+		t.Fatalf("duplicate OPT reply = %+v %+v, want a FORMERR response with one OPT record", reply.Header, reply.Additionals)
 	}
 }
 
