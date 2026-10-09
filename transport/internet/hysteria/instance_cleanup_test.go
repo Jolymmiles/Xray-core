@@ -117,6 +117,31 @@ func exchange(t *testing.T, conn stat.Connection, payload string) {
 	}
 }
 
+// echo dials dest through m, proves an echo exchange and closes the stream.
+func (m *testClientManager) echo(t *testing.T, ctx context.Context, dest xnet.Destination, payload string) {
+	t.Helper()
+	stream, err := m.dialTCP(ctx, dest)
+	if err != nil {
+		t.Fatalf("dial for %q: %v", payload, err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	exchange(t, stream, payload)
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// joinWithin waits for a worker to report on done and reports one that does
+// not finish within cleanupTestDeadline.
+func joinWithin[T any](t *testing.T, done <-chan T, worker string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(cleanupTestDeadline):
+		t.Errorf("%s did not finish within %v", worker, cleanupTestDeadline)
+	}
+}
+
 // clientResources are the transport objects of a connected client.
 type clientResources struct {
 	conn    *quic.Conn
@@ -272,7 +297,7 @@ func TestRemovedClientRefusesDialsWithoutPoolLock(t *testing.T) {
 				}
 			case <-time.After(cleanupTestDeadline):
 				release()
-				<-dialed
+				joinWithin(t, dialed, "the dial")
 				t.Fatal("a removed client waited for the pool lock")
 			}
 			release()
@@ -301,12 +326,7 @@ func TestCleanerKeepsAndResetsClientsOfRunningInstances(t *testing.T) {
 			m := newTestClientManager(t, settings)
 			ctx := tc.ctx(t)
 
-			stream, err := m.dialTCP(ctx, dest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			exchange(t, stream, "first")
-			_ = stream.Close()
+			m.echo(t, ctx, dest, "first")
 			c := m.pooled(dest)
 			if c == nil {
 				t.Fatal("the pool holds no client after a dial")
@@ -327,12 +347,7 @@ func TestCleanerKeepsAndResetsClientsOfRunningInstances(t *testing.T) {
 				t.Fatal("cleaning kept a dead connection")
 			}
 
-			stream, err = m.dialTCP(ctx, dest)
-			if err != nil {
-				t.Fatalf("a reset client did not reconnect: %v", err)
-			}
-			defer stream.Close()
-			exchange(t, stream, "second")
+			m.echo(t, ctx, dest, "after reset")
 			if second := c.resources().conn; second == nil || second == first {
 				t.Fatal("a reset client did not open a new connection")
 			}
@@ -350,12 +365,7 @@ func TestCleanerWaitingForOneClientDoesNotBlockOthers(t *testing.T) {
 	m := newTestClientManager(t, settings)
 	ctx := instanceContext(startCleanupTestInstance(t))
 
-	stream, err := m.dialTCP(ctx, dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exchange(t, stream, "ready")
-	_ = stream.Close()
+	m.echo(t, ctx, dest, "ready")
 
 	slowDest := dest
 	slowDest.Network = xnet.Network_UDP
@@ -383,7 +393,7 @@ func TestCleanerWaitingForOneClientDoesNotBlockOthers(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		release()
-		<-swept
+		joinWithin(t, swept, "the cleaner pass")
 	})
 
 	select {
@@ -407,7 +417,7 @@ func TestCleanerWaitingForOneClientDoesNotBlockOthers(t *testing.T) {
 		}
 	case <-time.After(cleanupTestDeadline):
 		release()
-		<-dialed
+		joinWithin(t, dialed, "the dial")
 		t.Fatal("a dial through a ready client waited for the cleaner")
 	}
 }

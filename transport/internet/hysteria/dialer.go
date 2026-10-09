@@ -289,6 +289,9 @@ func (m *clientManager) clean() {
 	}
 }
 
+// cleanOnce runs one cleaner pass. It deletes forced clients by key after
+// releasing the read lock, which is safe only while it is the pool's sole
+// cleaner: a dial adds a key only when it is absent.
 func (m *clientManager) cleanOnce() {
 	var forced []dialerConf
 

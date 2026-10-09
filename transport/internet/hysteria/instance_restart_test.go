@@ -112,6 +112,7 @@ func TestInstanceRestartsReleasePooledClients(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = conn.Close() })
 		if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
@@ -122,7 +123,9 @@ func TestInstanceRestartsReleasePooledClients(t *testing.T) {
 		if _, err := io.ReadFull(conn, echoed); err != nil {
 			t.Fatalf("cycle %d: no echo through the tunnel: %v", cycle, err)
 		}
-		_ = conn.Close()
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if string(echoed) != payload {
 			t.Fatalf("cycle %d: echo returned %q, want %q", cycle, echoed, payload)
 		}

@@ -1,8 +1,8 @@
 package core_test
 
 import (
-	"sync"
 	"testing"
+	"time"
 
 	. "github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/dns/localdns"
@@ -14,22 +14,31 @@ func closeConcurrently(t *testing.T, instance *Instance, op func()) {
 	t.Helper()
 	start := make(chan struct{})
 	closed := make(chan error, 1)
-	var wg sync.WaitGroup
-	wg.Add(2)
+	operated := make(chan struct{})
 	go func() {
-		defer wg.Done()
 		<-start
 		closed <- instance.Close()
 	}()
 	go func() {
-		defer wg.Done()
+		defer close(operated)
 		<-start
 		op()
 	}()
 	close(start)
-	wg.Wait()
-	if err := <-closed; err != nil {
-		t.Fatal(err)
+
+	deadline := time.After(10 * time.Second)
+	select {
+	case <-operated:
+	case <-deadline:
+		t.Fatal("the operation concurrent with Close did not return within 10s")
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-deadline:
+		t.Fatal("Close did not return within 10s")
 	}
 }
 
