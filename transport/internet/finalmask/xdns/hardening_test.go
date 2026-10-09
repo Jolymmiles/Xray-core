@@ -3,6 +3,7 @@ package xdns
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	stdnet "net"
 	"strings"
@@ -631,6 +632,8 @@ func TestNewDomainNormalisesName(t *testing.T) {
 	}
 }
 
+// The error names the rejected domain: a config lists several, and the
+// operator has to find the one that no longer loads.
 func TestNewDomainRejectsNamesThatCannotBePacked(t *testing.T) {
 	for _, configured := range []string{
 		"",
@@ -640,9 +643,15 @@ func TestNewDomainRejectsNamesThatCannotBePacked(t *testing.T) {
 		"t..example",
 		"t.example..",
 		strings.Repeat("a", 64) + ".example",
+		strings.Repeat("a.", 127) + "example",
 	} {
-		if domain, err := NewDomain(configured, 255, 63, []uint16{TypeTXT}, 0); err == nil {
+		domain, err := NewDomain(configured, 255, 63, []uint16{TypeTXT}, 0)
+		if err == nil {
 			t.Errorf("NewDomain(%q) = %q, want an error", configured, domain.name.String())
+			continue
+		}
+		if quoted := fmt.Sprintf("%q", configured); !strings.Contains(err.Error(), quoted) {
+			t.Errorf("NewDomain(%q) error %q does not name the domain %s", configured, err, quoted)
 		}
 	}
 }

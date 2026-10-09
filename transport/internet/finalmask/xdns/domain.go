@@ -89,8 +89,11 @@ func absoluteASCIIName(domain string) (dnsmessage.Name, error) {
 		return dnsmessage.Name{}, err
 	}
 	for _, label := range strings.Split(ascii, ".") {
-		if len(label) == 0 || len(label) > 63 {
-			return dnsmessage.Name{}, errors.New("invalid domain")
+		if len(label) == 0 {
+			return dnsmessage.Name{}, errors.New("empty label")
+		}
+		if len(label) > 63 {
+			return dnsmessage.Name{}, fmt.Errorf("label %q is longer than 63 bytes", label)
 		}
 	}
 	return dnsmessage.NewName(ascii + ".")
@@ -119,7 +122,7 @@ func NewDomain(domain string, lenLimit int, labelLimit int, types []uint16, edns
 
 	name, err := absoluteASCIIName(domain)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid domain %q: %w", domain, err)
 	}
 
 	if lenLimit < int(name.Length)+1 {
