@@ -168,16 +168,21 @@ func marshalBinary(ech EchConfig) ([]byte, error) {
 const ExtensionEncryptedClientHello = 0xfe0d
 
 // validateECHPublicName rejects public names ECH clients ignore. RFC 9849,
-// Section 6.1 has clients drop a config whose public name is not a DNS name
-// or ends with a numeric label, leaving them to send a cleartext SNI. The rules
-// follow `hysteria ech` (Hysteria 2.12.3).
+// Section 6.1.7 has clients drop a config whose public name is not a DNS name
+// or whose final label reads as a number, all digits or 0x and hexadecimal
+// digits, leaving them to send a cleartext SNI. The rules follow `hysteria ech`
+// (Hysteria 2.12.3), plus the hexadecimal form, which BoringSSL rejects too.
 func validateECHPublicName(name string) error {
 	if len(name) == 0 || len(name) > 253 || net.ParseIP(name) != nil || !strings.Contains(name, ".") {
 		return errors.New("serverName must be a DNS name such as public.example.com, without a scheme, port or trailing dot")
 	}
 	labels := strings.Split(name, ".")
-	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" {
 		return errors.New("serverName must not end with an all-numeric DNS label")
+	}
+	if hex, ok := strings.CutPrefix(strings.ToLower(last), "0x"); ok && strings.Trim(hex, "0123456789abcdef") == "" {
+		return errors.New("serverName must not end with a DNS label of 0x and hexadecimal digits")
 	}
 	for _, label := range labels {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
