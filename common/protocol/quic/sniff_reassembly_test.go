@@ -21,7 +21,7 @@ import (
 // quicTLSClientHello returns the ClientHello a crypto/tls QUIC client sends
 // for serverName, as carried by the CRYPTO frames of its Initial packets. An
 // empty serverName leaves out the server_name extension.
-func quicTLSClientHello(t *testing.T, serverName string) []byte {
+func quicTLSClientHello(t testing.TB, serverName string) []byte {
 	t.Helper()
 	conn := tls.QUICClient(&tls.QUICConfig{TLSConfig: &tls.Config{
 		ServerName:         serverName,
@@ -53,7 +53,7 @@ type cryptoFrame struct {
 
 // hkdfExpandLabel is HKDF-Expand-Label from RFC 8446, Section 7.1, with an
 // empty context.
-func hkdfExpandLabel(t *testing.T, secret []byte, label string, length int) []byte {
+func hkdfExpandLabel(t testing.TB, secret []byte, label string, length int) []byte {
 	t.Helper()
 	info := binary.BigEndian.AppendUint16(nil, uint16(length))
 	info = append(info, byte(len("tls13 ")+len(label)))
@@ -70,7 +70,7 @@ func hkdfExpandLabel(t *testing.T, secret []byte, label string, length int) []by
 // with packet number pn carrying frames followed by PADDING (RFC 9000, Section
 // 17.2.2; RFC 9001, Sections 5.2 to 5.4). It does not share code with the
 // sniffer.
-func sealInitial(t *testing.T, destConnID []byte, pn uint32, frames ...cryptoFrame) []byte {
+func sealInitial(t testing.TB, destConnID []byte, pn uint32, frames ...cryptoFrame) []byte {
 	t.Helper()
 	payload := appendCryptoFrames(nil, frames...)
 	payload = append(payload, make([]byte, 32)...) // PADDING frames, so a header protection sample exists
@@ -90,7 +90,16 @@ func appendCryptoFrames(payload []byte, frames ...cryptoFrame) []byte {
 
 // sealInitialPayload protects payload, the frames of a QUIC v1 client Initial
 // packet, as it is. The payload must leave a header protection sample.
-func sealInitialPayload(t *testing.T, destConnID []byte, pn uint32, payload []byte) []byte {
+func sealInitialPayload(t testing.TB, destConnID []byte, pn uint32, payload []byte) []byte {
+	t.Helper()
+	return sealInitialPacket(t, destConnID, uint64(pn), 4, payload)
+}
+
+// sealInitialPacket protects payload as a QUIC v1 client Initial packet with
+// packet number pn, of which the header carries the pnLength least
+// significant bytes (RFC 9000, Section 17.1). The nonce takes the whole
+// packet number (RFC 9001, Section 5.3).
+func sealInitialPacket(t testing.TB, destConnID []byte, pn uint64, pnLength int, payload []byte) []byte {
 	t.Helper()
 	salt := []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a}
 	initialSecret, err := hkdf.Extract(sha256.New, destConnID, salt)
@@ -112,18 +121,17 @@ func sealInitialPayload(t *testing.T, destConnID []byte, pn uint32, payload []by
 		t.Fatal(err)
 	}
 
-	const pnLength = 4
-	header := []byte{0xc0 | (pnLength - 1), 0, 0, 0, 1, byte(len(destConnID))}
+	header := []byte{0xc0 | byte(pnLength-1), 0, 0, 0, 1, byte(len(destConnID))}
 	header = append(header, destConnID...)
 	header = append(header, 0, 0) // no Source Connection ID, no token
 	header = quicvarint.AppendWithLen(header, uint64(pnLength+len(payload)+aead.Overhead()), 2)
 	pnOffset := len(header)
-	header = binary.BigEndian.AppendUint32(header, pn)
+	for i := pnLength - 1; i >= 0; i-- {
+		header = append(header, byte(pn>>(8*i)))
+	}
 
 	nonce := bytes.Clone(iv)
-	for i := range pnLength {
-		nonce[len(nonce)-pnLength+i] ^= header[pnOffset+i]
-	}
+	binary.BigEndian.PutUint64(nonce[len(nonce)-8:], binary.BigEndian.Uint64(nonce[len(nonce)-8:])^pn)
 	packet := aead.Seal(header, nonce, payload, header)
 
 	mask := make([]byte, headerProtection.BlockSize())
