@@ -972,31 +972,40 @@ func connectionFollowingFlows(t *testing.T) []connectionFlow {
 	return []connectionFlow{
 		// B1, F1
 		{"other connection reusing our packet numbers before ours", [][]byte{
-			ours(0, 4, 0), theirs(0, 4), theirs(1, 4), ours(1, 4, 1), theirs(2, 4), ours(2, 4, 2)}, name},
+			ours(0, 4, 0), theirs(0, 4), theirs(1, 4), ours(1, 4, 1), theirs(2, 4), ours(2, 4, 2),
+		}, name},
 		{"other connection with one-byte packet numbers between ours", [][]byte{
-			ours(0, 1, 0), theirs(1, 1), ours(1, 1, 1), theirs(2, 1), ours(2, 1, 2)}, name},
+			ours(0, 1, 0), theirs(1, 1), ours(1, 1, 1), theirs(2, 1), ours(2, 1, 2),
+		}, name},
 		{"other connection first", [][]byte{theirs(0, 4)}, otherName},
 		// B2, B3, B5, F1
 		{"zero and non-zero tails", [][]byte{
-			with(ours(0, 4, 0), zeros), with(ours(1, 4, 1), junk), ours(2, 4, 2)}, name},
+			with(ours(0, 4, 0), zeros), with(ours(1, 4, 1), junk), ours(2, 4, 2),
+		}, name},
 		{"tail with the signature behind another packet type", [][]byte{
-			with(ours(0, 4, 0), notInitial[:20], junk), ours(1, 4, 1), ours(2, 4, 2)}, name},
+			with(ours(0, 4, 0), notInitial[:20], junk), ours(1, 4, 1), ours(2, 4, 2),
+		}, name},
 		{"tail parsing as a packet of the connection that does not decrypt", [][]byte{
-			with(ours(0, 4, 0), undecryptable), with(ours(1, 4, 1), undecryptable), ours(2, 4, 2)}, name},
+			with(ours(0, 4, 0), undecryptable), with(ours(1, 4, 1), undecryptable), ours(2, 4, 2),
+		}, name},
 		// F1: the packets that do not decrypt leave the largest packet number,
 		// which 301 and 302 in one byte decode from, at 300.
 		{"tail that does not decrypt before one-byte packet numbers", [][]byte{
-			with(ours(300, 2, 0), undecryptable), with(ours(301, 1, 1), undecryptable), ours(302, 1, 2)}, name},
+			with(ours(300, 2, 0), undecryptable), with(ours(301, 1, 1), undecryptable), ours(302, 1, 2),
+		}, name},
 		// B4
 		{"0-RTT packets coalesced with Initial packets", [][]byte{
-			with(ours(0, 4, 0), notInitial, ours(1, 4, 1)), with(notInitial, ours(2, 4, 2))}, name},
+			with(ours(0, 4, 0), notInitial, ours(1, 4, 1)), with(notInitial, ours(2, 4, 2)),
+		}, name},
 		// F2
 		{"packet numbers out of order", [][]byte{ours(2, 4, 2), ours(0, 4, 0), ours(1, 4, 1)}, name},
 		{"one-byte packet numbers out of order", [][]byte{ours(2, 1, 2), ours(0, 1, 0), ours(1, 1, 1)}, name},
 		{"large first packet number, as ngtcp2 picks", [][]byte{
-			ours(1360156657, 4, 0), with(ours(1360156658, 4, 1), junk), ours(1360156659, 4, 2)}, name},
+			ours(1360156657, 4, 0), with(ours(1360156658, 4, 1), junk), ours(1360156659, 4, 2),
+		}, name},
 		// F3, B2
 		{"datagram repeated after its tail", [][]byte{
-			with(ours(0, 4, 0), junk), with(ours(0, 4, 0), junk), ours(1, 4, 1), ours(2, 4, 2)}, name},
+			with(ours(0, 4, 0), junk), with(ours(0, 4, 0), junk), ours(1, 4, 1), ours(2, 4, 2),
+		}, name},
 	}
 }
