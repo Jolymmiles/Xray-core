@@ -183,11 +183,15 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		if keys == nil {
 			keys = newInitialKeys(hdr.spec, hdr.destConnID)
 		}
-		decrypted, err := keys.open(packet, hdr.pnOffset, packetBuf)
+		decrypted, pn, err := keys.open(packet, hdr.pnOffset, packetBuf)
 		if err != nil {
 			if sniffed == nil {
 				return nil, err
 			}
+			continue
+		}
+		if !keys.firstOpen(pn) {
+			// A server discards the copy: only the first one counts.
 			continue
 		}
 		sniffed = keys
@@ -394,6 +398,12 @@ type initialKeys struct {
 	destConnID []byte
 	hp         cipher.Block
 	aead       cipher.AEAD
+	// largest is the largest packet number opened so far, -1 before any.
+	largest int64
+	// opened records the packet numbers opened so far: below 1024 in
+	// openedLow, others in openedHigh.
+	openedLow  [1024 / 64]uint64
+	openedHigh map[uint64]struct{}
 }
 
 // newInitialKeys derives the client Initial keys that protect the packets of
@@ -406,7 +416,7 @@ func newInitialKeys(s *quicVersionSpec, destConnID []byte) *initialKeys {
 	hp := common.Must2(aes.NewCipher(hkdfExpandLabel(secret, s.labelPrefix+" hp", 16)))
 	key := hkdfExpandLabel(secret, s.labelPrefix+" key", 16)
 	iv := hkdfExpandLabel(secret, s.labelPrefix+" iv", 12)
-	return &initialKeys{spec: s, destConnID: destConnID, hp: hp, aead: AEADAESGCMTLS13(key, iv)}
+	return &initialKeys{spec: s, destConnID: destConnID, hp: hp, aead: AEADAESGCMTLS13(key, iv), largest: -1}
 }
 
 // protects reports whether the packet with header hdr belongs to the
@@ -415,13 +425,15 @@ func (k *initialKeys) protects(hdr longHeader) bool {
 	return hdr.spec == k.spec && bytes.Equal(hdr.destConnID, k.destConnID)
 }
 
-// open returns the payload of an Initial packet of the connection whose Packet
-// Number field starts at pnOffset. The packet is borrowed, so its protection
-// is removed in a copy held by packetBuf.
-func (k *initialKeys) open(packet []byte, pnOffset int, packetBuf *buf.Buffer) ([]byte, error) {
+// open returns the payload and the packet number of an Initial packet of the
+// connection whose Packet Number field starts at pnOffset. The packet number
+// is recovered from the largest one opened so far, as a receiver does (RFC
+// 9000, Appendix A). The packet is borrowed, so its protection is removed in a
+// copy held by packetBuf.
+func (k *initialKeys) open(packet []byte, pnOffset int, packetBuf *buf.Buffer) ([]byte, uint64, error) {
 	// The header protection sample starts 4 bytes into the Packet Number field.
 	if len(packet) < pnOffset+4+aes.BlockSize {
-		return nil, errNotQUIC
+		return nil, 0, errNotQUIC
 	}
 	var mask [aes.BlockSize]byte
 	k.hp.Encrypt(mask[:], packet[pnOffset+4:pnOffset+4+aes.BlockSize])
@@ -430,14 +442,58 @@ func (k *initialKeys) open(packet []byte, pnOffset int, packetBuf *buf.Buffer) (
 	copy(unprotected, packet)
 	unprotected[0] ^= mask[0] & 0xf
 	packetNumberLength := int(unprotected[0]&0x3 + 1)
-	nonce := make([]byte, k.aead.NonceSize())
+	var truncated uint64
 	for i := range packetNumberLength {
 		unprotected[pnOffset+i] ^= mask[i+1]
+		truncated = truncated<<8 | uint64(unprotected[pnOffset+i])
 	}
-	copy(nonce[len(nonce)-packetNumberLength:], unprotected[pnOffset:pnOffset+packetNumberLength])
+	pn := decodePacketNumber(k.largest, truncated, packetNumberLength)
+	nonce := make([]byte, k.aead.NonceSize())
+	binary.BigEndian.PutUint64(nonce[len(nonce)-8:], pn)
 
 	extHdrLen := pnOffset + packetNumberLength
-	return k.aead.Open(unprotected[extHdrLen:extHdrLen], nonce, unprotected[extHdrLen:], unprotected[:extHdrLen])
+	payload, err := k.aead.Open(unprotected[extHdrLen:extHdrLen], nonce, unprotected[extHdrLen:], unprotected[:extHdrLen])
+	return payload, pn, err
+}
+
+// firstOpen reports whether packet number pn is opened for the first time,
+// and records it as opened. A receiver discards a packet whose number it has
+// opened before (RFC 9000, Section 12.3).
+func (k *initialKeys) firstOpen(pn uint64) bool {
+	if pn < uint64(len(k.openedLow))*64 {
+		bit := uint64(1) << (pn % 64)
+		if k.openedLow[pn/64]&bit != 0 {
+			return false
+		}
+		k.openedLow[pn/64] |= bit
+	} else {
+		if _, ok := k.openedHigh[pn]; ok {
+			return false
+		}
+		if k.openedHigh == nil {
+			k.openedHigh = make(map[uint64]struct{})
+		}
+		k.openedHigh[pn] = struct{}{}
+	}
+	k.largest = max(k.largest, int64(pn))
+	return true
+}
+
+// decodePacketNumber recovers a packet number sent as its pnLen least
+// significant bytes, truncated, from largest, the largest packet number
+// received so far or -1 (RFC 9000, Appendix A.3).
+func decodePacketNumber(largest int64, truncated uint64, pnLen int) uint64 {
+	expected := uint64(largest + 1)
+	window := uint64(1) << (8 * pnLen)
+	halfWindow := window / 2
+	candidate := expected&^(window-1) | truncated
+	switch {
+	case candidate+halfWindow <= expected && candidate < 1<<62-window:
+		return candidate + window
+	case candidate > expected+halfWindow && candidate >= window:
+		return candidate - window
+	}
+	return candidate
 }
 
 // nextInitial returns b from the next Initial packet of the connection after
