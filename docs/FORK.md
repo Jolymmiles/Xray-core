@@ -127,11 +127,13 @@ guard it.
   `TestRawUDPRefusesGeckoWithoutIntegrity`
   (`transport/internet/udp/gecko_integrity_test.go`) and
   `TestRawUDPInboundsRefuseGeckoUnderNominalQUIC`.
-- WireGuard's netstack TUN (`proxy/wireguard/netstack.go`) closes once:
-  wireguard-go closes the device itself when it shuts down after a failed
-  bind, and the server closes it again; upstream panics on the second close
-  and takes down a running instance that added such an inbound. Covered by
-  `TestNetTUNCloseIsIdempotent`.
+- WireGuard's TUN wrappers close once: wireguard-go closes the device itself
+  when it shuts down after a failed bind, and the owner closes it again.
+  Upstream's netstack TUN (`proxy/wireguard/netstack.go`) panics on the
+  second close and takes down a running instance that added such an inbound;
+  the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
+  closes its netlink handle concurrently. Covered by
+  `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
