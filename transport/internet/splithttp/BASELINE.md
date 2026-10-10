@@ -119,7 +119,10 @@ Measured for the change that allows a reading stream what it already holds
 sets up the namespaces and the link, writes the configs, drives the uploads
 and the small requests and prints the table; `origin` is the far end. It
 creates namespaces of its own and removes them, its temporary directory and
-its processes when it ends.
+its processes when it ends, and fails if a namespace cannot be removed. A
+measurement still running after 98 s per run is taken as stuck: the stand
+stops it, tears down and exits with status 1. When the stand fails, it
+prints what `origin` wrote to stderr.
 
 ```sh
 go build -o origin ./testing/xhttpflow/slowreader/origin
@@ -142,8 +145,9 @@ sudo python3 testing/xhttpflow/slowreader/stand.py     --origin ./origin --clien
   request times, and the server's peak RSS sampled every 0.25 s. A request
   that fails or takes over 10 s counts as 10 s, and the request in flight
   when the uploads end is waited for and counted. A run is valid only if
-  all twenty uploads were still sending at the deadline. The table gives the
-  median over runs and the worst run.
+  all twenty uploads were still sending at the deadline; a single invalid
+  run makes the stand exit with status 1, after the table. The table gives
+  the median over runs and the worst run.
 
 | | Before | After |
 | --- | --- | --- |
