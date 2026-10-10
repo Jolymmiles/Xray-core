@@ -134,6 +134,26 @@ guard it.
   the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
   closes its netlink handle concurrently. Covered by
   `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
+- `outbound.Manager.RemoveHandler`, which HandlerService `RemoveOutbound`
+  calls, closes the handler it removes, after unpublishing it and without the
+  manager lock: a port of upstream XTLS/Xray-core#7112 at `29885292ca`, open
+  when ported. Removal ends what the handler's `Close` ends; in this fork that
+  includes its SMUX sessions and the VLESS reverse's connected bridges, which
+  upstream's reverse leaves running. The fork's reverse `Close` waits for its
+  bridges, so it also cancels the reverse's context and closes each bridge's
+  connection: a bridge stalled in a dial, a TLS or REALITY handshake, or the
+  VLESS encryption handshake does not hold the removal. VLESS `testpre`
+  pre-connects stop on `Close`, which may run more than once, and a request
+  waiting for a pre-connection returns on `Close` or its own cancellation.
+  That is the lifecycle part of upstream XTLS/Xray-core#7113, which upstream
+  closed unmerged; its backoff and its 2 s fallback to a direct dial are not
+  ported, so while the handler is open its pre-connects still redial an
+  unreachable server without pause. Covered by `TestRemoveHandlerClosesHandler`
+  and `TestRemoveHandlerClosesAfterUnpublishingWithoutTheLock`
+  (`app/proxyman/outbound/handler_test.go`),
+  `TestRemovedOutboundClosesTUNOnce` (`proxy/wireguard`), and the
+  `TestRemovedReverse*`, `TestReverseCloseAborts*` and `TestTestpre*` tests in
+  `proxy/vless/outbound`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
