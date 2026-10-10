@@ -167,13 +167,24 @@ def outer(args):
         return inside.wait()
 
 
+def time_left(deadline):
+    """Seconds until deadline, for the next socket operation; socket.timeout
+    once it has passed, so no operation starts late."""
+    left = deadline - time.time()
+    if left <= 0:
+        raise socket.timeout("deadline passed")
+    return left
+
+
 def socks(deadline):
     """A TCP connection to the origin through the client's SOCKS5 inbound."""
-    s = socket.create_connection(SOCKS, timeout=max(0.05, deadline - time.time()))
+    s = socket.create_connection(SOCKS, timeout=time_left(deadline))
     try:
+        s.settimeout(time_left(deadline))
         s.sendall(b"\x05\x01\x00")
         if recv_exact(s, 2, deadline) != b"\x05\x00":
             raise OSError("socks: method refused")
+        s.settimeout(time_left(deadline))
         s.sendall(b"\x05\x01\x00\x03" + bytes([len(TARGET)]) + TARGET + TARGET_PORT.to_bytes(2, "big"))
         reply = recv_exact(s, 10, deadline)
         if reply[:2] != b"\x05\x00":
@@ -187,7 +198,7 @@ def socks(deadline):
 def recv_exact(s, n, deadline):
     buf = b""
     while len(buf) < n:
-        s.settimeout(max(0.05, deadline - time.time()))
+        s.settimeout(time_left(deadline))
         chunk = s.recv(n - len(buf))
         if not chunk:
             raise OSError("closed early")
@@ -197,12 +208,15 @@ def recv_exact(s, n, deadline):
 
 def ping(timeout=PING_TIMEOUT):
     """Milliseconds for one small request through the tunnel, or None if it
-    failed or did not finish within timeout: session, GET /ping, 200, "pong"."""
+    failed or did not finish within timeout: session, GET /ping, 200, "pong".
+    One deadline covers the whole request: every send and receive gets only
+    the time left, and an answer complete after it is a failure too."""
     start = time.time()
     deadline = start + timeout
     try:
         s = socks(deadline)
         try:
+            s.settimeout(time_left(deadline))
             s.sendall(b"GET /ping HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n")
             # The answer is the status line, headers and the four bytes of
             # "pong". The tunnel passes the origin's close on only after a
@@ -210,17 +224,18 @@ def ping(timeout=PING_TIMEOUT):
             want = b"\r\n\r\npong"
             buf = b""
             while want not in buf and len(buf) < 4096:
-                s.settimeout(max(0.05, deadline - time.time()))
+                s.settimeout(time_left(deadline))
                 chunk = s.recv(4096)
                 if not chunk:
                     break
                 buf += chunk
         finally:
             s.close()
+        end = time.time()
         head, _, body = buf.partition(b"\r\n\r\n")
-        if not head.startswith(b"HTTP/1.1 200") or body != b"pong":
+        if end >= deadline or not head.startswith(b"HTTP/1.1 200") or body != b"pong":
             return None
-        return (time.time() - start) * 1000
+        return (end - start) * 1000
     except OSError:
         return None
 
@@ -234,6 +249,7 @@ def upload(deadline, result):
         result.update(sent=0, end=f"no session: {e}")
         return
     try:
+        s.settimeout(time_left(deadline))
         s.sendall(b"POST /up?rate=%d HTTP/1.1\r\nHost: target.test\r\nContent-Length: 500000000\r\n"
                   b"Connection: close\r\n\r\n" % UPLOAD_RATE)
         block = os.urandom(32768)
