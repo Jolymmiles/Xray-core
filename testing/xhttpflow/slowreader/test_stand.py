@@ -6,8 +6,11 @@ clock, sockets and subprocesses are fakes.
 import contextlib
 import io
 import json
+import os
 import pathlib
+import shutil
 import socket
+import subprocess
 import tempfile
 import types
 import unittest
@@ -147,6 +150,132 @@ class ComparisonStatusTests(unittest.TestCase):
         self.assertIn("| Requests failed or over 10 s | 0 of 1080 | 0 of 1050 |", table)
         self.assertEqual(len(records), 72)
         self.assertIn({"server": "after", **invalid}, records)
+
+
+class WaitedForever(Exception):
+    """Stands in for a wait with no deadline on a child that never exits."""
+
+
+class FakeChild:
+    """A child process. With exit_code None it runs until killed and ignores
+    SIGTERM, as a stuck one would; otherwise it has exited with exit_code."""
+
+    def __init__(self, name, events, exit_code):
+        self.name, self.events = name, events
+        self.returncode = exit_code
+        self.pid = 4242
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.events.append((self.name, "wait", timeout))
+        if self.returncode is None:
+            if timeout is None:
+                raise WaitedForever(self.name)
+            raise subprocess.TimeoutExpired(self.name, timeout)
+        return self.returncode
+
+    def terminate(self):
+        self.events.append((self.name, "terminate"))
+
+    def kill(self):
+        self.events.append((self.name, "kill"))
+        self.returncode = -9
+
+
+class FakeHost:
+    """What outer() starts and runs on the host. The origin runs until it is
+    killed; the measuring child exits with inside_exit, or never if None. The
+    ip commands listed in failing exit with status 1."""
+
+    def __init__(self, inside_exit=0, origin_stderr=b"", failing=()):
+        self.inside_exit, self.origin_stderr, self.failing = inside_exit, origin_stderr, failing
+        self.events = []
+        self.popen_kwargs = {}
+
+    def popen(self, argv, **kwargs):
+        name = "inside" if "--inside" in argv else "origin"
+        self.popen_kwargs[name] = kwargs
+        if name == "origin" and self.origin_stderr and hasattr(kwargs.get("stderr"), "fileno"):
+            os.write(kwargs["stderr"].fileno(), self.origin_stderr)
+        return FakeChild(name, self.events, self.inside_exit if name == "inside" else None)
+
+    def run(self, cmd, **kwargs):
+        line = cmd if isinstance(cmd, str) else " ".join(cmd)
+        self.events.append(("run", line))
+        if line in self.failing:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=f"{line}: Device or resource busy\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def teardown(self):
+        """Who was stopped or removed after the first wait for the measuring
+        child, in order: inside, origin, cli, srv, work."""
+        first = next(i for i, e in enumerate(self.events) if e[:2] == ("inside", "wait"))
+        stages = []
+        for event in self.events[first + 1:]:
+            if event[0] == "run":
+                stage = event[1].rsplit("-", 1)[1]
+            elif event[0] == "rmtree":
+                stage = "work"
+            else:
+                stage = event[0]
+            if not stages or stages[-1] != stage:
+                stages.append(stage)
+        return stages
+
+
+class OuterTests(unittest.TestCase):
+    RUNS = 36
+
+    def outer(self, host):
+        """Runs outer() against host; returns its exit code or the exception
+        it raised, what it wrote to stderr, and its temporary directory."""
+        args = types.SimpleNamespace(server=["before=/before", "after=/after"], runs=self.RUNS,
+                                     origin="/origin", client="/client", out="runs.jsonl")
+        real_mkdtemp, real_rmtree = tempfile.mkdtemp, shutil.rmtree
+        work = []
+
+        def mkdtemp(**kwargs):
+            work.append(real_mkdtemp(**kwargs))
+            self.addCleanup(real_rmtree, work[0], ignore_errors=True)
+            return work[0]
+
+        def rmtree(path, **kwargs):
+            host.events.append(("rmtree", path))
+            real_rmtree(path, **kwargs)
+
+        stderr = io.StringIO()
+        with mock.patch.object(stand.os, "geteuid", return_value=0), \
+                mock.patch.object(stand.signal, "signal"), \
+                mock.patch.object(stand, "reality_keys", return_value=("private", "public")), \
+                mock.patch.object(stand.subprocess, "Popen", host.popen), \
+                mock.patch.object(stand.subprocess, "run", host.run), \
+                mock.patch.object(stand.tempfile, "mkdtemp", mkdtemp), \
+                mock.patch.object(stand.shutil, "rmtree", rmtree), \
+                contextlib.redirect_stderr(stderr):
+            try:
+                result = stand.outer(args)
+            except Exception as e:
+                result = e
+        return result, stderr.getvalue(), work[0]
+
+    def test_a_stuck_measurement_is_stopped_at_its_deadline_and_torn_down(self):
+        host = FakeHost(inside_exit=None)
+        result, stderr, work = self.outer(host)
+        if isinstance(result, WaitedForever):
+            self.fail("the parent waited for the measuring child with no deadline")
+        self.assertNotEqual(result, 0)
+        self.assertIn("did not finish", stderr)
+
+        limit = host.events[[e[:2] for e in host.events].index(("inside", "wait"))][2]
+        self.assertIsNotNone(limit)
+        self.assertGreaterEqual(limit, 2 * self.RUNS * stand.DURATION, "the deadline must leave room for every run")
+        self.assertLess(limit, 24 * 3600)
+
+        self.assertEqual(host.teardown(), ["inside", "origin", "cli", "srv", "work"])
+        self.assertIn(("inside", "terminate"), host.events)
+        self.assertFalse(os.path.exists(work))
 
 
 if __name__ == "__main__":

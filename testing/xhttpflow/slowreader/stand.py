@@ -22,7 +22,10 @@ has the governor on ("h2Flow": {"enabled": true}); the client is whatever
 The stand creates two network namespaces and a veth pair with names of its
 own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
 temporary directory and every process it started when it ends, however it
-ends. It touches nothing else on the host.
+ends. It touches nothing else on the host. The measurement gets RUN_LIMIT
+(98 s) per run, where a run normally takes its 12 s of load and a few seconds
+around them; one still going past that is stuck, and the stand stops it,
+tears down and exits with status 1.
 
 A run is valid only if every upload was still sending at the deadline and the
 server's memory could be read. A small request that fails or does not finish
@@ -54,6 +57,10 @@ XMUX = {"maxConnections": 3, "maxConcurrency": 0, "cMaxReuseTimes": 0,
 MBIT, RTT_MS = 100, 50
 UPLOADS, UPLOAD_RATE, DURATION, PING_EVERY = 20, 100_000, 12, 0.3
 PING_TIMEOUT, READY_TIMEOUT = 10.0, 20.0
+# What one run's own waits allow at most: readiness and its last ping, the
+# workload and the uploads' join, both watchers' joins; and half a minute for
+# starting and stopping Xray. The parent gives the measurement this per run.
+RUN_LIMIT = (READY_TIMEOUT + 2) + (DURATION + PING_TIMEOUT) + 2 * (PING_TIMEOUT + 2) + 30
 
 
 def sh(cmd):
@@ -166,7 +173,13 @@ def outer(args):
                                    "--work", work, "--srv-ns", srv, "--client", args.client, "--runs", str(args.runs),
                                    "--out", os.path.abspath(args.out)] + [x for s in args.server for x in ("--server", s)])
         stack.callback(reap, inside, 15.0)  # it stops and reaps its own Xray processes
-        return inside.wait()
+        # Past this the child is stuck, not slow; leaving here tears it down.
+        limit = len(servers) * args.runs * RUN_LIMIT + 60
+        try:
+            return inside.wait(limit)
+        except subprocess.TimeoutExpired:
+            print(f"the measurement did not finish within {limit:.0f} s; stopping it", file=sys.stderr)
+            return 1
 
 
 def time_left(deadline):
