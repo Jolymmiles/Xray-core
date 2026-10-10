@@ -37,7 +37,13 @@ var (
 	errNoServerName   = errors.New("no server name in the ClientHello")
 
 	errConflictingCrypto = errors.New("CRYPTO frames carry different data at the same offset")
+
+	errShortInitialDatagram = errors.New("an Initial packet of the connection in a datagram below 1200 bytes")
 )
+
+// minInitialDatagram is the smallest datagram a server takes an Initial packet
+// in (RFC 9000, Section 14.1).
+const minInitialDatagram = 1200
 
 // cryptoStreamCap bounds the CRYPTO stream offsets SniffQUIC keeps. The
 // stream starts with the ClientHello, which the TLS sniffer bounds the same.
@@ -169,12 +175,41 @@ var (
 // SniffQUIC returns the server name in the ClientHello carried by the QUIC
 // client Initial packets at the start of b.
 //
-// b holds the first datagrams of a UDP flow as the dispatcher caches them, and
-// it is borrowed: the dispatcher forwards those datagrams once sniffing ends.
+// b holds the first datagrams of a UDP flow without their boundaries, and it
+// is borrowed: the dispatcher forwards those datagrams once sniffing ends.
 // SniffQUIC therefore never writes to b and removes the packet protection of
 // each Initial packet in a copy.
 func SniffQUIC(b []byte) (*SniffHeader, error) {
-	if len(b) == 0 {
+	return sniffQUIC([][]byte{b}, false)
+}
+
+// SniffQUICDatagrams is SniffQUIC for the first datagrams of a UDP flow kept
+// apart, which it reads as a QUIC server receives them (RFC 9000, Sections
+// 12.2 and 14.1, and quic-go):
+//
+//   - A packet never continues into the next datagram, and the rest of a
+//     datagram after a packet that does not parse is ignored.
+//   - A server gives a datagram to the connection of its first packet, and
+//     ignores a coalesced packet of another connection or version with what
+//     follows it.
+//   - An Initial packet in a datagram below 1200 bytes starts no connection.
+//     Once the connection has started, such a packet makes the flow
+//     ambiguous, since quic-go reads it and other servers discard it, so the
+//     flow is not sniffed.
+//
+// The datagrams are borrowed like the payload of SniffQUIC.
+func SniffQUICDatagrams(datagrams [][]byte) (*SniffHeader, error) {
+	return sniffQUIC(datagrams, true)
+}
+
+// sniffQUIC implements SniffQUIC and SniffQUICDatagrams. Unless separate is
+// set, datagrams holds one byte stream whose datagram boundaries are unknown.
+func sniffQUIC(datagrams [][]byte, separate bool) (*SniffHeader, error) {
+	largest := 0
+	for _, datagram := range datagrams {
+		largest = max(largest, len(datagram))
+	}
+	if largest == 0 {
 		return nil, common.ErrNoClue
 	}
 
@@ -187,8 +222,9 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	defer cryptoDataBuf.Release()
 	var received receivedBytes
 	receivedLen := int32(0)
-	// The packet whose protection is being removed, copied out of b.
-	packetBuf := buf.NewWithSize(int32(len(b)))
+	// The packet whose protection is being removed, copied out of its
+	// datagram.
+	packetBuf := buf.NewWithSize(int32(largest))
 	defer packetBuf.Release()
 
 	// sniffed holds the Initial keys of the connection sniffed: the one of
@@ -197,155 +233,178 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	// skipped.
 	var sniffed *initialKeys
 
-	// Parse QUIC packets
-	for len(b) > 0 {
-		hdr, err := parseLongHeader(b)
-		if err != nil {
-			if sniffed == nil {
-				return nil, err
+	for _, b := range datagrams {
+		datagramLen := len(b)
+		// The connection and version of the first packet of the datagram.
+		var datagramConnID []byte
+		var datagramSpec *quicVersionSpec
+	packets:
+		for len(b) > 0 {
+			hdr, err := parseLongHeader(b)
+			if err != nil {
+				if sniffed == nil && (!separate || len(b) == datagramLen) {
+					return nil, err
+				}
+				if separate {
+					break packets
+				}
+				// What follows the last packet of a datagram is not a packet:
+				// Firefox pads with zeros there. b keeps no datagram boundaries,
+				// so resume at the next Initial packet of the connection.
+				if b = sniffed.nextInitial(b); b == nil {
+					break packets
+				}
+				continue
 			}
-			// What follows the last packet of a datagram is not a packet: Firefox
-			// pads with zeros there. b keeps no datagram boundaries, so resume
-			// at the next Initial packet of the connection.
-			if b = sniffed.nextInitial(b); b == nil {
-				break
+			if separate {
+				if len(b) == datagramLen {
+					datagramConnID, datagramSpec = hdr.destConnID, hdr.spec
+				} else if hdr.spec != datagramSpec || !bytes.Equal(hdr.destConnID, datagramConnID) {
+					break packets
+				}
 			}
-			continue
-		}
-		packet := b[:hdr.pnOffset+hdr.packetLen]
-		b = b[len(packet):]
-		if !hdr.initial || sniffed != nil && !sniffed.protects(hdr) { // Only Initial packets of the connection carry its ClientHello
-			continue
-		}
+			packet := b[:hdr.pnOffset+hdr.packetLen]
+			b = b[len(packet):]
+			if !hdr.initial || sniffed != nil && !sniffed.protects(hdr) { // Only Initial packets of the connection carry its ClientHello
+				continue
+			}
+			short := separate && datagramLen < minInitialDatagram
+			if short && sniffed == nil {
+				break packets
+			}
 
-		keys := sniffed
-		if keys == nil {
-			keys = newInitialKeys(hdr.spec, hdr.destConnID)
-		}
-		decrypted, pn, err := keys.open(packet, hdr.pnOffset, packetBuf)
-		if err != nil {
-			if sniffed == nil {
-				return nil, err
+			keys := sniffed
+			if keys == nil {
+				keys = newInitialKeys(hdr.spec, hdr.destConnID)
 			}
-			continue
-		}
-		if !keys.firstOpen(pn) {
-			// A server discards the copy: only the first one counts.
-			continue
-		}
-		sniffed = keys
+			decrypted, pn, err := keys.open(packet, hdr.pnOffset, packetBuf)
+			if err != nil {
+				if sniffed == nil {
+					return nil, err
+				}
+				continue
+			}
+			if !keys.firstOpen(pn) {
+				// A server discards the copy: only the first one counts.
+				continue
+			}
+			if short {
+				return nil, errShortInitialDatagram
+			}
+			sniffed = keys
 
-		buffer := buf.FromBytes(decrypted)
-		for !buffer.IsEmpty() {
-			frameType, _ := buffer.ReadByte()
-			for frameType == 0x0 && !buffer.IsEmpty() {
-				frameType, _ = buffer.ReadByte()
+			buffer := buf.FromBytes(decrypted)
+			for !buffer.IsEmpty() {
+				frameType, _ := buffer.ReadByte()
+				for frameType == 0x0 && !buffer.IsEmpty() {
+					frameType, _ = buffer.ReadByte()
+				}
+				switch frameType {
+				case 0x00: // PADDING frame
+				case 0x01: // PING frame
+				case 0x02, 0x03: // ACK frame
+					if _, err = readShortQUICVarint(buffer); err != nil { // Field: Largest Acknowledged
+						return nil, io.ErrUnexpectedEOF
+					}
+					if _, err = readShortQUICVarint(buffer); err != nil { // Field: ACK Delay
+						return nil, io.ErrUnexpectedEOF
+					}
+					ackRangeCount, err := readShortQUICVarint(buffer) // Field: ACK Range Count
+					if err != nil {
+						return nil, io.ErrUnexpectedEOF
+					}
+					if _, err = readShortQUICVarint(buffer); err != nil { // Field: First ACK Range
+						return nil, io.ErrUnexpectedEOF
+					}
+					for i := 0; i < int(ackRangeCount); i++ { // Field: ACK Range
+						if _, err = readShortQUICVarint(buffer); err != nil { // Field: ACK Range -> Gap
+							return nil, io.ErrUnexpectedEOF
+						}
+						if _, err = readShortQUICVarint(buffer); err != nil { // Field: ACK Range -> ACK Range Length
+							return nil, io.ErrUnexpectedEOF
+						}
+					}
+					if frameType == 0x03 {
+						if _, err = readShortQUICVarint(buffer); err != nil { // Field: ECN Counts -> ECT0 Count
+							return nil, io.ErrUnexpectedEOF
+						}
+						if _, err = readShortQUICVarint(buffer); err != nil { // Field: ECN Counts -> ECT1 Count
+							return nil, io.ErrUnexpectedEOF
+						}
+						if _, err = readShortQUICVarint(buffer); err != nil { //nolint:misspell // Field: ECN Counts -> ECT-CE Count
+							return nil, io.ErrUnexpectedEOF
+						}
+					}
+				case 0x06: // CRYPTO frame, we will use this frame
+					offset, err := readShortQUICVarint(buffer) // Field: Offset
+					if err != nil {
+						return nil, io.ErrUnexpectedEOF
+					}
+					length, err := readShortQUICVarint(buffer) // Field: Length
+					if err != nil || length > buffer.Len() {
+						return nil, io.ErrUnexpectedEOF
+					}
+					currentCryptoLen := int32(offset + length)
+					if cryptoLen < currentCryptoLen {
+						if currentCryptoLen > cryptoStreamCap {
+							return nil, io.ErrShortBuffer
+						}
+						cryptoDataBuf.Extend(currentCryptoLen - cryptoLen)
+						cryptoLen = currentCryptoLen
+					}
+					data, err := buffer.ReadBytes(length) // Field: Crypto Data
+					if err != nil {
+						return nil, io.ErrUnexpectedEOF
+					}
+					if !received.fill(cryptoDataBuf.BytesRange(offset, currentCryptoLen), data, offset) {
+						// quic-go keeps a copy it has delivered, yet lets a longer
+						// frame replace one still queued: no server name read here
+						// is sure to be the one the destination reads.
+						return nil, errConflictingCrypto
+					}
+				case 0x1c: // CONNECTION_CLOSE frame, only 0x1c is permitted in initial packet
+					if _, err = readShortQUICVarint(buffer); err != nil { // Field: Error Code
+						return nil, io.ErrUnexpectedEOF
+					}
+					if _, err = readShortQUICVarint(buffer); err != nil { // Field: Frame Type
+						return nil, io.ErrUnexpectedEOF
+					}
+					length, err := readShortQUICVarint(buffer) // Field: Reason Phrase Length
+					if err != nil {
+						return nil, io.ErrUnexpectedEOF
+					}
+					if _, err := buffer.ReadBytes(int32(length)); err != nil { // Field: Reason Phrase
+						return nil, io.ErrUnexpectedEOF
+					}
+				default:
+					// Only above frame types are permitted in initial packet.
+					// See https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2.2-8
+					return nil, errNotQUICInitial
+				}
 			}
-			switch frameType {
-			case 0x00: // PADDING frame
-			case 0x01: // PING frame
-			case 0x02, 0x03: // ACK frame
-				if _, err = readShortQUICVarint(buffer); err != nil { // Field: Largest Acknowledged
-					return nil, io.ErrUnexpectedEOF
-				}
-				if _, err = readShortQUICVarint(buffer); err != nil { // Field: ACK Delay
-					return nil, io.ErrUnexpectedEOF
-				}
-				ackRangeCount, err := readShortQUICVarint(buffer) // Field: ACK Range Count
-				if err != nil {
-					return nil, io.ErrUnexpectedEOF
-				}
-				if _, err = readShortQUICVarint(buffer); err != nil { // Field: First ACK Range
-					return nil, io.ErrUnexpectedEOF
-				}
-				for i := 0; i < int(ackRangeCount); i++ { // Field: ACK Range
-					if _, err = readShortQUICVarint(buffer); err != nil { // Field: ACK Range -> Gap
-						return nil, io.ErrUnexpectedEOF
-					}
-					if _, err = readShortQUICVarint(buffer); err != nil { // Field: ACK Range -> ACK Range Length
-						return nil, io.ErrUnexpectedEOF
-					}
-				}
-				if frameType == 0x03 {
-					if _, err = readShortQUICVarint(buffer); err != nil { // Field: ECN Counts -> ECT0 Count
-						return nil, io.ErrUnexpectedEOF
-					}
-					if _, err = readShortQUICVarint(buffer); err != nil { // Field: ECN Counts -> ECT1 Count
-						return nil, io.ErrUnexpectedEOF
-					}
-					if _, err = readShortQUICVarint(buffer); err != nil { //nolint:misspell // Field: ECN Counts -> ECT-CE Count
-						return nil, io.ErrUnexpectedEOF
-					}
-				}
-			case 0x06: // CRYPTO frame, we will use this frame
-				offset, err := readShortQUICVarint(buffer) // Field: Offset
-				if err != nil {
-					return nil, io.ErrUnexpectedEOF
-				}
-				length, err := readShortQUICVarint(buffer) // Field: Length
-				if err != nil || length > buffer.Len() {
-					return nil, io.ErrUnexpectedEOF
-				}
-				currentCryptoLen := int32(offset + length)
-				if cryptoLen < currentCryptoLen {
-					if currentCryptoLen > cryptoStreamCap {
-						return nil, io.ErrShortBuffer
-					}
-					cryptoDataBuf.Extend(currentCryptoLen - cryptoLen)
-					cryptoLen = currentCryptoLen
-				}
-				data, err := buffer.ReadBytes(length) // Field: Crypto Data
-				if err != nil {
-					return nil, io.ErrUnexpectedEOF
-				}
-				if !received.fill(cryptoDataBuf.BytesRange(offset, currentCryptoLen), data, offset) {
-					// quic-go keeps a copy it has delivered, yet lets a longer
-					// frame replace one still queued: no server name read here
-					// is sure to be the one the destination reads.
-					return nil, errConflictingCrypto
-				}
-			case 0x1c: // CONNECTION_CLOSE frame, only 0x1c is permitted in initial packet
-				if _, err = readShortQUICVarint(buffer); err != nil { // Field: Error Code
-					return nil, io.ErrUnexpectedEOF
-				}
-				if _, err = readShortQUICVarint(buffer); err != nil { // Field: Frame Type
-					return nil, io.ErrUnexpectedEOF
-				}
-				length, err := readShortQUICVarint(buffer) // Field: Reason Phrase Length
-				if err != nil {
-					return nil, io.ErrUnexpectedEOF
-				}
-				if _, err := buffer.ReadBytes(int32(length)); err != nil { // Field: Reason Phrase
-					return nil, io.ErrUnexpectedEOF
-				}
-			default:
-				// Only above frame types are permitted in initial packet.
-				// See https://www.rfc-editor.org/rfc/rfc9000.html#section-17.2.2-8
-				return nil, errNotQUICInitial
-			}
-		}
 
-		// The client's CRYPTO stream starts with its ClientHello: a handshake
-		// header (type 1, 24-bit length) and the body. Read it only once all of
-		// it has arrived; bytes still missing must never be read.
-		receivedLen = received.prefix(receivedLen, cryptoLen)
-		stream := cryptoDataBuf.BytesTo(receivedLen)
-		helloLen, ok := ptls.HandshakeMessageLength(stream)
-		if !ok {
-			continue
+			// The client's CRYPTO stream starts with its ClientHello: a handshake
+			// header (type 1, 24-bit length) and the body. Read it only once all of
+			// it has arrived; bytes still missing must never be read.
+			receivedLen = received.prefix(receivedLen, cryptoLen)
+			stream := cryptoDataBuf.BytesTo(receivedLen)
+			helloLen, ok := ptls.HandshakeMessageLength(stream)
+			if !ok {
+				continue
+			}
+			if stream[0] != 1 || helloLen > cryptoStreamCap {
+				return nil, errNotClientHello
+			}
+			if len(stream) < helloLen {
+				continue
+			}
+			tlsHdr := &ptls.SniffHeader{}
+			if err := ptls.ReadClientHello(stream[:helloLen], tlsHdr); err != nil {
+				// The whole ClientHello has arrived, so later packets cannot help.
+				return nil, errNoServerName
+			}
+			return &SniffHeader{domain: tlsHdr.Domain()}, nil
 		}
-		if stream[0] != 1 || helloLen > cryptoStreamCap {
-			return nil, errNotClientHello
-		}
-		if len(stream) < helloLen {
-			continue
-		}
-		tlsHdr := &ptls.SniffHeader{}
-		if err := ptls.ReadClientHello(stream[:helloLen], tlsHdr); err != nil {
-			// The whole ClientHello has arrived, so later packets cannot help.
-			return nil, errNoServerName
-		}
-		return &SniffHeader{domain: tlsHdr.Domain()}, nil
 	}
 	// All payload is parsed as valid QUIC packets, but we need more packets for crypto data to read client hello.
 	return nil, protocol.ErrProtoNeedMoreData

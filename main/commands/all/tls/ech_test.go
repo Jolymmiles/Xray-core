@@ -124,9 +124,10 @@ func parseECHConfigList(t *testing.T, list []byte) []echConfigFields {
 	return fields
 }
 
-// ECH clients ignore a config whose public name is not a DNS name (RFC 9849,
-// Section 6.1) and fall back to a cleartext SNI, so `hysteria ech` (Hysteria
-// 2.12.3) refuses such names and `xray tls ech` must too.
+// ECH clients ignore a config whose public name is not a DNS name or whose
+// final label reads as a number, in decimal or as 0x and hexadecimal digits
+// (RFC 9849, Section 6.1.7), and fall back to a cleartext SNI, so `xray tls
+// ech` must refuse such names.
 func TestECHRejectsPublicNamesClientsIgnore(t *testing.T) {
 	for _, name := range []string{
 		"192.0.2.1",
@@ -135,6 +136,9 @@ func TestECHRejectsPublicNamesClientsIgnore(t *testing.T) {
 		"example.com.",
 		"localhost",
 		"example.123",
+		"example.0x01",
+		"example.0X1F",
+		"example.0x",
 		"-bad.example.com",
 		"bad_label.example.com",
 		"bücher.example",
@@ -144,6 +148,23 @@ func TestECHRejectsPublicNamesClientsIgnore(t *testing.T) {
 			stdout, stderr, exitCode := runECH(t, "--serverName", name)
 			if exitCode == 0 || strings.Contains(stdout, "ECH config list") {
 				t.Fatalf("`xray tls ech --serverName %s` exited %d and printed:\n%s%s", name, exitCode, stdout, stderr)
+			}
+		})
+	}
+}
+
+// A final label that only starts like a hexadecimal number is a DNS label like
+// any other, and the config keeps it as the public name.
+func TestECHAcceptsFinalLabelsThatAreNotNumbers(t *testing.T) {
+	for _, name := range []string{"public.0xg1", "public.0x1g", "public.x01"} {
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr, exitCode := runECH(t, "--serverName", name)
+			if exitCode != 0 {
+				t.Fatalf("`xray tls ech --serverName %s` exited %d: %s", name, exitCode, stderr)
+			}
+			configs := parseECHConfigList(t, parseECHOutput(t, stdout).configList)
+			if len(configs) != 1 || configs[0].publicName != name {
+				t.Fatalf("configs = %+v, want one with public name %q", configs, name)
 			}
 		})
 	}
