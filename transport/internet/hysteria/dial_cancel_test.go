@@ -154,7 +154,9 @@ func (s *authServer) firstSource() *stdnet.UDPAddr {
 // udpRelay relays UDP datagrams between Hysteria clients and a listener and
 // records the client socket it heard first. With dropFirst it drops every
 // datagram of that socket, so the dial that owns it stalls in its QUIC
-// handshake while datagrams of later sockets pass.
+// handshake while datagrams of later sockets pass. A socket error before the
+// test ends fails the test, so a broken relay is not reported as a stalled
+// dial only.
 type udpRelay struct {
 	dest      xnet.Destination
 	conn      *stdnet.UDPConn
@@ -164,6 +166,7 @@ type udpRelay struct {
 
 	mu      sync.Mutex
 	closed  bool
+	failure error // the first socket error before closed
 	first   *stdnet.UDPAddr
 	peers   map[string]*stdnet.UDPConn
 	workers sync.WaitGroup
@@ -188,14 +191,32 @@ func startUDPRelay(t *testing.T, listener xnet.Destination, dropFirst bool) *udp
 	t.Cleanup(func() {
 		r.mu.Lock()
 		r.closed = true
+		failure := r.failure
 		for _, peer := range r.peers {
 			_ = peer.Close()
 		}
 		r.mu.Unlock()
 		_ = conn.Close()
 		r.workers.Wait()
+		if failure != nil {
+			t.Errorf("the UDP relay failed: %v", failure)
+		}
 	})
 	return r
+}
+
+// fail records err unless the relay is closing, when socket errors are
+// expected.
+func (r *udpRelay) fail(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failLocked(err)
+}
+
+func (r *udpRelay) failLocked(err error) {
+	if !r.closed && r.failure == nil {
+		r.failure = err
+	}
 }
 
 func (r *udpRelay) relay() {
@@ -204,10 +225,13 @@ func (r *udpRelay) relay() {
 	for {
 		n, source, err := r.conn.ReadFromUDP(buf)
 		if err != nil {
+			r.fail(err)
 			return
 		}
 		if peer := r.peerFor(source); peer != nil {
-			_, _ = peer.Write(buf[:n])
+			if _, err := peer.Write(buf[:n]); err != nil {
+				r.fail(err)
+			}
 		}
 	}
 }
@@ -232,6 +256,7 @@ func (r *udpRelay) peerFor(source *stdnet.UDPAddr) *stdnet.UDPConn {
 	}
 	peer, err := stdnet.DialUDP("udp4", nil, r.upstream)
 	if err != nil {
+		r.failLocked(err)
 		return nil
 	}
 	r.peers[source.String()] = peer
@@ -242,9 +267,12 @@ func (r *udpRelay) peerFor(source *stdnet.UDPAddr) *stdnet.UDPConn {
 		for {
 			n, err := peer.Read(buf)
 			if err != nil {
+				r.fail(err)
 				return
 			}
-			_, _ = r.conn.WriteToUDP(buf[:n], source)
+			if _, err := r.conn.WriteToUDP(buf[:n], source); err != nil {
+				r.fail(err)
+			}
 		}
 	}()
 	return peer
@@ -257,7 +285,10 @@ func (r *udpRelay) awaitFirst(t *testing.T) *stdnet.UDPAddr {
 	select {
 	case <-r.heard:
 	case <-time.After(cleanupTestDeadline):
-		t.Fatal("the relay heard no datagram")
+		r.mu.Lock()
+		failure := r.failure
+		r.mu.Unlock()
+		t.Fatalf("the relay heard no datagram (relay error: %v)", failure)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
