@@ -20,14 +20,11 @@
 *.swp
 *.swo
 
-# Local AI/agent state
-/.agents/
-/.claude/*
-!/.claude/skills/
-/.codex/
-/.factory/
-/.pi/
-/.serena/
+# Personal agent settings and local agent state. Shared agent configuration
+# (.claude/agents, .claude/skills, .codex/config.toml) is committed.
+/.claude/settings.local.json
+/.claude/worktrees/
+/.pi/fabric/
 /.scratch/
 
 # Generated codebase analysis output
@@ -112,3 +109,6 @@ ehthumbs.db
 .env
 .env.*
 !.env.example
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
