@@ -17,10 +17,11 @@ guard it.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
-  `-tags http2legacy`, which keeps x/net's own HTTP/2 client and server (XHTTP
-  client, H2MUX, MASQUE, DoH). Without the tag, Go 1.27's x/net wraps
-  net/http. Before x/net v0.60.0 that client dialed once per waiting request
-  while a TLS handshake hung, defeating XHTTP `xmux.maxConnections`
+  `-tags http2legacy`, which keeps x/net's own `http2.Transport` and
+  `http2.Server` (the XHTTP client, H2MUX and DoH among them; MASQUE uses only
+  x/net's framer). Without the tag, Go 1.27's x/net wraps net/http. Before
+  x/net v0.60.0 the wrapped client dialed once per waiting request while a
+  TLS handshake hung, defeating XHTTP `xmux.maxConnections`
   (XTLS/Xray-core#6797); v0.60.0 coalesces those dials again. Dropping the tag
   still changes what a TLS terminator such as a CDN sees: the XHTTP client's
   first SETTINGS frame advertises `MAX_FRAME_SIZE` 1048576 instead of 16384.
