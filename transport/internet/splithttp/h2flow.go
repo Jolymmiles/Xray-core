@@ -67,6 +67,15 @@ const (
 	// before its readers prove they need more: Go's default.
 	flowConnFloor   = 1 << 20
 	flowSmallCredit = 64 << 10
+	// Credit is handed on in pieces of at least flowQuantumMin and at most
+	// flowQuantumMax where the sender is not about to run dry, see hold. The
+	// larger stays under flowSmallCredit, so a governor at the other end
+	// still sees a peer that credits in small steps.
+	flowQuantumMin = 16 << 10
+	flowQuantumMax = 32 << 10
+	// flowPingRecheck is how many frame boundaries pass between looks at
+	// the clock on a connection that needs no PING.
+	flowPingRecheck = 64
 	flowShrinkAfter = 3
 	flowKernelEvery = 20 * time.Millisecond
 	flowQueueHold   = 15 * time.Millisecond
@@ -547,6 +556,7 @@ type flowConn struct {
 	wpending     atomic.Bool
 	settingsSent bool
 	pingReady    bool
+	pingSkip     int
 	closed       bool
 	broken       bool
 
@@ -990,11 +1000,28 @@ func (c *flowConn) upConnRelease() int64 {
 }
 
 func (c *flowConn) appendUpConnRelease(out []byte) []byte {
-	if rel := c.upConnRelease(); rel > 0 {
-		c.upConnForwarded += rel
-		out = appendWindowUpdate(out, 0, rel)
+	rel := c.upConnRelease()
+	if rel <= 0 || hold(rel, h2InitWindow+c.upConnForwarded-c.upConnSent, flowQuantumMax) {
+		return out
 	}
-	return out
+	c.upConnForwarded += rel
+	return appendWindowUpdate(out, 0, rel)
+}
+
+// quantum is the least credit worth handing on for a window of cap: an
+// eighth of it, between one and two default frames.
+func quantum(cap int32) int64 {
+	return min(max(int64(cap)/8, flowQuantumMin), flowQuantumMax)
+}
+
+// hold reports whether credit rel should wait for more. A reader returns
+// credit a few KiB at a time; handed on like that, each piece makes the
+// sender write one small frame, a system call and a TLS record each. While
+// the sender still has a quantum of window it loses nothing by waiting, and
+// what it sends then brings the next credit; once it has less, all credit
+// goes out at once. No cap changes, so the reader holds no more than before.
+func hold(rel, window, quantum int64) bool {
+	return rel < quantum && window >= quantum
 }
 
 // currentRTT is the kernel's min_rtt where it vouches for the path, otherwise
@@ -1035,8 +1062,22 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 // connection learns the round trip of the empty path. Once the kernel vouches
 // for that round trip, no more are needed.
 func (c *flowConn) appendPing(out []byte) []byte {
+	if !c.pingReady {
+		return out
+	}
+	// This runs at every frame boundary. Where the kernel vouches for the
+	// path no PING is due, so the clock is read only now and then, to see
+	// that it still does.
+	if c.pingSkip > 0 {
+		c.pingSkip--
+		return out
+	}
 	now := time.Now()
-	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
+	if c.modelled(now) {
+		c.pingSkip = flowPingRecheck
+		return out
+	}
+	if (len(c.streams) == 0 && c.rttBase != 0) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
 	}
@@ -1382,7 +1423,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
-		if rel <= 0 {
+		if rel <= 0 || hold(rel, int64(c.clientShown)+s.downForwarded-s.downSent, quantum(s.down.cap)) {
 			return out
 		}
 		s.downForwarded += rel
@@ -1511,7 +1552,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			s.up.cap = min(s.up.cap, flowUnconfirmedUp)
 		}
 		c.upLearned.note(now, c.up.init, s.up.cap)
-		if rel := c.upRelease(s); rel > 0 {
+		if rel := c.upRelease(s); rel > 0 && !hold(rel, int64(c.serverShown)+s.upForwarded-s.upSent, quantum(s.up.cap)) {
 			s.upForwarded += rel
 			out = appendWindowUpdate(out, f.stream, rel)
 		}
