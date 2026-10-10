@@ -64,13 +64,13 @@ guard it.
   `TestConcurrentCleanersKeepReplacementClients`).
 - Upstream's Lua `script` for `routing` and `dns` (XTLS/Xray-core#6823) is
   compiled in but disabled: `core.New` rejects a config that names either
-  script (`common/lua.ScriptsEnabled`, checked where the router and DNS
-  configs are registered, because a deferred `RequireFeatures` error can be
-  lost). Two problems block it. `common/lua.Pool` creates one state, about
-  177 KiB plus the script's data, per concurrent call without a bound, and a
-  plain bound would deadlock a routing script whose DNS lookup re-enters
-  routing; an acquisition error sends the connection to the default
-  outbound. Scripts also load in `Start`, after the inbound manager starts,
+  script (`ScriptsEnabled` in `common/lua/gate.go`, checked where the router
+  and DNS configs are registered, because a deferred `RequireFeatures` error
+  can be lost). Two problems block it. `Pool` in `common/lua/pool.go`
+  creates one state, about 177 KiB plus the script's data, per concurrent
+  call without a bound, and a plain bound would deadlock a routing script
+  whose DNS lookup re-enters routing; an acquisition error sends the
+  connection to the default outbound. Scripts also load in `Start`, after the inbound manager starts,
   so early connections and the TUN DNS takeover probe see only the JSON
   rules. Lift the gate only with a re-entry-safe bound and scripts ready
   before inbounds accept connections. Tests enable it to exercise the
