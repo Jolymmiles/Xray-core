@@ -11,8 +11,14 @@ const (
 	fragCount = 4096
 )
 
+// FragKey identifies one fragmented packet. The one-byte fragment ID repeats
+// every 256 packets, well within fragTTL on a busy client, so the key also
+// carries the 3-byte nonce the client draws once per packet and repeats in
+// each of its fragments; without it a later packet completes an earlier one
+// that lost a fragment.
 type FragKey struct {
 	clientID ClientID
+	nonce    [3]byte
 	fragID   byte
 }
 

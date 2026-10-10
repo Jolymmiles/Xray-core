@@ -102,6 +102,68 @@ func TestServerDropsShortFragmentQuery(t *testing.T) {
 	}
 }
 
+// fragmentQuery packs one upload fragment as a client sends it: client ID,
+// kind 3|0xC0, the packet's 3-byte nonce, fragment ID, index and count, data.
+func fragmentQuery(t *testing.T, domain *Domain, clientID [8]byte, nonce [3]byte, fragID, index, count byte, data string) []byte {
+	t.Helper()
+	payload := make([]byte, 15+len(data))
+	copy(payload, clientID[:])
+	payload[0] |= TypeMap[TypeTXT]
+	payload[8] = 3 | 0xC0
+	copy(payload[9:12], nonce[:])
+	payload[12], payload[13], payload[14] = fragID, index, count
+	copy(payload[15:], data)
+	return packTXTQuery(t, domain, payload)
+}
+
+// The fragment ID is one byte, so a busy client reuses it within the fragment
+// TTL. When a fragment of the earlier packet was lost, the later packet's
+// fragments must not complete the earlier packet's entry: the server would
+// deliver a packet spliced from two, and a transport without its own
+// integrity check (mKCP without a mask) passes the splice into the stream.
+func TestServerKeepsFragmentsOfDifferentPacketsApart(t *testing.T) {
+	conn, err := NewServer(hardeningConfig(), newBlockingPacketConn())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	server := conn.(*xdnsServer)
+	domain := hardeningTestDomain(t)
+	clientID := [8]byte{0x10, 1, 2, 3, 4, 5, 6, 7}
+	from := &net.UDPAddr{IP: net.IP{192, 0, 2, 1}, Port: 53}
+
+	queries := [][]byte{
+		// Packet A loses its middle fragment.
+		fragmentQuery(t, domain, clientID, [3]byte{0xA, 0xA, 0xA}, 7, 0, 3, "A0A0"),
+		fragmentQuery(t, domain, clientID, [3]byte{0xA, 0xA, 0xA}, 7, 2, 3, "A2A2"),
+		// Packet B reuses fragment ID 7 and arrives whole.
+		fragmentQuery(t, domain, clientID, [3]byte{0xB, 0xB, 0xB}, 7, 0, 3, "B0B0"),
+		fragmentQuery(t, domain, clientID, [3]byte{0xB, 0xB, 0xB}, 7, 1, 3, "B1B1"),
+		fragmentQuery(t, domain, clientID, [3]byte{0xB, 0xB, 0xB}, 7, 2, 3, "B2B2"),
+	}
+	go func() {
+		for _, query := range queries {
+			server.read(query, from)
+		}
+	}()
+
+	delivered := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		if n, _, err := conn.ReadFrom(buf); err == nil {
+			delivered <- string(buf[:n])
+		}
+	}()
+	select {
+	case packet := <-delivered:
+		if packet != "B0B0B1B1B2B2" {
+			t.Fatalf("server delivered %q, want packet B %q", packet, "B0B0B1B1B2B2")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server delivered no packet; want packet B")
+	}
+}
+
 // DNS over TCP prefixes every message with its length as a big-endian uint16
 // (RFC 1035 section 4.2.2).
 func TestTCPResolverFramesMessagesWithLength(t *testing.T) {

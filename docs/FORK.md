@@ -83,6 +83,18 @@ guard it.
   that mutex to close the resolvers, waits forever behind a resolver write
   that blocks until close. Covered by `TestClientCloseReleasesStalledWrite`
   in `transport/internet/finalmask/xdns/hardening_test.go`.
+- The XDNS server reassembles upload fragments by client ID, fragment ID
+  and the 3-byte nonce the client repeats in every fragment of one packet;
+  upstream keys by client ID and fragment ID only. That one-byte ID repeats
+  every 256 packets, so after a lost fragment a later packet completed the
+  earlier entry and the server delivered a packet spliced from two. mKCP
+  without a mask has no integrity check and passed the splice into the TCP
+  stream (on loopback with 14 % receive-buffer drops, a 1 MiB echo through
+  VLESS over mKCP over XDNS came back corrupted in 5 of 5 runs). Clients keep
+  the nonce constant within a packet since fragmentation was added upstream
+  (`fc8f8a45`), so the wire format is unchanged. Covered by
+  `TestServerKeepsFragmentsOfDifferentPacketsApart` in
+  `transport/internet/finalmask/xdns/hardening_test.go`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
