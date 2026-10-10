@@ -138,8 +138,8 @@ func TestFragManagerForgetsClientsWithoutFragments(t *testing.T) {
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if len(manager.m) != 0 || len(manager.sizem) != 0 {
-		t.Fatalf("after reassembly: %d fragment entries, %d client counters; want none", len(manager.m), len(manager.sizem))
+	if len(manager.m) != 0 {
+		t.Fatalf("after reassembly: %d fragment entries; want none", len(manager.m))
 	}
 }
 
@@ -177,7 +177,6 @@ func newHardeningClient(t *testing.T, resolver Resolver) *xdnsClient {
 		resolvers:     []Resolver{resolver},
 		resolverSends: make([]atomic.Uint32, 1),
 		readCh:        make(chan packet),
-		sendCh:        make(chan []byte, 16),
 		poolCh:        make(chan struct{}, pollLimit),
 		closeCh:       make(chan struct{}),
 	}
@@ -228,18 +227,30 @@ func TestClientPollAfterDataIsEmpty(t *testing.T) {
 	}
 }
 
-// When nothing drains the send queue, WriteTo must report the lost packet
-// instead of claiming success.
-func TestClientReportsFullSendQueue(t *testing.T) {
-	client := newHardeningClient(t, newRecordingResolver())
+// WriteTo reports success only for a packet it handed to a resolver. A burst
+// larger than the send queue the client once had must reach the resolver
+// whole instead of being dropped behind a successful return.
+func TestClientHandsEveryWrittenPacketToAResolver(t *testing.T) {
+	resolver := newRecordingResolver()
+	client := newHardeningClient(t, resolver)
 	defer close(client.closeCh)
-	for i := range cap(client.sendCh) {
-		if _, err := client.WriteTo([]byte{byte(i)}, &net.UDPAddr{}); err != nil {
-			t.Fatalf("write %d into a free queue: %v", i, err)
+	domain := client.domains[0]
+
+	const burst = 32
+	for i := range burst {
+		if n, err := client.WriteTo([]byte{byte(i)}, &net.UDPAddr{}); n != 1 || err != nil {
+			t.Fatalf("write %d = (%d, %v), want (1, nil)", i, n, err)
 		}
 	}
-	if n, err := client.WriteTo([]byte("overflow"), &net.UDPAddr{}); n != 0 || err == nil {
-		t.Fatalf("WriteTo on a full queue = (%d, %v), want (0, error)", n, err)
+	for i := range burst {
+		select {
+		case query := <-resolver.sent:
+			if kind := queryKind(t, domain, query); kind != 3 {
+				t.Fatalf("query %d kind = %d, want data (3)", i, kind)
+			}
+		default:
+			t.Fatalf("resolver got %d of %d written packets", i, burst)
+		}
 	}
 }
 
