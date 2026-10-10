@@ -593,7 +593,7 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			HTTP2:             l.config.h2ReceiveConfig(true),
 		}
 		if l.config.h2FlowOn() {
-			fl := &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault}
+			fl := &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault, sendWindow: l.config.h2SendWindow()}
 			if h2 := l.server.HTTP2; h2 != nil && h2.MaxReceiveBufferPerConnection > 0 {
 				fl.connWindow = int32(min(h2.MaxReceiveBufferPerConnection, h2MaxWindow))
 			} else {

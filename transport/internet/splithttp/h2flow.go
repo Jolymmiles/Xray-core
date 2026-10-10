@@ -123,6 +123,9 @@ type flowListener struct {
 	up, down flowLimit
 	// connWindow is the connection receive window the local server grants.
 	connWindow int32
+	// sendWindow is what one connection's client may hold in all, 0 for no
+	// limit, see flowConn.downRelease.
+	sendWindow int64
 }
 
 func (l *flowListener) Accept() (net.Conn, error) {
@@ -131,6 +134,7 @@ func (l *flowListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	fc := newFlowConn(c, l.up, l.down)
+	fc.sendWindow = l.sendWindow
 	if l.connWindow > 0 {
 		fc.upConnGrant, fc.upConnGrantKnown = int64(max(l.connWindow, h2InitWindow)-h2InitWindow), true
 	}
@@ -571,6 +575,10 @@ type flowConn struct {
 	// seen before any DATA.
 	upConnGrant      int64
 	upConnGrantKnown bool
+
+	// sendWindow is what this connection's client may hold in all, 0 for no
+	// limit, see downRelease.
+	sendWindow int64
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -1223,11 +1231,32 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 
 // downRelease is how much credit the server may be given on s: no more than
 // the client granted, and no more than keeps the client's unread data under cap.
+//
+// On a server the streams of one connection also share sendWindow. A cap
+// follows its own reader, but many streams starting at once on a fast link
+// each look fast for a moment, and the client has to hold their sum: twenty
+// of them took a client past 40 MiB within a second. What the client holds is
+// counted as the server may still send it: unread data and unused window. A
+// client that itself grants one stream more than sendWindow has that room, so
+// its own window is the limit then; that is how a bridge with raised windows
+// differs from a phone on the same inbound. A stream always has the
+// protocol's default window, which SETTINGS already gave it, so none waits
+// for the others; streams opened once the limit is used up add that much each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
-	unread := s.downSent - s.down.returned
-	window := int64(c.clientShown) + s.downForwarded - s.downSent
-	return min(bank, int64(s.down.cap)-unread-window, h2MaxWindow)
+	held := int64(c.clientShown) + s.downForwarded - s.down.returned
+	rel := min(bank, int64(s.down.cap)-held, h2MaxWindow)
+	if rel <= 0 || c.client || c.sendWindow == 0 {
+		return rel
+	}
+	total := int64(0)
+	for _, o := range c.streams {
+		if !o.serverDone {
+			total += int64(c.clientShown) + o.downForwarded - o.down.returned
+		}
+	}
+	limit := max(c.sendWindow, int64(c.clientInit))
+	return min(rel, max(limit-total, h2InitWindow-held))
 }
 
 func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {

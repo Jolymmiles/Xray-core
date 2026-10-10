@@ -301,11 +301,14 @@ type SplitHTTPConfig struct {
 
 // H2FlowConfig tunes HTTP/2 flow control on XHTTP connections over TCP.
 // "enabled" overrides XRAY_XHTTP_FLOW for this inbound or outbound; the
-// windows are what this side grants for data it receives.
+// receive windows are what this side grants for data it receives.
+// "maxConnectionSendWindow" is what a governed server lets one connection's
+// client hold of its data in all; -1 lifts that limit.
 type H2FlowConfig struct {
 	Enabled                    *bool `json:"enabled"`
 	MaxStreamReceiveWindow     int32 `json:"maxStreamReceiveWindow"`
 	MaxConnectionReceiveWindow int32 `json:"maxConnectionReceiveWindow"`
+	MaxConnectionSendWindow    int32 `json:"maxConnectionSendWindow"`
 }
 
 // HTTP/2 windows below the protocol's initial window would stall a stream;
@@ -322,6 +325,7 @@ func (c *H2FlowConfig) Build() (*splithttp.H2FlowConfig, error) {
 	config := &splithttp.H2FlowConfig{
 		MaxStreamReceiveWindow:     c.MaxStreamReceiveWindow,
 		MaxConnectionReceiveWindow: c.MaxConnectionReceiveWindow,
+		MaxConnectionSendWindow:    c.MaxConnectionSendWindow,
 	}
 	if c.Enabled != nil {
 		config.Mode = 2
@@ -339,6 +343,9 @@ func (c *H2FlowConfig) Build() (*splithttp.H2FlowConfig, error) {
 		if w.size != 0 && (w.size < h2FlowMinWindow || w.size > h2FlowMaxWindow) {
 			return nil, errors.New(`"h2Flow": "`, w.name, `" must be between `, h2FlowMinWindow, " and ", h2FlowMaxWindow)
 		}
+	}
+	if w := c.MaxConnectionSendWindow; w != 0 && w != -1 && (w < h2FlowMinWindow || w > h2FlowMaxWindow) {
+		return nil, errors.New(`"h2Flow": "maxConnectionSendWindow" must be -1 or between `, h2FlowMinWindow, " and ", h2FlowMaxWindow)
 	}
 	return config, nil
 }
