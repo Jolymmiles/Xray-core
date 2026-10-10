@@ -59,9 +59,10 @@ XMUX = {"maxConnections": 3, "maxConcurrency": 0, "cMaxReuseTimes": 0,
 MBIT, RTT_MS = 100, 50
 UPLOADS, UPLOAD_RATE, DURATION, PING_EVERY = 20, 100_000, 12, 0.3
 PING_TIMEOUT, READY_TIMEOUT = 10.0, 20.0
-# What one run's own waits allow at most: readiness and its last ping, the
+# About the most one run's own waits allow: readiness and its last ping, the
 # workload and the uploads' join, both watchers' joins; and half a minute for
-# starting and stopping Xray. The parent gives the measurement this per run.
+# starting and stopping Xray, which nothing bounds. A budget, not a proven
+# bound; the parent gives the measurement this per run.
 RUN_LIMIT = (READY_TIMEOUT + 2) + (DURATION + PING_TIMEOUT) + 2 * (PING_TIMEOUT + 2) + 30
 
 
