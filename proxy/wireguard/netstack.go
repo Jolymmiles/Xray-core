@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,9 +46,12 @@ type netTun struct {
 	notifyHandle   *channel.NotificationHandle
 	incomingPacket chan *buffer.View
 	closed         chan struct{}
-	mtu            int
-	dnsServers     []netip.Addr
-	hasV4, hasV6   bool
+	// closeOnce guards Close: wireguard-go closes the device when it shuts
+	// down, after a failed bind for example, and the owner closes it again.
+	closeOnce    sync.Once
+	mtu          int
+	dnsServers   []netip.Addr
+	hasV4, hasV6 bool
 }
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (tun.Device, *Net, *stack.Stack, error) {
@@ -181,20 +185,21 @@ func (tun *netTun) WriteNotify() {
 }
 
 func (tun *netTun) Close() error {
-	tun.stack.RemoveNIC(1)
-	tun.stack.Close()
-	tun.ep.RemoveNotify(tun.notifyHandle)
-	tun.ep.Close()
+	tun.closeOnce.Do(func() {
+		tun.stack.RemoveNIC(1)
+		tun.stack.Close()
+		tun.ep.RemoveNotify(tun.notifyHandle)
+		tun.ep.Close()
 
-	if tun.events != nil {
-		close(tun.events)
-	}
+		if tun.events != nil {
+			close(tun.events)
+		}
 
-	// we don't close incomingPacket, because WriteNotify may be mid-send on it (DNS lookup) and would panic.
-	if tun.closed != nil {
-		close(tun.closed)
-	}
-
+		// we don't close incomingPacket, because WriteNotify may be mid-send on it (DNS lookup) and would panic.
+		if tun.closed != nil {
+			close(tun.closed)
+		}
+	})
 	return nil
 }
 
