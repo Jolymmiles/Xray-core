@@ -17,10 +17,11 @@ import (
 
 // While a TLS handshake hangs, for example because a censor drops the flow
 // after the ClientHello, the HTTP/2 client must wait on its one pending dial.
-// Go 1.27 made x/net's http2.Transport wrap net/http, which dials once per
-// waiting request; that defeats xmux.maxConnections and produces the
-// connection burst censors block on. Builds use -tags http2legacy, which
-// keeps x/net's own connection pool (XTLS/Xray-core#6797).
+// Go 1.27 made x/net's http2.Transport wrap net/http, which before x/net
+// v0.60.0 dialed once per waiting request; that defeats xmux.maxConnections
+// and produces the connection burst censors block on. Builds use
+// -tags http2legacy, which keeps x/net's own connection pool
+// (XTLS/Xray-core#6797).
 func TestHTTP2ClientSharesOneDialWhileHandshakeHangs(t *testing.T) {
 	listener, err := stdnet.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
