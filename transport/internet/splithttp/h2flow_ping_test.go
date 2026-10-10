@@ -146,26 +146,3 @@ func TestFlowFloorConfirmed(t *testing.T) {
 		}
 	}
 }
-
-// TestFlowPingClockRecheck runs the PING check of a frame boundary on a path
-// the kernel vouches for: it reads the clock once and leaves the next
-// flowPingRecheck boundaries alone. When the kernel's view is lost meanwhile,
-// the PING goes out at the first boundary after those.
-func TestFlowPingClockRecheck(t *testing.T) {
-	ms := time.Millisecond
-	c := &flowConn{pingReady: true, rttBase: 50 * ms, streams: map[uint32]*flowStream{1: {}}}
-	c.tcp, c.kAt, c.kOK = fakeRawConn{}, time.Now(), true
-	c.kstat = tcpStats{rtt: 50 * ms, minRTT: 50 * ms}
-	if out := c.appendPing(nil); len(out) != 0 || c.pingSkip != flowPingRecheck {
-		t.Fatalf("modelled path: %d bytes written, %d boundaries to skip, want 0 and %d", len(out), c.pingSkip, flowPingRecheck)
-	}
-	c.tcp = nil
-	for i := 0; i < flowPingRecheck; i++ {
-		if out := c.appendPing(nil); len(out) != 0 {
-			t.Fatalf("PING at boundary %d of the %d to skip", i+1, flowPingRecheck)
-		}
-	}
-	if out := c.appendPing(nil); len(out) == 0 {
-		t.Fatal("no PING once the skipped boundaries had passed")
-	}
-}

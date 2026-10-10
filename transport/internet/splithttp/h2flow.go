@@ -71,11 +71,8 @@ const (
 	// flowQuantumMax where the sender is not about to run dry, see hold. The
 	// larger stays under flowSmallCredit, so a governor at the other end
 	// still sees a peer that credits in small steps.
-	flowQuantumMin = 16 << 10
-	flowQuantumMax = 32 << 10
-	// flowPingRecheck is how many frame boundaries pass between looks at
-	// the clock on a connection that needs no PING.
-	flowPingRecheck = 64
+	flowQuantumMin  = 16 << 10
+	flowQuantumMax  = 32 << 10
 	flowShrinkAfter = 3
 	flowKernelEvery = 20 * time.Millisecond
 	flowQueueHold   = 15 * time.Millisecond
@@ -569,7 +566,6 @@ type flowConn struct {
 	wpending     atomic.Bool
 	settingsSent bool
 	pingReady    bool
-	pingSkip     int
 	closed       bool
 	broken       bool
 
@@ -586,8 +582,13 @@ type flowConn struct {
 	upConnGrantKnown bool
 
 	// sendWindow is what this connection's client may hold in all, 0 for no
-	// limit, see downRelease.
-	sendWindow int64
+	// limit, see downRelease. The counters under it say what it holds now,
+	// see clientHolds: over the streams the server has not finished, how many
+	// there are, what the server was forwarded and what the client returned.
+	sendWindow        int64
+	downOpen          int64
+	downOpenForwarded int64
+	downOpenReturned  int64
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -794,6 +795,7 @@ func (c *flowConn) release() {
 
 func (c *flowConn) releaseLocked() {
 	c.streams = map[uint32]*flowStream{}
+	c.downOpen, c.downOpenForwarded, c.downOpenReturned = 0, 0, 0
 	c.opened = nil
 	c.wqueue = nil
 	clear(c.wcredit)
@@ -983,8 +985,41 @@ func (c *flowConn) finish(id uint32, s *flowStream) {
 }
 
 func (c *flowConn) drop(id uint32) {
+	if s := c.streams[id]; s != nil {
+		c.endDown(s)
+	}
 	delete(c.streams, id)
 	delete(c.wcredit, id)
+}
+
+// endDown takes s out of what the server may still send: it has finished the
+// stream, or the stream is gone.
+func (c *flowConn) endDown(s *flowStream) {
+	if s.serverDone {
+		return
+	}
+	s.serverDone = true
+	c.downOpen--
+	c.downOpenForwarded -= s.downForwarded
+	c.downOpenReturned -= s.down.returned
+}
+
+// forwardDown hands the server rel of credit on s.
+func (c *flowConn) forwardDown(s *flowStream, rel int64) {
+	s.downForwarded += rel
+	if !s.serverDone {
+		c.downOpenForwarded += rel
+	}
+}
+
+// clientHolds is what the connection's client holds of the server's data on
+// the streams the server has not finished, as the server may still send it:
+// data the client has not returned stream credit for, and the window left.
+// A stream the server has ended is not in it, read or not: a Go client
+// returns the last of such a body through the connection only, so its stream
+// credit would never tell.
+func (c *flowConn) clientHolds() int64 {
+	return c.downOpen*int64(c.clientShown) + c.downOpenForwarded - c.downOpenReturned
 }
 
 // upConnRelease is how much connection credit the client may be given: no
@@ -1079,22 +1114,8 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 // connection learns the round trip of the empty path. Once the kernel vouches
 // for that round trip, no more are needed.
 func (c *flowConn) appendPing(out []byte) []byte {
-	if !c.pingReady {
-		return out
-	}
-	// This runs at every frame boundary. Where the kernel vouches for the
-	// path no PING is due, so the clock is read only now and then, to see
-	// that it still does.
-	if c.pingSkip > 0 {
-		c.pingSkip--
-		return out
-	}
 	now := time.Now()
-	if c.modelled(now) {
-		c.pingSkip = flowPingRecheck
-		return out
-	}
-	if (len(c.streams) == 0 && c.rttBase != 0) || now.Sub(c.lastPing) < flowPingInterval ||
+	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
 	}
@@ -1216,10 +1237,17 @@ func (c *flowConn) unstick(now time.Time, out []byte) []byte {
 			again = true
 			continue
 		}
+		// A client that waits for half of its window never gets it on a
+		// connection at its limit, where the streams share less than that
+		// each. This one has returned nothing in small steps, so it may be
+		// such a client: the limit cannot hold for it.
+		if !c.incremental {
+			c.sendWindow = 0
+		}
 		s.down.cap = int32(min(int64(c.down.max), max(2*int64(s.down.cap), int64(c.clientInit)/2+flowSmallCredit)))
 		s.down.waiting = time.Time{}
 		if rel := c.downRelease(s); rel > 0 {
-			s.downForwarded += rel
+			c.forwardDown(s, rel)
 			out = appendWindowUpdate(out, id, rel)
 		}
 	}
@@ -1241,16 +1269,15 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 // downRelease is how much credit the server may be given on s: no more than
 // the client granted, and no more than keeps the client's unread data under cap.
 //
-// On a server the streams of one connection also share sendWindow. A cap
-// follows its own reader, but many streams starting at once on a fast link
-// each look fast for a moment, and the client has to hold their sum: twenty
-// of them took a client past 40 MiB within a second. What the client holds is
-// counted as the server may still send it: unread data and unused window. A
-// client that itself grants one stream more than sendWindow has that room, so
-// its own window is the limit then; that is how a bridge with raised windows
-// differs from a phone on the same inbound. A stream always has the
-// protocol's default window, which SETTINGS already gave it, so none waits
-// for the others; streams opened once the limit is used up add that much each.
+// On a server the unfinished streams of one connection also share
+// sendWindow. A cap follows its own reader, but many streams starting at once
+// on a fast link each look fast for a moment, and the client has to hold
+// their sum: twenty of them took a client past 40 MiB within a second. What
+// the client holds of them is clientHolds. A client that itself announces a
+// stream window above sendWindow has that room, so its window is the limit
+// then. A stream always has the protocol's default window, which SETTINGS
+// already gave it, so none waits for the others; streams opened once the
+// limit is used up add that much each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
 	held := int64(c.clientShown) + s.downForwarded - s.down.returned
@@ -1258,14 +1285,8 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
 	}
-	total := int64(0)
-	for _, o := range c.streams {
-		if !o.serverDone {
-			total += int64(c.clientShown) + o.downForwarded - o.down.returned
-		}
-	}
 	limit := max(c.sendWindow, int64(c.clientInit))
-	return min(rel, max(limit-total, h2InitWindow-held))
+	return min(rel, max(limit-c.clientHolds(), h2InitWindow-held))
 }
 
 func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {
@@ -1359,6 +1380,7 @@ func (r *flowReader) frame(f h2Frame) {
 			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
 			s.down.cap = max(c.downLearned.value(now, c.down.init), flowStartWindow)
 			c.streams[f.stream] = s
+			c.downOpen++
 			c.opened = append(c.opened, f.stream)
 		}
 		if s != nil && f.flags&h2FlagEndStream != 0 {
@@ -1401,7 +1423,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 						continue
 					}
 					if rel := c.downRelease(s); rel > 0 {
-						s.downForwarded += rel
+						c.forwardDown(s, rel)
 						out = appendWindowUpdate(out, id, rel)
 					}
 				}
@@ -1423,6 +1445,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		now := time.Now()
 		s.down.returned += inc
+		if !s.serverDone {
+			c.downOpenReturned += inc
+		}
 		s.down.waiting = time.Time{}
 		if inc < flowSmallCredit {
 			c.incremental = true
@@ -1464,7 +1489,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if rel <= 0 || hold(rel, int64(c.clientShown)+s.downForwarded-s.downSent, quantum(s.down.cap)) {
 			return out
 		}
-		s.downForwarded += rel
+		c.forwardDown(s, rel)
 		return appendWindowUpdate(out, f.stream, rel)
 	}
 	out = append(out, header...)
@@ -1480,7 +1505,7 @@ func (r *flowReader) boundary(out []byte) []byte {
 		}
 		if c.down.enabled() {
 			if rel := c.downRelease(s); rel > 0 {
-				s.downForwarded += rel
+				c.forwardDown(s, rel)
 				out = appendWindowUpdate(out, id, rel)
 			}
 		}
@@ -1517,7 +1542,7 @@ func (w *flowWriter) frame(f h2Frame) {
 		fallthrough
 	case h2Headers:
 		if s != nil && f.flags&h2FlagEndStream != 0 {
-			s.serverDone = true
+			c.endDown(s)
 			c.finish(f.stream, s)
 		}
 	case h2RSTStream:

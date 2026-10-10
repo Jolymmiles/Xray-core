@@ -92,6 +92,8 @@ type testListener struct {
 	conns []*flowConn
 	up    flowLimit
 	down  flowLimit
+	// sendWindow is given to the connections accepted from now on.
+	sendWindow int64
 }
 
 func (l *testListener) Accept() (net.Conn, error) {
@@ -107,6 +109,7 @@ func (l *testListener) Accept() (net.Conn, error) {
 	}
 	fc := newFlowConn(c, l.up, l.down)
 	l.mu.Lock()
+	fc.sendWindow = l.sendWindow
 	l.conns = append(l.conns, fc)
 	l.mu.Unlock()
 	return fc, nil

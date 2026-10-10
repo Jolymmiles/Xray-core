@@ -137,7 +137,29 @@ func (h *flowHarness) fromClientRaw(b []byte) []byte {
 	if h.toServer != nil {
 		h.toServer.receive(h.t, got)
 	}
+	h.checkHolds()
 	return got
+}
+
+// checkHolds compares the counters behind clientHolds, which are kept as the
+// streams change, with a walk over the streams.
+func (h *flowHarness) checkHolds() {
+	h.t.Helper()
+	c := h.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var open, forwarded, returned int64
+	for _, s := range c.streams {
+		if !s.serverDone {
+			open++
+			forwarded += s.downForwarded
+			returned += s.down.returned
+		}
+	}
+	if open != c.downOpen || forwarded != c.downOpenForwarded || returned != c.downOpenReturned {
+		h.t.Fatalf("unfinished streams: %d forwarded %d returned %d, the connection counts %d forwarded %d returned %d",
+			open, forwarded, returned, c.downOpen, c.downOpenForwarded, c.downOpenReturned)
+	}
 }
 
 func (h *flowHarness) fromClient(f func(fr *http2.Framer)) []byte {
@@ -153,6 +175,7 @@ func (h *flowHarness) fromServerRaw(b []byte) ([]byte, error) {
 	if h.toClient != nil {
 		h.toClient.receive(h.t, got)
 	}
+	h.checkHolds()
 	return got, err
 }
 
