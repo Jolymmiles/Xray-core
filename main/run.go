@@ -71,6 +71,11 @@ var (
 	}()
 )
 
+// closeTimeout bounds the wait for Close after a shutdown signal. A feature
+// whose Close never returns would otherwise keep the process, and the
+// connections it still relays, alive until SIGKILL.
+const closeTimeout = 10 * time.Second
+
 func executeRun(cmd *base.Command, args []string) {
 	if *dump {
 		clog.ReplaceWithSeverityLogger(clog.Severity_Warning)
@@ -100,13 +105,28 @@ func executeRun(cmd *base.Command, args []string) {
 		fmt.Println("Failed to start:", err)
 		os.Exit(-1)
 	}
-	defer server.Close()
 
 	// Explicitly triggering GC to remove garbage from config loading.
 	runtime.GC()
 	debug.FreeOSMemory()
 
 	<-osSignals
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- server.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			fmt.Println("Failed to close:", err)
+			os.Exit(1)
+		}
+	case <-time.After(closeTimeout):
+		fmt.Println("Timed out while closing Xray.")
+		os.Exit(1)
+	}
 }
 
 func dumpConfig() int {
