@@ -10,13 +10,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strconv"
 	"time"
 )
+
+// maxRate bounds ?rate= on /up: a mebibyte per second per upload is far above
+// what a slow reader stands for.
+const maxRate = 1 << 20
 
 func main() {
 	httpAddr := flag.String("http", "127.0.0.1:18000", "address of the plain HTTP origin")
@@ -27,26 +33,31 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("pong")) })
 	// /up reads the body at ?rate= bytes per second, in pieces of a
-	// twentieth of that, so the reader is slow but steady.
+	// twentieth of that, so the reader is slow but steady. It answers 200
+	// with the byte count for a whole body, 400 for a bad rate or a body
+	// that ends in an error.
 	mux.HandleFunc("/up", func(w http.ResponseWriter, r *http.Request) {
-		rate, _ := strconv.ParseInt(r.URL.Query().Get("rate"), 10, 64)
-		buf := make([]byte, 32<<10)
-		if rate > 0 {
-			buf = buf[:max(rate/20, 1024)]
+		rate, err := strconv.ParseInt(r.URL.Query().Get("rate"), 10, 64)
+		if err != nil || rate < 1 || rate > maxRate {
+			http.Error(w, fmt.Sprintf("rate must be 1 to %d bytes per second", maxRate), http.StatusBadRequest)
+			return
 		}
+		buf := make([]byte, max(rate/20, 1024))
 		start := time.Now()
 		var got int64
 		for {
 			n, err := r.Body.Read(buf)
 			got += int64(n)
-			if err != nil {
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			if rate > 0 {
-				want := time.Duration(float64(got) / float64(rate) * float64(time.Second))
-				if d := want - time.Since(start); d > 0 {
-					time.Sleep(d)
-				}
+			if err != nil {
+				http.Error(w, fmt.Sprintf("after %d bytes: %v", got, err), http.StatusBadRequest)
+				return
+			}
+			want := time.Duration(float64(got) / float64(rate) * float64(time.Second))
+			if d := want - time.Since(start); d > 0 {
+				time.Sleep(d)
 			}
 		}
 		fmt.Fprintf(w, "%d", got)
