@@ -26,7 +26,8 @@ ends short of SIGKILL; a namespace it cannot remove makes it fail with the
 error. It touches nothing else on the host. The measurement gets RUN_LIMIT
 (98 s) per run, where a run normally takes its 12 s of load and a few seconds
 around them; one still going past that is stuck, and the stand stops it,
-tears down and exits with status 1.
+tears down and exits with status 1. Origin's stderr is kept in the temporary
+directory and printed when the stand fails.
 
 A run is valid only if every upload was still sending at the deadline and the
 server's memory could be read. A small request that fails or does not finish
@@ -167,6 +168,7 @@ def outer(args):
     servers = dict(s.split("=", 1) for s in args.server)
     srv, cli = f"xslow-{os.getpid()}-srv", f"xslow-{os.getpid()}-cli"
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    code = None
     with contextlib.ExitStack() as stack:
         work = tempfile.mkdtemp(prefix="slowreader-")
         stack.callback(shutil.rmtree, work, ignore_errors=True)
@@ -176,8 +178,17 @@ def outer(args):
             json.dump(server_config(private_key), f)
         with open(f"{work}/client.json", "w") as f:
             json.dump(client_config(public_key), f)
+        # Origin logs its own errors; unless the stand succeeds, they are
+        # shown once origin has stopped, before the directory goes.
+        origin_log = stack.enter_context(open(f"{work}/origin.log", "w+b"))
+
+        def show_origin_log():
+            if code != 0:
+                show_log("origin", origin_log)
+
+        stack.callback(show_origin_log)
         origin = subprocess.Popen(["ip", "netns", "exec", srv, args.origin],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                  stdout=subprocess.DEVNULL, stderr=origin_log)
         stack.callback(reap, origin)
         inside = subprocess.Popen(["ip", "netns", "exec", cli, sys.executable, os.path.abspath(__file__), "--inside",
                                    "--work", work, "--srv-ns", srv, "--client", args.client, "--runs", str(args.runs),
@@ -186,10 +197,19 @@ def outer(args):
         # Past this the child is stuck, not slow; leaving here tears it down.
         limit = len(servers) * args.runs * RUN_LIMIT + 60
         try:
-            return inside.wait(limit)
+            code = inside.wait(limit)
         except subprocess.TimeoutExpired:
             print(f"the measurement did not finish within {limit:.0f} s; stopping it", file=sys.stderr)
-            return 1
+            code = 1
+    return code
+
+
+def show_log(name, f):
+    """Prints what a child wrote to f, if anything."""
+    f.seek(0)
+    text = f.read().decode(errors="replace").rstrip()
+    if text:
+        print(f"{name} stderr:\n{text}", file=sys.stderr)
 
 
 def time_left(deadline):

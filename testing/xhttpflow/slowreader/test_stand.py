@@ -288,6 +288,19 @@ class OuterTests(unittest.TestCase):
         self.assertIn(("run", f"ip netns del xslow-{os.getpid()}-srv"), host.events)
         self.assertFalse(os.path.exists(work))
 
+    def test_origin_errors_are_kept_and_shown_when_the_comparison_fails(self):
+        panic = "panic: listen tcp 127.0.0.1:18000: bind: address already in use"
+        host = FakeHost(inside_exit=1, origin_stderr=panic.encode() + b"\n")
+        result, stderr, work = self.outer(host)
+        self.assertEqual(result, 1)
+        self.assertIn(panic, stderr, "origin's stderr must be shown when the comparison fails")
+        self.assertTrue(host.popen_kwargs["origin"]["stderr"].name.startswith(work + os.sep))
+
+        host = FakeHost(inside_exit=0, origin_stderr=panic.encode() + b"\n")
+        result, stderr, work = self.outer(host)
+        self.assertEqual(result, 0)
+        self.assertNotIn(panic, stderr)
+
 
 class RemoveNamespaceTests(unittest.TestCase):
     def remove(self, results):

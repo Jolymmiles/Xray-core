@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -31,38 +32,61 @@ func main() {
 	go serveTLS(*tlsAddr)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("pong")) })
-	// /up reads the body at ?rate= bytes per second, in pieces of a
-	// twentieth of that, so the reader is slow but steady. It answers 200
-	// with the byte count for a whole body, 400 for a bad rate or a body
-	// that ends in an error.
-	mux.HandleFunc("/up", func(w http.ResponseWriter, r *http.Request) {
-		rate, err := strconv.ParseInt(r.URL.Query().Get("rate"), 10, 64)
-		if err != nil || rate < 1 || rate > maxRate {
-			http.Error(w, fmt.Sprintf("rate must be 1 to %d bytes per second", maxRate), http.StatusBadRequest)
+	mux.HandleFunc("/ping", servePing)
+	mux.HandleFunc("/up", serveUp)
+	panic(http.ListenAndServe(*httpAddr, mux))
+}
+
+// servePing answers "pong" at once.
+func servePing(w http.ResponseWriter, r *http.Request) {
+	_, err := w.Write([]byte("pong"))
+	logWrite(r, err)
+}
+
+// serveUp reads the body at ?rate= bytes per second, in pieces of a twentieth
+// of that, so the reader is slow but steady. It answers 200 with the byte
+// count for a whole body, 400 for a bad rate or a body that ends in an error.
+func serveUp(w http.ResponseWriter, r *http.Request) {
+	rate, err := strconv.ParseInt(r.URL.Query().Get("rate"), 10, 64)
+	if err != nil || rate < 1 || rate > maxRate {
+		http.Error(w, fmt.Sprintf("rate must be 1 to %d bytes per second", maxRate), http.StatusBadRequest)
+		return
+	}
+	buf := make([]byte, max(rate/20, 1024))
+	start := time.Now()
+	var got int64
+	for {
+		n, err := r.Body.Read(buf)
+		got += int64(n)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("after %d bytes: %v", got, err), http.StatusBadRequest)
 			return
 		}
-		buf := make([]byte, max(rate/20, 1024))
-		start := time.Now()
-		var got int64
-		for {
-			n, err := r.Body.Read(buf)
-			got += int64(n)
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				http.Error(w, fmt.Sprintf("after %d bytes: %v", got, err), http.StatusBadRequest)
-				return
-			}
-			want := time.Duration(float64(got) / float64(rate) * float64(time.Second))
-			if d := want - time.Since(start); d > 0 {
-				time.Sleep(d)
-			}
+		want := time.Duration(float64(got) / float64(rate) * float64(time.Second))
+		if d := want - time.Since(start); d > 0 {
+			time.Sleep(d)
 		}
-		fmt.Fprintf(w, "%d", got)
-	})
-	panic(http.ListenAndServe(*httpAddr, mux))
+	}
+	_, err = fmt.Fprintf(w, "%d", got)
+	logWrite(r, err)
+}
+
+// serveHello is the page of the TLS server that stands in as the REALITY
+// target.
+func serveHello(w http.ResponseWriter, r *http.Request) {
+	_, err := w.Write([]byte("hello"))
+	logWrite(r, err)
+}
+
+// logWrite reports a response that could not be written. Origin logs to
+// stderr, which the stand keeps and shows when a comparison fails.
+func logWrite(r *http.Request, err error) {
+	if err != nil {
+		log.Printf("%s %s: writing the response: %v", r.Method, r.URL.Path, err)
+	}
 }
 
 func serveTLS(addr string) {
@@ -83,7 +107,7 @@ func serveTLS(addr string) {
 	}
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("hello")) }),
+		Handler: http.HandlerFunc(serveHello),
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
 			MinVersion:   tls.VersionTLS13,
