@@ -965,13 +965,18 @@ func (c *flowConn) drop(id uint32) {
 // yet read under what the streams whose readers return credit may hold, plus
 // flowConnFloor for the rest. Streams nobody reads thus share Go's 1 MiB, as
 // they would without the governor, whatever the server's own window, and
-// slow readers holding their caps leave that room to new streams.
+// slow readers holding their caps leave that room to new streams. A stream
+// that holds more than its cap, because the cap shrank while its reader
+// stalled, is allowed what it holds, so the excess does not come out of the
+// room the others share. Shrinking a cap only stops further stream credit:
+// what was granted before cannot be taken back and may still be spent, and
+// the allowance follows it up to the window the server really grants.
 func (c *flowConn) upConnRelease() int64 {
 	var reading int64
 	for _, s := range c.streams {
 		// A finished upload needs no room, even while its response waits.
 		if !s.clientDone && s.up.returned > 0 {
-			reading += int64(s.up.cap)
+			reading += max(int64(s.up.cap), s.upSent-s.up.returned)
 		}
 	}
 	// What the server has not read, from the connection's own counters: it
