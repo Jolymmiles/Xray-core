@@ -106,7 +106,10 @@ guard it.
   the conflicting chunk: arrival order does not tell which message is newer.
   The wire format has no message identity, so a mix that stays consistent
   until it completes is still delivered and only whole-datagram integrity
-  above Gecko rejects it. The config build therefore accepts Gecko
+  above Gecko rejects it. `CheckDatagramIntegrity` in
+  `transport/internet/finalmask/datagram_integrity.go`, called by the JSON
+  config build and by `ToMemoryStreamConfig` (protobuf configs, the
+  HandlerService API), therefore accepts Gecko
   (salamander with `packetSize`) only under QUIC transports (hysteria,
   xhttp, masque) or under mKCP with an `mkcp-legacy` mask without a header
   (FNV checksum or AES-128-GCM) listed before it; upstream accepts it
@@ -115,7 +118,9 @@ guard it.
   gecko cells of `TestHysteriaProcessClientMatrix`
   (`common/singmux/hysteria_integration_test.go`) and
   `TestGeckoRequiresDatagramIntegrity`
-  (`infra/conf/transport_finalmask_gecko_test.go`).
+  (`infra/conf/transport_finalmask_gecko_test.go`) and
+  `TestToMemoryStreamConfigRequiresDatagramIntegrityForGecko`
+  (`transport/internet/gecko_integrity_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
