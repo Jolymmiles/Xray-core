@@ -1,6 +1,7 @@
 package salamander
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -67,6 +68,9 @@ type reassemblyEntry struct {
 	chunks   [][]byte
 	received int
 	total    uint8
+	// poisoned marks an ID that received chunks of two messages: it drops
+	// every chunk until its deadline instead of delivering a splice.
+	poisoned bool
 	deadline time.Time
 }
 
@@ -234,12 +238,30 @@ func (g *geckoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 }
 
 func (g *geckoConn) acceptChunk(addr net.Addr, h frameHeader, payload []byte) ([]byte, bool) {
+	return g.acceptChunkAt(addr, h, payload, time.Now())
+}
+
+// acceptChunkAt reassembles Gecko messages. The one-byte message ID repeats
+// every 256 fragmented messages and no field ties a chunk to its message, so
+// after a lost chunk a later message can arrive under the ID of an
+// incomplete one. A chunk that cannot belong to the message an entry holds
+// proves such a mix; the entry is then quarantined, because arrival order
+// does not tell which message is newer and restarting from the conflicting
+// chunk would let the other message's delayed chunks complete it. A mix that
+// stays consistent until it completes cannot be told from a reordered
+// message and is still delivered; QUIC's packet protection rejects it.
+func (g *geckoConn) acceptChunkAt(addr net.Addr, h frameHeader, payload []byte, now time.Time) ([]byte, bool) {
 	key := reassemblyKey{addr: addr.String(), msgID: h.msgID}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	e, exists := g.reassembly[key]
+	if exists && now.After(e.deadline) {
+		// Expired but not collected yet: it must not absorb a new message.
+		g.dropEntryLocked(key)
+		exists = false
+	}
 	if !exists {
 		// Per-source cap.
 		if g.perSource[key.addr] >= geckoMaxPerSource {
@@ -252,16 +274,25 @@ func (g *geckoConn) acceptChunk(addr net.Addr, h frameHeader, payload []byte) ([
 		e = &reassemblyEntry{
 			chunks:   make([][]byte, h.totalChunks),
 			total:    h.totalChunks,
-			deadline: time.Now().Add(geckoReassemblyTTL),
+			deadline: now.Add(geckoReassemblyTTL),
 		}
 		g.reassembly[key] = e
 		g.perSource[key.addr]++
-	} else if e.total != h.totalChunks {
-		// Inconsistent chunk count; drop.
-		return nil, false
 	}
-	if int(h.chunkIdx) >= len(e.chunks) || e.chunks[h.chunkIdx] != nil {
-		// Bad index or duplicate; drop.
+	switch {
+	case e.poisoned:
+		return nil, false
+	case int(h.chunkIdx) >= int(h.totalChunks):
+		// Bad index; drop.
+		return nil, false
+	case e.total != h.totalChunks || !geckoChunkFits(e, h.chunkIdx, payload):
+		// Keep the original deadline: the quarantine must end.
+		e.poisoned = true
+		e.chunks = nil
+		e.received = 0
+		return nil, false
+	case e.chunks[h.chunkIdx] != nil:
+		// Identical duplicate; drop.
 		return nil, false
 	}
 	cp := make([]byte, len(payload))
@@ -283,6 +314,37 @@ func (g *geckoConn) acceptChunk(addr net.Addr, h frameHeader, payload []byte) ([
 	}
 	g.dropEntryLocked(key)
 	return out, true
+}
+
+// geckoChunkFits reports whether a chunk can belong to the message whose
+// chunks e holds. Every Gecko sender (Xray, Hysteria, sing-quic) splits an
+// n-byte message into chunks of n/chunks bytes and gives the remainder to the
+// last one, so the other chunks share one length s and the last one has s to
+// s+chunks-1 bytes. A repeated index must carry the same bytes; padding is
+// already stripped.
+func geckoChunkFits(e *reassemblyEntry, idx uint8, payload []byte) bool {
+	if stored := e.chunks[idx]; stored != nil {
+		return bytes.Equal(stored, payload)
+	}
+	last := len(e.chunks) - 1
+	base, lastLen := -1, -1
+	if int(idx) == last {
+		lastLen = len(payload)
+	} else {
+		base = len(payload)
+	}
+	for i, chunk := range e.chunks {
+		switch {
+		case chunk == nil:
+		case i == last:
+			lastLen = len(chunk)
+		case base < 0:
+			base = len(chunk)
+		case len(chunk) != base:
+			return false
+		}
+	}
+	return base < 0 || lastLen < 0 || lastLen >= base && lastLen <= base+last
 }
 
 func (g *geckoConn) gcLoop() {
