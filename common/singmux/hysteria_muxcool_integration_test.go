@@ -31,7 +31,7 @@ func TestHysteriaMuxCoolServerSurvivesCarrierTeardown(t *testing.T) {
 
 	serverPort := freeUDPPort(t)
 	serverPath := filepath.Join(workDir, "server.json")
-	writeConfig(t, serverPath, xrayHysteriaServerConfig(t, serverPort, certificate, privateKey))
+	writeConfig(t, serverPath, xrayHysteriaServerConfig(t, serverPort, certificate, privateKey, false))
 	server := startE2EProcess(t, binaries.xray, "run", "-config", serverPath)
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -100,7 +100,7 @@ func TestHysteriaMuxCoolServerSurvivesCarrierTeardown(t *testing.T) {
 
 func xrayHysteriaMuxCoolClientConfig(t *testing.T, binaries e2eBinaries, serverPort, socksPort int, certificate string) []byte {
 	t.Helper()
-	_, _, encoded := hysteriaClientConfig(t, binaries, "xray", serverPort, socksPort, certificate)
+	_, _, encoded := hysteriaClientConfig(t, binaries, "xray", serverPort, socksPort, certificate, false)
 	var config map[string]any
 	if err := json.Unmarshal(encoded, &config); err != nil {
 		t.Fatal(err)
