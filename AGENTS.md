@@ -276,7 +276,11 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
   onto rewritten code instead of deleting them.
 - Every PR gets an independent review before merge.
 - Do not commit build artifacts, temporary profiles, logs, local IDE state,
-  `.codex`, graph output, or unrelated documentation.
+  graph output, or unrelated documentation.
+- Shared agent configuration (`.claude/agents/`, `.claude/skills/`,
+  `.codex/config.toml`) is committed. Personal settings and MCP servers that
+  need a personal key or a host-local service live in user-level
+  configuration.
 - Never amend, rebase, force-push, or discard maintainer work without explicit
   authorization.
 
@@ -292,7 +296,7 @@ every other rule in this file still applies to it.
 | --- | --- | --- |
 | `second-opinion` | GPT-6.1-Sol | T3 `delegate_task` |
 | `code-reviewer` | GPT-6.1-Sol | T3 `delegate_task` with `"role": "review"` |
-| `explorer` | Claude Haiku 5.5 | Agent tool `general-purpose`, `model: haiku` |
+| `explorer` | Claude Haiku 5.5 | Agent tool `explorer` |
 
 Dispatch both GPT roles with these `delegate_task` parameters:
 
@@ -353,11 +357,10 @@ Hand it mechanical work whose result needs no judgement: running a test,
 build, or gate command; locating files or symbols; collecting simple facts;
 and many independent cheap checks or generations, fanned out in parallel. The
 brief names the exact commands or questions and any path the explorer may
-write; it changes only those paths. It reports each command verbatim with its
-exit status and relevant output, and reports a failure as first observed,
-without retrying it. The implementer interprets the results. Send each
-follow-up to a fresh explorer; a resumed one can exhaust its context. Parallel
-explorers never overlap a timed benchmark.
+write. `.claude/agents/explorer.md` sets its model, tools, and how it runs and
+reports; the implementer interprets the results. Send each follow-up to a
+fresh explorer; a resumed one can exhaust its context. Parallel explorers
+never overlap a timed benchmark.
 
 ## Definition of done
 
