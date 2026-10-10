@@ -169,9 +169,10 @@ guard it.
   `proxy/vless/outbound`.
 - The WebSocket client connection with early data
   (`delayDialConn` in `transport/internet/websocket/dialer.go`), which dials on
-  its first write, may be read, written and closed from different goroutines,
-  as a proxy does with every carrier; upstream's reads and writes its
-  connection and closed flag unsynchronized. A dial that completes after
+  its first write, may be read from one goroutine, written from another and
+  closed from any, as a proxy does with every carrier; upstream's reads and
+  writes its connection and closed flag unsynchronized. Concurrent writers or
+  readers after the dial keep Gorilla's one-reader, one-writer limit. A dial that completes after
   `Close` closes the connection it dialed instead of publishing it, `Close`
   runs once, and a deadline set before the first write returns an error where
   upstream's panicked on the nil connection. The handshake and early-data

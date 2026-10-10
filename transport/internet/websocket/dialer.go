@@ -160,9 +160,10 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 }
 
 // delayDialConn dials on its first Write, so that the first payload can ride
-// in the handshake as early data. Like any net.Conn it may be read, written
-// and closed from different goroutines: a proxy reads and writes it from two
-// and closes it from whichever finishes first.
+// in the handshake as early data. A proxy reads it from one goroutine, writes
+// it from another and closes it from whichever finishes first, so publishing
+// the dialed connection is ordered against Close; after that, reads and
+// writes keep Gorilla's one-reader, one-writer limit.
 type delayDialConn struct {
 	cancel         context.CancelFunc
 	ctx            context.Context
