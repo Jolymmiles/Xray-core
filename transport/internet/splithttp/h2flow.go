@@ -105,14 +105,23 @@ var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
 // The initial window each side is shown, where the receiver grants that
 // much. A server shows Go's own 1 MiB, so its SETTINGS carry the stock value
 // and new upload streams need no credit at once; the upload connection
-// window still holds everything nobody reads to 1 MiB. A client keeps the
-// protocol default: when both ends govern the download, a larger value lets
-// the two hold back credit each counts as the other's, and a duplex stream
-// can stall.
+// window still holds everything nobody reads to 1 MiB.
+//
+// A client shows the protocol default, and must show no more than the lowest
+// cap a download stream can have (flowLimit.init). With a governor at both
+// ends of a download, each holds back credit. When the server has no window
+// left, the server-side governor takes for unread at the client what the
+// client showed less the credit it itself still holds, and hands that credit
+// on once its cap is above that. Its cap never falls below flowLimit.init, so
+// with no more than that shown it always can; with more, its cap can shrink
+// under the difference and both ends wait for each other for good.
 const (
 	flowShownUp   = 1 << 20
 	flowShownDown = h2InitWindow
 )
+
+// A constant larger than the lowest cap fails to compile here.
+const _ = uint(h2InitWindow - flowShownDown)
 
 type tcpStats struct {
 	rtt, minRTT, rttVar time.Duration

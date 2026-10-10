@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	gotls "crypto/tls"
+	"fmt"
 	"io"
 	mrand "math/rand/v2"
 	"net"
@@ -291,5 +292,65 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+	}
+}
+
+// TestFlowChainedGovernorsSlowReaders puts a governor at both ends of twelve
+// downloads, as on a bridge in front of a governed server, and reads them in
+// stops and starts, so the caps shrink at both ends while each holds credit
+// back. Every download must still complete: with the client showing more than
+// the lowest cap (see flowShownDown) the two governors wait for each other.
+func TestFlowChainedGovernorsSlowReaders(t *testing.T) {
+	const size = 3 << 20
+	_, addr := startFlowServer(t, testUp, testDown, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 16<<10)
+		for left := size; left > 0; left -= len(buf) {
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+		}
+	}))
+	client := newFlowTestClient(addr, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequestWithContext(ctx, "GET", "http://x/down", nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			buf := make([]byte, 8<<10)
+			got := 0
+			for {
+				n, err := resp.Body.Read(buf)
+				got += n
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					errs <- fmt.Errorf("after %d of %d bytes: %w", got, size, err)
+					return
+				}
+				// Stop and start for the first two thirds, at random.
+				if got < size*2/3 && mrand.IntN(8) == 0 {
+					time.Sleep(time.Duration(mrand.IntN(60)) * time.Millisecond)
+				}
+			}
+			if got != size {
+				errs <- fmt.Errorf("read %d bytes, want %d", got, size)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
