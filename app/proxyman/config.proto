@@ -74,6 +74,10 @@ message MultiplexingConfig {
   int32 xudpConcurrency = 3;
   // "reject" (default), "allow" or "skip".
   string xudpProxyUDP443 = 4;
+  // Sessions one Mux.Cool connection admits over its lifetime before new ones
+  // open another connection; XUDP keeps 128. 0 means 128, at most 60000.
+  // Field 30 is fork-owned (docs/FORK.md).
+  int32 maxReuseTimes = 30;
 }
 
 message SmuxConfig {

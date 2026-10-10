@@ -185,7 +185,10 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 
 type ClientStrategy struct {
 	MaxConcurrency uint32
-	MaxConnection  uint32
+	// MaxConnection is how many sessions a worker admits over its lifetime,
+	// aborted admissions included; 0 means no limit. Outbounds take it from
+	// mux.maxReuseTimes.
+	MaxConnection uint32
 }
 
 type ClientWorker struct {
