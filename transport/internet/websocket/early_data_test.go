@@ -2,6 +2,8 @@ package websocket_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	stdnet "net"
 	"net/http"
 	"sync"
@@ -77,31 +79,7 @@ func TestEarlyDataConnConcurrentReadWriteClose(t *testing.T) {
 	})
 
 	t.Run("dialed", func(t *testing.T) {
-		port := tcp.PickPort()
-		listener, err := ListenWS(context.Background(), net.LocalHostIP, port, &internet.MemoryStreamConfig{
-			ProtocolName:     "websocket",
-			ProtocolSettings: &Config{Path: "ws"},
-		}, func(conn stat.Connection) {
-			go func() {
-				defer conn.Close()
-				b := make([]byte, 1024)
-				for {
-					n, err := conn.Read(b)
-					if err != nil {
-						return
-					}
-					if _, err := conn.Write(b[:n]); err != nil {
-						return
-					}
-				}
-			}()
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = listener.Close() })
-
-		conn, err := Dial(context.Background(), net.TCPDestination(net.LocalHostIP, port), earlyDataSettings("ws"))
+		conn, err := Dial(context.Background(), listenEcho(t), earlyDataSettings("ws"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,6 +109,88 @@ func TestEarlyDataConnConcurrentReadWriteClose(t *testing.T) {
 	})
 }
 
+// listenEcho starts a WebSocket server on path "ws" that echoes what it
+// reads; its connections end when the client closes them or the test ends.
+func listenEcho(t *testing.T) net.Destination {
+	t.Helper()
+	port := tcp.PickPort()
+	listener, err := ListenWS(context.Background(), net.LocalHostIP, port, &internet.MemoryStreamConfig{
+		ProtocolName:     "websocket",
+		ProtocolSettings: &Config{Path: "ws"},
+	}, func(conn stat.Connection) {
+		go func() {
+			defer conn.Close()
+			b := make([]byte, 1024)
+			for {
+				n, err := conn.Read(b)
+				if err != nil {
+					return
+				}
+				if _, err := conn.Write(b[:n]); err != nil {
+					return
+				}
+			}
+		}()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return net.TCPDestination(net.LocalHostIP, port)
+}
+
+// Before the first write there is no connection to set a deadline on: the
+// deadline methods promoted from it dereferenced nil. They now fail, and
+// once the write has dialed they reach the connection.
+func TestEarlyDataDeadlines(t *testing.T) {
+	conn, err := Dial(context.Background(), listenEcho(t), earlyDataSettings("ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	setters := []struct {
+		name string
+		set  func(time.Time) error
+	}{
+		{"SetDeadline", conn.SetDeadline},
+		{"SetReadDeadline", conn.SetReadDeadline},
+		{"SetWriteDeadline", conn.SetWriteDeadline},
+	}
+	for _, setter := range setters {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Errorf("%s before the first write panicked: %v", setter.name, recovered)
+				}
+			}()
+			if err := setter.set(time.Now().Add(time.Minute)); err == nil {
+				t.Errorf("%s before the first write returned no error", setter.name)
+			}
+		}()
+	}
+
+	if _, err := conn.Write([]byte("early data")); err != nil {
+		t.Fatal(err)
+	}
+	for _, setter := range setters {
+		if err := setter.set(time.Now().Add(time.Minute)); err != nil {
+			t.Errorf("%s after the first write: %v", setter.name, err)
+		}
+	}
+	// A deadline already past ends the read waiting for the echo's successor.
+	echo := make([]byte, len("early data"))
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var timeout stdnet.Error
+	if _, err := conn.Read(make([]byte, 1)); !errors.As(err, &timeout) || !timeout.Timeout() {
+		t.Fatalf("a read past its deadline returned %v, want a timeout", err)
+	}
+}
+
 // gatedUpgradeServer holds every WebSocket upgrade until the test releases it
 // and reports when the upgraded connection ends.
 type gatedUpgradeServer struct {
@@ -154,8 +214,16 @@ func newGatedUpgradeServer(t *testing.T) *gatedUpgradeServer {
 		ended:   make(chan struct{}),
 	}
 	var endOnce sync.Once
+	// http.Server.Close leaves upgraded connections to their handlers, so
+	// the test closes them itself.
+	var mu sync.Mutex
+	var upgraded []*gorillaws.Conn
+	stopped := false
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.entered <- struct{}{}
+		select {
+		case s.entered <- struct{}{}:
+		default:
+		}
 		<-s.release
 		upgrader := gorillaws.Upgrader{}
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -163,6 +231,13 @@ func newGatedUpgradeServer(t *testing.T) *gatedUpgradeServer {
 			return
 		}
 		defer conn.Close()
+		mu.Lock()
+		if stopped {
+			mu.Unlock()
+			return
+		}
+		upgraded = append(upgraded, conn)
+		mu.Unlock()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				endOnce.Do(func() { close(s.ended) })
@@ -175,6 +250,12 @@ func newGatedUpgradeServer(t *testing.T) *gatedUpgradeServer {
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(s.release) })
 		_ = server.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		stopped = true
+		for _, conn := range upgraded {
+			_ = conn.Close()
+		}
 	})
 	s.releaseNow = func() { releaseOnce.Do(func() { close(s.release) }) }
 	return s

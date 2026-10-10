@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,18 +78,35 @@ func TestReverseCloseAbortsStalledEncryptionHandshake(t *testing.T) {
 	}
 }
 
-// webSocketCarrierServer accepts WebSocket carriers, reads and discards what
-// the client sends and never answers.
+// newWebSocketCarrierServer accepts WebSocket carriers, reads and discards
+// what the client sends and never answers. The listener's Close leaves
+// accepted connections open, so the test closes them and waits for their
+// readers.
 func newWebSocketCarrierServer(t *testing.T) (net.Destination, chan *carrier) {
 	t.Helper()
 	port := tcp.PickPort()
 	accepted := make(chan *carrier, 16)
+	var mu sync.Mutex
+	var conns []stat.Connection
+	stopped := false
+	var readers sync.WaitGroup
 	listener, err := websocket.ListenWS(context.Background(), net.LocalHostIP, port, &internet.MemoryStreamConfig{
 		ProtocolName:     "websocket",
 		ProtocolSettings: &websocket.Config{Path: "rvs"},
 	}, func(conn stat.Connection) {
+		mu.Lock()
+		if stopped {
+			mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		conns = append(conns, conn)
+		readers.Add(1)
+		mu.Unlock()
 		c := &carrier{ended: make(chan struct{})}
 		go func() {
+			defer readers.Done()
+			// The read ends, with EOF or an error, when the carrier does.
 			_, _ = io.Copy(io.Discard, conn)
 			close(c.ended)
 		}()
@@ -100,7 +118,25 @@ func newWebSocketCarrierServer(t *testing.T) (net.Destination, chan *carrier) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		stopped = true
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			readers.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("a WebSocket carrier's reader did not end after its connection closed")
+		}
+	})
 	return net.TCPDestination(net.LocalHostIP, port), accepted
 }
 
