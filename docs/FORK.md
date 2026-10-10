@@ -105,10 +105,17 @@ guard it.
   a later message completed the earlier one. Do not restart an entry from
   the conflicting chunk: arrival order does not tell which message is newer.
   The wire format has no message identity, so a mix that stays consistent
-  until it completes is still delivered; QUIC rejects it, mKCP without a
-  mask does not. Covered by `gecko_reassembly_test.go` in that package and
-  the gecko cells of `TestHysteriaProcessClientMatrix`
-  (`common/singmux/hysteria_integration_test.go`).
+  until it completes is still delivered and only whole-datagram integrity
+  above Gecko rejects it. The config build therefore accepts Gecko
+  (salamander with `packetSize`) only under QUIC transports (hysteria,
+  xhttp, masque) or under mKCP with an `mkcp-legacy` mask without a header
+  (FNV checksum or AES-128-GCM) listed before it; upstream accepts it
+  anywhere. Plain salamander does not fragment and stays allowed
+  everywhere. Covered by `gecko_reassembly_test.go` in that package, the
+  gecko cells of `TestHysteriaProcessClientMatrix`
+  (`common/singmux/hysteria_integration_test.go`) and
+  `TestGeckoRequiresDatagramIntegrity`
+  (`infra/conf/transport_finalmask_gecko_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.

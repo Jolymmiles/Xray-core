@@ -750,6 +750,30 @@ func (c *Salamander) Build() (proto.Message, error) {
 	}, nil
 }
 
+// checkGeckoIntegrity refuses Gecko (salamander with packetSize) below a
+// transport that does not authenticate whole datagrams. Gecko's message ID is
+// one byte and no field ties a chunk to its message, so after a lost chunk a
+// receiver can still deliver a packet spliced from two (docs/FORK.md). QUIC
+// rejects such a packet; mKCP accepts it unless an integrity mask outside
+// Gecko checks it. udpMasks is in finalmask.udp order, outermost first.
+func checkGeckoIntegrity(protocol string, udpMasks []proto.Message) error {
+	integrity := false
+	for _, mask := range udpMasks {
+		switch mask.(type) {
+		case *original.Config, *aes128gcm.Config:
+			integrity = true
+		case *salamander.GeckoConfig:
+			switch {
+			case protocol == "hysteria" || protocol == "splithttp" || protocol == "masque":
+			case protocol == "mkcp" && integrity:
+			default:
+				return errors.New(`the "salamander" UDP mask with packetSize (Gecko) can splice two packets into one after a lost fragment, so it needs a transport that authenticates whole datagrams: use it with hysteria, xhttp or masque, list an "mkcp-legacy" mask without a header before it under kcp, or drop packetSize`)
+			}
+		}
+	}
+	return nil
+}
+
 type Sudoku struct {
 	Password string `json:"password"`
 	ASCII    string `json:"ascii"`
