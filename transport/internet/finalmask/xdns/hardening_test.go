@@ -254,6 +254,73 @@ func TestClientHandsEveryWrittenPacketToAResolver(t *testing.T) {
 	}
 }
 
+// stalledResolver blocks every Send until it is closed, like a resolver conn
+// behind dialerProxy whose writes wait for Close.
+type stalledResolver struct {
+	entered   chan struct{}
+	enterOnce sync.Once
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newStalledResolver() *stalledResolver {
+	return &stalledResolver{entered: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (r *stalledResolver) Addr() *stdnet.UDPAddr {
+	return &stdnet.UDPAddr{IP: stdnet.IP{192, 0, 2, 53}, Port: 53}
+}
+
+func (r *stalledResolver) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *stalledResolver) Send([]byte) {
+	r.enterOnce.Do(func() { close(r.entered) })
+	<-r.closed
+}
+
+func (r *stalledResolver) Close() { r.closeOnce.Do(func() { close(r.closed) }) }
+
+// WriteTo sends synchronously, so a stalled resolver write blocks it. Closing
+// the client must still reach the resolvers and release that write.
+func TestClientCloseReleasesStalledWrite(t *testing.T) {
+	resolver := newStalledResolver()
+	t.Cleanup(resolver.Close)
+	client := newHardeningClient(t, resolver)
+
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		_, _ = client.WriteTo([]byte("payload"), &net.UDPAddr{})
+	}()
+	select {
+	case <-resolver.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WriteTo never reached the resolver")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		resolver.Close() // release the write so both goroutines finish
+		<-closed
+		<-written
+		t.Fatal("Close blocked behind a stalled resolver write")
+	}
+	select {
+	case <-written:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WriteTo stayed blocked after Close")
+	}
+}
+
 // XDNS reaches the network only through its resolvers. FinalMask must not open
 // a base socket for it that nothing owns.
 func TestFinalMaskDialOwnsEveryXDNSSocket(t *testing.T) {

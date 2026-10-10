@@ -364,8 +364,9 @@ func (c *xdnsClient) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 }
 
 func (c *xdnsClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Send without c.mu: a resolver write can block until Close closes the
+	// resolver, and Close needs c.mu to reach it. A write that races Close
+	// reaches a closed resolver, which drops it.
 	if c.closed() {
 		return 0, io.ErrClosedPipe
 	}
