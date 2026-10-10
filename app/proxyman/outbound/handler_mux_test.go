@@ -13,22 +13,29 @@ import (
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	F "github.com/xtls/xray-core/features/outbound"
+	featurestats "github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy/freedom"
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 )
 
 func newMuxTestContext(t *testing.T) context.Context {
 	t.Helper()
+	ctx, _ := newMuxTestInstance(t, &policy.Config{})
+	return ctx
+}
+
+func newMuxTestInstance(t *testing.T, policyConfig *policy.Config) (context.Context, *core.Instance) {
+	t.Helper()
 	instance, err := core.New(&core.Config{App: []*serial.TypedMessage{
 		serial.ToTypedMessage(&stats.Config{}),
-		serial.ToTypedMessage(&policy.Config{}),
+		serial.ToTypedMessage(policyConfig),
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	instance.AddFeature(F.Manager(new(Manager)))
 	ctx := context.WithValue(context.Background(), core.XrayKey(1), instance)
-	return session.ContextWithOutbounds(ctx, []*session.Outbound{{}})
+	return session.ContextWithOutbounds(ctx, []*session.Outbound{{}}), instance
 }
 
 func muxStrategy(t *testing.T, manager *mux.ClientManager) mux.ClientStrategy {
@@ -115,5 +122,45 @@ func TestNewHandlerRejectsInvalidMuxMaxReuseTimes(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "maxReuseTimes") {
 			t.Errorf("NewHandler(%+v) error = %v, want a maxReuseTimes error", settings, err)
 		}
+	}
+}
+
+// A rejected budget registers no traffic counter. With outbound stats on,
+// every failed HandlerService AddOutbound would otherwise keep two counters
+// that no handler owns. A counter that already exists for the tag stays.
+func TestNewHandlerRejectedMuxBudgetRegistersNoCounters(t *testing.T) {
+	ctx, instance := newMuxTestInstance(t, &policy.Config{System: &policy.SystemPolicy{
+		Stats: &policy.SystemPolicy_Stats{OutboundUplink: true, OutboundDownlink: true},
+	}})
+	counters := instance.GetFeature(featurestats.ManagerType()).(featurestats.Manager)
+	existing, err := counters.RegisterCounter("outbound>>>existing>>>traffic>>>uplink")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"rejected", "existing"} {
+		_, err := NewHandler(ctx, &core.OutboundHandlerConfig{
+			Tag: tag,
+			SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{
+				MultiplexSettings: &proxyman.MultiplexingConfig{Enabled: true, MaxReuseTimes: -1},
+			}),
+			ProxySettings: serial.ToTypedMessage(&freedom.Config{
+				FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
+			}),
+		})
+		if err == nil {
+			t.Fatalf("NewHandler(%q) accepted maxReuseTimes -1", tag)
+		}
+	}
+	for _, name := range []string{
+		"outbound>>>rejected>>>traffic>>>uplink",
+		"outbound>>>rejected>>>traffic>>>downlink",
+		"outbound>>>existing>>>traffic>>>downlink",
+	} {
+		if counters.GetCounter(name) != nil {
+			t.Errorf("rejected handler left counter %s", name)
+		}
+	}
+	if counters.GetCounter("outbound>>>existing>>>traffic>>>uplink") != existing {
+		t.Error("rejected handler replaced the existing counter of its tag")
 	}
 }

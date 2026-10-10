@@ -181,7 +181,7 @@ so the old server serves session IDs above 128, and session 131 opens a
 second one.
 
 ```sh
-go test -tags 'integration http2legacy' ./common/singmux -run '^TestMuxCoolMaxReuseTimes(OldServer)?Process$' -count=1 -v
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestMuxCoolMaxReuseTimes(OldServer)?Process$' -count=1 -timeout 20m -v
 ```
 
 The matching connection-latency benchmark keeps one Xray client and server
