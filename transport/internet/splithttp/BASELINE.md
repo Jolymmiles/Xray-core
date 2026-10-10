@@ -115,25 +115,42 @@ errors.
 ### Slow readers and the shared connection room
 
 Measured for the change that allows a reading stream what it already holds
-(`upConnRelease`), on the stand above with these conditions:
+(`upConnRelease`). The stand is `testing/xhttpflow/slowreader`: `stand.py`
+sets up the namespaces and the link, writes the configs, drives the uploads
+and the small requests and prints the table; `origin` is the far end.
 
-- Revisions, clean trees: before `14d049d0`, after `c13ea885`; Go 1.27.2,
-  `-tags http2legacy`, same host. Client: official Xray v26.9.30, XHTTP over
-  REALITY in its default mode, `xmux.maxConnections` 3.
-- Link 100 Mbit/s, RTT 50 ms. Twenty uploads run for 12 s into an origin that
-  reads 100 KB/s from each. Beside them a small request (`GET /ping` through
-  the tunnel, a new session each time) is sent every 0.3 s on the same three
+```sh
+go build -o origin ./testing/xhttpflow/slowreader/origin
+sudo python3 testing/xhttpflow/slowreader/stand.py     --origin ./origin --client /path/to/xray-v26.9.30     --server before=/path/to/xray-14d049d0 --server after=/path/to/xray-c13ea885     --runs 36
+```
+
+- Revisions, clean trees: before `14d049d0`, after `c13ea885`, each built
+  with Go 1.27.2 and `-tags http2legacy`; same host as above, in a privileged
+  container. Client: official Xray v26.9.30, XHTTP over REALITY in its
+  default mode, `xmux.maxConnections` 3. REALITY keys are made per run of
+  the stand.
+- Two network namespaces joined by a veth pair, netem on both ends: 100 Mbit/s,
+  25 ms each way, a queue of twice the bandwidth-delay product; TCP buffers
+  up to 32 MB. Twenty uploads run for 12 s into an origin that reads
+  100 KB/s from each. Beside them a small request (`GET /ping` through the
+  tunnel, a new session each time) is sent every 0.3 s on the same three
   connections, about forty per run.
-- 36 runs per build, the two builds interleaved in random order. Per run:
-  p50 and p95 of the ping times, and the server's peak RSS sampled every
-  0.25 s. The table gives the median over runs and the worst run.
+- 36 runs per build, all runs shuffled together. Per run: p50 and p95 of the
+  request times, and the server's peak RSS sampled every 0.25 s. The table
+  gives the median over runs and the worst run.
 
 | | Before | After |
 | --- | --- | --- |
-| Runs with ping p95 above 2 s | 3 (4.4 / 5.8 / 7.2 s) | 0 |
-| Worst ping p95 | 7.2 s | 0.88 s |
-| Median ping p50 / p95 | 53 / 564 ms | 53 / 517 ms |
-| Median server peak RSS | 40.1 MB | 40.0 MB |
+| Runs with ping p95 above 2 s | 1 (6.5 s) | 0 |
+| Worst ping p95 | 6.51 s | 0.74 s |
+| Median ping p50 / p95 | 53 / 500 ms | 53 / 495 ms |
+| Median server peak RSS | 39.9 MB | 40.0 MB |
+
+An earlier pair of 36 runs on the same two revisions, taken with the larger
+driver this stand was cut from (same link, uploads, requests and sampling),
+gave 3 runs above 2 s (4.4 / 5.8 / 7.2 s) against 0, worst p95 7.2 s against
+0.88 s, median p95 564 against 517 ms and RSS 40.1 against 40.0 MB. Together:
+4 of 72 runs before, 0 of 72 after.
 
 Limits:
 
@@ -142,8 +159,8 @@ Limits:
   the server's send buffers towards the slow origin to about 2.4 MB each and
   wakes the blocked writer only after a large part has drained. The change
   does not touch it; it only keeps other requests moving meanwhile.
-- The failure is rare (about one run in ten before), so 36 runs bound it
-  loosely: with that rate, no failure in 36 runs has a chance near 2%.
+- The failure is rare (4 of 72 runs before), so the runs bound it loosely:
+  at that rate, no failure in 72 runs has a chance near 2%.
 - A stream can still spend stream credit granted before its cap shrank, and
   the allowance follows what it then holds; the total stays within the
   connection window the server really grants (6 MiB by default).
