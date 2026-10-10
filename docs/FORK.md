@@ -38,6 +38,18 @@ guard it.
   `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
   Covered by the `h2flow*_test.go` tests and
   `common/singmux/xhttp_flow_verify_integration_test.go`.
+- The Hysteria client-pool cleaner (`clientManager.cleanOnce` in
+  `transport/internet/hysteria/dialer.go`) snapshots the process-wide pool
+  and releases the pool lock before it waits for an instance's status or a
+  client's lock; the port of XTLS/Xray-core#7107 (`2b0d898`) holds the read
+  lock across both waits. A forced client is closed before it is removed, and
+  removed only if the pool still holds that pointer, so overlapping passes
+  keep a replacement client. Keep this when upstream merges #7107 or when
+  syncing nearby code. Covered by
+  `transport/internet/hysteria/instance_cleanup_test.go`
+  (`TestCleanerWaitingForInstanceStatusDoesNotBlockDials`,
+  `TestCleanerWaitingForOneClientDoesNotBlockOthers`,
+  `TestConcurrentCleanersKeepReplacementClients`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
