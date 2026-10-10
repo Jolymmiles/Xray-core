@@ -24,10 +24,10 @@ import (
 // The XHTTP client's HTTP/2 preface is visible to whoever terminates its TLS,
 // such as a CDN. Release builds pass -tags http2legacy, which keeps x/net's
 // own HTTP/2 client; without the tag x/net wraps net/http and the first
-// SETTINGS frame advertises MAX_FRAME_SIZE 1048576 instead of 16384. A change
-// here changes the client's fingerprint and needs a camouflage assessment
-// (docs/FORK.md).
-func TestHTTP2ClientPrefaceMatchesReleaseBuild(t *testing.T) {
+// SETTINGS frame advertises a larger MAX_FRAME_SIZE (wantClientMaxFrameSize in
+// http2_preface_{legacy,wrap}_test.go). A change here changes the client's
+// fingerprint and needs a camouflage assessment (docs/FORK.md).
+func TestHTTP2ClientPrefaceSettings(t *testing.T) {
 	certificate, certificateHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
 	key, err := x509.ParsePKCS8PrivateKey(certificate.PrivateKey)
 	if err != nil {
@@ -104,11 +104,11 @@ func TestHTTP2ClientPrefaceMatchesReleaseBuild(t *testing.T) {
 	wantSettings := []http2.Setting{
 		{ID: http2.SettingEnablePush, Val: 0},
 		{ID: http2.SettingInitialWindowSize, Val: 4 << 20},
-		{ID: http2.SettingMaxFrameSize, Val: 16 << 10},
+		{ID: http2.SettingMaxFrameSize, Val: wantClientMaxFrameSize},
 		{ID: http2.SettingMaxHeaderListSize, Val: 10 << 20},
 	}
 	if !slices.Equal(preface.settings, wantSettings) {
-		t.Errorf("XHTTP client SETTINGS %v, want %v as release builds (-tags http2legacy) send", preface.settings, wantSettings)
+		t.Errorf("XHTTP client SETTINGS %v, want %v", preface.settings, wantSettings)
 	}
 	if want := uint32(1 << 30); preface.connectionWindowIncrement != want {
 		t.Errorf("XHTTP client connection WINDOW_UPDATE increment %d, want %d", preface.connectionWindowIncrement, want)

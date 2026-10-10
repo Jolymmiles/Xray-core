@@ -32,8 +32,9 @@ guard it.
   pool redial with no delay and no retry limit. Covered by
   `transport/internet/splithttp/http2_dial_test.go` (one dial while a
   handshake hangs), `transport/internet/splithttp/http2_preface_test.go` (the
-  client's SETTINGS) and `testing/release/build_contract_test.go` (release
-  builds pass the tag). No test pins the redial pacing.
+  client's SETTINGS with and without the tag) and
+  `testing/release/build_contract_test.go` (release builds pass the tag). No
+  test pins the redial pacing.
 - XHTTP inbounds accept Mux.Cool TCP sessions; upstream (XTLS/Xray-core#4128)
   limits them to pure XUDP. In packet-up and stream-up the server can poke an
   idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
