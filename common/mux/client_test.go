@@ -125,6 +125,19 @@ func TestClientWorkerUDPSource(t *testing.T) {
 
 	inR, inW := pipe.New(pipe.WithoutSizeLimit())
 	outR, outW := pipe.New(pipe.WithoutSizeLimit())
+	var got buf.MultiBuffer
+	t.Cleanup(func() {
+		buf.ReleaseMulti(got)
+		// EOF on the session input and on the carrier ends both of the
+		// worker's loops; it then closes its link.
+		common.Must(inW.Close())
+		common.Must(downW.Close())
+		select {
+		case <-worker.WaitClosed():
+		case <-time.After(5 * time.Second):
+			t.Error("client worker did not close after its carrier ended")
+		}
+	})
 	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
 		Target: net.UDPDestination(net.ParseAddress("8.8.8.8"), 53),
 	}})
@@ -134,7 +147,7 @@ func TestClientWorkerUDPSource(t *testing.T) {
 	b := buf.New()
 	b.WriteString("query")
 	common.Must(inW.WriteMultiBuffer(buf.MultiBuffer{b}))
-	mb, err := upR.ReadMultiBuffer() // New frame, the session is UDP from now on
+	mb, err := upR.ReadMultiBufferTimeout(5 * time.Second) // New frame, the session is UDP from now on
 	common.Must(err)
 	buf.ReleaseMulti(mb)
 
@@ -144,14 +157,13 @@ func TestClientWorkerUDPSource(t *testing.T) {
 		net.UDPDestination(net.ParseAddress("3.3.3.3"), 3333),
 	}
 	w := mux.NewResponseWriter(1, downW, protocol.TransferTypePacket)
-	var got buf.MultiBuffer
 	for i := range srcs {
 		b := buf.New()
 		b.WriteString("reply")
 		b.UDP = &srcs[i]
 		common.Must(w.WriteMultiBuffer(buf.MultiBuffer{b}))
 		// keep earlier replies around while the next frame is parsed
-		mb, err := outR.ReadMultiBuffer()
+		mb, err := outR.ReadMultiBufferTimeout(5 * time.Second)
 		common.Must(err)
 		got = append(got, mb...)
 	}
