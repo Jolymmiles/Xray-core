@@ -373,7 +373,8 @@ A change is complete only when:
 - baselines/specifications/testing docs are updated when behavior or
   measurements change;
 - unrelated workspace changes remain untouched;
-- every finding of the latest `code-reviewer` round has a disposition, and no
-  High or Medium finding is open unless the maintainer deferred it;
+- every finding of the latest `code-reviewer` round has a disposition, no High
+  finding is open, and a Medium finding stays open only when the maintainer
+  deferred it;
 - the final report lists exact commands, results, limitations, artifact hash,
   and any genuine blocker.
