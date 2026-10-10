@@ -277,6 +277,51 @@ class OuterTests(unittest.TestCase):
         self.assertIn(("inside", "terminate"), host.events)
         self.assertFalse(os.path.exists(work))
 
+    def test_a_namespace_that_cannot_be_removed_is_reported_and_the_rest_removed(self):
+        cli = f"xslow-{os.getpid()}-cli"
+        host = FakeHost(failing=[f"ip netns del {cli}"])
+        result, stderr, work = self.outer(host)
+        self.assertIsInstance(result, Exception, "a failed cleanup must not look like success")
+        self.assertIn(cli, str(result))
+        self.assertIn("Device or resource busy", str(result))
+        self.assertEqual(host.teardown(), ["inside", "origin", "cli", "srv", "work"])
+        self.assertIn(("run", f"ip netns del xslow-{os.getpid()}-srv"), host.events)
+        self.assertFalse(os.path.exists(work))
+
+
+class RemoveNamespaceTests(unittest.TestCase):
+    def remove(self, results):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(" ".join(cmd))
+            return results[cmd[2]]
+
+        with mock.patch.object(stand.subprocess, "run", run), mock.patch.object(stand.os, "kill") as kill:
+            try:
+                stand.remove_namespace("xslow-1-cli")
+                raised = None
+            except Exception as e:
+                raised = e
+        return raised, calls, kill.call_args_list
+
+    def test_failed_listing_and_deletion_are_reported(self):
+        raised, calls, kills = self.remove({
+            "pids": subprocess.CompletedProcess([], 0, stdout="11\n12\n", stderr=""),
+            "del": subprocess.CompletedProcess([], 0, stdout="", stderr="")})
+        self.assertIsNone(raised)
+        self.assertEqual(kills, [mock.call(11, stand.signal.SIGKILL), mock.call(12, stand.signal.SIGKILL)])
+
+        raised, calls, kills = self.remove({
+            "pids": subprocess.CompletedProcess([], 1, stdout="", stderr="Cannot open network namespace\n"),
+            "del": subprocess.CompletedProcess([], 1, stdout="", stderr="Device or resource busy\n")})
+        self.assertIsNotNone(raised, "a failed cleanup must be reported")
+        self.assertIn("xslow-1-cli", str(raised))
+        self.assertIn("Cannot open network namespace", str(raised))
+        self.assertIn("Device or resource busy", str(raised))
+        self.assertEqual(calls, ["ip netns pids xslow-1-cli", "ip netns del xslow-1-cli"],
+                         "deletion is still tried when listing fails")
+
 
 if __name__ == "__main__":
     unittest.main()

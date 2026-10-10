@@ -22,7 +22,8 @@ has the governor on ("h2Flow": {"enabled": true}); the client is whatever
 The stand creates two network namespaces and a veth pair with names of its
 own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
 temporary directory and every process it started when it ends, however it
-ends. It touches nothing else on the host. The measurement gets RUN_LIMIT
+ends short of SIGKILL; a namespace it cannot remove makes it fail with the
+error. It touches nothing else on the host. The measurement gets RUN_LIMIT
 (98 s) per run, where a run normally takes its 12 s of load and a few seconds
 around them; one still going past that is stuck, and the stand stops it,
 tears down and exits with status 1.
@@ -83,12 +84,21 @@ def reap(proc, grace=0.0):
 
 def remove_namespace(ns):
     """Kills whatever still runs in a namespace of this run and deletes it;
-    that removes the veth end inside it, and its peer."""
-    pids = subprocess.run(["ip", "netns", "pids", ns], capture_output=True, text=True).stdout.split()
-    for pid in pids:
+    that removes the veth end inside it, and its peer. If either step fails
+    it raises, after trying both: the ExitStack still runs the rest of the
+    teardown, and the stand ends with the error instead of a success."""
+    errors = []
+    listed = subprocess.run(["ip", "netns", "pids", ns], capture_output=True, text=True)
+    if listed.returncode:
+        errors.append(f"ip netns pids: {listed.stderr.strip()}")
+    for pid in listed.stdout.split():
         with contextlib.suppress(ProcessLookupError, ValueError):
             os.kill(int(pid), signal.SIGKILL)
-    subprocess.run(["ip", "netns", "del", ns], stderr=subprocess.DEVNULL)
+    deleted = subprocess.run(["ip", "netns", "del", ns], capture_output=True, text=True)
+    if deleted.returncode:
+        errors.append(f"ip netns del: {deleted.stderr.strip()}")
+    if errors:
+        raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
 
 
 def setup_network(stack, srv, cli):

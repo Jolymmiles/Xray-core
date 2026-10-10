@@ -119,8 +119,9 @@ Measured for the change that allows a reading stream what it already holds
 sets up the namespaces and the link, writes the configs, drives the uploads
 and the small requests and prints the table; `origin` is the far end. It
 creates namespaces of its own and removes them, its temporary directory and
-its processes when it ends. A measurement still running after 98 s per run
-is taken as stuck: the stand stops it, tears down and exits with status 1.
+its processes when it ends, and fails if a namespace cannot be removed. A
+measurement still running after 98 s per run is taken as stuck: the stand
+stops it, tears down and exits with status 1.
 
 ```sh
 go build -o origin ./testing/xhttpflow/slowreader/origin
