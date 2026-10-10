@@ -280,6 +280,85 @@ Run the stress, reconnect, performance, and 50-cycle hardening commands from
 - Never amend, rebase, force-push, or discard maintainer work without explicit
   authorization.
 
+## Agent roles
+
+The implementer is the agent that writes the code (Claude Opus by default). It
+works with three helper roles. A run whose task prompt assigns one of these
+roles performs that role's brief instead of the implementer duties, answers
+the implementer directly, and starts sub-agents only where its brief allows;
+every other rule in this file still applies to it.
+
+| Role | Model | Tool |
+| --- | --- | --- |
+| `second-opinion` | GPT-6.1-Sol | T3 `delegate_task` |
+| `code-reviewer` | GPT-6.1-Sol | T3 `delegate_task` with `"role": "review"` |
+| `explorer` | Claude Haiku 5.5 | Agent tool `general-purpose`, `model: haiku` |
+
+Dispatch both GPT roles with these `delegate_task` parameters:
+
+```json
+{
+  "target": {
+    "providerInstanceId": "codex",
+    "model": "gpt-6.1-sol",
+    "options": {"reasoningEffort": "high"}
+  },
+  "mode": "wait",
+  "timeoutMs": 1800000,
+  "clientRequestId": "<topic>-<role>-<round>"
+}
+```
+
+A delegated task starts without the implementer's conversation, so its prompt
+names the role and carries every fact the role needs. After `waitTimedOut`,
+collect the answer with `task_status`. When the T3 tools are unavailable, the
+final report states which consultation or review did not run.
+
+### second-opinion
+
+Consult it before committing to a choice you doubt, in particular when:
+
+- two designs are plausible and differ in wire bytes, observable traffic
+  shape, resource ownership, or configuration surface;
+- an upstream behavior, specification, or test failure admits more than one
+  reading;
+- the plan would depart from a rule in this file.
+
+Scope, priority, and product-behavior questions belong to the maintainer. The
+prompt states the question, the constraints, each option with your current
+leaning and its reason, and the evidence so far. The second opinion reads the
+code it needs, leaves the worktree untouched (scratch experiments go to a
+temporary directory), and returns a recommendation, its reasoning and
+evidence, the main risk, and what would change its answer. The implementer
+owns the decision; the final report names every safety, protocol, or
+camouflage point where it overruled the second opinion.
+
+### code-reviewer
+
+It is the reviewer of the `xray-pr-review` skill: findings, severity, gates,
+and the report follow `.claude/skills/xray-pr-review/SKILL.md`, and the
+implementer launches, collects, and closes rounds by its `ORCHESTRATOR.md`.
+Dispatch it once the change is complete and its targeted gates are green,
+before the final report. A committed change gets the `ORCHESTRATOR.md` round
+prompt. Work with no commit yet is reviewed in the live checkout while the
+implementer waits: the prompt gives the request, the acceptance check, `HEAD`,
+the gate results, and the ledger `/tmp/review/<topic>.md`, and the reviewer
+reads `git diff HEAD` plus untracked files instead of pinning a worktree.
+Repeat rounds until one reports no High or Medium finding; after three rounds,
+hand the open findings to the maintainer.
+
+### explorer
+
+Hand it mechanical work whose result needs no judgement: running a test,
+build, or gate command; locating files or symbols; collecting simple facts;
+and many independent cheap checks or generations, fanned out in parallel. The
+brief names the exact commands or questions and any path the explorer may
+write; it changes only those paths. It reports each command verbatim with its
+exit status and relevant output, and reports a failure as first observed,
+without retrying it. The implementer interprets the results. Send each
+follow-up to a fresh explorer; a resumed one can exhaust its context. Parallel
+explorers never overlap a timed benchmark.
+
 ## Definition of done
 
 A change is complete only when:
@@ -294,5 +373,8 @@ A change is complete only when:
 - baselines/specifications/testing docs are updated when behavior or
   measurements change;
 - unrelated workspace changes remain untouched;
+- every finding of the latest `code-reviewer` round has a disposition, no High
+  finding is open, and a Medium finding stays open only when the maintainer
+  deferred it;
 - the final report lists exact commands, results, limitations, artifact hash,
   and any genuine blocker.
