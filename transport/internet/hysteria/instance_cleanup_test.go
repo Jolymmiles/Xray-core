@@ -75,11 +75,11 @@ func newTestClientManager(t *testing.T, settings *internet.MemoryStreamConfig) *
 		m.Lock()
 		defer m.Unlock()
 		for _, c := range m.m {
-			c.Lock()
+			c.lock <- struct{}{}
 			if c.conn != nil {
 				c.close()
 			}
-			c.Unlock()
+			c.unlock()
 		}
 	})
 	return m
@@ -168,8 +168,8 @@ type clientResources struct {
 }
 
 func (c *client) resources() clientResources {
-	c.Lock()
-	defer c.Unlock()
+	c.lock <- struct{}{}
+	defer c.unlock()
 	return clientResources{conn: c.conn, pktConn: c.pktConn}
 }
 
@@ -401,14 +401,14 @@ func TestCleanerWaitingForOneClientDoesNotBlockOthers(t *testing.T) {
 			// No dial reaches this destination, so its key cannot collide
 			// with a listener's.
 			slowDest := xnet.UDPDestination(xnet.DomainAddress("stalled.invalid"), dest.Port)
-			slow := &client{}
+			slow := &client{lock: make(chan struct{}, 1)}
 			m.Lock()
 			m.m[dialerConf{slowDest, settings}] = slow
 			m.Unlock()
 
-			slow.Lock()
+			slow.lock <- struct{}{}
 			var unlock sync.Once
-			release := func() { unlock.Do(slow.Unlock) }
+			release := func() { unlock.Do(slow.unlock) }
 			t.Cleanup(release)
 
 			reached := make(chan struct{})
@@ -592,8 +592,8 @@ func TestCleanerWaitingForInstanceStatusDoesNotBlockDials(t *testing.T) {
 func closeOutsidePool(t *testing.T, c *client) {
 	t.Helper()
 	t.Cleanup(func() {
-		c.Lock()
-		defer c.Unlock()
+		c.lock <- struct{}{}
+		defer c.unlock()
 		if c.conn != nil {
 			c.close()
 		}

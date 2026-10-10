@@ -62,6 +62,19 @@ guard it.
   (`TestCleanerWaitingForInstanceStatusDoesNotBlockDials`,
   `TestCleanerWaitingForOneClientDoesNotBlockOthers`,
   `TestConcurrentCleanersKeepReplacementClients`).
+- A Hysteria client dial honors its context as in upstream's
+  XTLS/Xray-core#7119 (`61faab4d`), with two differences. `client.dial`
+  checks the context after it takes the client lock: a done context and a
+  free lock are both ready in the `select`, so upstream can hand a stream to
+  a dial that was already canceled. A rejected authentication closes the
+  QUIC connection with H3_GENERAL_PROTOCOL_ERROR (0x101) before it closes
+  the response body and the HTTP/3 transport, as the official Hysteria
+  client (v2.13.0) closes it; upstream closes the transport first, which
+  ends the connection with code 0, after closing the unread body, which can
+  send a stream cancellation first. Covered by
+  `TestCanceledDialGetsNoConnection` and
+  `TestRejectedAuthenticationClosesWithProtocolError` in
+  `transport/internet/hysteria/dial_cancel_test.go`.
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
   allocation-free picker, not `PickRoute`. A routing `script` (upstream
   XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports
