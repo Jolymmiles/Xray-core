@@ -7,12 +7,12 @@ import (
 )
 
 // Every shipped or release-tested binary is built with Go 1.27.2 and
-// `-tags http2legacy`. Without the tag, Go 1.27's x/net http2.Transport wraps
-// net/http: before x/net v0.60.0 it dialed once per request while a TLS
-// handshake hung, defeating XHTTP's xmux.maxConnections, and when a
-// connection resets right after its handshake it still redials back to back,
-// without the 1 to 32 second backoff of x/net's own pool. Censors can act on
-// both connection patterns (XTLS/Xray-core#6797).
+// `-tags http2legacy`, which keeps x/net's own HTTP/2 client and server.
+// Without the tag, Go 1.27's x/net http2.Transport wraps net/http: before
+// x/net v0.60.0 it dialed once per request while a TLS handshake hung,
+// defeating XHTTP's xmux.maxConnections (XTLS/Xray-core#6797), and it still
+// changes the XHTTP client's SETTINGS and its redial pacing after a reset
+// (docs/FORK.md).
 func TestReleaseBuildsUseGo1272AndHTTP2Legacy(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {

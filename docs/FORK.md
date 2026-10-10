@@ -17,15 +17,22 @@ guard it.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
-  `-tags http2legacy`. Under Go 1.27 x/net's HTTP/2 client wraps net/http.
-  Before x/net v0.60.0 the wrapper dialed once per waiting request while a
-  TLS handshake hung, defeating XHTTP `xmux.maxConnections`
-  (XTLS/Xray-core#6797). v0.60.0 coalesces those dials again, but when a
-  connection resets right after its handshake net/http redials at once, one
-  connection after another, while x/net's own pool waits 1 to 32 seconds
-  between retries. Censors can act on both connection patterns. Covered by
-  `transport/internet/splithttp/http2_dial_test.go` and
-  `testing/release/build_contract_test.go`.
+  `-tags http2legacy`, which keeps x/net's own HTTP/2 client and server (XHTTP
+  client, H2MUX, MASQUE, DoH). Without the tag, Go 1.27's x/net wraps
+  net/http. Before x/net v0.60.0 that client dialed once per waiting request
+  while a TLS handshake hung, defeating XHTTP `xmux.maxConnections`
+  (XTLS/Xray-core#6797); v0.60.0 coalesces those dials again. Dropping the tag
+  still changes what a TLS terminator such as a CDN sees: the XHTTP client's
+  first SETTINGS frame advertises `MAX_FRAME_SIZE` 1048576 instead of 16384.
+  It also changes redial pacing when a fresh connection dies right after its
+  handshake. Both modes then open about one connection per waiting request,
+  the first ones back to back; with the tag HTTP/2's retry loop delays the
+  rest by 1 to 32 seconds, while without it requests that miss net/http's
+  pool redial with no delay and no retry limit. Covered by
+  `transport/internet/splithttp/http2_dial_test.go` (one dial while a
+  handshake hangs), `transport/internet/splithttp/http2_preface_test.go` (the
+  client's SETTINGS) and `testing/release/build_contract_test.go` (release
+  builds pass the tag). No test pins the redial pacing.
 - XHTTP inbounds accept Mux.Cool TCP sessions; upstream (XTLS/Xray-core#4128)
   limits them to pure XUDP. In packet-up and stream-up the server can poke an
   idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
