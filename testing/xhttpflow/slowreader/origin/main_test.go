@@ -49,9 +49,14 @@ func TestHandlersLogResponsesTheyCannotWrite(t *testing.T) {
 		{"up", serveUp, request(http.MethodPost, "/up?rate=100000", func() io.Reader {
 			return strings.NewReader("abc")
 		}), http.StatusOK, "3"},
-		{"up with a bad rate", serveUp, request(http.MethodPost, "/up?rate=0", func() io.Reader {
+		{"up read as it comes", serveUp, request(http.MethodPost, "/up?rate=0", func() io.Reader {
 			return strings.NewReader("abc")
-		}), http.StatusBadRequest, "rate must be 1 to 1048576 bytes per second\n"},
+		}), http.StatusOK, "3"},
+		{"up with a bad rate", serveUp, request(http.MethodPost, "/up?rate=-1", func() io.Reader {
+			return strings.NewReader("abc")
+		}), http.StatusBadRequest, "rate must be 0 to 1048576 bytes per second\n"},
+		{"down", serveDown, request(http.MethodGet, "/down?bytes=5", none), http.StatusOK, "\x00\x00\x00\x00\x00"},
+		{"down without a size", serveDown, request(http.MethodGet, "/down", none), http.StatusBadRequest, "bytes must be a positive number\n"},
 		{"up with a broken body", serveUp, request(http.MethodPost, "/up?rate=100000", func() io.Reader {
 			return iotest.ErrReader(errors.New("stream reset"))
 		}), http.StatusBadRequest, "after 0 bytes: stream reset\n"},
