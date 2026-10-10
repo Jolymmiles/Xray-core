@@ -169,6 +169,21 @@ Mux.Cool; sing-box and Mihomo are covered by the SMUX matrices above.
 go test -tags 'integration http2legacy' ./common/singmux -run '^TestXHTTPMuxCoolProcess$' -count=1 -v
 ```
 
+The Mux.Cool reuse-budget gate runs an Xray client with `mux.maxReuseTimes`
+against an Xray VLESS server, over TLS and REALITY without flow, through a
+relay that counts the TCP connections the client opens. One session stays
+open while two more open and close: within the default budget of 128 they
+reuse its connection, with `maxReuseTimes` 1 each opens its own, and the held
+session echoes again afterwards. The old-server cells build upstream
+v26.10.10 and the fork's v26.8.25-1457 from the local git objects and run a
+budget of 130 against them: sessions 2 to 130 stay on the first connection,
+so the old server serves session IDs above 128, and session 131 opens a
+second one.
+
+```sh
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestMuxCoolMaxReuseTimes(OldServer)?Process$' -count=1 -timeout 20m -v
+```
+
 The matching connection-latency benchmark keeps one Xray client and server
 process alive per mode and opens a new VLESS connection for every operation.
 Use a fixed iteration count on macOS: adaptive multi-second runs can exhaust

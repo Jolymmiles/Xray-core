@@ -131,10 +131,11 @@ func xrayXHTTPMuxCoolConfig(t *testing.T, server bool, serverPort, socksPort int
 	return encoded
 }
 
-// countingRelay forwards loopback TCP to the server and counts the bytes the
-// server sends back.
+// countingRelay forwards loopback TCP to the server and counts the
+// connections it accepts and the bytes the server sends back.
 type countingRelay struct {
 	port       int
+	accepted   atomic.Int64
 	downstream atomic.Int64
 }
 
@@ -161,6 +162,7 @@ func startCountingRelay(t *testing.T, serverPort int) *countingRelay {
 			if err != nil {
 				return
 			}
+			relay.accepted.Add(1)
 			server, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", serverPort), 5*time.Second)
 			if err != nil {
 				_ = client.Close()
