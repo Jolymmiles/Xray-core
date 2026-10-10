@@ -142,8 +142,9 @@ sudo python3 testing/xhttpflow/slowreader/stand.py     --origin ./origin --clien
   request times, and the server's peak RSS sampled every 0.25 s. A request
   that fails or takes over 10 s counts as 10 s, and the request in flight
   when the uploads end is waited for and counted. A run is valid only if
-  all twenty uploads were still sending at the deadline. The table gives the
-  median over runs and the worst run.
+  all twenty uploads were still sending at the deadline; a single invalid
+  run makes the stand exit with status 1, after the table. The table gives
+  the median over runs and the worst run.
 
 | | Before | After |
 | --- | --- | --- |

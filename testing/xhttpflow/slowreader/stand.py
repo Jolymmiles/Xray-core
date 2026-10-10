@@ -27,7 +27,9 @@ ends. It touches nothing else on the host.
 A run is valid only if every upload was still sending at the deadline and the
 server's memory could be read. A small request that fails or does not finish
 within 10 s counts as a 10 s sample, so a stall can only make a run worse.
-Invalid runs are reported and left out of the table.
+Invalid runs are reported and left out of the table, and a single one makes
+the stand exit with status 1: the table and the JSON lines still come out,
+but the comparison is incomplete.
 """
 import argparse
 import contextlib
@@ -382,7 +384,12 @@ def inside(args):
     ]
     for label, f in rows:
         print(f"| {label} | " + " | ".join(f(n, rs) if rs else "-" for n, rs in results.items()) + " |")
-    return 0 if all(results.values()) else 1
+    # A run left out of the table could be the one that shows the stall, so
+    # a single invalid run makes the whole comparison fail.
+    failed = sum(invalid.values())
+    if failed:
+        print(f"\n{failed} of {len(jobs)} runs were invalid: the comparison is incomplete", file=sys.stderr)
+    return 1 if failed or not all(results.values()) else 0
 
 
 def main():

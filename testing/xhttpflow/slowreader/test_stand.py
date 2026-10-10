@@ -3,7 +3,12 @@ clock, sockets and subprocesses are fakes.
 
   cd testing/xhttpflow/slowreader && python3 -B -m unittest test_stand
 """
+import contextlib
+import io
+import json
+import pathlib
 import socket
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -113,6 +118,35 @@ class DeadlineTests(unittest.TestCase):
         self.assertEqual(sock.violations, [])
         self.assertEqual(result, {"sent": 32768, "end": "deadline"})
         self.assertTrue(sock.closed)
+
+
+VALID_RUN = {"p50": 53.0, "p95": 529.0, "pings": 30, "pings_failed": 0, "rss_mb": 39.8, "upload_mb": 24.0}
+
+
+class ComparisonStatusTests(unittest.TestCase):
+    def compare(self, before, after):
+        out = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "runs.jsonl"
+        args = types.SimpleNamespace(server=["before=/before", "after=/after"], runs=len(before), out=str(out))
+        runs = {"/before": iter(before), "/after": iter(after)}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(stand, "one_run", lambda binary, _: next(runs[binary])), \
+                mock.patch.object(stand.signal, "signal"), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = stand.inside(args)
+        return code, stdout.getvalue(), [json.loads(line) for line in out.read_text().splitlines()]
+
+    def test_one_invalid_run_fails_the_comparison_and_keeps_its_table(self):
+        code, table, records = self.compare([VALID_RUN] * 36, [VALID_RUN] * 36)
+        self.assertEqual(code, 0)
+        self.assertIn("| Valid runs | 36 of 36 | 36 of 36 |", table)
+
+        invalid = {"invalid": "Xray exited during the run"}
+        code, table, records = self.compare([VALID_RUN] * 36, [VALID_RUN] * 35 + [invalid])
+        self.assertEqual(code, 1, "a comparison with an invalid run is incomplete")
+        self.assertIn("| Valid runs | 36 of 36 | 35 of 36 |", table)
+        self.assertIn("| Requests failed or over 10 s | 0 of 1080 | 0 of 1050 |", table)
+        self.assertEqual(len(records), 72)
+        self.assertIn({"server": "after", **invalid}, records)
 
 
 if __name__ == "__main__":
