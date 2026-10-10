@@ -74,7 +74,9 @@ guard it.
   so early connections and the TUN DNS takeover probe see only the JSON
   rules. Lift the gate only with a re-entry-safe bound and scripts ready
   before inbounds accept connections. Tests enable it to exercise the
-  upstream code. Covered by `TestCoreRejectsRoutingScriptWhileScriptsDisabled`
+  upstream code. Covered by `TestShippedBuildRejectsLuaScripts`
+  (`infra/conf/lua_gate_test.go`, the shipping default through JSON),
+  `TestCoreRejectsRoutingScriptWhileScriptsDisabled`
   (`app/router/script_gate_test.go`) and
   `TestCoreRejectsDNSScriptWhileScriptsDisabled`
   (`app/dns/script_gate_test.go`).
