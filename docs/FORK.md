@@ -100,9 +100,9 @@ guard it.
   carry the same bytes and chunk lengths must match the split every sender
   uses, and an entry that receives a chunk that does not fit drops every
   chunk until its original deadline, or until the global cap
-  (`geckoMaxReassembly`) evicts it as the oldest entry. Upstream keys reassembly by remote
-  address and a one-byte, sequential message ID only, so after a lost chunk
-  a later message completed the earlier one. Do not restart an entry from
+  (`geckoMaxReassembly`) evicts it as the oldest entry. Upstream keys
+  reassembly by remote address and a one-byte, sequential message ID only,
+  so after a lost chunk a later message completed the earlier one. Do not restart an entry from
   the conflicting chunk: arrival order does not tell which message is newer.
   The wire format has no message identity, so a mix that stays consistent
   until it completes is still delivered and only whole-datagram integrity
@@ -116,7 +116,7 @@ guard it.
   anywhere. Plain salamander does not fragment and stays allowed
   everywhere. Covered by `gecko_reassembly_test.go` in that package, the
   gecko cells of `TestHysteriaProcessClientMatrix`
-  (`common/singmux/hysteria_integration_test.go`) and
+  (`common/singmux/hysteria_integration_test.go`),
   `TestGeckoRequiresDatagramIntegrity`
   (`infra/conf/transport_finalmask_gecko_test.go`) and
   `TestToMemoryStreamConfigRequiresDatagramIntegrityForGecko`
