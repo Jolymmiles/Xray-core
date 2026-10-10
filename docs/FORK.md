@@ -95,6 +95,19 @@ guard it.
   (`fc8f8a45`), so the wire format is unchanged. Covered by
   `TestServerKeepsFragmentsOfDifferentPacketsApart` in
   `transport/internet/finalmask/xdns/hardening_test.go`.
+- Gecko (`transport/internet/finalmask/salamander/conn.go`) quarantines a
+  message ID that received chunks of two messages: a repeated index must
+  carry the same bytes and chunk lengths must match the split every sender
+  uses, and an entry that receives a chunk that does not fit drops every
+  chunk until its original deadline. Upstream keys reassembly by remote
+  address and a one-byte, sequential message ID only, so after a lost chunk
+  a later message completed the earlier one. Do not restart an entry from
+  the conflicting chunk: arrival order does not tell which message is newer.
+  The wire format has no message identity, so a mix that stays consistent
+  until it completes is still delivered; QUIC rejects it, mKCP without a
+  mask does not. Covered by `gecko_reassembly_test.go` in that package and
+  the gecko cells of `TestHysteriaProcessClientMatrix`
+  (`common/singmux/hysteria_integration_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
