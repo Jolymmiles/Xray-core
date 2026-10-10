@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 // goneWriter is a response to a client that went away: no write gets through.
@@ -32,23 +34,35 @@ func TestHandlersLogResponsesTheyCannotWrite(t *testing.T) {
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(prev) })
 
+	request := func(method, target string, body func() io.Reader) func() *http.Request {
+		return func() *http.Request { return httptest.NewRequest(method, target, body()) }
+	}
+	none := func() io.Reader { return nil }
 	for _, tc := range []struct {
 		name    string
 		handler http.HandlerFunc
 		request func() *http.Request
+		code    int
 		body    string
 	}{
-		{"ping", servePing, func() *http.Request { return httptest.NewRequest(http.MethodGet, "/ping", nil) }, "pong"},
-		{"up", serveUp, func() *http.Request {
-			return httptest.NewRequest(http.MethodPost, "/up?rate=100000", strings.NewReader("abc"))
-		}, "3"},
-		{"hello", serveHello, func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }, "hello"},
+		{"ping", servePing, request(http.MethodGet, "/ping", none), http.StatusOK, "pong"},
+		{"up", serveUp, request(http.MethodPost, "/up?rate=100000", func() io.Reader {
+			return strings.NewReader("abc")
+		}), http.StatusOK, "3"},
+		{"up with a bad rate", serveUp, request(http.MethodPost, "/up?rate=0", func() io.Reader {
+			return strings.NewReader("abc")
+		}), http.StatusBadRequest, "rate must be 1 to 1048576 bytes per second\n"},
+		{"up with a broken body", serveUp, request(http.MethodPost, "/up?rate=100000", func() io.Reader {
+			return iotest.ErrReader(errors.New("stream reset"))
+		}), http.StatusBadRequest, "after 0 bytes: stream reset\n"},
+		{"hello", serveHello, request(http.MethodGet, "/", none), http.StatusOK, "hello"},
 	} {
 		logged.Reset()
 		rec := httptest.NewRecorder()
 		tc.handler(rec, tc.request())
-		if rec.Code != http.StatusOK || rec.Body.String() != tc.body || logged.Len() != 0 {
-			t.Errorf("%s: got %d %q, log %q; want 200 %q and no log", tc.name, rec.Code, rec.Body.String(), logged.String(), tc.body)
+		if rec.Code != tc.code || rec.Body.String() != tc.body || logged.Len() != 0 {
+			t.Errorf("%s: got %d %q, log %q; want %d %q and no log",
+				tc.name, rec.Code, rec.Body.String(), logged.String(), tc.code, tc.body)
 		}
 
 		tc.handler(&goneWriter{}, tc.request())

@@ -49,7 +49,7 @@ func servePing(w http.ResponseWriter, r *http.Request) {
 func serveUp(w http.ResponseWriter, r *http.Request) {
 	rate, err := strconv.ParseInt(r.URL.Query().Get("rate"), 10, 64)
 	if err != nil || rate < 1 || rate > maxRate {
-		http.Error(w, fmt.Sprintf("rate must be 1 to %d bytes per second", maxRate), http.StatusBadRequest)
+		fail(w, r, fmt.Sprintf("rate must be 1 to %d bytes per second", maxRate), http.StatusBadRequest)
 		return
 	}
 	buf := make([]byte, max(rate/20, 1024))
@@ -62,7 +62,7 @@ func serveUp(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf("after %d bytes: %v", got, err), http.StatusBadRequest)
+			fail(w, r, fmt.Sprintf("after %d bytes: %v", got, err), http.StatusBadRequest)
 			return
 		}
 		want := time.Duration(float64(got) / float64(rate) * float64(time.Second))
@@ -81,8 +81,30 @@ func serveHello(w http.ResponseWriter, r *http.Request) {
 	logWrite(r, err)
 }
 
+// fail answers as http.Error does and logs a response it could not write,
+// which http.Error does not return.
+func fail(w http.ResponseWriter, r *http.Request, msg string, code int) {
+	ew := &errWriter{ResponseWriter: w}
+	http.Error(ew, msg, code)
+	logWrite(r, ew.err)
+}
+
+// errWriter keeps the first error of the writes through it.
+type errWriter struct {
+	http.ResponseWriter
+	err error
+}
+
+func (w *errWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if w.err == nil {
+		w.err = err
+	}
+	return n, err
+}
+
 // logWrite reports a response that could not be written. Origin logs to
-// stderr, which the stand keeps and shows when a comparison fails.
+// stderr, which the stand keeps and shows when it fails.
 func logWrite(r *http.Request, err error) {
 	if err != nil {
 		log.Printf("%s %s: writing the response: %v", r.Method, r.URL.Path, err)
