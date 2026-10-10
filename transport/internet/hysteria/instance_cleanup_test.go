@@ -3,10 +3,12 @@ package hysteria
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	stdnet "net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,34 +101,51 @@ func (m *testClientManager) pooled(dest xnet.Destination) *client {
 	return m.m[dialerConf{dest, m.settings}]
 }
 
-// exchange proves that conn carries payload to the echo listener and back.
-func exchange(t *testing.T, conn stat.Connection, payload string) {
-	t.Helper()
+// echoOver carries payload over conn to the echo listener and back.
+func echoOver(conn stat.Connection, payload string) error {
 	if err := conn.SetDeadline(time.Now().Add(cleanupTestDeadline)); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if _, err := conn.Write([]byte(payload)); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	echoed := make([]byte, len(payload))
 	if _, err := io.ReadFull(conn, echoed); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if string(echoed) != payload {
-		t.Fatalf("echo returned %q, want %q", echoed, payload)
+		return fmt.Errorf("echo returned %q, want %q", echoed, payload)
 	}
+	return nil
+}
+
+// exchange proves that conn carries payload to the echo listener and back.
+func exchange(t *testing.T, conn stat.Connection, payload string) {
+	t.Helper()
+	if err := echoOver(conn, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dialEcho dials dest through m, carries payload to the echo listener and
+// back, and closes the stream on every path. It reports failure as an error,
+// so worker goroutines can call it.
+func (m *testClientManager) dialEcho(ctx context.Context, dest xnet.Destination, payload string) error {
+	stream, err := m.dialTCP(ctx, dest)
+	if err != nil {
+		return fmt.Errorf("dial for %q: %w", payload, err)
+	}
+	if err := echoOver(stream, payload); err != nil {
+		_ = stream.Close()
+		return err
+	}
+	return stream.Close()
 }
 
 // echo dials dest through m, proves an echo exchange and closes the stream.
 func (m *testClientManager) echo(t *testing.T, ctx context.Context, dest xnet.Destination, payload string) {
 	t.Helper()
-	stream, err := m.dialTCP(ctx, dest)
-	if err != nil {
-		t.Fatalf("dial for %q: %v", payload, err)
-	}
-	t.Cleanup(func() { _ = stream.Close() })
-	exchange(t, stream, payload)
-	if err := stream.Close(); err != nil {
+	if err := m.dialEcho(ctx, dest, payload); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -356,33 +375,161 @@ func TestCleanerKeepsAndResetsClientsOfRunningInstances(t *testing.T) {
 }
 
 // The cleaner may wait for a client whose dial holds the client lock, for as
-// long as a handshake takes. Meanwhile dials through other clients that are
-// already in the pool must proceed: the cleaner may hold the pool lock only
-// for reading.
+// long as a handshake takes. Meanwhile dials through other clients must
+// proceed, both through clients already in the pool and through new ones:
+// the cleaner must not hold the pool lock while it waits.
 func TestCleanerWaitingForOneClientDoesNotBlockOthers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		newClient bool
+	}{
+		{"ready client", false},
+		{"new client", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := hysteriaTestSettings(t)
+			dest := startEchoListener(t, settings)
+			m := newTestClientManager(t, settings)
+			ctx := instanceContext(startCleanupTestInstance(t))
+
+			m.echo(t, ctx, dest, "ready")
+			target := dest
+			if tc.newClient {
+				target = startEchoListener(t, settings)
+			}
+
+			// No dial reaches this destination, so its key cannot collide
+			// with a listener's.
+			slowDest := xnet.UDPDestination(xnet.DomainAddress("stalled.invalid"), dest.Port)
+			slow := &client{}
+			m.Lock()
+			m.m[dialerConf{slowDest, settings}] = slow
+			m.Unlock()
+
+			slow.Lock()
+			var unlock sync.Once
+			release := func() { unlock.Do(slow.Unlock) }
+			t.Cleanup(release)
+
+			reached := make(chan struct{})
+			m.cleaning = func(c *client) {
+				if c == slow {
+					close(reached)
+				}
+			}
+			swept := make(chan struct{})
+			go func() {
+				defer close(swept)
+				m.cleanOnce()
+			}()
+			t.Cleanup(func() {
+				release()
+				joinWithin(t, swept, "the cleaner pass")
+			})
+
+			select {
+			case <-reached:
+			case <-time.After(cleanupTestDeadline):
+				t.Fatal("the cleaner did not reach the stalled client")
+			}
+
+			dialed := make(chan error, 1)
+			go func() { dialed <- m.dialEcho(ctx, target, "while the cleaner waits") }()
+			select {
+			case err := <-dialed:
+				if err != nil {
+					t.Fatalf("a dial through a %s failed while the cleaner waited: %v", tc.name, err)
+				}
+			case <-time.After(cleanupTestDeadline):
+				release()
+				joinWithin(t, dialed, "the dial")
+				t.Fatalf("a dial through a %s waited for the cleaner", tc.name)
+			}
+		})
+	}
+}
+
+// closeBlockingFeature is a feature whose Close waits until the test
+// unblocks it, as app/geodata's Close waits for a download through an
+// outbound to finish.
+type closeBlockingFeature struct {
+	closing     chan struct{}
+	release     chan struct{}
+	closingOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newCloseBlockingFeature() *closeBlockingFeature {
+	return &closeBlockingFeature{
+		closing: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (*closeBlockingFeature) Type() interface{} { return (*closeBlockingFeature)(nil) }
+
+func (*closeBlockingFeature) Start() error { return nil }
+
+func (f *closeBlockingFeature) Close() error {
+	f.closingOnce.Do(func() { close(f.closing) })
+	<-f.release
+	return nil
+}
+
+func (f *closeBlockingFeature) unblock() {
+	f.releaseOnce.Do(func() { close(f.release) })
+}
+
+// An instance holds its status lock while its features start or close, and
+// a feature may wait for an outbound dial meanwhile, as app/geodata's Close
+// waits for a download. The cleaner must not hold the pool lock while it
+// waits for that status: a dial that needs the pool lock would stall until
+// the instance finished closing, and an instance waiting for that dial would
+// never finish.
+func TestCleanerWaitingForInstanceStatusDoesNotBlockDials(t *testing.T) {
 	settings := hysteriaTestSettings(t)
 	dest := startEchoListener(t, settings)
+	newDest := startEchoListener(t, settings)
 	m := newTestClientManager(t, settings)
-	ctx := instanceContext(startCleanupTestInstance(t))
 
-	m.echo(t, ctx, dest, "ready")
+	feature := newCloseBlockingFeature()
+	instance := new(core.Instance)
+	if err := instance.AddFeature(feature); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		feature.unblock()
+		_ = instance.Close()
+	})
 
-	slowDest := dest
-	slowDest.Network = xnet.Network_UDP
-	slowDest.Port++
-	slow := &client{}
-	m.Lock()
-	m.m[dialerConf{slowDest, settings}] = slow
-	m.Unlock()
+	m.echo(t, instanceContext(instance), dest, "before close")
+	owned := m.pooled(dest)
+	if owned == nil {
+		t.Fatal("the pool holds no client after a dial")
+	}
 
-	slow.Lock()
-	var unlock sync.Once
-	release := func() { unlock.Do(slow.Unlock) }
-	t.Cleanup(release)
+	closeErr := make(chan error, 1)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		closeErr <- instance.Close()
+	}()
+	t.Cleanup(func() {
+		feature.unblock()
+		joinWithin(t, closed, "the instance close")
+	})
+	select {
+	case <-feature.closing:
+	case <-time.After(cleanupTestDeadline):
+		t.Fatal("the instance did not start closing its features")
+	}
 
 	reached := make(chan struct{})
 	m.cleaning = func(c *client) {
-		if c == slow {
+		if c == owned {
 			close(reached)
 		}
 	}
@@ -392,32 +539,161 @@ func TestCleanerWaitingForOneClientDoesNotBlockOthers(t *testing.T) {
 		m.cleanOnce()
 	}()
 	t.Cleanup(func() {
-		release()
+		feature.unblock()
 		joinWithin(t, swept, "the cleaner pass")
 	})
-
 	select {
 	case <-reached:
 	case <-time.After(cleanupTestDeadline):
-		t.Fatal("the cleaner did not reach the stalled client")
+		t.Fatal("the cleaner did not reach the client of the closing instance")
 	}
 
+	running := instanceContext(startCleanupTestInstance(t))
 	dialed := make(chan error, 1)
-	go func() {
-		stream, err := m.dialTCP(ctx, dest)
-		if err == nil {
-			_ = stream.Close()
-		}
-		dialed <- err
-	}()
+	go func() { dialed <- m.dialEcho(running, newDest, "while another instance closes") }()
 	select {
 	case err := <-dialed:
 		if err != nil {
-			t.Fatalf("a dial through a ready client failed while the cleaner waited: %v", err)
+			t.Fatalf("a dial of a running instance failed while another instance was closing: %v", err)
 		}
 	case <-time.After(cleanupTestDeadline):
-		release()
+		feature.unblock()
 		joinWithin(t, dialed, "the dial")
-		t.Fatal("a dial through a ready client waited for the cleaner")
+		t.Fatal("a dial of a running instance to a new destination waited for another instance to finish closing")
+	}
+
+	feature.unblock()
+	select {
+	case <-closed:
+		if err := <-closeErr; err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(cleanupTestDeadline):
+		t.Fatal("the instance did not finish closing")
+	}
+	select {
+	case <-swept:
+	case <-time.After(cleanupTestDeadline):
+		t.Fatal("the cleaner pass did not finish after the instance closed")
+	}
+	if m.pooled(dest) != nil {
+		t.Fatal("the pass kept the client of the stopped instance")
+	}
+	if remaining := owned.resources(); remaining.conn != nil || remaining.pktConn != nil {
+		t.Fatal("the client of the stopped instance still holds its connection")
+	}
+	if m.pooled(newDest) == nil {
+		t.Fatal("the pass dropped the client of a new destination")
+	}
+}
+
+// closeOutsidePool registers the release of a client the pool may no longer
+// hold, so a failing test does not leave its connection open.
+func closeOutsidePool(t *testing.T, c *client) {
+	t.Helper()
+	t.Cleanup(func() {
+		c.Lock()
+		defer c.Unlock()
+		if c.conn != nil {
+			c.close()
+		}
+	})
+}
+
+// Cleaner passes may overlap, as CleanPooledClients overlaps the background
+// cleaner. A pass that captured a forced client must not remove the
+// replacement that a dial added under the same key after another pass
+// removed that client.
+func TestConcurrentCleanersKeepReplacementClients(t *testing.T) {
+	settings := hysteriaTestSettings(t)
+	dest := startEchoListener(t, settings)
+	m := newTestClientManager(t, settings)
+
+	stopped := startCleanupTestInstance(t)
+	m.echo(t, instanceContext(stopped), dest, "before stop")
+	old := m.pooled(dest)
+	if old == nil {
+		t.Fatal("the pool holds no client after a dial")
+	}
+	closeOutsidePool(t, old)
+	if err := stopped.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var oldCaptures atomic.Int32
+	reached := make(chan struct{})
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	release := func() { resumeOnce.Do(func() { close(resume) }) }
+	m.cleaning = func(c *client) {
+		if c == old && oldCaptures.Add(1) == 1 {
+			close(reached)
+			<-resume
+		}
+	}
+
+	stale := make(chan struct{})
+	go func() {
+		defer close(stale)
+		m.cleanOnce()
+	}()
+	t.Cleanup(func() {
+		release()
+		joinWithin(t, stale, "the stale cleaner pass")
+	})
+	select {
+	case <-reached:
+	case <-time.After(cleanupTestDeadline):
+		t.Fatal("the stale pass did not reach the client of the stopped instance")
+	}
+
+	removed := make(chan struct{})
+	go func() {
+		defer close(removed)
+		m.cleanOnce()
+	}()
+	t.Cleanup(func() {
+		release()
+		joinWithin(t, removed, "the second cleaner pass")
+	})
+	select {
+	case <-removed:
+	case <-time.After(cleanupTestDeadline):
+		t.Fatal("a cleaner pass did not finish while another pass waited")
+	}
+	if m.pooled(dest) != nil {
+		t.Fatal("the second pass kept the client of the stopped instance")
+	}
+
+	running := instanceContext(startCleanupTestInstance(t))
+	m.echo(t, running, dest, "replacement")
+	replacement := m.pooled(dest)
+	if replacement == nil || replacement == old {
+		t.Fatal("a dial after the removal did not add a replacement client")
+	}
+	closeOutsidePool(t, replacement)
+
+	release()
+	select {
+	case <-stale:
+	case <-time.After(cleanupTestDeadline):
+		t.Fatal("the stale pass did not finish")
+	}
+	if m.pooled(dest) != replacement {
+		t.Fatal("the stale pass removed the replacement client")
+	}
+	m.echo(t, running, dest, "after the stale pass")
+
+	for _, dial := range []func(context.Context) (stat.Connection, error){old.tcp, old.udp} {
+		conn, err := dial(context.Background())
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if err == nil {
+			t.Fatal("the removed client accepted a dial")
+		}
+	}
+	if old.resources().conn != nil {
+		t.Fatal("the removed client opened a new connection")
 	}
 }

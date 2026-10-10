@@ -13,9 +13,9 @@ func processPool() *clientManager {
 }
 
 // CleanPooledClients runs one cleaner pass over the process-wide client pool
-// and returns how many clients remain in it. The pass may overlap the
-// background cleaner, which is safe for keys nothing dials again, such as
-// those of a stopped instance.
+// and returns the pool size after it. The pass may overlap the background
+// cleaner and dials; a client added after the pass took its snapshot stays
+// in the pool until a later pass.
 func CleanPooledClients() int {
 	pool := processPool()
 	pool.cleanOnce()

@@ -277,8 +277,11 @@ type clientManager struct {
 	sync.RWMutex
 	m map[dialerConf]*client
 
-	// cleaning, when a test sets it, runs under the manager lock before
-	// cleanOnce cleans each client.
+	// cleaning, when set by a test, runs for each captured client before its
+	// instance check and cleanup, with no manager or client lock held.
+	// Install it before starting cleaner passes and leave it unchanged until
+	// all passes finish. Overlapping passes may call it concurrently,
+	// including for a client no longer present in the pool.
 	cleaning func(*client)
 }
 
@@ -289,29 +292,39 @@ func (m *clientManager) clean() {
 	}
 }
 
-// cleanOnce runs one cleaner pass. It deletes forced clients by key after
-// releasing the read lock, which is safe only while it is the pool's sole
-// cleaner: a dial adds a key only when it is absent.
-func (m *clientManager) cleanOnce() {
-	var forced []dialerConf
+type pooledClient struct {
+	key    dialerConf
+	client *client
+}
 
+// cleanOnce runs one cleaner pass over a snapshot of the pool. It waits for
+// instance status (Instance.Start and Close hold it while features start or
+// close) and for client locks (a dial holds one during a handshake) without
+// holding the pool lock, so neither wait stalls dials. A forced client is
+// closed before it is removed, and removed only if the pool still holds it:
+// an overlapping pass keeps a replacement that a dial added under the same
+// key.
+func (m *clientManager) cleanOnce() {
 	m.RLock()
+	clients := make([]pooledClient, 0, len(m.m))
 	for k, c := range m.m {
-		if m.cleaning != nil {
-			m.cleaning(c)
-		}
-		force := c.instance != nil && !c.instance.IsRunning()
-		c.clean(force)
-		if force {
-			forced = append(forced, k)
-		}
+		clients = append(clients, pooledClient{k, c})
 	}
 	m.RUnlock()
 
-	for i := range forced {
-		m.Lock()
-		delete(m.m, forced[i])
-		m.Unlock()
+	for _, p := range clients {
+		if m.cleaning != nil {
+			m.cleaning(p.client)
+		}
+		force := p.client.instance != nil && !p.client.instance.IsRunning()
+		p.client.clean(force)
+		if force {
+			m.Lock()
+			if m.m[p.key] == p.client {
+				delete(m.m, p.key)
+			}
+			m.Unlock()
+		}
 	}
 }
 
