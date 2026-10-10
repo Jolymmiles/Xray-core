@@ -38,6 +38,7 @@ func TestToMemoryStreamConfigRequiresDatagramIntegrityForGecko(t *testing.T) {
 		{"mkcp with plain salamander", "mkcp", masks(&salamander.Config{Password: "plain"}), true},
 		{"bare mkcp", "mkcp", masks(gecko), false},
 		{"mkcp with the integrity mask inside", "mkcp", masks(gecko, &original.Config{}), false},
+		{"tcp with the checksum mask outside", "tcp", masks(&original.Config{}, gecko), true},
 		{"tcp", "tcp", masks(gecko), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
