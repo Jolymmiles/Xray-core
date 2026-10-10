@@ -47,6 +47,9 @@ guard it.
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
   wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
   fork-owned: renumber it if upstream claims that number.
+  A governed server lets one connection's client hold 4 MiB of its data in
+  all, or the client's own stream window if that is larger;
+  `h2Flow.maxConnectionSendWindow` sets it and `-1` lifts it.
   `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
   Covered by the `h2flow*_test.go` tests and
   `common/singmux/xhttp_flow_verify_integration_test.go`.

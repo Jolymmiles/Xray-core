@@ -177,3 +177,89 @@ Limits:
   connection window the server really grants (6 MiB by default).
 - One link, one client implementation, no loss or jitter; peak RSS is the
   whole process, not the governor alone.
+
+### Credit quanta and the connection send window
+
+Measured for two changes: credit is handed on in quanta of 16 to 32 KiB
+(`hold`), and the streams of one server connection share
+`h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set.
+
+- Revisions, clean trees: before `da42e75f`, after `b7089bb2`, each built
+  with Go 1.27.2 and `-tags http2legacy`. Client: official Xray v26.10.10,
+  XHTTP over REALITY, `xmux.maxConnections` 3.
+- The stand is the larger driver the slow-reader stand was cut from; it is
+  not in this repository. Two network namespaces, veth, netem 1 Gbit/s with
+  RTT 50 ms unless stated (the stand tops out near 114 MB/s), TCP buffers up
+  to 32 MB. 12 s per run, five rounds in shuffled order, medians.
+- Client memory is `RssAnon` of the client process sampled every 50 ms. A
+  client above 40 MiB is killed at once and the run is marked: a model of a
+  process memory limit such as the one on a phone's network extension.
+- CPU is process time (user and system) per gigabyte moved. It includes the
+  kernel's work on the emulated link, so only the columns compare.
+
+Twenty downloads each read at 100 KB/s, 1 Gbit/s. "Stock" is the governor
+off, "no limit" is `maxConnectionSendWindow: -1`:
+
+| | Stock | Before | After | After, no limit |
+| --- | --- | --- | --- | --- |
+| Client memory, median / worst | 41.6 / 44.8 MB | 41.1 / 43.0 MB | 23.6 / 23.9 MB | 40.7 / 44.3 MB |
+| Client killed at 40 MiB | 5 of 5 | 5 of 5 | 0 of 5 | 5 of 5 |
+| Request beside them p50 / p95 | none pass | none pass | 52 / 243 ms | none pass |
+
+The client dies 1.06 to 1.16 s after the start: it is the opening burst of
+twenty streams, not growth. At 100 Mbit/s the same scenario holds 13 to
+14 MB before and after.
+
+What the limit costs is the sum of many downloads on one connection on a
+long path, at most the limit per round trip. Speed in MB/s, three
+connections:
+
+| | Before | After | After, no limit |
+| --- | --- | --- | --- |
+| 8 downloads, RTT 50 ms | 113.9 | 113.6 | |
+| 8 downloads, RTT 150 ms | 102.4 | 71.4 | 102.4 |
+| 8 downloads, RTT 300 ms | 74.5 | 31.0 | 65.1 |
+| One download, RTT 50 ms | 70.6 | 71.2 | |
+| One download, RTT 300 ms | 10.2 | 10.0 | |
+| One upload, RTT 50 ms | 81.6 | 81.3 | |
+
+CPU seconds per gigabyte, server / client, 1 Gbit/s:
+
+| | Before | After |
+| --- | --- | --- |
+| 4 uploads | 26.6 / 19.1 | 23.3 / 17.0 |
+| One upload | 27.3 / 19.8 | 24.0 / 17.6 |
+| 4 downloads and 4 uploads | 20.5 / 16.8 | 18.0 / 14.6 |
+| One download | 24.0 / 18.2 | 23.0 / 17.8 |
+| 8 downloads | 25.1 / 22.5 | 25.3 / 23.4 |
+
+At 100 Mbit/s, RTT 50 ms, the request beside the load is unchanged: p50 /
+p95 66 / 268 against 66 / 255 ms beside 8 downloads, 65 / 176 against
+65 / 188 ms beside downloads and short requests, 52 / 474 against
+53 / 470 ms beside slow readers, 53 / 557 against 52 / 407 ms beside
+uploads into a slow server.
+
+`BenchmarkFlowRead` and `BenchmarkFlowWrite` do not move: 61.5 to 59.0 µs
+and 193.6 to 197.6 µs per MiB, 65 allocations each, medians of five. The
+replay connection has no system calls and no peer that answers credit, so
+the saving cannot show there; `TestFlowCreditWaitsForAQuantum` fixes the
+local effect instead, 128 KiB of credit in 4 WINDOW_UPDATE frames where
+there were 32.
+
+Limits:
+
+- The "no limit" cells at RTT 150 and 300 ms ran as a batch of their own
+  after the shuffled runs, on a host that was in use; the five runs at
+  300 ms spread from 53.5 to 75.0 MB/s. Whether the quanta slow many
+  downloads on a 300 ms path with the limit lifted is not settled by this.
+- The limit is per connection and the server does not know how many
+  connections a client keeps: the client holds about the limit times its
+  connections above its base of about 11 MB.
+- The limit is never below the stream window the client itself announces,
+  4 MiB for a Go client, so lower values do nothing for such clients.
+- A stream past the limit keeps the protocol's 65535 bytes: forty streams
+  opened at once may be sent 5.5 MiB, not 4 (`TestFlowSendWindowBoundsManyStreams`).
+- The client is Xray for linux/amd64, not a phone; kernel socket buffers are
+  not counted, and a spike shorter than 50 ms can be missed.
+- CPU differences of a few percent on downloads are inside the noise of
+  five runs; the upload rows repeat.
