@@ -16,8 +16,9 @@ on; with it off, the code below is never in the data path.
 - Not re-measured since: `4703622c` and `4937e234` (the upload connection
   window counts unread data from the connection's own counters and leaves
   finished uploads out), `6807a2e6` (TLS stays visible to net/http) and
-  `7d61adc0` (first PING after the client preface). The upload rows and the
-  slow-server row below may differ on the current tree. Unit, race and
+  `7d61adc0` (first PING after the client preface). The upload rows below
+  may differ on the current tree; the slow-server scenario was measured
+  again, see "Slow readers and the shared connection room". Unit, race and
   process gates were re-run on `7d61adc0`.
 - Host: linux/amd64 container, AMD Ryzen 5 5600 (12 threads), Go 1.27.1,
   build tag `http2legacy` as CI and releases build.
@@ -110,3 +111,41 @@ on the jittered link rather than the window.
 Integrity: byte-exact pattern transfers up and down, direct, behind a TCP
 proxy and with jitter, 65 transfers and 125 MB, no bad bytes, short reads or
 errors.
+
+### Slow readers and the shared connection room
+
+Measured for the change that allows a reading stream what it already holds
+(`upConnRelease`), on the stand above with these conditions:
+
+- Revisions, clean trees: before `14d049d0`, after `c13ea885`; Go 1.27.2,
+  `-tags http2legacy`, same host. Client: official Xray v26.9.30, XHTTP over
+  REALITY in its default mode, `xmux.maxConnections` 3.
+- Link 100 Mbit/s, RTT 50 ms. Twenty uploads run for 12 s into an origin that
+  reads 100 KB/s from each. Beside them a small request (`GET /ping` through
+  the tunnel, a new session each time) is sent every 0.3 s on the same three
+  connections, about forty per run.
+- 36 runs per build, the two builds interleaved in random order. Per run:
+  p50 and p95 of the ping times, and the server's peak RSS sampled every
+  0.25 s. The table gives the median over runs and the worst run.
+
+| | Before | After |
+| --- | --- | --- |
+| Runs with ping p95 above 2 s | 3 (4.4 / 5.8 / 7.2 s) | 0 |
+| Worst ping p95 | 7.2 s | 0.88 s |
+| Median ping p50 / p95 | 53 / 564 ms | 53 / 517 ms |
+| Median server peak RSS | 40.1 MB | 40.0 MB |
+
+Limits:
+
+- The uploads themselves pause for 4 to 5 s about every 10 s in this
+  scenario, governor on or off. That is not flow control: the kernel grows
+  the server's send buffers towards the slow origin to about 2.4 MB each and
+  wakes the blocked writer only after a large part has drained. The change
+  does not touch it; it only keeps other requests moving meanwhile.
+- The failure is rare (about one run in ten before), so 36 runs bound it
+  loosely: with that rate, no failure in 36 runs has a chance near 2%.
+- A stream can still spend stream credit granted before its cap shrank, and
+  the allowance follows what it then holds; the total stays within the
+  connection window the server really grants (6 MiB by default).
+- One link, one client implementation, no loss or jitter; peak RSS is the
+  whole process, not the governor alone.
