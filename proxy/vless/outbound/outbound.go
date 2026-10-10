@@ -119,10 +119,12 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 				SniffingRequest: request,
 			})
 		}
+		rvsCtx, rvsCancel := context.WithCancel(rvsCtx)
 		handler.reverse = &Reverse{
 			tag:        a.Reverse.Tag,
 			dispatcher: v.GetFeature(routing.DispatcherType()).(routing.Dispatcher),
 			ctx:        rvsCtx,
+			cancel:     rvsCancel,
 			handler:    handler,
 		}
 		handler.reverse.monitorTask = &task.Periodic{
@@ -451,10 +453,13 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 }
 
 type Reverse struct {
-	mu           sync.Mutex
-	tag          string
-	dispatcher   routing.Dispatcher
+	mu         sync.Mutex
+	tag        string
+	dispatcher routing.Dispatcher
+	// ctx is cancelled by Close, which ends dials and transfers of bridges
+	// that are still running.
 	ctx          context.Context
+	cancel       context.CancelFunc
 	handler      *Handler
 	workers      []*reverse.BridgeWorker
 	monitorTask  *task.Periodic
@@ -520,7 +525,9 @@ func (r *Reverse) monitor() error {
 			ctx := session.ContextWithOutbounds(r.ctx, []*session.Outbound{{
 				Target: net.Destination{Address: net.DomainAddress("v1.rvs.cool")},
 			}})
-			r.handler.Process(ctx, link2, session.FullHandlerFromContext(ctx).(*proxyman.Handler))
+			dialer := &reverseCarrierDialer{Dialer: session.FullHandlerFromContext(ctx).(*proxyman.Handler), ctx: r.ctx}
+			r.handler.Process(ctx, link2, dialer)
+			dialer.release()
 			common.Interrupt(reader1)
 			common.Interrupt(reader2)
 		}()
@@ -570,6 +577,9 @@ func (r *Reverse) Close() error {
 		startTimer := r.startTimer
 		r.startTimer = nil
 		r.mu.Unlock()
+		if r.cancel != nil {
+			r.cancel()
+		}
 		if startTimer != nil && startTimer.Stop() {
 			r.delayedStart.Done()
 		}
@@ -582,4 +592,32 @@ func (r *Reverse) Close() error {
 		r.workersDone.Wait()
 	})
 	return result
+}
+
+// reverseCarrierDialer closes the connection it dials once the reverse closes.
+// Cancelling the reverse's context ends dials and transfers, but not the VLESS
+// encryption handshake, which reads its server's reply without one.
+type reverseCarrierDialer struct {
+	internet.Dialer
+	ctx  context.Context
+	stop func() bool
+}
+
+func (d *reverseCarrierDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
+	conn, err := d.Dialer.Dial(ctx, dest)
+	if err != nil {
+		return nil, err
+	}
+	d.release()
+	d.stop = context.AfterFunc(d.ctx, func() { _ = conn.Close() })
+	return conn, nil
+}
+
+// release stops watching the connection once Process, which closes it, has
+// returned.
+func (d *reverseCarrierDialer) release() {
+	if d.stop != nil {
+		d.stop()
+		d.stop = nil
+	}
 }
