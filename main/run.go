@@ -76,6 +76,9 @@ var (
 // connections it still relays, alive until SIGKILL.
 const closeTimeout = 10 * time.Second
 
+// exitMessageTimeout bounds the wait for the shutdown failure message.
+const exitMessageTimeout = time.Second
+
 func executeRun(cmd *base.Command, args []string) {
 	if *dump {
 		clog.ReplaceWithSeverityLogger(clog.Severity_Warning)
@@ -120,13 +123,27 @@ func executeRun(cmd *base.Command, args []string) {
 	select {
 	case err := <-closeDone:
 		if err != nil {
-			fmt.Println("Failed to close:", err)
-			os.Exit(1)
+			exitWithMessage("Failed to close:", err)
 		}
 	case <-time.After(closeTimeout):
-		fmt.Println("Timed out while closing Xray.")
-		os.Exit(1)
+		exitWithMessage("Timed out while closing Xray.")
 	}
+}
+
+// exitWithMessage prints message and exits 1. The exit waits for the print
+// at most exitMessageTimeout: a stdout nobody reads must not keep the
+// process alive past its shutdown bound.
+func exitWithMessage(message ...interface{}) {
+	printed := make(chan struct{})
+	go func() {
+		fmt.Println(message...)
+		close(printed)
+	}()
+	select {
+	case <-printed:
+	case <-time.After(exitMessageTimeout):
+	}
+	os.Exit(1)
 }
 
 func dumpConfig() int {

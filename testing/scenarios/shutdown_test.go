@@ -130,11 +130,13 @@ func TestShutdownSignalClosesRelayingXray(t *testing.T) {
 }
 
 type xrayProcess struct {
-	cmd  *exec.Cmd
+	cmd *exec.Cmd
+	// done is closed after Xray exited and its output was read.
 	done chan struct{}
 
-	mu     sync.Mutex
-	stdout bytes.Buffer
+	mu      sync.Mutex
+	stdout  bytes.Buffer
+	readErr error
 }
 
 // startRelayingXray builds Xray and runs it with a JSON config whose
@@ -201,6 +203,7 @@ func startRelayingXray(t *testing.T, geodata map[string]any, env ...string) (*xr
 			xray.stdout.WriteString(scanner.Text() + "\n")
 			xray.mu.Unlock()
 		}
+		xray.readErr = scanner.Err()
 	}()
 	go func() {
 		_ = xray.cmd.Wait()
@@ -211,8 +214,18 @@ func startRelayingXray(t *testing.T, geodata map[string]any, env ...string) (*xr
 		select {
 		case <-xray.done:
 		default:
-			_ = xray.cmd.Process.Kill()
-			<-xray.done
+			if err := xray.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("kill Xray: %v", err)
+			}
+			select {
+			case <-xray.done:
+			case <-time.After(5 * time.Second):
+				t.Errorf("Xray output was not closed within 5s after SIGKILL\n%s", xray.output())
+				return
+			}
+		}
+		if xray.readErr != nil {
+			t.Errorf("read Xray output: %v", xray.readErr)
 		}
 	})
 

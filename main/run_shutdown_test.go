@@ -63,6 +63,7 @@ func TestShutdownAfterSignalIsBounded(t *testing.T) {
 		executeRun(cmdRun, nil)
 		return
 	}
+	t.Parallel()
 
 	// The bound xray run promises between a shutdown signal and its exit.
 	const shutdownTimeout = 10 * time.Second
@@ -94,7 +95,11 @@ func TestShutdownAfterSignalIsBounded(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			child := startShutdownChild(t, config, closeTestFeatureStarted)
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := startShutdownChild(t, config, reader, writer, false)
 			select {
 			case <-child.started:
 			case <-child.done:
@@ -129,26 +134,31 @@ func TestShutdownAfterSignalIsBounded(t *testing.T) {
 
 type shutdownChild struct {
 	cmd *exec.Cmd
-	// started is closed when the child prints its marker line.
+	// started is closed when the child prints closeTestFeatureStarted.
 	started chan struct{}
-	// done is closed after the child exited and its output was read.
-	done chan struct{}
+	// exited is closed when the child exited; done once its output was read.
+	exited chan struct{}
+	done   chan struct{}
+	// heldStdout is the test's end of the child's stdout pipe while the test
+	// holds the output; see startShutdownChild.
+	heldStdout *os.File
 
-	mu     sync.Mutex
-	stdout strings.Builder
+	mu      sync.Mutex
+	stdout  strings.Builder
+	readErr error
 }
 
-// startShutdownChild runs executeRun in a copy of the test binary. The child
-// is killed when the test ends if it is still running.
-func startShutdownChild(t *testing.T, config, marker string) *shutdownChild {
+// startShutdownChild runs executeRun in a copy of the test binary with its
+// config at config, stdout and stderr on the pipe reader and writer, and
+// takes both. With holdOutput the test stops reading the pipe after the
+// child's features started, until the child exits, and keeps writer open as
+// heldStdout. The child is killed when the test ends if it is still running.
+func startShutdownChild(t *testing.T, config string, reader, writer *os.File, holdOutput bool) *shutdownChild {
 	t.Helper()
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
 	child := &shutdownChild{
 		cmd:     exec.Command(os.Args[0], "-test.run=^TestShutdownAfterSignalIsBounded$"),
 		started: make(chan struct{}),
+		exited:  make(chan struct{}),
 		done:    make(chan struct{}),
 	}
 	child.cmd.Env = append(os.Environ(), "XRAY_TEST_SHUTDOWN_CONFIG="+config)
@@ -159,7 +169,11 @@ func startShutdownChild(t *testing.T, config, marker string) *shutdownChild {
 		writer.Close()
 		t.Fatal(err)
 	}
-	writer.Close()
+	if holdOutput {
+		child.heldStdout = writer
+	} else {
+		writer.Close()
+	}
 
 	outputRead := make(chan struct{})
 	go func() {
@@ -171,26 +185,40 @@ func startShutdownChild(t *testing.T, config, marker string) *shutdownChild {
 			child.mu.Lock()
 			child.stdout.WriteString(line + "\n")
 			child.mu.Unlock()
-			if line == marker {
-				select {
-				case <-child.started:
-				default:
-					close(child.started)
+			if line == closeTestFeatureStarted {
+				close(child.started)
+				if holdOutput {
+					<-child.exited
 				}
 			}
 		}
+		child.readErr = scanner.Err()
 	}()
 	go func() {
 		_ = child.cmd.Wait()
+		close(child.exited)
 		<-outputRead
 		close(child.done)
 	}()
 	t.Cleanup(func() {
+		if child.heldStdout != nil {
+			child.heldStdout.Close()
+		}
 		select {
 		case <-child.done:
 		default:
-			_ = child.cmd.Process.Kill()
-			<-child.done
+			if err := child.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("kill Xray: %v", err)
+			}
+			select {
+			case <-child.done:
+			case <-time.After(5 * time.Second):
+				t.Errorf("Xray output was not closed within 5s after SIGKILL\n%s", child.output())
+				return
+			}
+		}
+		if child.readErr != nil {
+			t.Errorf("read Xray output: %v", child.readErr)
 		}
 	})
 	return child

@@ -139,13 +139,17 @@ guard it.
   `Timed out while closing Xray.` and exits 1; a `Close` error prints
   `Failed to close:` and exits 1. This ports XTLS/Xray-core#6164 (head
   `09e5e23c24`), open upstream, where the CLI waits for `Close` without a
-  bound and ignores its error. A feature whose `Close` never returns, such as
+  bound and ignores its error. Unlike that head, the exit waits for the
+  message at most 1 s (`exitMessageTimeout`), so a stdout nobody reads does
+  not hold the process. A feature whose `Close` never returns, such as
   `app/geodata` waiting for a download nothing cancels, otherwise kept the
   process relaying established connections and swallowing further SIGTERMs
   until SIGKILL. The fork also subscribes to the signals before `Start`
   (`23b5ebbb`); keep both when syncing `main/run.go`. Covered by
   `TestShutdownAfterSignalIsBounded` (`main/run_shutdown_test.go`),
   `TestShutdownSignalDuringStartup` and, on Linux,
+  `TestShutdownAfterSignalIsBoundedWhileStdoutIsBlocked`
+  (`main/run_shutdown_linux_test.go`),
   `TestShutdownSignalEndsProxyingWhenCloseHangs` and
   `TestShutdownSignalClosesRelayingXray`
   (`testing/scenarios/shutdown_test.go`).
