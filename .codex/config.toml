@@ -1,0 +1,11 @@
+# Project-scoped Codex settings. Codex reads this file only when the user-level
+# ~/.codex/config.toml trusts the main checkout:
+#
+#   [projects."/path/to/Xray-core"]
+#   trust_level = "trusted"
+#
+# Worktrees of that checkout inherit the trust. MCP servers that need a personal
+# key or a host-local service belong in the user-level configuration.
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
