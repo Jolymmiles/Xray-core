@@ -172,21 +172,22 @@ def outer(args):
     with contextlib.ExitStack() as stack:
         work = tempfile.mkdtemp(prefix="slowreader-")
         stack.callback(shutil.rmtree, work, ignore_errors=True)
+        # Origin logs its own errors. Unless the stand succeeds, including its
+        # teardown, they are shown after the rest is torn down and before the
+        # directory goes.
+        origin_log = stack.enter_context(open(f"{work}/origin.log", "w+b"))
+
+        def show_origin_log(exc_type, exc, tb):
+            if code != 0 or exc_type is not None:
+                show_log("origin", origin_log)
+
+        stack.push(show_origin_log)
         setup_network(stack, srv, cli)
         private_key, public_key = reality_keys(next(iter(servers.values())))
         with open(f"{work}/server.json", "w") as f:
             json.dump(server_config(private_key), f)
         with open(f"{work}/client.json", "w") as f:
             json.dump(client_config(public_key), f)
-        # Origin logs its own errors; unless the stand succeeds, they are
-        # shown once origin has stopped, before the directory goes.
-        origin_log = stack.enter_context(open(f"{work}/origin.log", "w+b"))
-
-        def show_origin_log():
-            if code != 0:
-                show_log("origin", origin_log)
-
-        stack.callback(show_origin_log)
         origin = subprocess.Popen(["ip", "netns", "exec", srv, args.origin],
                                   stdout=subprocess.DEVNULL, stderr=origin_log)
         stack.callback(reap, origin)

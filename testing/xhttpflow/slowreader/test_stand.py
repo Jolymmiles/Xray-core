@@ -285,11 +285,12 @@ class OuterTests(unittest.TestCase):
 
     def test_a_namespace_that_cannot_be_removed_is_reported_and_the_rest_removed(self):
         cli = f"xslow-{os.getpid()}-cli"
-        host = FakeHost(failing=[f"ip netns del {cli}"])
+        host = FakeHost(failing=[f"ip netns del {cli}"], origin_stderr=b"origin diagnostic\n")
         result, stderr, work = self.outer(host)
         self.assertIsInstance(result, Exception, "a failed cleanup must not look like success")
         self.assertIn(cli, str(result))
         self.assertIn("Device or resource busy", str(result))
+        self.assertIn("origin diagnostic", stderr, "the stand failed, so origin's stderr must be shown")
         self.assertEqual(host.teardown(), ["inside", "origin", "cli", "srv", "work"])
         self.assertIn(("run", f"ip netns del xslow-{os.getpid()}-srv"), host.events)
         self.assertFalse(os.path.exists(work))
