@@ -154,6 +154,18 @@ guard it.
   `TestRemovedOutboundClosesTUNOnce` (`proxy/wireguard`), and the
   `TestRemovedReverse*`, `TestReverseCloseAborts*` and `TestTestpre*` tests in
   `proxy/vless/outbound`.
+- The WebSocket client connection with early data
+  (`delayDialConn` in `transport/internet/websocket/dialer.go`), which dials on
+  its first write, may be read, written and closed from different goroutines,
+  as a proxy does with every carrier; upstream's reads and writes its
+  connection and closed flag unsynchronized. A dial that completes after
+  `Close` closes the connection it dialed instead of publishing it, `Close`
+  runs once, and a deadline set before the first write returns an error where
+  upstream's panicked on the nil connection. The handshake and early-data
+  bytes are upstream's. Covered by `TestEarlyDataConnConcurrentReadWriteClose`
+  and `TestEarlyDataCloseDuringDialClosesTheDialedConnection`
+  (`transport/internet/websocket/early_data_test.go`) and
+  `TestReverseCloseOverWebSocketEarlyData` (`proxy/vless/outbound`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
