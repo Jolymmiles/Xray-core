@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	stdnet "net"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,9 +27,7 @@ import (
 type carrierListener struct {
 	listener stdnet.Listener
 	accepted chan *carrier
-
-	mu    sync.Mutex
-	conns []stdnet.Conn
+	conns    connOwner
 }
 
 // carrier is one accepted connection; ended is closed once the client closes
@@ -46,7 +43,11 @@ func newCarrierListener(t *testing.T) *carrierListener {
 		t.Fatal(err)
 	}
 	l := &carrierListener{listener: listener, accepted: make(chan *carrier, 16)}
-	t.Cleanup(l.close)
+	t.Cleanup(func() {
+		if !l.close() {
+			t.Error("a carrier's reader did not end after its connection closed")
+		}
+	})
 	go l.serve()
 	return l
 }
@@ -57,11 +58,13 @@ func (l *carrierListener) serve() {
 		if err != nil {
 			return
 		}
-		l.mu.Lock()
-		l.conns = append(l.conns, conn)
-		l.mu.Unlock()
+		if !l.conns.own(conn) {
+			continue
+		}
 		c := &carrier{ended: make(chan struct{})}
 		go func() {
+			defer l.conns.done()
+			// The read ends, with EOF or an error, when the carrier does.
 			_, _ = io.Copy(io.Discard, conn)
 			close(c.ended)
 		}()
@@ -73,14 +76,11 @@ func (l *carrierListener) serve() {
 }
 
 // close releases every connection, which also ends a stalled client dial
-// when a failing test left one behind.
-func (l *carrierListener) close() {
+// when a failing test left one behind, and reports whether their readers
+// ended.
+func (l *carrierListener) close() bool {
 	_ = l.listener.Close()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, conn := range l.conns {
-		_ = conn.Close()
-	}
+	return l.conns.close()
 }
 
 func (l *carrierListener) destination() net.Destination {

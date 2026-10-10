@@ -34,9 +34,7 @@ type bridgeRelay struct {
 	upstream  chan struct{}
 	ended     chan struct{}
 	firstOnce sync.Once
-
-	mu    sync.Mutex
-	conns []stdnet.Conn
+	conns     connOwner
 }
 
 func newBridgeRelay(t *testing.T, portal net.Destination) *bridgeRelay {
@@ -51,7 +49,11 @@ func newBridgeRelay(t *testing.T, portal net.Destination) *bridgeRelay {
 		upstream: make(chan struct{}),
 		ended:    make(chan struct{}),
 	}
-	t.Cleanup(r.close)
+	t.Cleanup(func() {
+		if !r.close() {
+			t.Error("the bridge relay did not end after its connections closed")
+		}
+	})
 	go r.serve()
 	return r
 }
@@ -63,15 +65,20 @@ func (r *bridgeRelay) serve() {
 	if err != nil {
 		return
 	}
-	portal, err := stdnet.Dial("tcp", r.portal)
+	if !r.conns.own(bridge) {
+		return
+	}
+	defer r.conns.done()
+	portal, err := stdnet.DialTimeout("tcp", r.portal, 5*time.Second)
 	if err != nil {
 		_ = bridge.Close()
 		return
 	}
-	r.mu.Lock()
-	r.conns = append(r.conns, bridge, portal)
-	r.mu.Unlock()
+	if !r.conns.own(portal) {
+		return
+	}
 	go func() {
+		defer r.conns.done()
 		_, _ = io.Copy(bridge, portal)
 		_ = bridge.Close()
 	}()
@@ -92,13 +99,10 @@ func (r *bridgeRelay) serve() {
 	_ = portal.Close()
 }
 
-func (r *bridgeRelay) close() {
+// close ends the relay and reports whether its goroutines ended.
+func (r *bridgeRelay) close() bool {
 	_ = r.listener.Close()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, conn := range r.conns {
-		_ = conn.Close()
-	}
+	return r.conns.close()
 }
 
 func (r *bridgeRelay) destination() net.Destination {

@@ -114,11 +114,16 @@ func TestEarlyDataConnConcurrentReadWriteClose(t *testing.T) {
 func listenEcho(t *testing.T) net.Destination {
 	t.Helper()
 	port := tcp.PickPort()
+	var conns connOwner
 	listener, err := ListenWS(context.Background(), net.LocalHostIP, port, &internet.MemoryStreamConfig{
 		ProtocolName:     "websocket",
 		ProtocolSettings: &Config{Path: "ws"},
 	}, func(conn stat.Connection) {
+		if !conns.own(conn) {
+			return
+		}
 		go func() {
+			defer conns.done()
 			defer conn.Close()
 			b := make([]byte, 1024)
 			for {
@@ -135,7 +140,12 @@ func listenEcho(t *testing.T) net.Destination {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
+	t.Cleanup(func() {
+		_ = listener.Close()
+		if !conns.close() {
+			t.Error("an echo connection's reader did not end after it closed")
+		}
+	})
 	return net.TCPDestination(net.LocalHostIP, port)
 }
 
@@ -214,11 +224,7 @@ func newGatedUpgradeServer(t *testing.T) *gatedUpgradeServer {
 		ended:   make(chan struct{}),
 	}
 	var endOnce sync.Once
-	// http.Server.Close leaves upgraded connections to their handlers, so
-	// the test closes them itself.
-	var mu sync.Mutex
-	var upgraded []*gorillaws.Conn
-	stopped := false
+	var conns connOwner
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case s.entered <- struct{}{}:
@@ -230,14 +236,11 @@ func newGatedUpgradeServer(t *testing.T) *gatedUpgradeServer {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		mu.Lock()
-		if stopped {
-			mu.Unlock()
+		if !conns.own(conn) {
 			return
 		}
-		upgraded = append(upgraded, conn)
-		mu.Unlock()
+		defer conns.done()
+		defer conn.Close()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				endOnce.Do(func() { close(s.ended) })
@@ -250,11 +253,8 @@ func newGatedUpgradeServer(t *testing.T) *gatedUpgradeServer {
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(s.release) })
 		_ = server.Close()
-		mu.Lock()
-		defer mu.Unlock()
-		stopped = true
-		for _, conn := range upgraded {
-			_ = conn.Close()
+		if !conns.close() {
+			t.Error("an upgraded connection's handler did not end after it closed")
 		}
 	})
 	s.releaseNow = func() { releaseOnce.Do(func() { close(s.release) }) }
