@@ -12,7 +12,6 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/geodata"
-	xlua "github.com/xtls/xray-core/common/lua"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/utils"
@@ -573,9 +572,6 @@ func makeGroups( /*ctx context.Context,*/ clients []*Client) ([]group, []int) {
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
-		if script := config.(*Config).Script; script != "" && !xlua.ScriptsEnabled {
-			return nil, errors.New("DNS script ", script).Base(xlua.ErrScriptsDisabled)
-		}
 		return New(ctx, config.(*Config))
 	}))
 }

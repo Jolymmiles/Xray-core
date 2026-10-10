@@ -62,31 +62,22 @@ guard it.
   (`TestCleanerWaitingForInstanceStatusDoesNotBlockDials`,
   `TestCleanerWaitingForOneClientDoesNotBlockOthers`,
   `TestConcurrentCleanersKeepReplacementClients`).
-- Upstream's Lua `script` for `routing` and `dns` (XTLS/Xray-core#6823) is
-  compiled in but disabled: `core.New` rejects a config that names either
-  script (`ScriptsEnabled` in `common/lua/gate.go`, checked where the router
-  and DNS configs are registered, because a deferred `RequireFeatures` error
-  can be lost). Two problems block it. `Pool` in `common/lua/pool.go`
-  creates one state, about 177 KiB plus the script's data, per concurrent
-  call without a bound, and a plain bound would deadlock a routing script
-  whose DNS lookup re-enters routing; an acquisition error sends the
-  connection to the default outbound. Scripts also load in `Start`, after the inbound manager starts,
-  so early connections and the TUN DNS takeover probe see only the JSON
-  rules. Lift the gate only with a re-entry-safe bound and scripts ready
-  before inbounds accept connections. Tests enable it to exercise the
-  upstream code. Covered by `TestShippedBuildRejectsLuaScripts`
-  (`infra/conf/lua_gate_test.go`, the shipping default through JSON),
-  `TestCoreRejectsRoutingScriptWhileScriptsDisabled`
-  (`app/router/script_gate_test.go`) and
-  `TestCoreRejectsDNSScriptWhileScriptsDisabled`
-  (`app/dns/script_gate_test.go`).
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
-  allocation-free picker, not `PickRoute`. A routing script decides in both,
-  and `NeedsSniffingAttributes` reports true while a script is loaded because
-  a script can read HTTP attributes. Mirror any new hook upstream adds to
-  `PickRoute` in `PickRouteTag`. Covered by
-  `app/router/script_fastpath_test.go` and upstream's
+  allocation-free picker, not `PickRoute`. A routing `script` (upstream
+  XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports
+  true while a script is loaded because a script can read HTTP attributes.
+  Mirror any new hook upstream adds to `PickRoute` in `PickRouteTag`. Covered
+  by `app/router/script_fastpath_test.go` and upstream's
   `TestRouterScriptDNSDispatcherReentry`.
+  The scripts ship enabled, as upstream does, with two known risks the
+  maintainer accepted on 2026-10-10 (PR #33 review findings R1-1, R1-3).
+  `Pool` in `common/lua/pool.go` creates one state, about 177 KiB plus the
+  script's data, per concurrent call with no bound; a plain bound would
+  deadlock a routing script whose DNS lookup re-enters routing, and an
+  acquisition error sends the connection to the default outbound. Scripts
+  load in `Start`, after the inbound manager starts, so the first connections
+  and the TUN DNS takeover probe see only the JSON rules. Do not gate the
+  scripts again without the maintainer.
 - The XDNS client's `WriteTo` sends without the client mutex; upstream's
   synchronous upload (XTLS/Xray-core#7095) holds it, so `Close`, which needs
   that mutex to close the resolvers, waits forever behind a resolver write
