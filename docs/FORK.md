@@ -99,7 +99,8 @@ guard it.
   message ID that received chunks of two messages: a repeated index must
   carry the same bytes and chunk lengths must match the split every sender
   uses, and an entry that receives a chunk that does not fit drops every
-  chunk until its original deadline. Upstream keys reassembly by remote
+  chunk until its original deadline, or until the global cap
+  (`geckoMaxReassembly`) evicts it as the oldest entry. Upstream keys reassembly by remote
   address and a one-byte, sequential message ID only, so after a lost chunk
   a later message completed the earlier one. Do not restart an entry from
   the conflicting chunk: arrival order does not tell which message is newer.
