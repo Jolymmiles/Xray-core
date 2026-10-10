@@ -27,8 +27,7 @@ import (
 )
 
 type client struct {
-	sync.Mutex
-
+	lock         chan struct{}
 	instance     *core.Instance
 	forced       bool
 	dest         net.Destination
@@ -67,6 +66,11 @@ func (c *client) close() {
 }
 
 func (c *client) dial(ctx context.Context) error {
+	// A done context and a free client lock are both ready, so the lock can
+	// be taken for a dial that is already canceled.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.forced {
 		return errors.New("client is closed")
 	}
@@ -172,8 +176,11 @@ func (c *client) dial(ctx context.Context) error {
 			CommonHeaderPadding: []string{AuthRequestPadding.String()},
 		},
 	}
-	resp, err := rt.RoundTrip(req)
+	resp, err := rt.RoundTrip(req.WithContext(ctx))
 	if err != nil {
+		// On cancellation RoundTrip returns while HTTP/3 may still run Dial
+		// on its own goroutine; Close waits for it before conn is read.
+		_ = rt.Close()
 		if conn != nil {
 			_ = conn.CloseWithError(closeErrCodeProtocolError, "")
 		}
@@ -182,7 +189,12 @@ func (c *client) dial(ctx context.Context) error {
 		return err
 	}
 	if resp.StatusCode != StatusAuthOK {
+		// Close the connection first: it then ends with the protocol error
+		// alone, not with code 0 from rt.Close or a stream cancellation from
+		// closing the unread body.
 		_ = conn.CloseWithError(closeErrCodeProtocolError, "")
+		_ = resp.Body.Close()
+		_ = rt.Close()
 		_ = tr.Close()
 		_ = pktConn.Close()
 		return errors.New("auth failed code ", resp.StatusCode)
@@ -222,9 +234,17 @@ func (c *client) dial(ctx context.Context) error {
 	return nil
 }
 
+func (c *client) unlock() {
+	<-c.lock
+}
+
 func (c *client) tcp(ctx context.Context) (stat.Connection, error) {
-	c.Lock()
-	defer c.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case c.lock <- struct{}{}:
+		defer c.unlock()
+	}
 
 	err := c.dial(ctx)
 	if err != nil {
@@ -246,8 +266,12 @@ func (c *client) tcp(ctx context.Context) (stat.Connection, error) {
 }
 
 func (c *client) udp(ctx context.Context) (stat.Connection, error) {
-	c.Lock()
-	defer c.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case c.lock <- struct{}{}:
+		defer c.unlock()
+	}
 
 	err := c.dial(ctx)
 	if err != nil {
@@ -258,14 +282,14 @@ func (c *client) udp(ctx context.Context) (stat.Connection, error) {
 }
 
 func (c *client) clean(force bool) {
-	c.Lock()
+	c.lock <- struct{}{}
 	if force {
 		c.forced = true
 	}
 	if status := c.status(); force && status != StatusNull || status == StatusInactive {
 		c.close()
 	}
-	c.Unlock()
+	c.unlock()
 }
 
 type dialerConf struct {
@@ -364,6 +388,7 @@ func (m *clientManager) dial(ctx context.Context, dest net.Destination, streamSe
 		c = m.m[dialerConfKey]
 		if c == nil {
 			c = &client{
+				lock:         make(chan struct{}, 1),
 				instance:     core.FromContext(ctx),
 				dest:         dest,
 				config:       streamSettings.ProtocolSettings.(*Config),
