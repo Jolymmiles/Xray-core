@@ -102,25 +102,36 @@ guard it.
   chunk until its original deadline, or until the global cap
   (`geckoMaxReassembly`) evicts it as the oldest entry. Upstream keys
   reassembly by remote address and a one-byte, sequential message ID only,
-  so after a lost chunk a later message completed the earlier one. Do not restart an entry from
-  the conflicting chunk: arrival order does not tell which message is newer.
+  so after a lost chunk a later message completed the earlier one. Do not
+  restart an entry from the conflicting chunk: arrival order does not tell
+  which message is newer.
   The wire format has no message identity, so a mix that stays consistent
   until it completes is still delivered and only whole-datagram integrity
-  above Gecko rejects it. `CheckDatagramIntegrity` in
-  `transport/internet/finalmask/datagram_integrity.go`, called by the JSON
-  config build and by `ToMemoryStreamConfig` (protobuf configs, the
-  HandlerService API), therefore accepts Gecko
-  (salamander with `packetSize`) only under QUIC transports (hysteria,
-  xhttp, masque) or under mKCP with an `mkcp-legacy` mask without a header
-  (FNV checksum or AES-128-GCM) listed before it; upstream accepts it
-  anywhere. Plain salamander does not fragment and stays allowed
+  above Gecko rejects it. Gecko therefore needs an `mkcp-legacy` mask
+  without a header (FNV checksum or AES-128-GCM) listed before it, except
+  under a QUIC transport (hysteria, xhttp, masque); upstream accepts it
+  anywhere. `CheckDatagramIntegrity` in
+  `transport/internet/finalmask/datagram_integrity.go` applies the rule to
+  the stream (JSON config build and `ToMemoryStreamConfig`, which also
+  serves protobuf configs and the HandlerService API). The UDP dialer, the
+  UDP hub and WireGuard use the masks whatever the stream network is, with
+  no QUIC above them, so they call `FinalMask.CheckRawUDP`, which grants no
+  QUIC exemption. Plain salamander does not fragment and stays allowed
   everywhere. Covered by `gecko_reassembly_test.go` in that package, the
   gecko cells of `TestHysteriaProcessClientMatrix`
   (`common/singmux/hysteria_integration_test.go`),
   `TestGeckoRequiresDatagramIntegrity`
-  (`infra/conf/transport_finalmask_gecko_test.go`) and
+  (`infra/conf/transport_finalmask_gecko_test.go`),
   `TestToMemoryStreamConfigRequiresDatagramIntegrityForGecko`
-  (`transport/internet/gecko_integrity_test.go`).
+  (`transport/internet/gecko_integrity_test.go`),
+  `TestRawUDPRefusesGeckoWithoutIntegrity`
+  (`transport/internet/udp/gecko_integrity_test.go`) and
+  `TestRawUDPInboundsRefuseGeckoUnderNominalQUIC`.
+- WireGuard's netstack TUN (`proxy/wireguard/netstack.go`) closes once:
+  wireguard-go closes the device itself when it shuts down after a failed
+  bind, and the server closes it again; upstream panics on the second close
+  and takes down a running instance that added such an inbound. Covered by
+  `TestNetTUNCloseIsIdempotent`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
