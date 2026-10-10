@@ -1,6 +1,7 @@
 package scenarios
 
 import (
+	"context"
 	"fmt"
 	gonet "net"
 	"testing"
@@ -153,16 +154,40 @@ func TestDNSOutboundSendThroughOverXUDP(t *testing.T) {
 		}),
 		NotifyStartedFunc: func() { close(upstreamStarted) },
 	}
-	upstreamServed := make(chan error, 1)
-	go func() { upstreamServed <- upstream.ActivateAndServe() }()
-	defer func() {
-		_ = upstream.Shutdown()
-		<-upstreamServed
+	served := make(chan struct{})
+	var serveErr error
+	go func() {
+		serveErr = upstream.ActivateAndServe()
+		close(served)
 	}()
+	// Join the serve goroutine on every path. Closing the socket releases it
+	// even when the server never started.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr := upstream.ShutdownContext(ctx)
+		_ = upstreamConn.Close()
+		select {
+		case <-served:
+		case <-time.After(5 * time.Second):
+			t.Error("upstream DNS server did not stop within 5s")
+			return
+		}
+		select {
+		case <-upstreamStarted:
+			if shutdownErr != nil {
+				t.Errorf("shut down upstream DNS server: %v", shutdownErr)
+			}
+			if serveErr != nil {
+				t.Errorf("upstream DNS server: %v", serveErr)
+			}
+		default:
+		}
+	})
 	select {
 	case <-upstreamStarted:
-	case err := <-upstreamServed:
-		t.Fatalf("upstream DNS server stopped before serving: %v", err)
+	case <-served:
+		t.Fatalf("upstream DNS server stopped before serving: %v", serveErr)
 	case <-time.After(10 * time.Second):
 		t.Fatal("upstream DNS server did not start within 10s")
 	}

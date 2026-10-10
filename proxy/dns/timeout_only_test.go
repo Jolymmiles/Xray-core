@@ -116,16 +116,40 @@ func startUpstreamDNS(t *testing.T) net.Destination {
 		}),
 		NotifyStartedFunc: func() { close(started) },
 	}
-	served := make(chan error, 1)
-	go func() { served <- server.ActivateAndServe() }()
+	served := make(chan struct{})
+	var serveErr error
+	go func() {
+		serveErr = server.ActivateAndServe()
+		close(served)
+	}()
+	// Join the serve goroutine on every path. Closing the socket releases it
+	// even when the server never started.
 	t.Cleanup(func() {
-		_ = server.Shutdown()
-		<-served
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr := server.ShutdownContext(ctx)
+		_ = pc.Close()
+		select {
+		case <-served:
+		case <-time.After(5 * time.Second):
+			t.Error("upstream DNS server did not stop within 5s")
+			return
+		}
+		select {
+		case <-started:
+			if shutdownErr != nil {
+				t.Errorf("shut down upstream DNS server: %v", shutdownErr)
+			}
+			if serveErr != nil {
+				t.Errorf("upstream DNS server: %v", serveErr)
+			}
+		default:
+		}
 	})
 	select {
 	case <-started:
-	case err := <-served:
-		t.Fatalf("upstream DNS server stopped before serving: %v", err)
+	case <-served:
+		t.Fatalf("upstream DNS server stopped before serving: %v", serveErr)
 	case <-time.After(10 * time.Second):
 		t.Fatal("upstream DNS server did not start within 10s")
 	}
