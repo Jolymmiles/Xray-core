@@ -42,6 +42,31 @@ guard it.
   30 and 31 of the splithttp `Config` message are fork-owned: renumber them if
   upstream claims those numbers. Covered by `common/mux/server_test.go` and
   `common/singmux/xhttp_muxcool_integration_test.go`.
+- Outbound `mux.maxReuseTimes` sets how many sessions one Mux.Cool
+  connection of the main pool admits over its lifetime before new sessions
+  open another connection. The main pool also carries UDP when
+  `xudpConcurrency` is 0; the XUDP pool keeps 128. It ports the option of
+  XTLS/Xray-core#4231 (head `a0bf239fc1`, not merged upstream) with these
+  differences: 0 or no key keeps the fixed 128 of earlier versions, where
+  the PR raises the default to 60000 and so keeps connections alive longer;
+  a value outside 0-60000 fails the config, from JSON and from protobuf or
+  the HandlerService API alike, where the PR clamps values above 60000 and
+  lets a negative one through; `ClientStrategy.MaxConnection` keeps its
+  name. The PR's `CopyChunk` frame copy, its per-session log line and its
+  benchmark are not ported: the fork already drains a frame whose session
+  write fails and keeps the connection, while the PR's server
+  `handleStatusNew` would end it. The budget counts admissions, not age: one
+  long session keeps its connection open, and an exhausted connection closes
+  once its last session ends. Field 30 of `MultiplexingConfig` is fork-owned;
+  if upstream claims it or ships the option under another number or type,
+  migrate persisted protobuf configs and API clients rather than renumber
+  silently. Covered by `TestMuxConfigBuildMaxReuseTimes`,
+  `TestNewHandlerAppliesMuxMaxReuseTimes`,
+  `TestNewHandlerRejectsInvalidMuxMaxReuseTimes`,
+  `TestClientManagerReplacesExhaustedCarrier`,
+  `TestClientSessionManagerLargestBudgetNeverWrapsIDs`,
+  `TestMuxCoolMaxReuseTimesProcess` and
+  `TestMuxCoolMaxReuseTimesOldServerProcess`.
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2

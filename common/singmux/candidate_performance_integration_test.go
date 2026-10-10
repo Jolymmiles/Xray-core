@@ -5,7 +5,6 @@ package singmux_test
 import (
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -143,33 +142,7 @@ func waitProcessResourcesDrained(t *testing.T, pid int, baseline processResource
 
 func buildCandidatePerformanceBaseline(t *testing.T, workDir string) string {
 	t.Helper()
-	source := filepath.Join(workDir, candidatePerformanceLabel+"-source")
-	binary := filepath.Join(workDir, "xray-"+candidatePerformanceLabel)
-	if err := os.MkdirAll(source, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	archive := exec.Command("git", "-C", filepath.Join("..", ".."), "archive", candidatePerformanceRevision)
-	extract := exec.Command("tar", "-x", "-C", source)
-	pipe, err := archive.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	extract.Stdin, archive.Stderr, extract.Stderr = pipe, os.Stderr, os.Stderr
-	if err := extract.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if err := archive.Run(); err != nil {
-		t.Fatal(err)
-	}
-	if err := extract.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./main")
-	build.Dir = source
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build %s: %v\n%s", candidatePerformanceLabel, err, output)
-	}
-	return binary
+	return buildXrayRevision(t, workDir, candidatePerformanceLabel, candidatePerformanceRevision)
 }
 
 func startXrayPerformanceTopologyWithServer(t *testing.T, workDir string, binaries e2eBinaries, serverBinary, certificate, privateKey, carrier, name string) *stressTopology {

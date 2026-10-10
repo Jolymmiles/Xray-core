@@ -97,6 +97,15 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 		}
 	}
 
+	// Checked before the proxy exists: protobuf configs skip the JSON check.
+	var muxMaxReuseTimes uint32
+	if h.senderSettings != nil && h.senderSettings.MultiplexSettings != nil {
+		var err error
+		if muxMaxReuseTimes, err = h.senderSettings.MultiplexSettings.ResolveMaxReuseTimes(); err != nil {
+			return nil, err
+		}
+	}
+
 	proxyConfig, err := config.ProxySettings.GetInstance()
 	if err != nil {
 		return nil, err
@@ -167,7 +176,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 							Dialer: h,
 							Strategy: mux.ClientStrategy{
 								MaxConcurrency: uint32(config.Concurrency),
-								MaxConnection:  128,
+								MaxConnection:  muxMaxReuseTimes,
 							},
 						},
 					},
