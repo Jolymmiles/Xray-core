@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"io"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -24,7 +26,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	if streamSettings.ProtocolSettings.(*Config).Ed > 0 {
 		ctx, cancel := context.WithCancel(ctx)
 		conn = &delayDialConn{
-			dialed:         make(chan bool, 1),
+			dialed:         make(chan struct{}),
 			cancel:         cancel,
 			ctx:            ctx,
 			dest:           dest,
@@ -157,76 +159,137 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 	return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
 }
 
+// delayDialConn dials on its first Write, so that the first payload can ride
+// in the handshake as early data. A proxy reads it from one goroutine, writes
+// it from another and closes it from whichever finishes first, so publishing
+// the dialed connection is ordered against Close; after that, reads and
+// writes keep Gorilla's one-reader, one-writer limit.
 type delayDialConn struct {
-	net.Conn
-	closed         bool
-	dialed         chan bool
 	cancel         context.CancelFunc
 	ctx            context.Context
 	dest           net.Destination
 	streamSettings *internet.MemoryStreamConfig
+
+	dialMu sync.Mutex    // held by the Write that dials
+	dialed chan struct{} // closed once the dialed connection is published
+
+	mu     sync.Mutex // orders publishing the connection against Close
+	conn   atomic.Pointer[dialedConn]
+	closed atomic.Bool
 }
 
+type dialedConn struct {
+	net.Conn
+}
+
+var errDeadlineBeforeDial = errors.New("WebSocket early data: deadline set before the first write dialed")
+
 // LocalAddr returns nil until the deferred WebSocket dial has completed.
-// Without this method, Go promotes LocalAddr from the embedded net.Conn; the
-// embedded interface is nil before the first Write, so the promoted call panics.
 func (d *delayDialConn) LocalAddr() net.Addr {
-	if d.Conn == nil {
-		return nil
+	if conn := d.conn.Load(); conn != nil {
+		return conn.LocalAddr()
 	}
-	return d.Conn.LocalAddr()
+	return nil
 }
 
 // RemoteAddr returns nil until the deferred WebSocket dial has completed.
-// See LocalAddr for why an explicit method is required here.
 func (d *delayDialConn) RemoteAddr() net.Addr {
-	if d.Conn == nil {
-		return nil
+	if conn := d.conn.Load(); conn != nil {
+		return conn.RemoteAddr()
 	}
-	return d.Conn.RemoteAddr()
+	return nil
 }
 
 func (d *delayDialConn) Write(b []byte) (int, error) {
-	if d.closed {
+	if d.closed.Load() {
 		return 0, io.ErrClosedPipe
 	}
-	if d.Conn == nil {
-		ed := b
-		if len(ed) > int(d.streamSettings.ProtocolSettings.(*Config).Ed) {
-			ed = nil
-		}
-		var err error
-		if d.Conn, err = dialWebSocket(d.ctx, d.dest, d.streamSettings, ed); err != nil {
-			d.Close()
-			return 0, errors.New("failed to dial WebSocket").Base(err)
-		}
-		d.dialed <- true
-		if ed != nil {
-			return len(ed), nil
-		}
+	if conn := d.conn.Load(); conn != nil {
+		return conn.Write(b)
 	}
-	return d.Conn.Write(b)
+	d.dialMu.Lock()
+	defer d.dialMu.Unlock()
+	if conn := d.conn.Load(); conn != nil {
+		return conn.Write(b)
+	}
+	if d.closed.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	ed := b
+	if len(ed) > int(d.streamSettings.ProtocolSettings.(*Config).Ed) {
+		ed = nil
+	}
+	conn, err := dialWebSocket(d.ctx, d.dest, d.streamSettings, ed)
+	if err != nil {
+		d.Close()
+		return 0, errors.New("failed to dial WebSocket").Base(err)
+	}
+	// A Close during the dial found nothing to close: this Write owns the
+	// connection then.
+	d.mu.Lock()
+	if d.closed.Load() {
+		d.mu.Unlock()
+		conn.Close()
+		return 0, io.ErrClosedPipe
+	}
+	d.conn.Store(&dialedConn{conn})
+	d.mu.Unlock()
+	close(d.dialed)
+	if ed != nil {
+		return len(ed), nil
+	}
+	return conn.Write(b)
 }
 
 func (d *delayDialConn) Read(b []byte) (int, error) {
-	if d.closed {
+	if d.closed.Load() {
 		return 0, io.ErrClosedPipe
 	}
-	if d.Conn == nil {
+	conn := d.conn.Load()
+	if conn == nil {
 		select {
 		case <-d.ctx.Done():
 			return 0, io.ErrUnexpectedEOF
 		case <-d.dialed:
 		}
+		conn = d.conn.Load()
 	}
-	return d.Conn.Read(b)
+	return conn.Read(b)
 }
 
 func (d *delayDialConn) Close() error {
-	d.closed = true
-	d.cancel()
-	if d.Conn == nil {
+	d.mu.Lock()
+	if d.closed.Load() {
+		d.mu.Unlock()
 		return nil
 	}
-	return d.Conn.Close()
+	d.closed.Store(true)
+	conn := d.conn.Load()
+	d.mu.Unlock()
+	d.cancel()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
+}
+
+func (d *delayDialConn) SetDeadline(t time.Time) error {
+	if conn := d.conn.Load(); conn != nil {
+		return conn.SetDeadline(t)
+	}
+	return errDeadlineBeforeDial
+}
+
+func (d *delayDialConn) SetReadDeadline(t time.Time) error {
+	if conn := d.conn.Load(); conn != nil {
+		return conn.SetReadDeadline(t)
+	}
+	return errDeadlineBeforeDial
+}
+
+func (d *delayDialConn) SetWriteDeadline(t time.Time) error {
+	if conn := d.conn.Load(); conn != nil {
+		return conn.SetWriteDeadline(t)
+	}
+	return errDeadlineBeforeDial
 }

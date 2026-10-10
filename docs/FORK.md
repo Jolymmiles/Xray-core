@@ -172,6 +172,40 @@ guard it.
   the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
   closes its netlink handle concurrently. Covered by
   `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
+- `outbound.Manager.RemoveHandler`, which HandlerService `RemoveOutbound`
+  calls, closes the handler it removes, after unpublishing it and without the
+  manager lock: a port of upstream XTLS/Xray-core#7112 at `29885292ca`, open
+  when ported. Removal ends what the handler's `Close` ends; in this fork that
+  includes its SMUX sessions and the VLESS reverse's connected bridges, which
+  upstream's reverse leaves running. The fork's reverse `Close` waits for its
+  bridges, so it also cancels the reverse's context and closes each bridge's
+  connection: a bridge stalled in a dial, a TLS or REALITY handshake, or the
+  VLESS encryption handshake does not hold the removal. VLESS `testpre`
+  pre-connects stop on `Close`, which may run more than once, and a request
+  waiting for a pre-connection returns on `Close` or its own cancellation.
+  That is the lifecycle part of upstream XTLS/Xray-core#7113, which upstream
+  closed unmerged; its backoff and its 2 s fallback to a direct dial are not
+  ported, so while the handler is open its pre-connects still redial an
+  unreachable server without pause. Covered by `TestRemoveHandlerClosesHandler`
+  and `TestRemoveHandlerClosesAfterUnpublishingWithoutTheLock`
+  (`app/proxyman/outbound/handler_test.go`),
+  `TestRemovedOutboundClosesTUNOnce` (`proxy/wireguard`), and the
+  `TestRemovedReverse*`, `TestReverseCloseAborts*` and `TestTestpre*` tests in
+  `proxy/vless/outbound`.
+- The WebSocket client connection with early data
+  (`delayDialConn` in `transport/internet/websocket/dialer.go`), which dials on
+  its first write, may be read from one goroutine, written from another and
+  closed from any, as a proxy does with every carrier; upstream's reads and
+  writes its connection and closed flag unsynchronized. Concurrent writers or
+  readers after the dial keep Gorilla's one-reader, one-writer limit. A dial
+  that completes after `Close` closes the connection it dialed instead of
+  publishing it, `Close` runs once, and a deadline set before the first write
+  returns an error where upstream's panicked on the nil connection. The
+  handshake and early-data bytes are upstream's. Covered by
+  `TestEarlyDataConnConcurrentReadWriteClose`,
+  `TestEarlyDataCloseDuringDialClosesTheDialedConnection` and
+  `TestEarlyDataDeadlines` (`transport/internet/websocket/early_data_test.go`)
+  and `TestReverseCloseOverWebSocketEarlyData` (`proxy/vless/outbound`).
 - `xray run` bounds its shutdown: after SIGINT or SIGTERM it waits at most
   10 s (`closeTimeout` in `main/run.go`) for `Instance.Close`, then prints
   `Timed out while closing Xray.` and exits 1; a `Close` error prints
