@@ -34,9 +34,10 @@ class Clock:
 class ScriptedSocket:
     """A socket whose peer answers each recv after a delay on the fake clock,
     and whose sends each take send_delay. An operation that would wait longer
-    than the timeout in effect times out, as a real one does. Every operation
-    is checked against the request's deadline: none may start after it or run
-    with a timeout past it."""
+    than the timeout in effect times out, as a real one does. A reply may
+    carry a third number, the time the caller then takes to run again. Every
+    operation is checked against the request's deadline: none may start after
+    it or run with a timeout past it."""
 
     def __init__(self, clock, deadline, replies, send_delay=0):
         self.clock, self.deadline = clock, deadline
@@ -70,12 +71,12 @@ class ScriptedSocket:
 
     def recv(self, n):
         self.check("recv", self.timeout)
-        delay, data = self.replies.pop(0)
+        delay, data, *resumed = self.replies.pop(0)
         if delay > self.timeout:
             self.clock.now += self.timeout
-            self.replies.insert(0, (delay - self.timeout, data))
+            self.replies.insert(0, (delay - self.timeout, data, *resumed))
             raise socket.timeout("timed out")
-        self.clock.now += delay
+        self.clock.now += delay + sum(resumed)
         return data
 
     def close(self):
@@ -101,6 +102,11 @@ class DeadlineTests(unittest.TestCase):
         ms, violations = self.ping([(0, SOCKS_METHOD_REPLY), (0, SOCKS_CONNECT_REPLY),
                                     (9.99, PONG[:-3]), (0.04, b"o"), (0.04, b"n"), (0.04, b"g")])
         self.assertIsNone(ms, "a request over the deadline must count as failed")
+        self.assertEqual(violations, [])
+
+        # The whole answer is in at 9.99 s, but ping runs again only at 10.01 s.
+        ms, violations = self.ping([(0, SOCKS_METHOD_REPLY), (0, SOCKS_CONNECT_REPLY), (9.99, PONG, 0.02)])
+        self.assertIsNone(ms, "an answer read after the deadline must count as failed")
         self.assertEqual(violations, [])
 
     def test_every_send_and_receive_gets_only_the_time_left(self):
