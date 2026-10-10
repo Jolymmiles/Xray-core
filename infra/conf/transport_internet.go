@@ -7,8 +7,8 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/transport/internet"
+	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"github.com/xtls/xray-core/transport/internet/hysteria/congestion/bbr"
-	"google.golang.org/protobuf/proto"
 )
 
 type TransportProtocol string
@@ -235,7 +235,7 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 			}
 			config.Tcpmasks = append(config.Tcpmasks, serial.ToTypedMessage(u))
 		}
-		udpMasks := make([]proto.Message, 0, len(c.FinalMask.Udp))
+		udpMasks := make([]finalmask.UDPMask, 0, len(c.FinalMask.Udp))
 		for i, mask := range c.FinalMask.Udp {
 			// xdns reads and writes plain DNS on the wire, so it has to be
 			// the innermost UDP mask, which is the last entry.
@@ -246,10 +246,12 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 			if err != nil {
 				return nil, errors.New("failed to build mask with type ", mask.Type).Base(err)
 			}
-			udpMasks = append(udpMasks, u)
+			if mask, ok := u.(finalmask.UDPMask); ok {
+				udpMasks = append(udpMasks, mask)
+			}
 			config.Udpmasks = append(config.Udpmasks, serial.ToTypedMessage(u))
 		}
-		if err := checkGeckoIntegrity(config.ProtocolName, udpMasks); err != nil {
+		if err := finalmask.CheckDatagramIntegrity(config.ProtocolName, udpMasks); err != nil {
 			return nil, err
 		}
 		if c.FinalMask.QuicParams != nil {
