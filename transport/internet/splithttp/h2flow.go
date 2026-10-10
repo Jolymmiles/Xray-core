@@ -967,8 +967,10 @@ func (c *flowConn) drop(id uint32) {
 // they would without the governor, whatever the server's own window, and
 // slow readers holding their caps leave that room to new streams. A stream
 // that holds more than its cap, because the cap shrank while its reader
-// stalled, is allowed what it holds: its own window lets it send no more, and
-// the excess must not come out of the room the others share.
+// stalled, is allowed what it holds, so the excess does not come out of the
+// room the others share. Shrinking a cap only stops further stream credit:
+// what was granted before cannot be taken back and may still be spent, and
+// the allowance follows it up to the window the server really grants.
 func (c *flowConn) upConnRelease() int64 {
 	var reading int64
 	for _, s := range c.streams {
