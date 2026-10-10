@@ -122,3 +122,55 @@ func TestFlowNoCreditAtStreamOpen(t *testing.T) {
 		}
 	}
 }
+
+// TestFlowShrunkCapsLeaveConnectionRoom stalls sixteen readers with their
+// streams full and then lets their caps shrink, as they do while a reader
+// stays slow. What those streams already hold is theirs: it must not count
+// against the room other streams share, or a request opened meanwhile gets
+// no connection credit until the slow ones drain.
+func TestFlowShrunkCapsLeaveConnectionRoom(t *testing.T) {
+	h := newFlowHarness(t)
+	h.openStream(4 << 20)
+	credit := connCredit(t, h.fromServer(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 6<<20-h2InitWindow) }))
+	var sent int64
+	for id := uint32(1); id <= 31; id += 2 {
+		if id > 1 {
+			h.fromClient(func(fr *http2.Framer) {
+				fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true})
+			})
+		}
+		h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, id, 16<<10) })
+		sent += 16 << 10
+		credit += connCredit(t, h.fromServer(func(fr *http2.Framer) {
+			fr.WriteWindowUpdate(id, 16<<10)
+			fr.WriteWindowUpdate(0, 16<<10)
+		}))
+		h.c.mu.Lock()
+		full := int64(h.c.streams[id].up.cap)
+		h.c.mu.Unlock()
+		h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, id, int(full)) })
+		sent += full
+	}
+	h.c.mu.Lock()
+	for _, s := range h.c.streams {
+		s.up.cap = h2InitWindow
+	}
+	h.c.mu.Unlock()
+
+	// Another request uploads 512 KiB twice; its handler reads each at once.
+	const id, chunk = 33, 512 << 10
+	h.fromClient(func(fr *http2.Framer) {
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true})
+	})
+	for range 2 {
+		h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, id, chunk) })
+		sent += chunk
+		credit += connCredit(t, h.fromServer(func(fr *http2.Framer) {
+			fr.WriteWindowUpdate(id, chunk)
+			fr.WriteWindowUpdate(0, chunk)
+		}))
+	}
+	if room := h2InitWindow + credit - sent; room < flowConnFloor/2 {
+		t.Fatalf("with the slow streams' caps shrunk, %d of connection window is left for the others", room)
+	}
+}
