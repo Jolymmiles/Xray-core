@@ -11,6 +11,7 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/geodata/strmatcher"
+	xlua "github.com/xtls/xray-core/common/lua"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
@@ -600,6 +601,11 @@ func (r *Route) GetRuleTag() string {
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		// Rejected here, not in Init: an error from a deferred RequireFeatures
+		// callback can be lost, and this one must stop core.New.
+		if script := config.(*Config).Script; script != "" && !xlua.ScriptsEnabled {
+			return nil, errors.New("routing script ", script).Base(xlua.ErrScriptsDisabled)
+		}
 		r := new(Router)
 		if err := core.RequireFeatures(ctx, func(d dns.Client, ohm outbound.Manager, dispatcher routing.Dispatcher) error {
 			return r.Init(ctx, config.(*Config), d, ohm, dispatcher)
