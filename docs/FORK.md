@@ -172,6 +172,25 @@ guard it.
   the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
   closes its netlink handle concurrently. Covered by
   `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
+- `xray run` bounds its shutdown: after SIGINT or SIGTERM it waits at most
+  10 s (`closeTimeout` in `main/run.go`) for `Instance.Close`, then prints
+  `Timed out while closing Xray.` and exits 1; a `Close` error prints
+  `Failed to close:` and exits 1. This ports XTLS/Xray-core#6164 (head
+  `09e5e23c24`), open upstream, where the CLI waits for `Close` without a
+  bound and ignores its error. Unlike that head, the exit waits for the
+  message at most 1 s (`exitMessageTimeout`), so a stdout nobody reads does
+  not hold the process. A feature whose `Close` never returns, such as
+  `app/geodata` waiting for a download nothing cancels, otherwise kept the
+  process relaying established connections and swallowing further SIGTERMs
+  until SIGKILL. The fork also subscribes to the signals before `Start`
+  (`23b5ebbb`); keep both when syncing `main/run.go`. Covered by
+  `TestShutdownAfterSignalIsBounded` (`main/run_shutdown_test.go`),
+  `TestShutdownSignalDuringStartup` and, on Linux,
+  `TestShutdownAfterSignalIsBoundedWhileStdoutIsBlocked`
+  (`main/run_shutdown_linux_test.go`),
+  `TestShutdownSignalEndsProxyingWhenCloseHangs` and
+  `TestShutdownSignalClosesRelayingXray`
+  (`testing/scenarios/shutdown_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.

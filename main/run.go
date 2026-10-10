@@ -71,6 +71,14 @@ var (
 	}()
 )
 
+// closeTimeout bounds the wait for Close after a shutdown signal. A feature
+// whose Close never returns would otherwise keep the process, and the
+// connections it still relays, alive until SIGKILL.
+const closeTimeout = 10 * time.Second
+
+// exitMessageTimeout bounds the wait for the shutdown failure message.
+const exitMessageTimeout = time.Second
+
 func executeRun(cmd *base.Command, args []string) {
 	if *dump {
 		clog.ReplaceWithSeverityLogger(clog.Severity_Warning)
@@ -100,13 +108,42 @@ func executeRun(cmd *base.Command, args []string) {
 		fmt.Println("Failed to start:", err)
 		os.Exit(-1)
 	}
-	defer server.Close()
 
 	// Explicitly triggering GC to remove garbage from config loading.
 	runtime.GC()
 	debug.FreeOSMemory()
 
 	<-osSignals
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- server.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			exitWithMessage("Failed to close:", err)
+		}
+	case <-time.After(closeTimeout):
+		exitWithMessage("Timed out while closing Xray.")
+	}
+}
+
+// exitWithMessage prints message and exits 1. The exit waits for the print
+// at most exitMessageTimeout: a stdout nobody reads must not keep the
+// process alive past its shutdown bound.
+func exitWithMessage(message ...interface{}) {
+	printed := make(chan struct{})
+	go func() {
+		fmt.Println(message...)
+		close(printed)
+	}()
+	select {
+	case <-printed:
+	case <-time.After(exitMessageTimeout):
+	}
+	os.Exit(1)
 }
 
 func dumpConfig() int {
