@@ -22,3 +22,6 @@ func (c *GeckoConfig) WrapPacketConnClient(conn net.PacketConn, dest *net.Destin
 func (c *GeckoConfig) WrapPacketConnServer(conn net.PacketConn, addr net.Addr, lc *finalmask.ListenConfig) (net.PacketConn, error) {
 	return NewGeckoConnServer(c, conn)
 }
+
+// MaySpliceDatagrams marks Gecko for finalmask.CheckDatagramIntegrity.
+func (c *GeckoConfig) MaySpliceDatagrams() {}

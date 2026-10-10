@@ -35,6 +35,7 @@ type UDPMask interface {
 type FinalMask struct {
 	tcpMasks     []TCPMask
 	udpMasks     []UDPMask
+	rawUDPErr    error
 	dialTCP      func(context.Context, net.Destination) (net.Conn, error)
 	listen       func(context.Context, net.Addr) (net.Listener, error)
 	dialUDP      func(context.Context, net.Destination) (net.PacketConn, net.Addr, error)
@@ -42,11 +43,16 @@ type FinalMask struct {
 }
 
 func NewFinalMask(tcpMasks []TCPMask, udpMasks []UDPMask, dialTCP func(context.Context, net.Destination) (net.Conn, error), listen func(context.Context, net.Addr) (net.Listener, error), dialUDP func(context.Context, net.Destination) (net.PacketConn, net.Addr, error), listenPacket func(context.Context, net.Addr) (net.PacketConn, error)) *FinalMask {
+	var rawUDPErr error
+	if spliceUnchecked(udpMasks) {
+		rawUDPErr = errRawUDPSplice
+	}
 	slices.Reverse(tcpMasks)
 	slices.Reverse(udpMasks)
 	return &FinalMask{
 		tcpMasks:     tcpMasks,
 		udpMasks:     udpMasks,
+		rawUDPErr:    rawUDPErr,
 		dialTCP:      dialTCP,
 		dialUDP:      dialUDP,
 		listen:       listen,

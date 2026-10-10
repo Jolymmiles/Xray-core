@@ -259,6 +259,9 @@ func (h *Handler) init(ctx context.Context) error {
 		}
 		var pktConn net.PacketConn
 		if h.streamSettings != nil && h.streamSettings.FinalMask != nil {
+			if err := h.streamSettings.FinalMask.CheckRawUDP(); err != nil {
+				return nil, err
+			}
 			conn, err := h.streamSettings.FinalMask.DialUDP(ctx, dest)
 			if err != nil {
 				return nil, errors.New("failed to dial to dest").Base(err)

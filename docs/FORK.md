@@ -53,15 +53,87 @@ guard it.
 - The Hysteria client-pool cleaner (`clientManager.cleanOnce` in
   `transport/internet/hysteria/dialer.go`) snapshots the process-wide pool
   and releases the pool lock before it waits for an instance's status or a
-  client's lock; the port of XTLS/Xray-core#7107 (`2b0d898`) holds the read
-  lock across both waits. A forced client is closed before it is removed, and
-  removed only if the pool still holds that pointer, so overlapping passes
-  keep a replacement client. Keep this when upstream merges #7107 or when
-  syncing nearby code. Covered by
+  client's lock; upstream's XTLS/Xray-core#7107 (`c7dbfd5e`, v26.10.10) holds
+  the read lock across both waits. A forced client is closed before it is
+  removed, and removed only if the pool still holds that pointer, so
+  overlapping passes keep a replacement client. Keep this when syncing nearby
+  code. Covered by
   `transport/internet/hysteria/instance_cleanup_test.go`
   (`TestCleanerWaitingForInstanceStatusDoesNotBlockDials`,
   `TestCleanerWaitingForOneClientDoesNotBlockOthers`,
   `TestConcurrentCleanersKeepReplacementClients`).
+- The dispatcher routes through `Router.PickRouteTag`, the fork's
+  allocation-free picker, not `PickRoute`. A routing `script` (upstream
+  XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports
+  true while a script is loaded because a script can read HTTP attributes.
+  Mirror any new hook upstream adds to `PickRoute` in `PickRouteTag`. Covered
+  by `app/router/script_fastpath_test.go` and upstream's
+  `TestRouterScriptDNSDispatcherReentry`.
+  The scripts ship enabled, as upstream does, with two known risks the
+  maintainer accepted on 2026-10-10 (PR #33 review findings R1-1, R1-3).
+  `Pool` in `common/lua/pool.go` creates one state, about 177 KiB plus the
+  script's data, per concurrent call with no bound; a plain bound would
+  deadlock a routing script whose DNS lookup re-enters routing, and an
+  acquisition error sends the connection to the default outbound. Scripts
+  load in `Start`, after the inbound manager starts, so the first connections
+  and the TUN DNS takeover probe see only the JSON rules. Do not gate the
+  scripts again without the maintainer.
+- The XDNS client's `WriteTo` sends without the client mutex; upstream's
+  synchronous upload (XTLS/Xray-core#7095) holds it, so `Close`, which needs
+  that mutex to close the resolvers, waits forever behind a resolver write
+  that blocks until close. Covered by `TestClientCloseReleasesStalledWrite`
+  in `transport/internet/finalmask/xdns/hardening_test.go`.
+- The XDNS server reassembles upload fragments by client ID, fragment ID
+  and the 3-byte nonce the client repeats in every fragment of one packet;
+  upstream keys by client ID and fragment ID only. That one-byte ID repeats
+  every 256 packets, so after a lost fragment a later packet completed the
+  earlier entry and the server delivered a packet spliced from two. mKCP
+  without a mask has no integrity check and passed the splice into the TCP
+  stream (on loopback with 14 % receive-buffer drops, a 1 MiB echo through
+  VLESS over mKCP over XDNS came back corrupted in 5 of 5 runs). Clients keep
+  the nonce constant within a packet since fragmentation was added upstream
+  (`fc8f8a45`), so the wire format is unchanged. Covered by
+  `TestServerKeepsFragmentsOfDifferentPacketsApart` in
+  `transport/internet/finalmask/xdns/hardening_test.go`.
+- Gecko (`transport/internet/finalmask/salamander/conn.go`) quarantines a
+  message ID that received chunks of two messages: a repeated index must
+  carry the same bytes and chunk lengths must match the split every sender
+  uses, and an entry that receives a chunk that does not fit drops every
+  chunk until its original deadline, or until the global cap
+  (`geckoMaxReassembly`) evicts it as the oldest entry. Upstream keys
+  reassembly by remote address and a one-byte, sequential message ID only,
+  so after a lost chunk a later message completed the earlier one. Do not
+  restart an entry from the conflicting chunk: arrival order does not tell
+  which message is newer.
+  The wire format has no message identity, so a mix that stays consistent
+  until it completes is still delivered and only whole-datagram integrity
+  above Gecko rejects it. Gecko therefore needs an `mkcp-legacy` mask
+  without a header (FNV checksum or AES-128-GCM) listed before it, except
+  under a QUIC transport (hysteria, xhttp, masque); upstream accepts it
+  anywhere. `CheckDatagramIntegrity` in
+  `transport/internet/finalmask/datagram_integrity.go` applies the rule to
+  the stream (JSON config build and `ToMemoryStreamConfig`, which also
+  serves protobuf configs and the HandlerService API). The UDP dialer, the
+  UDP hub and WireGuard use the masks whatever the stream network is, with
+  no QUIC above them, so they call `FinalMask.CheckRawUDP`, which grants no
+  QUIC exemption. Plain salamander does not fragment and stays allowed
+  everywhere. Covered by `gecko_reassembly_test.go` in that package, the
+  gecko cells of `TestHysteriaProcessClientMatrix`
+  (`common/singmux/hysteria_integration_test.go`),
+  `TestGeckoRequiresDatagramIntegrity`
+  (`infra/conf/transport_finalmask_gecko_test.go`),
+  `TestToMemoryStreamConfigRequiresDatagramIntegrityForGecko`
+  (`transport/internet/gecko_integrity_test.go`),
+  `TestRawUDPRefusesGeckoWithoutIntegrity`
+  (`transport/internet/udp/gecko_integrity_test.go`) and
+  `TestRawUDPInboundsRefuseGeckoUnderNominalQUIC`.
+- WireGuard's TUN wrappers close once: wireguard-go closes the device itself
+  when it shuts down after a failed bind, and the owner closes it again.
+  Upstream's netstack TUN (`proxy/wireguard/netstack.go`) panics on the
+  second close and takes down a running instance that added such an inbound;
+  the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
+  closes its netlink handle concurrently. Covered by
+  `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.

@@ -102,6 +102,68 @@ func TestServerDropsShortFragmentQuery(t *testing.T) {
 	}
 }
 
+// fragmentQuery packs one upload fragment as a client sends it: client ID,
+// kind 3|0xC0, the packet's 3-byte nonce, fragment ID, index and count, data.
+func fragmentQuery(t *testing.T, domain *Domain, clientID [8]byte, nonce [3]byte, fragID, index, count byte, data string) []byte {
+	t.Helper()
+	payload := make([]byte, 15+len(data))
+	copy(payload, clientID[:])
+	payload[0] |= TypeMap[TypeTXT]
+	payload[8] = 3 | 0xC0
+	copy(payload[9:12], nonce[:])
+	payload[12], payload[13], payload[14] = fragID, index, count
+	copy(payload[15:], data)
+	return packTXTQuery(t, domain, payload)
+}
+
+// The fragment ID is one byte, so a busy client reuses it within the fragment
+// TTL. When a fragment of the earlier packet was lost, the later packet's
+// fragments must not complete the earlier packet's entry: the server would
+// deliver a packet spliced from two, and a transport without its own
+// integrity check (mKCP without a mask) passes the splice into the stream.
+func TestServerKeepsFragmentsOfDifferentPacketsApart(t *testing.T) {
+	conn, err := NewServer(hardeningConfig(), newBlockingPacketConn())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	server := conn.(*xdnsServer)
+	domain := hardeningTestDomain(t)
+	clientID := [8]byte{0x10, 1, 2, 3, 4, 5, 6, 7}
+	from := &net.UDPAddr{IP: net.IP{192, 0, 2, 1}, Port: 53}
+
+	queries := [][]byte{
+		// Packet A loses its middle fragment.
+		fragmentQuery(t, domain, clientID, [3]byte{0xA, 0xA, 0xA}, 7, 0, 3, "A0A0"),
+		fragmentQuery(t, domain, clientID, [3]byte{0xA, 0xA, 0xA}, 7, 2, 3, "A2A2"),
+		// Packet B reuses fragment ID 7 and arrives whole.
+		fragmentQuery(t, domain, clientID, [3]byte{0xB, 0xB, 0xB}, 7, 0, 3, "B0B0"),
+		fragmentQuery(t, domain, clientID, [3]byte{0xB, 0xB, 0xB}, 7, 1, 3, "B1B1"),
+		fragmentQuery(t, domain, clientID, [3]byte{0xB, 0xB, 0xB}, 7, 2, 3, "B2B2"),
+	}
+	go func() {
+		for _, query := range queries {
+			server.read(query, from)
+		}
+	}()
+
+	delivered := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		if n, _, err := conn.ReadFrom(buf); err == nil {
+			delivered <- string(buf[:n])
+		}
+	}()
+	select {
+	case packet := <-delivered:
+		if packet != "B0B0B1B1B2B2" {
+			t.Fatalf("server delivered %q, want packet B %q", packet, "B0B0B1B1B2B2")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server delivered no packet; want packet B")
+	}
+}
+
 // DNS over TCP prefixes every message with its length as a big-endian uint16
 // (RFC 1035 section 4.2.2).
 func TestTCPResolverFramesMessagesWithLength(t *testing.T) {
@@ -138,8 +200,8 @@ func TestFragManagerForgetsClientsWithoutFragments(t *testing.T) {
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if len(manager.m) != 0 || len(manager.sizem) != 0 {
-		t.Fatalf("after reassembly: %d fragment entries, %d client counters; want none", len(manager.m), len(manager.sizem))
+	if len(manager.m) != 0 {
+		t.Fatalf("after reassembly: %d fragment entries; want none", len(manager.m))
 	}
 }
 
@@ -177,7 +239,6 @@ func newHardeningClient(t *testing.T, resolver Resolver) *xdnsClient {
 		resolvers:     []Resolver{resolver},
 		resolverSends: make([]atomic.Uint32, 1),
 		readCh:        make(chan packet),
-		sendCh:        make(chan []byte, 16),
 		poolCh:        make(chan struct{}, pollLimit),
 		closeCh:       make(chan struct{}),
 	}
@@ -228,18 +289,97 @@ func TestClientPollAfterDataIsEmpty(t *testing.T) {
 	}
 }
 
-// When nothing drains the send queue, WriteTo must report the lost packet
-// instead of claiming success.
-func TestClientReportsFullSendQueue(t *testing.T) {
-	client := newHardeningClient(t, newRecordingResolver())
+// WriteTo reports success only for a packet it handed to a resolver. A burst
+// larger than the send queue the client once had must reach the resolver
+// whole instead of being dropped behind a successful return.
+func TestClientHandsEveryWrittenPacketToAResolver(t *testing.T) {
+	resolver := newRecordingResolver()
+	client := newHardeningClient(t, resolver)
 	defer close(client.closeCh)
-	for i := range cap(client.sendCh) {
-		if _, err := client.WriteTo([]byte{byte(i)}, &net.UDPAddr{}); err != nil {
-			t.Fatalf("write %d into a free queue: %v", i, err)
+	domain := client.domains[0]
+
+	const burst = 32
+	for i := range burst {
+		if n, err := client.WriteTo([]byte{byte(i)}, &net.UDPAddr{}); n != 1 || err != nil {
+			t.Fatalf("write %d = (%d, %v), want (1, nil)", i, n, err)
 		}
 	}
-	if n, err := client.WriteTo([]byte("overflow"), &net.UDPAddr{}); n != 0 || err == nil {
-		t.Fatalf("WriteTo on a full queue = (%d, %v), want (0, error)", n, err)
+	for i := range burst {
+		select {
+		case query := <-resolver.sent:
+			if kind := queryKind(t, domain, query); kind != 3 {
+				t.Fatalf("query %d kind = %d, want data (3)", i, kind)
+			}
+		default:
+			t.Fatalf("resolver got %d of %d written packets", i, burst)
+		}
+	}
+}
+
+// stalledResolver blocks every Send until it is closed, like a resolver conn
+// behind dialerProxy whose writes wait for Close.
+type stalledResolver struct {
+	entered   chan struct{}
+	enterOnce sync.Once
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newStalledResolver() *stalledResolver {
+	return &stalledResolver{entered: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (r *stalledResolver) Addr() *stdnet.UDPAddr {
+	return &stdnet.UDPAddr{IP: stdnet.IP{192, 0, 2, 53}, Port: 53}
+}
+
+func (r *stalledResolver) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *stalledResolver) Send([]byte) {
+	r.enterOnce.Do(func() { close(r.entered) })
+	<-r.closed
+}
+
+func (r *stalledResolver) Close() { r.closeOnce.Do(func() { close(r.closed) }) }
+
+// WriteTo sends synchronously, so a stalled resolver write blocks it. Closing
+// the client must still reach the resolvers and release that write.
+func TestClientCloseReleasesStalledWrite(t *testing.T) {
+	resolver := newStalledResolver()
+	t.Cleanup(resolver.Close)
+	client := newHardeningClient(t, resolver)
+
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		_, _ = client.WriteTo([]byte("payload"), &net.UDPAddr{})
+	}()
+	select {
+	case <-resolver.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WriteTo never reached the resolver")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		resolver.Close() // release the write so both goroutines finish
+		<-closed
+		<-written
+		t.Fatal("Close blocked behind a stalled resolver write")
+	}
+	select {
+	case <-written:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WriteTo stayed blocked after Close")
 	}
 }
 

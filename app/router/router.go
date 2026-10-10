@@ -28,6 +28,8 @@ type Router struct {
 	domainRuleIndex     *strmatcher.MphMatcherGroup
 	nonAggregateRules   []indexedRule
 	simpleTargetIPRules bool
+	scriptPath          string
+	script              *scriptEngine
 	balancers           atomic.Pointer[map[string]*Balancer]
 	dns                 dns.Client
 
@@ -69,6 +71,7 @@ func (r *Router) currentBalancers() map[string]*Balancer {
 // Init initializes the Router.
 func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm outbound.Manager, dispatcher routing.Dispatcher) error {
 	r.domainStrategy = config.DomainStrategy
+	r.scriptPath = config.Script
 	r.dns = d
 	r.ctx = ctx
 	r.ohm = ohm
@@ -81,6 +84,10 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 
 // PickRoute implements routing.Router.
 func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
+	if r.script != nil {
+		return r.script.pickRoute(ctx)
+	}
+
 	originalCtx := ctx
 	rule, ctx, err := r.pickRouteInternal(ctx)
 	if err != nil {
@@ -98,8 +105,17 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 
 // PickRouteTag returns the part of a route decision used by the dispatcher
 // without allocating a Route wrapper. PickRoute remains the stable feature API
-// for callers that need the resolved routing context or group tags.
+// for callers that need the resolved routing context or group tags. A routing
+// script decides here exactly as it does in PickRoute.
 func (r *Router) PickRouteTag(ctx routing.Context) (outboundTag string, ruleTag string, err error) {
+	if r.script != nil {
+		route, err := r.script.pickRoute(ctx)
+		if err != nil {
+			return "", "", err
+		}
+		return route.GetOutboundTag(), route.GetRuleTag(), nil
+	}
+
 	originalCtx := ctx
 	var rule *Rule
 	if r.domainStrategy == Config_IpIfNonMatch {
@@ -272,10 +288,11 @@ func (r *Router) RemoveRule(tag string) error {
 	return nil
 }
 
-// NeedsSniffingAttributes reports whether any active route rule consumes HTTP
-// attributes. The dispatcher uses it to avoid collecting unused headers.
+// NeedsSniffingAttributes reports whether any active route rule, or a routing
+// script, may consume HTTP attributes. The dispatcher uses it to avoid
+// collecting unused headers.
 func (r *Router) NeedsSniffingAttributes() bool {
-	return r.needsSniffingAttributes.Load()
+	return r.script != nil || r.needsSniffingAttributes.Load()
 }
 
 // ListRule implements routing.Router
@@ -532,6 +549,13 @@ func routingRuleNeedsTargetIPs(rule *RoutingRule) bool {
 
 // Start implements common.Runnable.
 func (r *Router) Start() error {
+	if r.scriptPath != "" {
+		engine, err := newScriptEngine(r.scriptPath, r)
+		if err != nil {
+			return errors.New("failed to initialize routing script").Base(err)
+		}
+		r.script = engine
+	}
 	return nil
 }
 
@@ -546,6 +570,9 @@ func closeWebhooks(rules []*Rule) {
 
 // Close implements common.Closable.
 func (r *Router) Close() error {
+	if r.script != nil {
+		r.script.close()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	closeWebhooks(r.currentRules())
