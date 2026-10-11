@@ -60,6 +60,9 @@ MIHOMO_E2E_BIN=/path/to/mihomo SING_BOX_E2E_BIN=/bin/true \
   Mihomo clients in stream-up and packet-up, governor on and off, plus the
   SETTINGS each server advertises: all 10 cases pass on `7d61adc0`.
 - `TestXHTTPMuxCoolProcess`: 6/6 pass on `7d61adc0`.
+- Both were run again on `a79b4aac`, the server with its default send
+  window, against Mihomo Meta v1.19.32 (release binary, linux/amd64): 10 of
+  10 and 6 of 6 pass.
 
 ## Behavior gates
 
@@ -238,7 +241,10 @@ twenty streams, not growth. At 100 Mbit/s the same scenario holds 12.7 MB
 before and 12.6 MB after, worst 13.9 MB both.
 
 The same scenario against other clients, three runs each, and eight
-downloads at RTT 150 ms, two runs each: the limit must hold for every client
+downloads at RTT 150 ms, two runs each (the table is `323ca8b1`; on
+`60e39569` all seven peak at 22.9 to 23.9 MB at 4 MiB and 16.7 to 17.6 MB
+at 2 MiB, none killed, and read 71.6 to 72.3 MB/s, with one run of 47.4 on
+v26.7.28): the limit must hold for every client
 and must not slow one whose connection credit comes otherwise. Without the
 limit every one of these clients was killed, 3 of 3 (`439f0110`).
 
