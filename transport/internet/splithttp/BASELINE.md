@@ -370,10 +370,15 @@ Limits:
 - The limit is per connection, so with three connections and hundreds of
   streams the client is still near 40 MiB: 192 slow downloads of 4 MB
   started over ten seconds kill it 3 of 3 on stock, on `323ca8b1` and on
-  `5ae2b3de`. Its process holds about twice the 15 MB the windows account
-  for; that this is the Go heap's headroom is an estimate, not a
-  measurement. A client buffer of its own (`policy.bufferSize` 0) changes
-  nothing, and 192 open sessions with 1000-byte bodies take 12.4 MB.
+  `5ae2b3de`. Its process holds about 30 MB above its idle 12.4 MB where
+  the windows account for 15. That is not the garbage collector's headroom:
+  with the client limit at 60 MiB the client peaks at 43.0 MB, at 38.6 with
+  `GOGC=50` and at 36.8 with `GOGC=25`, and with twenty streams `GOGC`
+  changes nothing (23.6, 23.6, 23.2 MB). Nor a client buffer of its own
+  (`policy.bufferSize` 0 changes nothing), nor the sessions as such (192
+  open with 1000-byte bodies take 12.4 MB). Every figure here fits about
+  1.2 times the limit on each connection and 80 KB for each stream data
+  moves on, above the idle client; where those 80 KB are was not found.
 - `5ae2b3de` against `323ca8b1`: twenty slow readers 23.7 against 23.5 MB
   and eight downloads at RTT 150 ms 72.1 against 71.6 MB/s (three runs);
   at 100 Mbit/s the request beside eight downloads p50 / p95 66 / 310
