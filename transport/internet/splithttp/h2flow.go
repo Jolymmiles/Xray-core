@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -143,17 +144,18 @@ const flowShownFull = max(h2InitWindow, flowShownDown)
 // in downRelease hands on is all the client has returned, so the limit holds
 // nothing back from it, and what such a client holds is up to its own
 // governor.
-func (c *flowConn) shownDown(real int32) int32 {
-	c.shownLimited = !c.client && c.sendWindow != 0 && real > h2InitWindow
+//
+// found says the frame carries an initial window at all. One that does not
+// changes nothing here: what the stack was shown stands, and shownLimited
+// with it.
+func (c *flowConn) shownDown(real int32, found bool) int32 {
+	if found {
+		c.shownLimited = !c.client && c.sendWindow != 0 && real > h2InitWindow
+	}
 	if c.shownLimited {
 		return flowShownLimited
 	}
 	return flowShownFull
-}
-
-// first is the first of two values.
-func first[A, B any](a A, _ B) A {
-	return a
 }
 
 // initialWindow is the last SETTINGS_INITIAL_WINDOW_SIZE in payload.
@@ -557,6 +559,7 @@ func (l *flowLearned) note(now time.Time, init, cap int32) {
 }
 
 type flowStream struct {
+	id            uint32
 	up, down      flowWindow
 	upSent        int64
 	upForwarded   int64
@@ -564,6 +567,9 @@ type flowStream struct {
 	downForwarded int64
 	clientDone    bool
 	serverDone    bool
+	// refused says the send window kept credit from the stream and it waits
+	// in flowConn.downRefused for room.
+	refused bool
 }
 
 type flowConn struct {
@@ -645,6 +651,9 @@ type flowConn struct {
 	// shownLimited says the server's stack was shown flowShownLimited for
 	// the client's initial window, see shownDown and downRelease.
 	shownLimited bool
+	// downRefused are the streams the send window kept credit from, in the
+	// order it did, see releaseRefused.
+	downRefused []*flowStream
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -852,6 +861,7 @@ func (c *flowConn) release() {
 func (c *flowConn) releaseLocked() {
 	c.streams = map[uint32]*flowStream{}
 	c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned = 0, 0, 0, 0
+	c.downRefused = nil
 	c.opened = nil
 	c.wqueue = nil
 	clear(c.wcredit)
@@ -1387,7 +1397,51 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
 	}
-	return min(rel, max(c.sendWindow-c.clientHolds(), int64(c.clientShown)-held))
+	room := max(c.sendWindow-c.clientHolds(), int64(c.clientShown)-held)
+	if room < rel && !s.refused {
+		s.refused = true
+		if len(c.downRefused) >= 64 && len(c.downRefused) >= 2*len(c.streams) {
+			c.downRefused = slices.DeleteFunc(c.downRefused, func(s *flowStream) bool { return s.serverDone })
+		}
+		c.downRefused = append(c.downRefused, s)
+	}
+	return min(rel, room)
+}
+
+// releaseRefused hands the streams the send window kept credit from what
+// room there is now, oldest first. Nothing else would: such a stream is
+// looked at again when its own client returns credit, and one that was left
+// with no window, or with less than a client returns credit for, sends
+// nothing that would bring any. A client that reads what it held of other
+// streams returns that through the connection, or on those streams.
+//
+// Credit waits here as anywhere, see hold: a stream whose stack still has a
+// quantum of window sends, and is looked at again when that is read. Each
+// stream is looked at once a call; downRelease puts one back that the send
+// window still keeps credit from.
+func (c *flowConn) releaseRefused(out []byte) []byte {
+	for n := len(c.downRefused); n > 0; n-- {
+		s := c.downRefused[0]
+		if !s.serverDone && c.sendWindow != 0 && c.sendWindow <= c.clientHolds() {
+			return out
+		}
+		c.downRefused[0] = nil
+		c.downRefused = c.downRefused[1:]
+		if s.serverDone {
+			continue
+		}
+		s.refused = false
+		rel := c.downRelease(s)
+		if rel <= 0 || hold(rel, int64(c.clientShown)+s.downForwarded-s.downSent, quantum(s.down.cap)) {
+			continue
+		}
+		c.forwardDown(s, rel)
+		out = appendWindowUpdate(out, s.id, rel)
+	}
+	if len(c.downRefused) == 0 {
+		c.downRefused = nil
+	}
+	return out
 }
 
 func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {
@@ -1416,27 +1470,19 @@ func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found
 // for each stream shown + forwarded <= real + returned. Where no value is
 // low enough, ok is false and the connection has to go. Streams the sender
 // has finished do not count: nothing more is sent on them.
-//
-// A stream whose sender has used all it was forwarded (spent) needs no value
-// that low: shown nothing, it has no window left, which is all the receiver
-// asks of it, and it is forwarded nothing more until the receiver's credit
-// has made up the difference.
-func (c *flowConn) changeInitialWindow(payload []byte, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done, spent bool)) (ok bool) {
+func (c *flowConn) changeInitialWindow(payload []byte, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
 	real, show, found := rewriteInitialWindow(payload, start)
 	if !found {
 		return true
 	}
 	for _, s := range c.streams {
-		returned, forwarded, done, spent := credit(s)
+		returned, forwarded, done := credit(s)
 		if done {
 			continue
 		}
 		lim := int64(real) + returned - forwarded
 		if lim < 0 {
-			if !spent {
-				return false
-			}
-			lim = 0
+			return false
 		}
 		show = int32(min(int64(show), lim))
 	}
@@ -1485,7 +1531,7 @@ func (r *flowReader) frame(f h2Frame) {
 				return
 			}
 			now := time.Now()
-			s = &flowStream{}
+			s = &flowStream{id: f.stream}
 			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
 			s.down.cap = max(c.downLearned.value(now, c.down.init), flowStartWindow)
 			c.streams[f.stream] = s
@@ -1515,8 +1561,8 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(first(initialWindow(payload))), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool, bool) {
-				return s.down.returned, s.downForwarded, s.serverDone, c.shownLimited && s.downForwarded <= s.downSent
+			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(initialWindow(payload)), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
+				return s.down.returned, s.downForwarded, s.serverDone
 			}) {
 				c.giveUp()
 				return out
@@ -1631,6 +1677,9 @@ func (r *flowReader) boundary(out []byte) []byte {
 		}
 	}
 	c.opened = c.opened[:0]
+	if len(c.downRefused) > 0 && c.down.enabled() {
+		out = c.releaseRefused(out)
+	}
 	if c.client {
 		out = c.appendPing(out)
 	}
@@ -1671,8 +1720,8 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.up.enabled() && !c.changeInitialWindow(payload, max(c.up.init, flowShownUp), &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool, bool) {
-				return s.up.returned, s.upForwarded, s.clientDone, false
+			if c.up.enabled() && !c.changeInitialWindow(payload, max(c.up.init, flowShownUp), &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
+				return s.up.returned, s.upForwarded, s.clientDone
 			}) {
 				c.giveUp()
 				return out

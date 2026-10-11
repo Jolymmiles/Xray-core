@@ -169,6 +169,16 @@ func downCountersAgree(c *flowConn) error {
 		return fmt.Errorf("unfinished streams: %d forwarded %d sent %d returned %d, the connection counts %d forwarded %d sent %d returned %d",
 			open, forwarded, sent, returned, c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned)
 	}
+	// A stream marked refused waits in downRefused, once.
+	waiting := map[*flowStream]int{}
+	for _, s := range c.downRefused {
+		waiting[s]++
+	}
+	for id, s := range c.streams {
+		if want := map[bool]int{true: 1}[s.refused]; waiting[s] != want && !s.serverDone {
+			return fmt.Errorf("stream %d: refused %v, %d times among the refused", id, s.refused, waiting[s])
+		}
+	}
 	return nil
 }
 
