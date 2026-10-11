@@ -319,7 +319,8 @@ stock Go differs from both as the rest of this file says:
   no credentials for that. With a send window `5ae2b3de` to `ce4624fc`
   forwarded 245760 and closed in that wider range; `09136349` forwards
   196609 again (`TestFlowInitialWindowDecrease`, with the send window off
-  and at its default).
+  and at its default), and `0a5f8c08` keeps it so after a SETTINGS frame that
+  carries no initial window (`TestFlowSendWindowSettingsWithoutWindow`).
 - Passive, on the path, TLS records only. A governed server during uploads,
   and a governed client during downloads, sends fewer credit records: one
   per 16 to 32 KiB the reader took instead of one per 4 KiB or so. A
@@ -399,10 +400,13 @@ Limits:
   then opens with 212993 bytes of window, not 262144, and has its whole cap
   once data moves (`TestFlowSendWindowCreditFollowsData`). A lowering of the
   initial window that could be passed on before any data still can; one
-  that comes while data lies unread and the stack has credit it has not
-  used is passed on in a range up to 49151 bytes narrower than with 65535
-  shown, and one that comes when the stack has used all it was forwarded is
-  always passed on, which it was not (`TestFlowSendWindowLoweringWhenSpent`).
+  that comes while data lies unread is passed on in a range up to 49151
+  bytes narrower than with 65535 shown. One under what the stack was
+  forwarded gives the connection up as before, with the send window as
+  without (`TestFlowSendWindowLoweringUnderForwarded`); `09136349` passed
+  it on where the stack had used all it was forwarded, by showing the stack
+  nothing, and `0a5f8c08` took that out again: a stream opened then could stay
+  at no window for good.
   `09136349` against `a21c075d`, five shuffled runs: one download 70.0
   against 68.2 MB/s, at RTT 150 ms 24.1 against 23.5; eight downloads at
   RTT 150 ms 70.8 against 71.5; twenty slow readers 23.9 against 23.6 MB;
@@ -444,6 +448,24 @@ Limits:
   35.7 MB target, and `GOGC` changes nothing (23.6, 23.6, 23.2 MB, three
   runs each). A client buffer of its own (`policy.bufferSize` 0) changes
   nothing either.
+- A stream the limit kept credit from waits in a queue and is handed the
+  room that frees, oldest first, after any frame from the client
+  (`releaseRefused`, `0a5f8c08`). Before, such a stream was looked at again only
+  when its own client returned credit, and one left with no window, or with
+  less than a Go client returns credit for, sent nothing that would bring
+  any: with the stack shown under 4 KiB after a lowering, a stream opened at
+  a full limit stayed where it was when the limit freed
+  (`TestFlowSendWindowRefusedStreamResumes`). Credit from the queue goes on
+  in quanta like any other (`TestFlowSendWindowRefusedCreditWaitsForAQuantum`);
+  a first version handed it on as it came and one download read 56.3
+  against 72.8 MB/s, 19.8 against 23.6 at RTT 150 ms. `0a5f8c08` against
+  `09136349`, five shuffled runs: one download 74.5 against 74.5 MB/s, at
+  RTT 150 ms 23.6 against 23.6; eight downloads 114.0 against 114.2, at
+  RTT 150 ms 72.1 against 72.1; twenty slow readers 23.3 against 23.4 MB;
+  192 short, completed downloads 35.5 against 35.5 MB; 192 slow downloads
+  at 2 MiB 36.1 against 34.6 MB, none killed, at 4 MiB killed 5 of 5 both;
+  at 100 Mbit/s the request beside eight downloads 65 / 350 against
+  66 / 291 ms and beside twenty slow readers 52 / 331 against 52 / 383 ms.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
