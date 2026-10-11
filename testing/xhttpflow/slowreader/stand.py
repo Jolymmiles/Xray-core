@@ -57,7 +57,8 @@ directory and printed when the stand fails.
 A run is valid only if every upload was still sending at the deadline and the
 server's memory could be read. A download run is valid only if every download
 was still reading at the deadline, or the client was killed at its limit, and
-the memory of both could be read. A small request that fails or does not finish
+the memory of both could be read; a download read to its end before the
+deadline makes the run invalid, as its reader then stood idle. A small request that fails or does not finish
 within 10 s counts as a 10 s sample, so a stall can only make a run worse.
 Invalid runs are reported and left out of the table, and a single one makes
 the stand exit with status 1: the table and the JSON lines still come out,
@@ -175,7 +176,7 @@ def server_config(private_key, h2flow=None):
             "inbounds": [{"listen": "10.9.0.1", "port": 443, "protocol": "vless",
                           "settings": {"clients": [{"id": UUID, "email": "u@x"}], "decryption": "none"},
                           "streamSettings": {"network": "xhttp", "security": "reality",
-                                             "xhttpSettings": {"extra": {"xmux": XMUX, "h2Flow": h2flow or {"enabled": True}}},
+                                             "xhttpSettings": {"extra": {"xmux": XMUX, "h2Flow": {"enabled": True} if h2flow is None else h2flow}},
                                              "realitySettings": {"target": "127.0.0.1:8444", "shortIds": ["ab12"],
                                                                  "privateKey": private_key,
                                                                  "serverNames": ["www.example.com"]}}}],
@@ -365,8 +366,8 @@ def upload(deadline, result, rate=UPLOAD_RATE):
 def download(deadline, rate, result, size=DOWNLOAD_BYTES, delay=0.0, app_buffer=0):
     """Reads a download of size bytes until deadline, at rate bytes per second
     if rate is set, starting after delay. result gets the bytes read and how
-    it ended; one read to its end before the deadline is kept open until
-    then."""
+    it ended: "deadline" if it was still reading then, "complete" if it had
+    read all of it before, which it then keeps open until the deadline."""
     got = 0
     time.sleep(max(0, min(delay, deadline - time.time() - 1)))
     try:
@@ -407,7 +408,7 @@ def download(deadline, rate, result, size=DOWNLOAD_BYTES, delay=0.0, app_buffer=
                 ahead = start + got / rate - time.time()
                 if ahead > 0:
                     time.sleep(min(ahead, max(0, deadline - time.time())))
-        result.update(got=got, end="deadline")
+        result.update(got=got, end="complete" if got >= size else "deadline")
     except OSError as e:
         result.update(got=got, end=f"error: {e}")
     finally:
