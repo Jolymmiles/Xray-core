@@ -25,14 +25,15 @@ func (c *Config) h2FlowOn() bool {
 }
 
 // flowServerSendWindow is what a governed server lets one connection's client
-// hold of its data unless configured otherwise: the window a Go client grants
+// hold of its data on unfinished streams unless configured otherwise: the window a Go client grants
 // one stream. A client under a memory limit, such as a phone's network
 // extension, holds a few connections of that and stays within tens of MiB.
 const flowServerSendWindow = 4 << 20
 
 // h2SendWindow returns what one connection's client may hold of a governed
-// server's data, 0 for no limit: "h2Flow.maxConnectionSendWindow", where -1
-// lifts the limit and unset means flowServerSendWindow.
+// server's data on unfinished streams, 0 for no limit:
+// "h2Flow.maxConnectionSendWindow", where -1 lifts the limit and unset means
+// flowServerSendWindow.
 func (c *Config) h2SendWindow() int64 {
 	switch w := c.GetH2Flow().GetMaxConnectionSendWindow(); {
 	case w < 0:

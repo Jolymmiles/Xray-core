@@ -129,7 +129,7 @@ type flowListener struct {
 	up, down flowLimit
 	// connWindow is the connection receive window the local server grants.
 	connWindow int32
-	// sendWindow is what one connection's client may hold in all, 0 for no
+	// sendWindow is what one connection's client may hold, 0 for no
 	// limit, see flowConn.downRelease.
 	sendWindow int64
 }
@@ -581,7 +581,7 @@ type flowConn struct {
 	upConnGrant      int64
 	upConnGrantKnown bool
 
-	// sendWindow is what this connection's client may hold in all, 0 for no
+	// sendWindow is what this connection's client may hold, 0 for no
 	// limit, see downRelease. The counters under it say what it holds now,
 	// see clientHolds: over the streams the server has not finished, how many
 	// there are, what the server was forwarded and what the client returned.

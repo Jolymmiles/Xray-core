@@ -83,9 +83,9 @@ type H2FlowConfig struct {
 	// 0 keeps the default.
 	MaxStreamReceiveWindow     int32 `protobuf:"varint,2,opt,name=maxStreamReceiveWindow,proto3" json:"maxStreamReceiveWindow,omitempty"`
 	MaxConnectionReceiveWindow int32 `protobuf:"varint,3,opt,name=maxConnectionReceiveWindow,proto3" json:"maxConnectionReceiveWindow,omitempty"`
-	// What one connection's client may hold of this server's data in all:
-	// unread data plus unused window, over every stream. 0 keeps the default,
-	// -1 lifts the limit.
+	// What one connection's client may hold of this server's data: unread
+	// data plus unused window, over the streams the server has not finished.
+	// 0 keeps the default, -1 lifts the limit.
 	MaxConnectionSendWindow int32 `protobuf:"varint,4,opt,name=maxConnectionSendWindow,proto3" json:"maxConnectionSendWindow,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache

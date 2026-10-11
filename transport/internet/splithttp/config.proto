@@ -21,9 +21,9 @@ message H2FlowConfig {
   // 0 keeps the default.
   int32 maxStreamReceiveWindow = 2;
   int32 maxConnectionReceiveWindow = 3;
-  // What one connection's client may hold of this server's data in all:
-  // unread data plus unused window, over every stream. 0 keeps the default,
-  // -1 lifts the limit.
+  // What one connection's client may hold of this server's data: unread
+  // data plus unused window, over the streams the server has not finished.
+  // 0 keeps the default, -1 lifts the limit.
   int32 maxConnectionSendWindow = 4;
 }
 

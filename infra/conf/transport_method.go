@@ -303,7 +303,7 @@ type SplitHTTPConfig struct {
 // "enabled" overrides XRAY_XHTTP_FLOW for this inbound or outbound; the
 // receive windows are what this side grants for data it receives.
 // "maxConnectionSendWindow" is what a governed server lets one connection's
-// client hold of its data in all; -1 lifts that limit.
+// client hold of its data on unfinished streams; -1 lifts that limit.
 type H2FlowConfig struct {
 	Enabled                    *bool `json:"enabled"`
 	MaxStreamReceiveWindow     int32 `json:"maxStreamReceiveWindow"`

@@ -181,85 +181,169 @@ Limits:
 ### Credit quanta and the connection send window
 
 Measured for two changes: credit is handed on in quanta of 16 to 32 KiB
-(`hold`), and the streams of one server connection share
+(`hold`), and the unfinished streams of one server connection share
 `h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set.
 
-- Revisions, clean trees: before `da42e75f`, after `b7089bb2`, each built
-  with Go 1.27.2 and `-tags http2legacy`. Client: official Xray v26.10.10,
-  XHTTP over REALITY, `xmux.maxConnections` 3.
-- The stand is the larger driver the slow-reader stand was cut from; it is
-  not in this repository. Two network namespaces, veth, netem 1 Gbit/s with
-  RTT 50 ms unless stated (the stand tops out near 114 MB/s), TCP buffers up
-  to 32 MB. 12 s per run, five rounds in shuffled order, medians.
-- Client memory is `RssAnon` of the client process sampled every 50 ms. A
-  client above 40 MiB is killed at once and the run is marked: a model of a
-  process memory limit such as the one on a phone's network extension.
-- CPU is process time (user and system) per gigabyte moved. It includes the
-  kernel's work on the emulated link, so only the columns compare.
+The stand is `testing/xhttpflow/slowreader/stand.py` with
+`--workload downloads` or `--workload uploads`; see its head for what a run
+is and when it counts.
 
-Twenty downloads each read at 100 KB/s, 1 Gbit/s. "Stock" is the governor
-off, "no limit" is `maxConnectionSendWindow: -1`:
+```sh
+go build -o origin ./testing/xhttpflow/slowreader/origin
+S="sudo python3 testing/xhttpflow/slowreader/stand.py --origin ./origin --client /path/to/xray-v26.10.10"
+NOLIMIT='nolimit={"enabled": true, "maxConnectionSendWindow": -1}'
+# twenty slow readers
+$S --workload downloads --mbit 1000 --readers 20 --read-rate 100000 --client-limit-mb 40 \
+   --server stock=xray-da42e75f --h2flow 'stock={"enabled": false}' --server before=xray-da42e75f \
+   --server after=xray-439f0110 --server nolimit=xray-439f0110 --h2flow "$NOLIMIT" --runs 5
+# eight downloads, for --rtt 50, 150, 300; one download with --readers 1
+$S --workload downloads --mbit 1000 --rtt 150 --readers 8 --read-rate 0 \
+   --server before=xray-da42e75f --server after=xray-439f0110 \
+   --server nolimit=xray-439f0110 --h2flow "$NOLIMIT" --runs 5
+# four uploads; one with --readers 1
+$S --workload uploads --mbit 1000 --readers 4 --read-rate 0 \
+   --server before=xray-da42e75f --server after=xray-439f0110 --runs 5
+```
+
+- Revisions: before `da42e75f` (clean tree), after `439f0110` (its tree,
+  built before the commit was made), each with Go 1.27.2 and
+  `-tags http2legacy`. Client: official Xray v26.10.10, XHTTP over REALITY,
+  `xmux.maxConnections` 3. Host: linux/amd64 privileged container under
+  Docker Desktop (WSL2 kernel), AMD Ryzen 5 5600; the host was otherwise
+  idle but is a desktop.
+- 12 s per run, five runs per build, all shuffled together, medians. The
+  link is netem at 1 Gbit/s and RTT 50 ms unless stated; the stand tops out
+  near 114 MB/s.
+- Client memory is `RssAnon` of the client process sampled every 50 ms.
+  With `--client-limit-mb 40` a client above 40 MiB is killed at once: a
+  model of a process memory limit such as the one on a phone's network
+  extension.
+- CPU is the processor time of the Xray process, user and system, per
+  gigabyte moved. It includes the kernel's work on the emulated link, so
+  only the columns compare.
+
+Twenty downloads each read at 100 KB/s. "Stock" is the governor off, "no
+limit" is `maxConnectionSendWindow: -1`:
 
 | | Stock | Before | After | After, no limit |
 | --- | --- | --- | --- | --- |
-| Client memory, median / worst | 41.6 / 44.8 MB | 41.1 / 43.0 MB | 23.6 / 23.9 MB | 40.7 / 44.3 MB |
+| Client peak RssAnon, median / worst | 43.8 / 44.6 MB | 41.6 / 44.3 MB | 23.7 / 24.6 MB | 42.5 / 43.9 MB |
 | Client killed at 40 MiB | 5 of 5 | 5 of 5 | 0 of 5 | 5 of 5 |
-| Request beside them p50 / p95 | none pass | none pass | 52 / 243 ms | none pass |
+| Requests failed or over 10 s | 183 of 192 | 182 of 194 | 0 of 167 | 183 of 194 |
+| Median ping p50 / p95 | 10 / 10 s | 10 / 10 s | 52 / 115 ms | 10 / 10 s |
 
-The client dies 1.06 to 1.16 s after the start: it is the opening burst of
-twenty streams, not growth. At 100 Mbit/s the same scenario holds 13 to
-14 MB before and after.
+The client dies about 1.1 s after the start: it is the opening burst of
+twenty streams, not growth. At 100 Mbit/s the same scenario holds 12.7 MB
+before and 12.6 MB after, worst 13.9 MB both.
+
+The same scenario against other clients, server `439f0110`, three runs
+each. The limit rests on stream credit alone, which every client returns as
+it reads:
+
+| Client | With the limit: median / worst, killed | No limit: killed |
+| --- | --- | --- |
+| Xray v26.10.10, release | 24.2 / 24.7 MB, 0 of 3 | 3 of 3 |
+| Xray v26.9.30, release | 23.8 / 24.0 MB, 0 of 3 | 3 of 3 |
+| Xray v26.7.28, release | 23.9 / 24.0 MB, 0 of 3 | 3 of 3 |
+| Xray v26.5.9, release | 23.4 / 23.9 MB, 0 of 3 | 3 of 3 |
+| v26.10.10 built with `-tags http2legacy` | 23.5 / 23.6 MB, 0 of 3 | 3 of 3 |
+| v26.10.10 with `golang.org/x/net` v0.61.0 | 23.6 / 24.0 MB, 0 of 3 | 3 of 3 |
+| v26.10.10 with both | 23.5 / 23.9 MB, 0 of 3 | 3 of 3 |
 
 What the limit costs is the sum of many downloads on one connection on a
-long path, at most the limit per round trip. Speed in MB/s, three
-connections:
+long path, at most the limit per round trip. MB/s read, three connections:
 
 | | Before | After | After, no limit |
 | --- | --- | --- | --- |
-| 8 downloads, RTT 50 ms | 113.9 | 113.6 | |
-| 8 downloads, RTT 150 ms | 102.4 | 71.4 | 102.4 |
-| 8 downloads, RTT 300 ms | 74.5 | 31.0 | 65.1 |
-| One download, RTT 50 ms | 70.6 | 71.2 | |
-| One download, RTT 300 ms | 10.2 | 10.0 | |
-| One upload, RTT 50 ms | 81.6 | 81.3 | |
+| 8 downloads, RTT 50 ms | 114.1 | 114.1 | 114.1 |
+| 8 downloads, RTT 150 ms | 103.3 | 71.5 | 102.7 |
+| 8 downloads, RTT 300 ms | 74.8 | 31.0 | 74.1 |
+| One download, RTT 50 ms | 74.6 | 75.7 | |
+| One download, RTT 300 ms | 10.3 | 9.9 | |
 
-CPU seconds per gigabyte, server / client, 1 Gbit/s:
+CPU seconds per gigabyte, server / client:
 
 | | Before | After |
 | --- | --- | --- |
-| 4 uploads | 26.6 / 19.1 | 23.3 / 17.0 |
-| One upload | 27.3 / 19.8 | 24.0 / 17.6 |
-| 4 downloads and 4 uploads | 20.5 / 16.8 | 18.0 / 14.6 |
-| One download | 24.0 / 18.2 | 23.0 / 17.8 |
-| 8 downloads | 25.1 / 22.5 | 25.3 / 23.4 |
+| 4 uploads, 115 MB/s | 25.7 / 17.3 | 23.1 / 15.0 |
+| One upload, 91 MB/s | 24.5 / 17.1 | 22.1 / 14.9 |
+| 8 downloads | 23.3 / 20.9 | 23.6 / 21.9 |
+| One download | 22.2 / 17.2 | 21.6 / 17.3 |
 
-At 100 Mbit/s, RTT 50 ms, the request beside the load is unchanged: p50 /
-p95 66 / 268 against 66 / 255 ms beside 8 downloads, 65 / 176 against
-65 / 188 ms beside downloads and short requests, 52 / 474 against
-53 / 470 ms beside slow readers, 53 / 557 against 52 / 407 ms beside
-uploads into a slow server.
+At 100 Mbit/s, RTT 50 ms, the request beside the load does not change: p50 /
+p95 65 / 226 against 66 / 251 ms beside 8 downloads, 52 / 367 against
+52 / 352 ms beside twenty slow readers, 52 / 398 against 52 / 374 ms beside
+twenty uploads into a slow origin.
 
-`BenchmarkFlowRead` and `BenchmarkFlowWrite` do not move: 61.5 to 59.0 µs
-and 193.6 to 197.6 µs per MiB, 65 allocations each, medians of five. The
-replay connection has no system calls and no peer that answers credit, so
-the saving cannot show there; `TestFlowCreditWaitsForAQuantum` fixes the
-local effect instead, 128 KiB of credit in 4 WINDOW_UPDATE frames where
-there were 32.
+One frame from the client on a server connection with streams open past the
+limit (`BenchmarkFlowClientFrame`, `-benchtime=2000x`, medians of three).
+With the total found by walking the streams (`154e636c`) a SETTINGS frame
+cost 35 µs with 100 streams and 5.2 ms with 1000:
+
+| Frame | Streams | No limit | Limit |
+| --- | --- | --- | --- |
+| SETTINGS | 100 | 2.2 µs | 2.4 µs |
+| SETTINGS | 1000 | 29.4 µs | 30.7 µs |
+| WINDOW_UPDATE | 1000 | 2.5 µs | 2.5 µs |
+
+`BenchmarkFlowRead` and `BenchmarkFlowWrite` do not show the quanta: the
+replay connection has no system calls and no peer that answers credit.
+`TestFlowCreditWaitsForAQuantum` fixes the local effect instead: 128 KiB of
+credit in 4 WINDOW_UPDATE frames where there were 32.
+
+What an observer sees of these changes, against the governor before them;
+stock Go differs from both as the rest of this file says:
+
+- Handshake, SETTINGS values, the PING schedule, preface handling and the
+  replies to malformed or unauthenticated input are not touched; the
+  probe-comparison tests pass unchanged.
+- Passive, on the path, TLS records only. A governed server during uploads,
+  and a governed client during downloads, sends fewer credit records: one
+  per 16 to 32 KiB the reader took instead of one per 4 KiB or so. A
+  governed server with more than sixteen downloads starting on one
+  connection sends less in the first round trip, and with many downloads on
+  a long path less per round trip from then on.
+- A TLS terminator in front of the server reads the frames: it sees
+  WINDOW_UPDATE increments of 16 to 32 KiB from either governed end where
+  they were about 4 KiB, and a server that leaves stream window unused.
+- An active prober that cannot authenticate opens no download and sees
+  none of it.
+- Not measured: record sizes and timing were not captured and compared, and
+  nothing was run against a classifier. The record counts above follow from
+  the frame counts in the unit test, not from a capture.
 
 Limits:
 
-- The "no limit" cells at RTT 150 and 300 ms ran as a batch of their own
-  after the shuffled runs, on a host that was in use; the five runs at
-  300 ms spread from 53.5 to 75.0 MB/s. Whether the quanta slow many
-  downloads on a 300 ms path with the limit lifted is not settled by this.
+- The limit covers the streams the server has not finished. A download the
+  server has ended and the client has not read is outside it
+  (`TestFlowSendWindowLeavesFinishedDownloadsOut`): a Go client returns the
+  last of such a body through the connection only. Counting through the
+  connection's credit instead was tried and did not hold on the stand: the
+  client was killed at 40.0 to 44.1 MB in three runs of three, cause not
+  found.
 - The limit is per connection and the server does not know how many
   connections a client keeps: the client holds about the limit times its
   connections above its base of about 11 MB.
-- The limit is never below the stream window the client itself announces,
-  4 MiB for a Go client, so lower values do nothing for such clients.
+- The limit is never below the stream window the client announces, 4 MiB
+  for a Go client, so lower values do nothing for such clients. A client
+  with a governor of its own announces 65535 whatever its window, so a
+  governed bridge is held to the server's limit like any other client;
+  `-1` on its inbound lifts that.
 - A stream past the limit keeps the protocol's 65535 bytes: forty streams
-  opened at once may be sent 5.5 MiB, not 4 (`TestFlowSendWindowBoundsManyStreams`).
-- The client is Xray for linux/amd64, not a phone; kernel socket buffers are
-  not counted, and a spike shorter than 50 ms can be missed.
-- CPU differences of a few percent on downloads are inside the noise of
-  five runs; the upload rows repeat.
+  opened at once may be sent 5.5 MiB, not 4
+  (`TestFlowSendWindowBoundsManyStreams`).
+- A client that has returned nothing in small steps when the guard fires has
+  the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
+  client that credits at half its window would stop for good. A Go client
+  whose every reader is stopped from the first byte is such a connection too.
+- The client is Xray for linux/amd64, not a phone; kernel socket buffers
+  are not counted, and a spike shorter than 50 ms can be missed.
+- CPU differences on downloads are inside the noise of five runs; the
+  upload rows repeat across runs.
+- `TestFlowChainedGovernorsSlowReaders` stopped once in a full `-race` run
+  of `154e636c` in review. It has not come back: 150 `-race` runs of it
+  alone, with and without the send window, on a tree that differs from
+  `439f0110` only in how the send window is totalled, and a full `-race`
+  run of the package on `439f0110` pass. The cause of that one stop is not
+  known; the test now logs its seed and both ends' counters if it happens
+  again.
