@@ -83,8 +83,12 @@ type H2FlowConfig struct {
 	// 0 keeps the default.
 	MaxStreamReceiveWindow     int32 `protobuf:"varint,2,opt,name=maxStreamReceiveWindow,proto3" json:"maxStreamReceiveWindow,omitempty"`
 	MaxConnectionReceiveWindow int32 `protobuf:"varint,3,opt,name=maxConnectionReceiveWindow,proto3" json:"maxConnectionReceiveWindow,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// What one connection's client may hold of this server's data: unread
+	// data plus unused window, over the streams the server has not finished.
+	// 0 keeps the default, -1 lifts the limit.
+	MaxConnectionSendWindow int32 `protobuf:"varint,4,opt,name=maxConnectionSendWindow,proto3" json:"maxConnectionSendWindow,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *H2FlowConfig) Reset() {
@@ -134,6 +138,13 @@ func (x *H2FlowConfig) GetMaxStreamReceiveWindow() int32 {
 func (x *H2FlowConfig) GetMaxConnectionReceiveWindow() int32 {
 	if x != nil {
 		return x.MaxConnectionReceiveWindow
+	}
+	return 0
+}
+
+func (x *H2FlowConfig) GetMaxConnectionSendWindow() int32 {
+	if x != nil {
+		return x.MaxConnectionSendWindow
 	}
 	return 0
 }
@@ -521,11 +532,12 @@ const file_transport_internet_splithttp_config_proto_rawDesc = "" +
 	")transport/internet/splithttp/config.proto\x12!xray.transport.internet.splithttp\x1a\x1ftransport/internet/config.proto\"1\n" +
 	"\vRangeConfig\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\x05R\x04from\x12\x0e\n" +
-	"\x02to\x18\x02 \x01(\x05R\x02to\"\x9a\x01\n" +
+	"\x02to\x18\x02 \x01(\x05R\x02to\"\xd4\x01\n" +
 	"\fH2FlowConfig\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\x05R\x04mode\x126\n" +
 	"\x16maxStreamReceiveWindow\x18\x02 \x01(\x05R\x16maxStreamReceiveWindow\x12>\n" +
-	"\x1amaxConnectionReceiveWindow\x18\x03 \x01(\x05R\x1amaxConnectionReceiveWindow\"\xf8\x03\n" +
+	"\x1amaxConnectionReceiveWindow\x18\x03 \x01(\x05R\x1amaxConnectionReceiveWindow\x128\n" +
+	"\x17maxConnectionSendWindow\x18\x04 \x01(\x05R\x17maxConnectionSendWindow\"\xf8\x03\n" +
 	"\n" +
 	"XmuxConfig\x12V\n" +
 	"\x0emaxConcurrency\x18\x01 \x01(\v2..xray.transport.internet.splithttp.RangeConfigR\x0emaxConcurrency\x12V\n" +

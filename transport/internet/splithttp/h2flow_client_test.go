@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	gotls "crypto/tls"
+	"fmt"
 	"io"
+	"math"
 	mrand "math/rand/v2"
 	"net"
 	"net/http"
@@ -292,4 +294,155 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+}
+
+// TestFlowChainedGovernorsSlowReaders puts a governor at both ends of twelve
+// downloads, as on a bridge in front of a governed server, and reads them in
+// stops and starts, so the caps shrink at both ends while each holds credit
+// back. Every download must still complete: with the client showing more than
+// the lowest cap (see flowShownDown) the two governors wait for each other.
+// It runs without the server's send window and with the default one.
+func TestFlowChainedGovernorsSlowReaders(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sendWindow int64
+	}{{"no send window", 0}, {"default send window", flowServerSendWindow}} {
+		t.Run(tc.name, func(t *testing.T) { chainedSlowReaders(t, tc.sendWindow) })
+	}
+}
+
+// lowestDownCap is the smallest download cap among the streams of conns.
+func lowestDownCap(conns []*flowConn) int32 {
+	lowest := int32(math.MaxInt32)
+	for _, c := range conns {
+		c.mu.Lock()
+		for _, s := range c.streams {
+			lowest = min(lowest, s.down.cap)
+		}
+		c.mu.Unlock()
+	}
+	return lowest
+}
+
+// logDownState writes what each stream of conns holds, for a download that
+// has stopped.
+func logDownState(t *testing.T, end string, conns []*flowConn) {
+	for n, c := range conns {
+		c.mu.Lock()
+		t.Logf("%s connection %d: client window %d shown %d, incremental %v, send window %d, client holds %d, %d streams",
+			end, n, c.clientInit, c.clientShown, c.incremental, c.sendWindow, c.clientHolds(), len(c.streams))
+		for id, s := range c.streams {
+			t.Logf("  stream %d: cap %d, sent %d, forwarded %d, returned %d, server done %v, waiting %v",
+				id, s.down.cap, s.downSent, s.downForwarded, s.down.returned, s.serverDone, !s.down.waiting.IsZero())
+		}
+		c.mu.Unlock()
+	}
+}
+
+func chainedSlowReaders(t *testing.T, sendWindow int64) {
+	const size = 3 << 20
+	tl, addr := startFlowServer(t, testUp, testDown, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 16<<10)
+		for left := size; left > 0; left -= len(buf) {
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+		}
+	}))
+	tl.mu.Lock()
+	tl.sendWindow = sendWindow
+	tl.mu.Unlock()
+	client := newFlowTestClient(addr, true)
+	serverConns := func() []*flowConn {
+		tl.mu.Lock()
+		defer tl.mu.Unlock()
+		return append([]*flowConn(nil), tl.conns...)
+	}
+	clientConns := func() []*flowConn {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return append([]*flowConn(nil), client.conns...)
+	}
+
+	// The pauses of each reader come from the seed, so a failing pacing can
+	// be run again.
+	seed := uint64(time.Now().UnixNano())
+	t.Logf("seed %d", seed)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Watch the caps: the test means nothing unless they shrink at both ends.
+	lowServer, lowClient := int32(math.MaxInt32), int32(math.MaxInt32)
+	watched := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(watched)
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				lowServer = min(lowServer, lowestDownCap(serverConns()))
+				lowClient = min(lowClient, lowestDownCap(clientConns()))
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rng := mrand.New(mrand.NewPCG(seed, uint64(i)))
+			req, _ := http.NewRequestWithContext(ctx, "GET", "http://x/down", nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer resp.Body.Close()
+			buf := make([]byte, 8<<10)
+			got := 0
+			for {
+				n, err := resp.Body.Read(buf)
+				got += n
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					errs <- fmt.Errorf("download %d after %d of %d bytes: %w", i, got, size, err)
+					return
+				}
+				// Stop and start for the first two thirds.
+				if got < size*2/3 && rng.IntN(8) == 0 {
+					time.Sleep(time.Duration(rng.IntN(60)) * time.Millisecond)
+				}
+			}
+			if got != size {
+				errs <- fmt.Errorf("download %d read %d bytes, want %d", i, got, size)
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	<-watched
+	close(errs)
+	failed := false
+	for err := range errs {
+		t.Error(err)
+		failed = true
+	}
+	if failed {
+		logDownState(t, "server", serverConns())
+		logDownState(t, "client", clientConns())
+		t.FailNow()
+	}
+	if lowServer >= flowStartWindow || lowClient >= flowStartWindow {
+		t.Fatalf("lowest cap seen: server %d, client %d; both must fall under the starting %d for the two governors to hold credit at once",
+			lowServer, lowClient, flowStartWindow)
+	}
+	t.Logf("lowest cap seen: server %d, client %d", lowServer, lowClient)
 }

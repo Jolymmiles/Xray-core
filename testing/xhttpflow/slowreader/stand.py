@@ -15,9 +15,28 @@ It needs root on Linux (network namespaces, netem), python3, iproute2, and:
       --runs 36
 
 Every --server build runs --runs times, all runs shuffled together. The server
-has the governor on ("h2Flow": {"enabled": true}); the client is whatever
---client is, with its own defaults. REALITY keys are made on the spot with
+has the governor on ("h2Flow": {"enabled": true}) unless --h2flow NAME=JSON
+gives that server another "h2Flow" object; the client is whatever --client is,
+with its own defaults. REALITY keys are made on the spot with
 "<first server> x25519" and live in a temporary directory.
+
+With --workload downloads the load is --readers downloads instead, each read
+at --read-rate bytes per second (0 reads as fast as it comes), on a link of
+--mbit and --rtt. The stand then reports the client's anonymous memory
+(RssAnon, sampled every 50 ms) and the megabytes read per second, and with
+--client-limit-mb it kills the client the moment it holds more than that, as
+a process memory limit would. --readers and --read-rate also set the number
+of uploads and what the origin reads from each; with --read-rate 0 nothing
+is slowed, and the megabytes moved and the processor time of both Xray
+processes per gigabyte are the result:
+
+  sudo python3 testing/xhttpflow/slowreader/stand.py --workload downloads \\
+      --mbit 1000 --readers 20 --read-rate 100000 --client-limit-mb 40 \\
+      --origin ./origin --client /path/to/xray-client \\
+      --server stock=/path/to/xray --h2flow 'stock={"enabled": false}' \\
+      --server limit=/path/to/xray \\
+      --server nolimit=/path/to/xray --h2flow 'nolimit={"enabled": true, "maxConnectionSendWindow": -1}' \\
+      --runs 5
 
 The stand creates two network namespaces and a veth pair with names of its
 own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
@@ -30,7 +49,9 @@ tears down and exits with status 1. Origin's stderr is kept in the temporary
 directory and printed when the stand fails.
 
 A run is valid only if every upload was still sending at the deadline and the
-server's memory could be read. A small request that fails or does not finish
+server's memory could be read. A download run is valid only if every download
+was still reading at the deadline, or the client was killed at its limit, and
+the memory of both could be read. A small request that fails or does not finish
 within 10 s counts as a 10 s sample, so a stall can only make a run worse.
 Invalid runs are reported and left out of the table, and a single one makes
 the stand exit with status 1: the table and the JSON lines still come out,
@@ -59,6 +80,7 @@ XMUX = {"maxConnections": 3, "maxConcurrency": 0, "cMaxReuseTimes": 0,
 MBIT, RTT_MS = 100, 50
 UPLOADS, UPLOAD_RATE, DURATION, PING_EVERY = 20, 100_000, 12, 0.3
 PING_TIMEOUT, READY_TIMEOUT = 10.0, 20.0
+ANON_EVERY = 0.05
 # About the most one run's own waits allow: readiness and its last ping, the
 # workload and the uploads' join, both watchers' joins; and half a minute for
 # starting and stopping Xray, which nothing bounds. A budget, not a proven
@@ -103,7 +125,7 @@ def remove_namespace(ns):
         raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
 
 
-def setup_network(stack, srv, cli):
+def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS):
     """Two namespaces of this run joined by a veth pair, shaped in both."""
     existing = subprocess.run(["ip", "netns", "list"], check=True, capture_output=True, text=True).stdout.split()
     for ns in (srv, cli):
@@ -119,13 +141,13 @@ def setup_network(stack, srv, cli):
     sh(f"ip -n {cli} addr add 10.9.0.2/24 dev {vcli}")
     # netem drops what exceeds its queue, so the queue holds twice the
     # bandwidth-delay product: the windows, not the queue, limit the flows.
-    limit = max(1000, int(MBIT * 1e6 / 8 * RTT_MS / 1000 / 1500 * 2))
+    limit = max(1000, int(mbit * 1e6 / 8 * rtt_ms / 1000 / 1500 * 2))
     for ns, dev in ((srv, vsrv), (cli, vcli)):
         sh(f"ip -n {ns} link set lo up")
         sh(f"ip -n {ns} link set {dev} up")
         sh(f'ip netns exec {ns} sysctl -qw net.ipv4.tcp_rmem="4096 131072 33554432" '
            f'net.ipv4.tcp_wmem="4096 16384 33554432"')
-        sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {RTT_MS / 2:g}ms rate {MBIT}mbit limit {limit}")
+        sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {rtt_ms / 2:g}ms rate {mbit}mbit limit {limit}")
     subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", "net.ipv4.tcp_congestion_control=cubic"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -138,12 +160,12 @@ def reality_keys(xray):
     return values[0], values[1]
 
 
-def server_config(private_key):
+def server_config(private_key, h2flow=None):
     return {"log": {"loglevel": "error"}, "dns": {"hosts": {"target.test": "127.0.0.1"}},
             "inbounds": [{"listen": "10.9.0.1", "port": 443, "protocol": "vless",
                           "settings": {"clients": [{"id": UUID, "email": "u@x"}], "decryption": "none"},
                           "streamSettings": {"network": "xhttp", "security": "reality",
-                                             "xhttpSettings": {"extra": {"xmux": XMUX, "h2Flow": {"enabled": True}}},
+                                             "xhttpSettings": {"extra": {"xmux": XMUX, "h2Flow": h2flow or {"enabled": True}}},
                                              "realitySettings": {"target": "127.0.0.1:8444", "shortIds": ["ab12"],
                                                                  "privateKey": private_key,
                                                                  "serverNames": ["www.example.com"]}}}],
@@ -167,6 +189,9 @@ def outer(args):
     if os.geteuid() != 0:
         sys.exit("needs root: it creates network namespaces")
     servers = dict(s.split("=", 1) for s in args.server)
+    h2flow = {name: json.loads(value) for name, value in (s.split("=", 1) for s in getattr(args, "h2flow", None) or [])}
+    if set(h2flow) - set(servers):
+        sys.exit(f"--h2flow names no --server: {', '.join(sorted(set(h2flow) - set(servers)))}")
     srv, cli = f"xslow-{os.getpid()}-srv", f"xslow-{os.getpid()}-cli"
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     code = None
@@ -183,10 +208,11 @@ def outer(args):
                 show_log("origin", origin_log)
 
         stack.push(show_origin_log)
-        setup_network(stack, srv, cli)
+        setup_network(stack, srv, cli, getattr(args, "mbit", MBIT), getattr(args, "rtt", RTT_MS))
         private_key, public_key = reality_keys(next(iter(servers.values())))
-        with open(f"{work}/server.json", "w") as f:
-            json.dump(server_config(private_key), f)
+        for name in servers:
+            with open(f"{work}/server-{name}.json", "w") as f:
+                json.dump(server_config(private_key, h2flow.get(name)), f)
         with open(f"{work}/client.json", "w") as f:
             json.dump(client_config(public_key), f)
         origin = subprocess.Popen(["ip", "netns", "exec", srv, args.origin],
@@ -194,7 +220,12 @@ def outer(args):
         stack.callback(reap, origin)
         inside = subprocess.Popen(["ip", "netns", "exec", cli, sys.executable, os.path.abspath(__file__), "--inside",
                                    "--work", work, "--srv-ns", srv, "--client", args.client, "--runs", str(args.runs),
-                                   "--out", os.path.abspath(args.out)] + [x for s in args.server for x in ("--server", s)])
+                                   "--out", os.path.abspath(args.out),
+                                   "--workload", getattr(args, "workload", "uploads"),
+                                   "--readers", str(getattr(args, "readers", UPLOADS)),
+                                   "--read-rate", str(getattr(args, "read_rate", UPLOAD_RATE)),
+                                   "--client-limit-mb", str(getattr(args, "client_limit_mb", 0))]
+                                  + [x for s in args.server for x in ("--server", s)])
         stack.callback(reap, inside, 15.0)  # it stops and reaps its own Xray processes
         # Past this the child is stuck, not slow; leaving here tears it down.
         limit = len(servers) * args.runs * RUN_LIMIT + 60
@@ -287,8 +318,9 @@ def ping(timeout=PING_TIMEOUT):
         return None
 
 
-def upload(deadline, result):
-    """Sends until deadline. result gets the bytes sent and how it ended."""
+def upload(deadline, result, rate=UPLOAD_RATE):
+    """Sends until deadline to an origin that reads rate bytes per second, or
+    all it gets if rate is 0. result gets the bytes sent and how it ended."""
     sent = 0
     try:
         s = socks(time.time() + PING_TIMEOUT)
@@ -297,8 +329,8 @@ def upload(deadline, result):
         return
     try:
         s.settimeout(time_left(deadline))
-        s.sendall(b"POST /up?rate=%d HTTP/1.1\r\nHost: target.test\r\nContent-Length: 500000000\r\n"
-                  b"Connection: close\r\n\r\n" % UPLOAD_RATE)
+        s.sendall(b"POST /up?rate=%d HTTP/1.1\r\nHost: target.test\r\nContent-Length: 100000000000\r\n"
+                  b"Connection: close\r\n\r\n" % rate)
         block = os.urandom(32768)
         while time.time() < deadline:
             # A send may wait for seconds while the origin drains; only the
@@ -316,6 +348,66 @@ def upload(deadline, result):
         s.close()
 
 
+def download(deadline, rate, result):
+    """Reads a download until deadline, at rate bytes per second if rate is
+    set. result gets the bytes read and how it ended."""
+    got = 0
+    try:
+        s = socks(time.time() + PING_TIMEOUT)
+    except OSError as e:
+        result.update(got=0, end=f"no session: {e}")
+        return
+    try:
+        s.settimeout(time_left(deadline))
+        s.sendall(b"GET /down?bytes=100000000000 HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n")
+        head = b""
+        while b"\r\n\r\n" not in head:
+            s.settimeout(time_left(deadline))
+            chunk = s.recv(4096)
+            if not chunk:
+                raise OSError("closed before the headers")
+            head += chunk
+        if not head.startswith(b"HTTP/1.1 200"):
+            raise OSError(f"status {head[:12]!r}")
+        got = len(head.partition(b"\r\n\r\n")[2])
+        buf = memoryview(bytearray(4096 if rate else 1 << 20))
+        start = time.time()
+        while time.time() < deadline:
+            s.settimeout(max(0.05, deadline - time.time()))
+            try:
+                n = s.recv_into(buf)
+            except socket.timeout:
+                break
+            if not n:
+                raise OSError("closed early")
+            got += n
+            if rate:
+                ahead = start + got / rate - time.time()
+                if ahead > 0:
+                    time.sleep(min(ahead, max(0, deadline - time.time())))
+        result.update(got=got, end="deadline")
+    except OSError as e:
+        result.update(got=got, end=f"error: {e}")
+    finally:
+        s.close()
+
+
+def anon_bytes(pid):
+    """Anonymous memory of a process: what a memory limit on it counts."""
+    with open(f"/proc/{pid}/status") as f:
+        for line in f:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) * 1024
+    raise ValueError("no RssAnon")
+
+
+def cpu_seconds(pid):
+    """Processor time a process has used, user and system."""
+    with open(f"/proc/{pid}/stat") as f:
+        fields = f.read().rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
 def rss_bytes(pid):
     with open(f"/proc/{pid}/statm") as f:
         return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
@@ -326,10 +418,12 @@ def percentile(values, p):
     return values[min(len(values) - 1, int(p * len(values)))]
 
 
-def one_run(server_binary, args):
+def one_run(server_binary, args, name):
     """One run. Returns its numbers, with "invalid" set to the reason if it must not count."""
+    downloads = args.workload == "downloads"
     with contextlib.ExitStack() as stack:
-        server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c", f"{args.work}/server.json"],
+        server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
+                                   f"{args.work}/server-{name}.json"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stack.callback(reap, server)  # "ip netns exec" execs Xray in place, so this is Xray
         client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
@@ -362,16 +456,46 @@ def one_run(server_binary, args):
                     rss_errors[0] += 1
                 stop.wait(0.25)
 
-        watchers = [threading.Thread(target=f, daemon=True) for f in (prober, sampler)]
+        anon, anon_errors, killed = [], [0], []
+        started = time.time()
+
+        def client_sampler():
+            """The client's anonymous memory; over the limit, it is killed
+            at once, as the system would."""
+            limit = args.client_limit_mb * 2**20
+            while not stop.is_set():
+                try:
+                    anon.append(anon_bytes(client.pid))
+                except (OSError, ValueError, IndexError):
+                    if not killed:
+                        anon_errors[0] += 1
+                if limit and anon and anon[-1] > limit and not killed:
+                    killed.append(time.time() - started)
+                    client.kill()
+                stop.wait(ANON_EVERY)
+
+        watchers = [threading.Thread(target=f, daemon=True)
+                    for f in ((prober, sampler, client_sampler) if downloads else (prober, sampler))]
         for t in watchers:
             t.start()
         deadline = time.time() + DURATION
-        outcomes = [{} for _ in range(UPLOADS)]
-        uploads = [threading.Thread(target=upload, args=(deadline, o), daemon=True) for o in outcomes]
+        outcomes = [{} for _ in range(args.readers)]
+        if downloads:
+            uploads = [threading.Thread(target=download, args=(deadline, args.read_rate, o), daemon=True) for o in outcomes]
+        else:
+            uploads = [threading.Thread(target=upload, args=(deadline, o, args.read_rate), daemon=True) for o in outcomes]
+        try:
+            cpu_before = cpu_seconds(server.pid), cpu_seconds(client.pid)
+        except (OSError, ValueError, IndexError):
+            cpu_before = None
         for t in uploads:
             t.start()
         for t in uploads:
             t.join(max(0, deadline + PING_TIMEOUT - time.time()))
+        try:
+            cpu = [after - before for after, before in zip((cpu_seconds(server.pid), cpu_seconds(client.pid)), cpu_before)]
+        except (OSError, ValueError, IndexError, TypeError):
+            cpu = [None, None]  # a client killed at its limit has none
         stop.set()
         for t in watchers:
             t.join(PING_TIMEOUT + 2)
@@ -380,17 +504,25 @@ def one_run(server_binary, args):
                "p95": percentile(latencies, 0.95) if latencies else None,
                "pings": len(latencies), "pings_failed": failures[0],
                "rss_mb": max(rss) / 2**20 if rss else None,
-               "upload_mb": sum(o.get("sent", 0) for o in outcomes) / 1e6}
-        bad = [o.get("end", "still running") for o in outcomes if o.get("end") != "deadline" or not o.get("sent")]
+               "upload_mb": sum(o.get("sent", 0) for o in outcomes) / 1e6,
+               "server_cpu_s": cpu[0], "client_cpu_s": cpu[1]}
+        moved = "got" if downloads else "sent"
+        bad = [o.get("end", "still running") for o in outcomes if o.get("end") != "deadline" or not o.get(moved)]
+        if downloads:
+            run.update(download_mb_s=sum(o.get("got", 0) for o in outcomes) / 1e6 / DURATION,
+                       client_anon_mb=max(anon) / 2**20 if anon else None,
+                       client_killed_s=killed[0] if killed else None)
         if any(t.is_alive() for t in uploads + watchers):
             run["invalid"] = "a driver did not finish"
-        elif bad:
-            run["invalid"] = f"{len(bad)} of {UPLOADS} uploads stopped early or sent nothing ({bad[0]})"
+        elif bad and not killed:
+            run["invalid"] = f"{len(bad)} of {len(outcomes)} {args.workload} stopped early or moved nothing ({bad[0]})"
         elif not latencies:
             run["invalid"] = "no request was sent"
         elif not rss or rss_errors[0]:
             run["invalid"] = "the server's memory could not be read"
-        elif server.poll() is not None or client.poll() is not None:
+        elif downloads and (not anon or anon_errors[0]):
+            run["invalid"] = "the client's memory could not be read"
+        elif server.poll() is not None or (client.poll() is not None and not killed):
             run["invalid"] = "Xray exited during the run"
         return run
 
@@ -399,13 +531,14 @@ def inside(args):
     """The measurement itself; runs in the client namespace."""
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     servers = dict(s.split("=", 1) for s in args.server)
+    downloads = getattr(args, "workload", "uploads") == "downloads"
     results = {name: [] for name in servers}
     invalid = {name: 0 for name in servers}
     jobs = [name for name in servers for _ in range(args.runs)]
     random.shuffle(jobs)
     with open(args.out, "a") as out:
         for i, name in enumerate(jobs, 1):
-            r = one_run(servers[name], args)
+            r = one_run(servers[name], args, name)
             out.write(json.dumps({"server": name, **r}) + "\n")
             out.flush()
             if "invalid" in r:
@@ -414,7 +547,11 @@ def inside(args):
                 continue
             results[name].append(r)
             print(f"[{i}/{len(jobs)}] {name}: ping p50 {r['p50']:.0f} ms, p95 {r['p95']:.0f} ms, "
-                  f"{r['pings_failed']} of {r['pings']} failed, server peak RSS {r['rss_mb']:.1f} MB", flush=True)
+                  f"{r['pings_failed']} of {r['pings']} failed, server peak RSS {r['rss_mb']:.1f} MB", end="")
+            if downloads:
+                end = "not killed" if r["client_killed_s"] is None else f"killed after {r['client_killed_s']:.2f} s"
+                print(f", {r['download_mb_s']:.1f} MB/s, client peak RssAnon {r['client_anon_mb']:.1f} MB, {end}", end="")
+            print(flush=True)
 
     print("\n| | " + " | ".join(results) + " |")
     print("|---|" + "---|" * len(results))
@@ -427,6 +564,22 @@ def inside(args):
                                                  f"{statistics.median(r['p95'] for r in rs):.0f} ms"),
         ("Median server peak RSS", lambda n, rs: f"{statistics.median(r['rss_mb'] for r in rs):.1f} MB"),
     ]
+    def cpu_per_gb(rs, key):
+        moved = "download_mb_s" if downloads else "upload_mb"
+        values = [r[key] / (r[moved] * (DURATION if downloads else 1) / 1000) for r in rs if r.get(key) is not None and r.get(moved)]
+        return f"{statistics.median(values):.1f}" if values else "-"
+
+    rows.append(("Median CPU per GB, server / client", lambda n, rs: f"{cpu_per_gb(rs, 'server_cpu_s')} / "
+                                                                    f"{cpu_per_gb(rs, 'client_cpu_s')} s"))
+    if not downloads:
+        rows.append(("Median sent", lambda n, rs: f"{statistics.median(r['upload_mb'] for r in rs) / DURATION:.1f} MB/s"))
+    if downloads:
+        rows += [
+            ("Median read", lambda n, rs: f"{statistics.median(r['download_mb_s'] for r in rs):.1f} MB/s"),
+            ("Client peak RssAnon, median / worst", lambda n, rs: f"{statistics.median(r['client_anon_mb'] for r in rs):.1f} / "
+                                                                   f"{max(r['client_anon_mb'] for r in rs):.1f} MB"),
+            ("Client killed at its limit", lambda n, rs: f"{sum(r['client_killed_s'] is not None for r in rs)} of {len(rs)}"),
+        ]
     for label, f in rows:
         print(f"| {label} | " + " | ".join(f(n, rs) if rs else "-" for n, rs in results.items()) + " |")
     # A run left out of the table could be the one that shows the stall, so
@@ -444,6 +597,15 @@ def main():
     ap.add_argument("--server", action="append", required=True, metavar="NAME=PATH",
                     help="Xray binary used as the server; repeat for each build to compare")
     ap.add_argument("--runs", type=int, default=36)
+    ap.add_argument("--h2flow", action="append", metavar="NAME=JSON",
+                    help='"h2Flow" object of that server instead of {"enabled": true}')
+    ap.add_argument("--workload", choices=("uploads", "downloads"), default="uploads")
+    ap.add_argument("--mbit", type=int, default=MBIT, help="link rate")
+    ap.add_argument("--rtt", type=int, default=RTT_MS, help="round trip of the link, ms")
+    ap.add_argument("--readers", type=int, default=UPLOADS, help="downloads at once")
+    ap.add_argument("--read-rate", type=int, default=UPLOAD_RATE, help="bytes per second each download is read at, 0 for no limit")
+    ap.add_argument("--client-limit-mb", type=int, default=0,
+                    help="kill the client above this much anonymous memory, 0 for never")
     ap.add_argument("--out", default="slowreader.jsonl", help="one JSON line per run, appended")
     ap.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--work", help=argparse.SUPPRESS)

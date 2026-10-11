@@ -138,7 +138,7 @@ class ComparisonStatusTests(unittest.TestCase):
         args = types.SimpleNamespace(server=["before=/before", "after=/after"], runs=len(before), out=str(out))
         runs = {"/before": iter(before), "/after": iter(after)}
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(stand, "one_run", lambda binary, _: next(runs[binary])), \
+        with mock.patch.object(stand, "one_run", lambda binary, *_: next(runs[binary])), \
                 mock.patch.object(stand.signal, "signal"), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = stand.inside(args)
