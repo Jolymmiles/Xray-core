@@ -376,15 +376,20 @@ Limits:
 - The limit is per connection, so with three connections and hundreds of
   streams the client is still near 40 MiB: 192 slow downloads of 4 MB
   started over ten seconds kill it 3 of 3 on stock, on `323ca8b1` and on
-  `5ae2b3de`. Its process holds about 30 MB above its idle 12.4 MB where
-  the windows account for 15. That is not the garbage collector's headroom:
-  with the client limit at 60 MiB the client peaks at 43.0 MB, at 38.6 with
-  `GOGC=50` and at 36.8 with `GOGC=25`, and with twenty streams `GOGC`
-  changes nothing (23.6, 23.6, 23.2 MB). Nor a client buffer of its own
-  (`policy.bufferSize` 0 changes nothing), nor the sessions as such (192
-  open with 1000-byte bodies take 12.4 MB). Every figure here fits about
-  1.2 times the limit on each connection and 80 KB for each stream data
-  moves on, above the idle client; where those 80 KB are was not found.
+  `5ae2b3de`. The windows are 15 MB of what the client then holds. Its
+  runtime's own figures (`/debug/pprof/heap?debug=1` through a `metrics`
+  listener, one run, client limit raised to 80 MiB, peak 43 to 45 MB):
+  about 24 MB of live heap, the windows' 15 and 5 the client holds idle
+  among them; 13 MB of heap the collector has not reclaimed yet (heap in
+  use 37.4 MB, next collection at 39.0); and 7.8 MB of goroutine stacks,
+  four goroutines to a session, against 2.1 MB with twenty. So about 60 KB
+  of each open download is the client's own, stacks and heap, which no
+  window reaches. `GOGC=25` brings the peak to 36.8 MB (heap in use
+  29.3), a memory limit of 30 MiB beside it to 33.2 MB at 2333 collections
+  in the run. With twenty streams little is allocated after the start, the
+  heap stays at 21.5 MB of a 35.7 MB target, and `GOGC` changes nothing
+  (23.6, 23.6, 23.2 MB). A client buffer of its own (`policy.bufferSize`
+  0) changes nothing either.
 - `5ae2b3de` against `323ca8b1`: twenty slow readers 23.7 against 23.5 MB
   and eight downloads at RTT 150 ms 72.1 against 71.6 MB/s (three runs);
   at 100 Mbit/s the request beside eight downloads p50 / p95 66 / 310
