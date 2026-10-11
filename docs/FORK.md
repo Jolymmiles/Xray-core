@@ -50,10 +50,11 @@ guard it.
   A governed server lets one connection's client hold 4 MiB of its data,
   unread or as window still open; `h2Flow.maxConnectionSendWindow` sets it
   and `-1` lifts that limit, nothing else. The limit does not hold a client
-  with a governor of its own, which its own governor bounds, and it loses
-  count of unread data when a client raises its connection window after
-  the start; `transport/internet/splithttp/BASELINE.md` has both under
-  "Limits".
+  with a governor of its own, which its own governor bounds; it loses count
+  of unread data when a client raises its connection window after the
+  start; and a connection whose reader pauses before the client's first
+  credit loses the limit for good, even under it.
+  `transport/internet/splithttp/BASELINE.md` has all three under "Limits".
   `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
   Covered by the `h2flow*_test.go` tests and
   `common/singmux/xhttp_flow_verify_integration_test.go`.

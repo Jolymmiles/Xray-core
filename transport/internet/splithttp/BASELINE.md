@@ -308,8 +308,18 @@ What an observer sees of these changes, against the governor before them;
 stock Go differs from both as the rest of this file says:
 
 - Handshake, SETTINGS values, the PING schedule, preface handling and the
-  replies to malformed or unauthenticated input are not touched; the
-  probe-comparison tests pass unchanged.
+  replies to malformed input are not touched; the probe-comparison tests
+  pass unchanged.
+- One reply to legal input differs from stock, as it did before these
+  changes: a client that lowers its initial window under the credit the
+  server's stack was forwarded and has not used. Stock applies it; the
+  governor cannot pass it on and gives the connection up. A new stream is
+  forwarded 196609 bytes before any data, so a client that opens a GET and
+  lowers its window under that is closed where stock answers, and it needs
+  no credentials for that. With a send window `5ae2b3de` to `ce4624fc`
+  forwarded 245760 and closed in that wider range; `09136349` forwards
+  196609 again (`TestFlowInitialWindowDecrease`, with the send window off
+  and at its default).
 - Passive, on the path, TLS records only. A governed server during uploads,
   and a governed client during downloads, sends fewer credit records: one
   per 16 to 32 KiB the reader took instead of one per 4 KiB or so. A
@@ -319,8 +329,9 @@ stock Go differs from both as the rest of this file says:
 - A TLS terminator in front of the server reads the frames: it sees
   WINDOW_UPDATE increments of 16 to 32 KiB from either governed end where
   they were about 4 KiB, and a server that leaves stream window unused.
-- An active prober that cannot authenticate opens no download and sees
-  none of it.
+- An active prober that cannot authenticate gets no data on a stream, so
+  it sees none of the quanta and none of the limit; what it can do is the
+  lowering above.
 - Not measured: record sizes and timing were not captured and compared, and
   nothing was run against a classifier. The record counts above follow from
   the frame counts in the unit test, not from a capture.
@@ -350,7 +361,7 @@ Limits:
   that is shown all of it (`shownDown`): the server governor then hands on
   all such a client returns, and the client governor opens each stream with
   credit of its cap above what it showed. Forty downloads nobody reads hold
-  10.5 MiB at a governed client with the limit as without
+  10 MiB at a governed client with the limit as without
   (`TestFlowChainedClientNotHeldToSendWindow`); what it holds is up to its
   own governor. Showing such a client less stopped downloads for good
   (`TestFlowChainedStallAtSendWindow`, `5ae2b3de` to `a21c075d`): the
@@ -381,8 +392,24 @@ Limits:
   start: 16 KiB (`flowShownLimited`) for a client that announces more than
   the protocol default, 65535 before `5ae2b3de` and for a client that
   announces the default or no initial window at all. Forty streams of a Go
-  client opened at once may be sent 4.4 MiB, not 4
+  client opened at once may be sent 4.3 MiB, not 4
   (`TestFlowSendWindowBoundsManyStreams`).
+- A stack shown 16 KiB is forwarded no more ahead of the data it has sent
+  than it had unused with 65535 shown (`09136349`, `downRelease`). A stream
+  then opens with 212993 bytes of window, not 262144, and has its whole cap
+  once data moves (`TestFlowSendWindowCreditFollowsData`). A lowering of the
+  initial window that could be passed on before any data still can; one
+  that comes while data lies unread and the stack has credit it has not
+  used is passed on in a range up to 49151 bytes narrower than with 65535
+  shown, and one that comes when the stack has used all it was forwarded is
+  always passed on, which it was not (`TestFlowSendWindowLoweringWhenSpent`).
+  `09136349` against `a21c075d`, five shuffled runs: one download 70.0
+  against 68.2 MB/s, at RTT 150 ms 24.1 against 23.5; eight downloads at
+  RTT 150 ms 70.8 against 71.5; twenty slow readers 23.9 against 23.6 MB;
+  192 short, completed downloads 36.3 against 35.7 MB; 192 slow downloads
+  at 2 MiB 35.9 against 35.9 MB, none killed; at 100 Mbit/s the request
+  beside eight downloads 66 / 253 against 66 / 259 ms and beside twenty
+  slow readers 53 / 318 against 53 / 315 ms.
 - On the stand an Xray client does not keep short, completed downloads in
   its own memory, governor on or off (192 downloads of 256 KiB read at
   1 KB/s each: 13 to 17 MB): it writes them on to the application's socket,
@@ -419,8 +446,14 @@ Limits:
   nothing either.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
-  client that credits at half its window would stop for good. A Go client
-  whose every reader is stopped from the first byte is such a connection too.
+  client that credits at half its window would stop for good. The lift is
+  for good, and it does not take a client at its limit: a connection whose
+  reader pauses before a Go client's first credit, which waits for 4 KiB
+  read, loses the limit with the client holding half of it, and keeps none
+  when the reader goes on and credit comes in small steps
+  (`TestFlowGuardLiftIsForGood`). Bringing the limit back on small credit
+  would stop a client that returns it per stream: one stream may credit in
+  small steps while the others wait for half a window.
 - The client is Xray for linux/amd64, not a phone; kernel socket buffers
   are not counted, and a spike shorter than 50 ms can be missed.
 - CPU differences on downloads are inside the noise of five runs; the
