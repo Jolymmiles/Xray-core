@@ -328,12 +328,14 @@ Limits:
   client has returned connection credit in small steps; until then, and for
   a client that never does, ended downloads are outside the limit
   (`TestFlowSendWindowWithoutConnectionCredit`).
-- That part is shown by unit test only. On the stand an Xray client does
-  not keep short ended downloads in its own memory at all, governor on or
-  off (192 downloads of 256 KiB read at 1 KB/s each: 13 to 17 MB): it
-  writes them on to the application's socket, into the kernel. A client
-  whose reader lives in its own process would keep them; the stand has
-  none.
+- On the stand an Xray client does not keep short ended downloads in its
+  own memory, governor on or off (192 downloads of 256 KiB read at 1 KB/s
+  each: 13 to 17 MB): it writes them on to the application's socket, into
+  the kernel. `--app-buffer 32768` bounds that, as where the reader lives
+  in the client's process. Then, with `--readers 192 --stagger 0.055
+  --read-rate 1000 --download-bytes 262144 --client-limit-mb 40`, three
+  runs each: stock is killed 3 of 3; `323ca8b1` peaks at 38.7 MB (worst
+  38.9), `5ae2b3de` at 34.9 MB (worst 35.5), neither killed.
 - A first version counted every connection WINDOW_UPDATE as credit returned
   and failed on the stand, client killed at 40 to 44 MB: a Go client opens
   with one of 1 GiB to raise its window. The harness now has that frame
@@ -346,11 +348,25 @@ Limits:
   with a governor of its own announces 65535 whatever its window, so a
   governed bridge is held to the server's limit like any other client;
   `-1` on its inbound lifts that.
-- A stream past the limit keeps the protocol's 65535 bytes: forty streams
-  opened at once may be sent 5.5 MiB, not 4
-  (`TestFlowSendWindowBoundsManyStreams`). With enough streams that is the
-  larger part: 192 slow downloads of 4 MB started over ten seconds killed
-  the client with the limit as without, after 8.1 s against 5.9 s.
+- A stream past the limit keeps what the server's stack was shown at the
+  start, 16 KiB since `5ae2b3de` (`flowShownLimited`; 65535 before): forty
+  streams opened at once may be sent 4.4 MiB, not 4
+  (`TestFlowSendWindowBoundsManyStreams`). A client that does not announce
+  an initial window keeps 65535 per stream: the value is lowered by
+  rewriting the one it sends.
+- The limit is per connection, so with three connections and hundreds of
+  streams the client is still near 40 MiB: 192 slow downloads of 4 MB
+  started over ten seconds kill it 3 of 3 on stock, on `323ca8b1` and on
+  `5ae2b3de`. Its process holds about twice the 15 MB the windows account
+  for; that this is the Go heap's headroom is an estimate, not a
+  measurement. A client buffer of its own (`policy.bufferSize` 0) changes
+  nothing, and 192 open sessions with 1000-byte bodies take 12.4 MB.
+- `5ae2b3de` against `323ca8b1`: twenty slow readers 23.7 against 23.5 MB
+  and eight downloads at RTT 150 ms 72.1 against 71.6 MB/s (three runs);
+  at 100 Mbit/s the request beside eight downloads p50 / p95 66 / 310
+  against 66 / 268 ms (ten runs, p95 of single runs 157 to 449 against 161
+  to 327), beside twenty slow readers 52 / 314 against 52 / 334 ms (four
+  runs).
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. A Go client
