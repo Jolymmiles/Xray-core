@@ -21,13 +21,39 @@ func writeDataSplit(fr *http2.Framer, id uint32, n int) {
 	}
 }
 
+// eachSendWindow runs f with the server's send window off and at its default.
+func eachSendWindow(t *testing.T, f func(t *testing.T, sendWindow int64)) {
+	for _, w := range []int64{0, flowServerSendWindow} {
+		t.Run(fmt.Sprintf("send window %d", w), func(t *testing.T) { f(t, w) })
+	}
+}
+
+// newFlowHarnessWindow is newFlowHarness on a server with sendWindow.
+func newFlowHarnessWindow(t *testing.T, sendWindow int64) *flowHarness {
+	h := newFlowHarness(t)
+	h.c.sendWindow = sendWindow
+	return h
+}
+
+// openingWindow is what a server may send on a new stream of a Go client
+// before any of it is read: the starting cap, less what a server with a send
+// window is shown less and forwarded only behind data, see downRelease.
+func openingWindow(sendWindow int64) int64 {
+	if sendWindow != 0 {
+		return flowStartWindow - (flowShownFull - flowShownLimited)
+	}
+	return flowStartWindow
+}
+
 // TestFlowInitialWindowDecrease lowers the client's initial window after the
 // governor has handed the server credit beyond the window it shows. The real
 // window of the stream drops with it, so what the server may still send has
 // to drop as far; when no SETTINGS value can take it that far, the governor
 // must give up the connection instead of letting the server overrun the
 // client.
-func TestFlowInitialWindowDecrease(t *testing.T) {
+func TestFlowInitialWindowDecrease(t *testing.T) { eachSendWindow(t, testFlowInitialWindowDecrease) }
+
+func testFlowInitialWindowDecrease(t *testing.T, sendWindow int64) {
 	const sent = 32 << 10
 	for _, tc := range []struct {
 		lowered    uint32
@@ -37,11 +63,11 @@ func TestFlowInitialWindowDecrease(t *testing.T) {
 		{0, false},
 	} {
 		t.Run(fmt.Sprintf("to %d", tc.lowered), func(t *testing.T) {
-			h := newFlowHarness(t)
+			h := newFlowHarnessWindow(t, sendWindow)
 			h.track()
 			h.openStream(4 << 20)
-			if got := h.toServer.streams[1]; got != flowStartWindow {
-				t.Fatalf("server opened stream 1 with %d of credit, want %d", got, flowStartWindow)
+			if got, want := h.toServer.streams[1], openingWindow(sendWindow); got != want {
+				t.Fatalf("server opened stream 1 with %d of credit, want %d", got, want)
 			}
 			h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 1, sent) })
 			h.toServer.streams[1] -= sent
@@ -74,8 +100,10 @@ func TestFlowInitialWindowDecrease(t *testing.T) {
 // server used up the default one. The client then counts on the server
 // having room and owes no credit, so the governor has to hand the server its
 // share of the new window, after the SETTINGS frame that funds it.
-func TestFlowInitialWindowIncrease(t *testing.T) {
-	h := newFlowHarness(t)
+func TestFlowInitialWindowIncrease(t *testing.T) { eachSendWindow(t, testFlowInitialWindowIncrease) }
+
+func testFlowInitialWindowIncrease(t *testing.T, sendWindow int64) {
+	h := newFlowHarnessWindow(t, sendWindow)
 	h.track()
 	h.fromClient(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingMaxConcurrentStreams, Val: 100})
@@ -128,8 +156,12 @@ func TestFlowInitialWindowIncrease(t *testing.T) {
 // applies the lower window first and the credit after it; together they must
 // not exceed what the server really accepts.
 func TestFlowInitialWindowChangeOrdering(t *testing.T) {
+	eachSendWindow(t, testFlowInitialWindowChangeOrdering)
+}
+
+func testFlowInitialWindowChangeOrdering(t *testing.T, sendWindow int64) {
 	const lowered = 200000
-	h := newFlowHarness(t)
+	h := newFlowHarnessWindow(t, sendWindow)
 	h.track()
 	h.fromClient(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
@@ -183,18 +215,22 @@ var malformedSettings = []struct {
 // rejects in both directions: the governor must hand them on byte for byte,
 // so the receiving stack fails them as it would without the governor.
 func TestFlowMalformedSettingsPassVerbatim(t *testing.T) {
+	eachSendWindow(t, testFlowMalformedSettingsPassVerbatim)
+}
+
+func testFlowMalformedSettingsPassVerbatim(t *testing.T, sendWindow int64) {
 	for _, tc := range malformedSettings {
 		in := frames(func(fr *http2.Framer) {
 			fr.WriteRawFrame(http2.FrameSettings, 0, tc.stream, settingsPayload(tc.values...))
 		})
 		t.Run("client "+tc.name, func(t *testing.T) {
-			h := newFlowHarness(t)
+			h := newFlowHarnessWindow(t, sendWindow)
 			if got := h.fromClientRaw(in); !bytes.Equal(got, in) {
 				t.Fatalf("server read %x, client sent %x", got, in)
 			}
 		})
 		t.Run("server "+tc.name, func(t *testing.T) {
-			h := newFlowHarness(t)
+			h := newFlowHarnessWindow(t, sendWindow)
 			got, err := h.fromServerRaw(in)
 			if err != nil {
 				t.Fatal(err)

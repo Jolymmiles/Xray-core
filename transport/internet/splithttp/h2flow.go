@@ -128,6 +128,9 @@ const _ = uint(h2InitWindow - flowShownDown)
 // credit when it opens, as before. The value never leaves the process.
 const flowShownLimited = h2MinMaxFrameSize
 
+// flowShownFull is what the sender of downloads is shown otherwise.
+const flowShownFull = max(h2InitWindow, flowShownDown)
+
 // shownDown is the initial window the sender of downloads is shown for a
 // client that announces real.
 //
@@ -141,10 +144,11 @@ const flowShownLimited = h2MinMaxFrameSize
 // nothing back from it, and what such a client holds is up to its own
 // governor.
 func (c *flowConn) shownDown(real int32) int32 {
-	if !c.client && c.sendWindow != 0 && real > h2InitWindow {
+	c.shownLimited = !c.client && c.sendWindow != 0 && real > h2InitWindow
+	if c.shownLimited {
 		return flowShownLimited
 	}
-	return max(c.down.init, flowShownDown)
+	return flowShownFull
 }
 
 // first is the first of two values.
@@ -638,6 +642,9 @@ type flowConn struct {
 	downConnWindow    int64
 	downConnHigh      int64
 	downConnSmall     bool
+	// shownLimited says the server's stack was shown flowShownLimited for
+	// the client's initial window, see shownDown and downRelease.
+	shownLimited bool
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -1356,12 +1363,27 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 // a client with a governor of its own announces the protocol default whatever
 // its window, so that says nothing, and a value under the 4 MiB a Go client
 // announces has to be able to hold. A stream always has the window the
-// server was shown at the start, flowShownLimited, so none waits for the
-// others; streams opened once the limit is used up add that much each.
+// server's stack is shown for it, clientShown (see shownDown), so none waits
+// for the others; streams opened once the limit is used up add that much
+// each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
 	held := int64(c.clientShown) + s.downForwarded - s.down.returned
 	rel := min(bank, int64(s.down.cap)-held, h2MaxWindow)
+	if c.shownLimited {
+		// A stack shown less has to be forwarded more for the same window,
+		// and credit it has not used is what a client's lowering of its
+		// initial window cannot take back: changeInitialWindow can only
+		// lower what the stack was shown. So the stack is forwarded no more
+		// ahead of the data it has sent than it had unused with
+		// flowShownFull shown: a stream opens with what it was shown less
+		// missing from its window, which comes once data moves, and a
+		// lowering that could be passed on before any data still can. A
+		// stream at the lowest cap is forwarded what it was shown less all
+		// the same, or its window would stay at one frame.
+		ahead := max(int64(s.down.cap)-flowShownFull, flowShownFull-flowShownLimited)
+		rel = min(rel, s.downSent+ahead-s.downForwarded)
+	}
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
 	}
@@ -1394,19 +1416,27 @@ func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found
 // for each stream shown + forwarded <= real + returned. Where no value is
 // low enough, ok is false and the connection has to go. Streams the sender
 // has finished do not count: nothing more is sent on them.
-func (c *flowConn) changeInitialWindow(payload []byte, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
+//
+// A stream whose sender has used all it was forwarded (spent) needs no value
+// that low: shown nothing, it has no window left, which is all the receiver
+// asks of it, and it is forwarded nothing more until the receiver's credit
+// has made up the difference.
+func (c *flowConn) changeInitialWindow(payload []byte, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done, spent bool)) (ok bool) {
 	real, show, found := rewriteInitialWindow(payload, start)
 	if !found {
 		return true
 	}
 	for _, s := range c.streams {
-		returned, forwarded, done := credit(s)
+		returned, forwarded, done, spent := credit(s)
 		if done {
 			continue
 		}
 		lim := int64(real) + returned - forwarded
 		if lim < 0 {
-			return false
+			if !spent {
+				return false
+			}
+			lim = 0
 		}
 		show = int32(min(int64(show), lim))
 	}
@@ -1485,8 +1515,8 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(first(initialWindow(payload))), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
-				return s.down.returned, s.downForwarded, s.serverDone
+			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(first(initialWindow(payload))), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool, bool) {
+				return s.down.returned, s.downForwarded, s.serverDone, c.shownLimited && s.downForwarded <= s.downSent
 			}) {
 				c.giveUp()
 				return out
@@ -1641,8 +1671,8 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.up.enabled() && !c.changeInitialWindow(payload, max(c.up.init, flowShownUp), &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
-				return s.up.returned, s.upForwarded, s.clientDone
+			if c.up.enabled() && !c.changeInitialWindow(payload, max(c.up.init, flowShownUp), &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool, bool) {
+				return s.up.returned, s.upForwarded, s.clientDone, false
 			}) {
 				c.giveUp()
 				return out
