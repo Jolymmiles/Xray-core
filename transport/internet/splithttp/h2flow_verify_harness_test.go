@@ -148,17 +148,18 @@ func (h *flowHarness) checkHolds() {
 	c := h.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var open, forwarded, returned int64
+	var open, forwarded, sent, returned int64
 	for _, s := range c.streams {
 		if !s.serverDone {
 			open++
 			forwarded += s.downForwarded
+			sent += s.downSent
 			returned += s.down.returned
 		}
 	}
-	if open != c.downOpen || forwarded != c.downOpenForwarded || returned != c.downOpenReturned {
-		h.t.Fatalf("unfinished streams: %d forwarded %d returned %d, the connection counts %d forwarded %d returned %d",
-			open, forwarded, returned, c.downOpen, c.downOpenForwarded, c.downOpenReturned)
+	if open != c.downOpen || forwarded != c.downOpenForwarded || sent != c.downOpenSent || returned != c.downOpenReturned {
+		h.t.Fatalf("unfinished streams: %d forwarded %d sent %d returned %d, the connection counts %d forwarded %d sent %d returned %d",
+			open, forwarded, sent, returned, c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned)
 	}
 }
 

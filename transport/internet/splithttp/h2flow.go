@@ -584,11 +584,18 @@ type flowConn struct {
 	// sendWindow is what this connection's client may hold, 0 for no
 	// limit, see downRelease. The counters under it say what it holds now,
 	// see clientHolds: over the streams the server has not finished, how many
-	// there are, what the server was forwarded and what the client returned.
+	// there are, what the server was forwarded, what it sent and what the
+	// client returned; and for the connection, how its window stands against
+	// where it started, the most it has stood at, and whether the client has
+	// returned connection credit in small steps.
 	sendWindow        int64
 	downOpen          int64
 	downOpenForwarded int64
+	downOpenSent      int64
 	downOpenReturned  int64
+	downConnWindow    int64
+	downConnHigh      int64
+	downConnSmall     bool
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -795,7 +802,7 @@ func (c *flowConn) release() {
 
 func (c *flowConn) releaseLocked() {
 	c.streams = map[uint32]*flowStream{}
-	c.downOpen, c.downOpenForwarded, c.downOpenReturned = 0, 0, 0
+	c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned = 0, 0, 0, 0
 	c.opened = nil
 	c.wqueue = nil
 	clear(c.wcredit)
@@ -1001,6 +1008,7 @@ func (c *flowConn) endDown(s *flowStream) {
 	s.serverDone = true
 	c.downOpen--
 	c.downOpenForwarded -= s.downForwarded
+	c.downOpenSent -= s.downSent
 	c.downOpenReturned -= s.down.returned
 }
 
@@ -1012,14 +1020,40 @@ func (c *flowConn) forwardDown(s *flowStream, rel int64) {
 	}
 }
 
-// clientHolds is what the connection's client holds of the server's data on
-// the streams the server has not finished, as the server may still send it:
-// data the client has not returned stream credit for, and the window left.
-// A stream the server has ended is not in it, read or not: a Go client
-// returns the last of such a body through the connection only, so its stream
-// credit would never tell.
+// clientHolds is what the connection's client holds of the server's data, as
+// the server may still send it. It is counted two ways and the larger taken.
+//
+// By stream: over the streams the server has not finished, the data the
+// client has not returned stream credit for and the window left.
+//
+// By connection: the data the client has not returned connection credit for,
+// and the same window left. That also counts a download the server has ended
+// and the client has not read, which its stream no longer tells: a Go client
+// returns the last of a body through the connection only. A client raises its
+// connection window once at the start, so what it has not returned is how far
+// the window stands under the most it has stood at. A client that returns
+// connection credit only once half of a large window is read would look as
+// if it held that half for good, so this count is used only once the client
+// has returned connection credit in small steps.
 func (c *flowConn) clientHolds() int64 {
-	return c.downOpen*int64(c.clientShown) + c.downOpenForwarded - c.downOpenReturned
+	window := c.downOpen*int64(c.clientShown) + c.downOpenForwarded
+	holds := window - c.downOpenReturned
+	if c.downConnSmall {
+		holds = max(holds, c.downConnHigh-c.downConnWindow+window-c.downOpenSent)
+	}
+	return holds
+}
+
+// noteConnCredit follows a connection WINDOW_UPDATE from the client. One that
+// takes the window above where it has been raises the window; any other
+// returns what was read.
+func (c *flowConn) noteConnCredit(inc int64) {
+	c.downConnWindow += inc
+	if c.downConnWindow > c.downConnHigh {
+		c.downConnHigh = c.downConnWindow
+	} else if inc < flowSmallCredit {
+		c.downConnSmall = true
+	}
 }
 
 // upConnRelease is how much connection credit the client may be given: no
@@ -1269,15 +1303,15 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 // downRelease is how much credit the server may be given on s: no more than
 // the client granted, and no more than keeps the client's unread data under cap.
 //
-// On a server the unfinished streams of one connection also share
-// sendWindow. A cap follows its own reader, but many streams starting at once
-// on a fast link each look fast for a moment, and the client has to hold
-// their sum: twenty of them took a client past 40 MiB within a second. What
-// the client holds of them is clientHolds. A client that itself announces a
-// stream window above sendWindow has that room, so its window is the limit
-// then. A stream always has the protocol's default window, which SETTINGS
-// already gave it, so none waits for the others; streams opened once the
-// limit is used up add that much each.
+// On a server the streams of one connection also share sendWindow. A cap
+// follows its own reader, but many streams starting at once on a fast link
+// each look fast for a moment, and the client has to hold their sum: twenty
+// of them took a client past 40 MiB within a second. What the client holds
+// is clientHolds. A client that itself announces a stream window above
+// sendWindow has that room, so its window is the limit then. A stream always
+// has the protocol's default window, which SETTINGS already gave it, so none
+// waits for the others; streams opened once the limit is used up add that
+// much each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
 	held := int64(c.clientShown) + s.downForwarded - s.down.returned
@@ -1439,6 +1473,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 	case h2WindowUpdate:
 		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
+		if f.stream == 0 {
+			c.noteConnCredit(inc)
+		}
 		s := c.stream(f.stream)
 		if s == nil || inc == 0 || !c.down.enabled() {
 			break
@@ -1533,8 +1570,12 @@ func (w *flowWriter) frame(f h2Frame) {
 	s := c.stream(f.stream)
 	switch f.typ {
 	case h2Data:
+		c.downConnWindow -= int64(f.length)
 		if s != nil {
 			s.downSent += int64(f.length)
+			if !s.serverDone {
+				c.downOpenSent += int64(f.length)
+			}
 			if c.down.enabled() {
 				c.armGuard(s)
 			}

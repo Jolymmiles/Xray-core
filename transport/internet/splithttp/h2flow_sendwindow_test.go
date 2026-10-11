@@ -112,24 +112,25 @@ func TestFlowSendWindowIsReturned(t *testing.T) {
 	}
 }
 
-// TestFlowSendWindowLeavesFinishedDownloadsOut fixes what the limit does not
-// cover. Sixteen downloads are sent all they may and ended, and the client
-// reads nothing; the next sixteen get the whole limit again. The limit is on
-// the streams the server has not finished: an ended one cannot be followed,
-// see clientHolds.
-func TestFlowSendWindowLeavesFinishedDownloadsOut(t *testing.T) {
-	h := openStreams(t, flowServerSendWindow, 4<<20, 0)
+// finishedRounds opens downloads in rounds of sixteen on h. The server sends
+// each all it may and ends it, and the client reads nothing. It returns what
+// each round was sent.
+func finishedRounds(h *flowHarness, rounds int) (sent []int64) {
 	next := uint32(1)
-	round := func() (sent int64) {
+	for id := range h.toServer.streams {
+		next = max(next, id+2)
+	}
+	for ; rounds > 0; rounds-- {
 		var ids []uint32
 		for i := 0; i < 16; i++ {
+			ids = append(ids, next)
 			id := next
 			next += 2
-			ids = append(ids, id)
 			h.fromClient(func(fr *http2.Framer) {
 				fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true, EndStream: true})
 			})
 		}
+		total := int64(0)
 		for _, id := range ids {
 			w := h.toServer.streams[id]
 			h.fromServer(func(fr *http2.Framer) {
@@ -137,14 +138,75 @@ func TestFlowSendWindowLeavesFinishedDownloadsOut(t *testing.T) {
 				writeDataSplit(fr, id, int(w))
 				fr.WriteData(id, true, nil)
 			})
-			sent += w
+			total += w
 		}
-		return sent
+		sent = append(sent, total)
 	}
-	for n := 1; n <= 2; n++ {
-		if sent := round(); sent != flowServerSendWindow {
-			t.Fatalf("round %d: sixteen downloads were sent %d, want the limit %d", n, sent, flowServerSendWindow)
+	return sent
+}
+
+// goClientStart is how a Go client opens a connection and shows that it
+// returns connection credit as it reads: it raises the connection window to
+// 1 GiB, and after one small download returns its bytes to the connection.
+func goClientStart(t *testing.T, h *flowHarness) {
+	t.Helper()
+	const first = 8 << 10
+	h.fromClient(func(fr *http2.Framer) {
+		fr.WriteWindowUpdate(0, 1<<30-h2InitWindow)
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x82}, EndHeaders: true, EndStream: true})
+	})
+	h.fromServer(func(fr *http2.Framer) {
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x88}, EndHeaders: true})
+		fr.WriteData(1, true, make([]byte, first))
+	})
+	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, first) })
+	if !h.c.downConnSmall || h.c.clientHolds() != 0 {
+		t.Fatalf("after one download read to the end: small connection credit seen %v, client holds %d, want true and 0",
+			h.c.downConnSmall, h.c.clientHolds())
+	}
+}
+
+// TestFlowSendWindowCountsFinishedDownloads has downloads the server ends and
+// the client does not read: their data is still the client's to hold, and
+// only the connection's credit tells. Once the limit is used up a new stream
+// has the protocol's default window and no more, until the client returns
+// connection credit for what it read.
+func TestFlowSendWindowCountsFinishedDownloads(t *testing.T) {
+	h := openStreams(t, flowServerSendWindow, 4<<20, 0)
+	goClientStart(t, h)
+	sent := finishedRounds(h, 2)
+	if sent[0] != flowServerSendWindow {
+		t.Fatalf("the first sixteen downloads were sent %d, want the limit %d", sent[0], flowServerSendWindow)
+	}
+	if sent[1] != 16*h2InitWindow {
+		t.Fatalf("with %d unread the next sixteen downloads were sent %d, want the default window each, %d", sent[0], sent[1], 16*h2InitWindow)
+	}
+	// The client reads it all, 16 KiB at a time.
+	for left := sent[0] + sent[1]; left > 0; left -= min(left, 16<<10) {
+		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, uint32(min(left, 16<<10))) })
+	}
+	if again := finishedRounds(h, 1); again[0] != flowServerSendWindow {
+		t.Fatalf("once the client had read everything sixteen downloads were sent %d, want %d", again[0], flowServerSendWindow)
+	}
+}
+
+// TestFlowSendWindowWithoutConnectionCredit is the same on a client that has
+// not returned connection credit in small steps: it may be one that returns
+// it at half of a large window, which would look as if it held that half for
+// good. The connection's count is not used for it, and ended downloads are
+// outside the limit.
+func TestFlowSendWindowWithoutConnectionCredit(t *testing.T) {
+	h := openStreams(t, flowServerSendWindow, 4<<20, 0)
+	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 15<<20) })
+	for n, sent := range finishedRounds(h, 2) {
+		if sent != flowServerSendWindow {
+			t.Fatalf("round %d: sixteen downloads were sent %d, want the limit %d", n+1, sent, flowServerSendWindow)
 		}
+	}
+	// Half of its window read, it returns that at once.
+	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 7<<20) })
+	if h.c.downConnSmall {
+		t.Fatal("a 7 MiB connection credit was taken for a small step")
 	}
 }
 
