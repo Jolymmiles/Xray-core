@@ -128,12 +128,38 @@ const _ = uint(h2InitWindow - flowShownDown)
 // credit when it opens, as before. The value never leaves the process.
 const flowShownLimited = h2MinMaxFrameSize
 
-// shownDown is the initial window the sender of downloads is shown.
-func (c *flowConn) shownDown() int32 {
-	if !c.client && c.sendWindow != 0 {
+// shownDown is the initial window the sender of downloads is shown for a
+// client that announces real.
+//
+// A client that announces no more than the protocol default gets all of it,
+// limit or not. It may be a governor: one shows exactly that, counts on every
+// byte of it, and holds back credit under a quantum while it takes the sender
+// to have a quantum left. A server that kept its stack under what such a
+// client showed would wait for that credit while the client waits for data,
+// for good; see flowShownDown. With all of it shown, what the stream's floor
+// in downRelease hands on is all the client has returned, so the limit holds
+// nothing back from it, and what such a client holds is up to its own
+// governor.
+func (c *flowConn) shownDown(real int32) int32 {
+	if !c.client && c.sendWindow != 0 && real > h2InitWindow {
 		return flowShownLimited
 	}
 	return max(c.down.init, flowShownDown)
+}
+
+// first is the first of two values.
+func first[A, B any](a A, _ B) A {
+	return a
+}
+
+// initialWindow is the last SETTINGS_INITIAL_WINDOW_SIZE in payload.
+func initialWindow(payload []byte) (real int32, found bool) {
+	for i := 0; i+6 <= len(payload); i += 6 {
+		if binary.BigEndian.Uint16(payload[i:]) == h2SettingInitialWindowSize {
+			real, found = int32(min(binary.BigEndian.Uint32(payload[i+2:]), h2MaxWindow)), true
+		}
+	}
+	return real, found
 }
 
 type tcpStats struct {
@@ -1062,7 +1088,10 @@ func (c *flowConn) clientHolds() int64 {
 
 // noteConnCredit follows a connection WINDOW_UPDATE from the client. One that
 // takes the window above where it has been raises the window; any other
-// returns what was read.
+// returns what was read. The two cannot be told apart in a credit that does
+// both, so a client that raises its window while it holds unread data has
+// that data dropped from the count: the count errs towards sending, not
+// towards stopping a client for data it does not hold.
 func (c *flowConn) noteConnCredit(inc int64) {
 	c.downConnWindow += inc
 	if c.downConnWindow > c.downConnHigh {
@@ -1456,7 +1485,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
+			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(first(initialWindow(payload))), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
 				return s.down.returned, s.downForwarded, s.serverDone
 			}) {
 				c.giveUp()
