@@ -48,9 +48,12 @@ guard it.
   wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
   fork-owned: renumber it if upstream claims that number.
   A governed server lets one connection's client hold 4 MiB of its data,
-  unread or as window still open, whatever window the client announces;
-  `h2Flow.maxConnectionSendWindow` sets it and `-1` lifts that limit,
-  nothing else. A governed bridge is held to the limit like any client.
+  unread or as window still open; `h2Flow.maxConnectionSendWindow` sets it
+  and `-1` lifts that limit, nothing else. The limit does not hold a client
+  with a governor of its own, which its own governor bounds, and it loses
+  count of unread data when a client raises its connection window after
+  the start; `transport/internet/splithttp/BASELINE.md` has both under
+  "Limits".
   `transport/internet/splithttp/BASELINE.md` holds its benchmarks and gates.
   Covered by the `h2flow*_test.go` tests and
   `common/singmux/xhttp_flow_verify_integration_test.go`.

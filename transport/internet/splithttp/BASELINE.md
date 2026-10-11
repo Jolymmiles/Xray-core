@@ -60,7 +60,7 @@ MIHOMO_E2E_BIN=/path/to/mihomo SING_BOX_E2E_BIN=/bin/true \
   Mihomo clients in stream-up and packet-up, governor on and off, plus the
   SETTINGS each server advertises: all 10 cases pass on `7d61adc0`.
 - `TestXHTTPMuxCoolProcess`: 6/6 pass on `7d61adc0`.
-- Both were run again on `a79b4aac`, the server with its default send
+- Both were run again on `e9737656`, the server with its default send
   window, against Mihomo Meta v1.19.32 (release binary, linux/amd64): 10 of
   10 and 6 of 6 pass.
 
@@ -240,26 +240,25 @@ The client dies about 1.1 s after the start: it is the opening burst of
 twenty streams, not growth. At 100 Mbit/s the same scenario holds 12.7 MB
 before and 12.6 MB after, worst 13.9 MB both.
 
-The same scenario against other clients, three runs each, and eight
-downloads at RTT 150 ms, two runs each (the table is `323ca8b1`; on
-`60e39569` all seven peak at 22.9 to 23.9 MB at 4 MiB and 16.7 to 17.6 MB
-at 2 MiB, none killed, and read 71.6 to 72.3 MB/s, with one run of 47.4 on
-v26.7.28): the limit must hold for every client
-and must not slow one whose connection credit comes otherwise. Without the
-limit every one of these clients was killed, 3 of 3 (`439f0110`).
+The same scenario against other clients, and eight downloads at RTT 150 ms,
+server `a21c075d`, five runs each: the limit must hold for every client and
+must not slow one whose connection credit comes otherwise. Without the limit
+every one of these clients was killed, 3 of 3 (`439f0110`).
 
-| Client | Slow readers: median / worst, killed | 8 downloads, RTT 150 ms |
-| --- | --- | --- |
-| Xray v26.10.10, release | 23.6 / 23.9 MB, 0 of 3 | 72.0 MB/s |
-| Xray v26.9.30, release | 23.3 / 23.5 MB, 0 of 3 | 71.9 MB/s |
-| Xray v26.7.28, release | 23.5 / 23.8 MB, 0 of 3 | 71.1 MB/s |
-| Xray v26.5.9, release | 23.3 / 24.2 MB, 0 of 3 | 48.4 and 71.4 MB/s |
-| v26.10.10 built with `-tags http2legacy` | 23.6 / 23.6 MB, 0 of 3 | 70.9 MB/s |
-| v26.10.10 with `golang.org/x/net` v0.61.0 | 23.4 / 23.5 MB, 0 of 3 | 70.8 MB/s |
-| v26.10.10 with both | 23.0 / 23.5 MB, 0 of 3 | 70.5 MB/s |
+| Client | Slow readers, 4 MiB: median / worst, killed | The same, 2 MiB | 8 downloads, RTT 150 ms: median (range) |
+| --- | --- | --- | --- |
+| Xray v26.10.10, release | 23.7 / 24.1 MB, 0 of 5 | 17.4 / 17.6 MB, 0 of 5 | 72.3 (71.0 to 72.5) MB/s |
+| Xray v26.9.30, release | 23.9 / 24.2 MB, 0 of 5 | 17.6 / 17.9 MB, 0 of 5 | 72.3 (71.4 to 72.4) MB/s |
+| Xray v26.7.28, release | 23.5 / 23.9 MB, 0 of 5 | 16.9 / 17.1 MB, 0 of 5 | 71.8 (71.3 to 72.5) MB/s |
+| Xray v26.5.9, release | 23.1 / 23.1 MB, 0 of 5 | 16.6 / 17.1 MB, 0 of 5 | 72.3 (71.4 to 72.4) MB/s |
+| v26.10.10 built with `-tags http2legacy` | 23.2 / 23.4 MB, 0 of 5 | 17.0 / 17.3 MB, 0 of 5 | 72.4 (71.5 to 72.7) MB/s |
+| v26.10.10 with `golang.org/x/net` v0.61.0 | 23.4 / 24.1 MB, 0 of 5 | 17.1 / 17.4 MB, 0 of 5 | 67.6 (47.4 to 72.5) MB/s |
+| v26.10.10 with both | 23.2 / 24.1 MB, 0 of 5 | 17.0 / 17.2 MB, 0 of 5 | 71.5 (48.8 to 72.0) MB/s |
 
-v26.5.9 reads 48 MB/s in about one run of six whichever way the limit is
-counted: 1 of 6 on `439f0110`, 1 of 6 on `323ca8b1`, the rest 70 to 72.
+A run of 47 to 49 MB/s turns up now and then on any of these clients and on
+any way of counting the limit: on v26.5.9 in 1 of 6 runs of `439f0110` and
+1 of 6 of `323ca8b1`, on v26.7.28 in 1 of 2 of `60e39569`, on the last two
+rows here. Its cause was not looked for.
 
 What the limit costs is the sum of many downloads on one connection on a
 long path, at most the limit per round trip. MB/s read, three connections:
@@ -289,15 +288,16 @@ p95 65 / 226 against 66 / 251 ms beside 8 downloads, 52 / 367 against
 twenty uploads into a slow origin.
 
 One frame from the client on a server connection with streams open past the
-limit (`BenchmarkFlowClientFrame`, `-benchtime=2000x`, medians of three).
-With the total found by walking the streams (`154e636c`) a SETTINGS frame
-cost 35 µs with 100 streams and 5.2 ms with 1000; the table is `439f0110`:
+limit (`BenchmarkFlowClientFrame`, `-benchtime=2000x -count=5`, medians, on
+`a21c075d`). With the total found by walking the streams (`154e636c`) a
+SETTINGS frame cost 35 µs with 100 streams and 5.2 ms with 1000:
 
 | Frame | Streams | No limit | Limit |
 | --- | --- | --- | --- |
-| SETTINGS | 100 | 2.2 µs | 2.4 µs |
-| SETTINGS | 1000 | 29.4 µs | 30.7 µs |
-| WINDOW_UPDATE | 1000 | 2.5 µs | 2.5 µs |
+| SETTINGS | 100 | 2.26 µs | 2.33 µs |
+| SETTINGS | 1000 | 31.1 µs | 31.1 µs |
+| WINDOW_UPDATE | 100 | 2.56 µs | 2.56 µs |
+| WINDOW_UPDATE | 1000 | 2.56 µs | 2.55 µs |
 
 `BenchmarkFlowRead` and `BenchmarkFlowWrite` do not show the quanta: the
 replay connection has no system calls and no peer that answers credit.
@@ -334,68 +334,89 @@ Limits:
   client has returned connection credit in small steps; until then, and for
   a client that never does, ended downloads are outside the limit
   (`TestFlowSendWindowWithoutConnectionCredit`).
-- On the stand an Xray client does not keep short ended downloads in its
-  own memory, governor on or off (192 downloads of 256 KiB read at 1 KB/s
-  each: 13 to 17 MB): it writes them on to the application's socket, into
-  the kernel. `--app-buffer 32768` bounds that, as where the reader lives
-  in the client's process. Then, with `--readers 192 --stagger 0.055
-  --read-rate 1000 --download-bytes 262144 --client-limit-mb 40`, three
-  runs each: stock is killed 3 of 3; `323ca8b1` peaks at 38.7 MB (worst
-  38.9), `5ae2b3de` at 34.9 MB (worst 35.5), neither killed.
+- A connection WINDOW_UPDATE that takes the window above where it has been
+  is taken for a raise, and what the client had not returned by then drops
+  out of the connection's count (`TestFlowSendWindowRaiseDropsUnread`). A
+  raise cannot be told from a large return in such a credit; counting it as
+  a return would hold a client for data it does not have, so the count errs
+  towards sending. Xray and Mihomo clients raise the window once, at the
+  start.
 - A first version counted every connection WINDOW_UPDATE as credit returned
   and failed on the stand, client killed at 40 to 44 MB: a Go client opens
   with one of 1 GiB to raise its window. The harness now has that frame
   (`goClientStart`).
+- A client with a governor of its own is not held to the limit. It
+  announces the protocol default, and a client that announces no more than
+  that is shown all of it (`shownDown`): the server governor then hands on
+  all such a client returns, and the client governor opens each stream with
+  credit of its cap above what it showed. Forty downloads nobody reads hold
+  10.5 MiB at a governed client with the limit as without
+  (`TestFlowChainedClientNotHeldToSendWindow`); what it holds is up to its
+  own governor. Showing such a client less stopped downloads for good
+  (`TestFlowChainedStallAtSendWindow`, `5ae2b3de` to `a21c075d`): the
+  server governor kept back 49151 bytes the client governor counted on.
 - The limit is per connection and the server does not know how many
-  connections a client keeps: the client holds about the limit times its
-  connections above its base of about 11 MB.
+  connections a client keeps.
 - The limit is what is configured, whatever window the client announces
   (`60e39569`; before, it was never below that window, so nothing under the
-  4 MiB a Go client announces took effect). A governed bridge is held to it
-  like any other client; `-1` on its inbound lifts that. One download is
-  held to the limit per round trip as well. `60e39569`, three runs each,
-  `--h2flow` with `maxConnectionSendWindow` 2097152 and 1048576:
+  4 MiB a Go client announces took effect). One download is held to the
+  limit per round trip as well. `a21c075d`, five runs each, `--h2flow` with
+  `maxConnectionSendWindow` 2097152 and 1048576; "192 slow downloads" is
+  `--readers 192 --stagger 0.055 --read-rate 1000 --download-bytes
+  4000000`, the completed ones the same with `--download-bytes 262144
+  --app-buffer 32768`:
 
   | | 4 MiB | 2 MiB | 1 MiB |
   | --- | --- | --- | --- |
-  | Twenty slow readers, client peak | 23.0 MB | 17.3 MB | 14.4 MB |
-  | 192 slow downloads of 4 MB, client peak, killed | 40.1 MB, 3 of 3 | 35.0 MB, 0 of 3 | 32.6 MB, 0 of 3 |
-  | 192 ended downloads nobody reads, client peak | 35.6 MB | 31.2 MB | 28.5 MB |
-  | One download, RTT 50 ms | 64.9 MB/s | 38.9 MB/s | 19.6 MB/s |
-  | One download, RTT 150 ms | 24.1 MB/s | 12.1 MB/s | 6.1 MB/s |
-  | 8 downloads, RTT 150 ms | 72.3 MB/s | 36.7 MB/s | 18.6 MB/s |
+  | Twenty slow readers: client peak, median / worst | 23.7 / 24.1 MB | 17.3 / 17.6 MB | 14.5 / 14.8 MB |
+  | 192 slow downloads of 4 MB: client peak, killed | 40.0 / 40.1 MB, 4 of 5 | 35.4 / 36.3 MB, 0 of 5 | 32.5 / 32.8 MB, 0 of 5 |
+  | 192 short, completed downloads nobody reads: client peak | 35.7 / 35.9 MB | 31.3 / 31.8 MB | 28.3 / 28.6 MB |
+  | One download, RTT 50 ms | 68.2 MB/s | 39.3 MB/s | 19.7 MB/s |
+  | One download, RTT 150 ms | 24.1 MB/s | 12.2 MB/s | 6.1 MB/s |
+  | 8 downloads, RTT 150 ms | 72.0 MB/s | 36.9 MB/s | 18.6 MB/s |
 
   At the default, one download at RTT 50 ms reads the same on `da42e75f`,
   `5ae2b3de` and `60e39569`: 67.9, 68.2 and 68.8 MB/s, six shuffled runs.
 - A stream past the limit keeps what the server's stack was shown at the
-  start, 16 KiB since `5ae2b3de` (`flowShownLimited`; 65535 before): forty
-  streams opened at once may be sent 4.4 MiB, not 4
-  (`TestFlowSendWindowBoundsManyStreams`). A client that does not announce
-  an initial window keeps 65535 per stream: the value is lowered by
-  rewriting the one it sends.
-- The limit is per connection, so with three connections and hundreds of
-  streams the client is still near 40 MiB: 192 slow downloads of 4 MB
-  started over ten seconds kill it 3 of 3 on stock, on `323ca8b1` and on
-  `5ae2b3de`. The windows are 15 MB of what the client then holds. Its
-  runtime's own figures (`/debug/pprof/heap?debug=1` through a `metrics`
-  listener, one run, client limit raised to 80 MiB, peak 43 to 45 MB):
-  about 24 MB of live heap, the windows' 15 and 5 the client holds idle
-  among them; 13 MB of heap the collector has not reclaimed yet (heap in
-  use 37.4 MB, next collection at 39.0); and 7.8 MB of goroutine stacks,
-  four goroutines to a session, against 2.1 MB with twenty. So about 60 KB
-  of each open download is the client's own, stacks and heap, which no
-  window reaches. `GOGC=25` brings the peak to 36.8 MB (heap in use
-  29.3), a memory limit of 30 MiB beside it to 33.2 MB at 2333 collections
-  in the run. With twenty streams little is allocated after the start, the
-  heap stays at 21.5 MB of a 35.7 MB target, and `GOGC` changes nothing
-  (23.6, 23.6, 23.2 MB). A client buffer of its own (`policy.bufferSize`
-  0) changes nothing either.
-- `5ae2b3de` against `323ca8b1`: twenty slow readers 23.7 against 23.5 MB
-  and eight downloads at RTT 150 ms 72.1 against 71.6 MB/s (three runs);
-  at 100 Mbit/s the request beside eight downloads p50 / p95 66 / 310
-  against 66 / 268 ms (ten runs, p95 of single runs 157 to 449 against 161
-  to 327), beside twenty slow readers 52 / 314 against 52 / 334 ms (four
-  runs).
+  start: 16 KiB (`flowShownLimited`) for a client that announces more than
+  the protocol default, 65535 before `5ae2b3de` and for a client that
+  announces the default or no initial window at all. Forty streams of a Go
+  client opened at once may be sent 4.4 MiB, not 4
+  (`TestFlowSendWindowBoundsManyStreams`).
+- On the stand an Xray client does not keep short, completed downloads in
+  its own memory, governor on or off (192 downloads of 256 KiB read at
+  1 KB/s each: 13 to 17 MB): it writes them on to the application's socket,
+  into the kernel. `--app-buffer 32768` bounds that, as where the reader
+  lives in the client's process. Then, five runs each, with 65535 shown
+  (`323ca8b1`) against one frame (`a21c075d`):
+
+  | | Stock | 65535 shown | One frame shown |
+  | --- | --- | --- | --- |
+  | 192 short, completed downloads nobody reads: client peak, killed | 40.0 / 40.1 MB, 5 of 5 | 40.6 / 41.0 MB, 5 of 5 | 35.7 / 36.5 MB, 0 of 5 |
+  | 192 slow downloads of 4 MB: client peak, killed | 40.2 / 40.7 MB, 5 of 5 | 40.0 / 40.3 MB, 5 of 5 | 40.0 / 40.1 MB, 5 of 5 |
+  | Twenty slow readers: client peak | | 23.6 / 23.6 MB | 23.8 / 23.9 MB |
+  | 8 downloads, RTT 150 ms | | 71.0 MB/s | 71.8 MB/s |
+  | Twenty slow readers, 100 Mbit/s: ping p50 / p95 | | 53 / 364 ms | 53 / 312 ms |
+
+  At 100 Mbit/s the request beside eight downloads is p50 / p95 66 / 310
+  against 66 / 268 ms (ten runs on `5ae2b3de`, p95 of single runs 157 to
+  449 against 161 to 327).
+- With three connections and hundreds of streams the default limit does
+  not keep the client under 40 MiB, as the 192 slow downloads show. The
+  windows are 15 MB of what the client then holds. Its runtime's own
+  figures (`/debug/pprof/heap?debug=1` through a `metrics` listener, one
+  run, client limit raised to 80 MiB, peak 43 to 45 MB): about 24 MB of
+  live heap, the windows' 15 and 5 the client holds idle among them; 13 MB
+  of heap the collector has not reclaimed yet (heap in use 37.4 MB, next
+  collection at 39.0); and 7.8 MB of goroutine stacks, four goroutines to a
+  session, against 2.1 MB with twenty. So about 60 KB of each open download
+  is the client's own, stacks and heap, which no window reaches. `GOGC=25`
+  brings the peak to 36.8 MB (heap in use 29.3), a memory limit of 30 MiB
+  beside it to 33.2 MB at 2333 collections in the run. With twenty streams
+  little is allocated after the start, the heap stays at 21.5 MB of a
+  35.7 MB target, and `GOGC` changes nothing (23.6, 23.6, 23.2 MB, three
+  runs each). A client buffer of its own (`policy.bufferSize` 0) changes
+  nothing either.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. A Go client
