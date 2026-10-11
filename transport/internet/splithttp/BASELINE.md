@@ -343,11 +343,24 @@ Limits:
 - The limit is per connection and the server does not know how many
   connections a client keeps: the client holds about the limit times its
   connections above its base of about 11 MB.
-- The limit is never below the stream window the client announces, 4 MiB
-  for a Go client, so lower values do nothing for such clients. A client
-  with a governor of its own announces 65535 whatever its window, so a
-  governed bridge is held to the server's limit like any other client;
-  `-1` on its inbound lifts that.
+- The limit is what is configured, whatever window the client announces
+  (`60e39569`; before, it was never below that window, so nothing under the
+  4 MiB a Go client announces took effect). A governed bridge is held to it
+  like any other client; `-1` on its inbound lifts that. One download is
+  held to the limit per round trip as well. `60e39569`, three runs each,
+  `--h2flow` with `maxConnectionSendWindow` 2097152 and 1048576:
+
+  | | 4 MiB | 2 MiB | 1 MiB |
+  | --- | --- | --- | --- |
+  | Twenty slow readers, client peak | 23.0 MB | 17.3 MB | 14.4 MB |
+  | 192 slow downloads of 4 MB, client peak, killed | 40.1 MB, 3 of 3 | 35.0 MB, 0 of 3 | 32.6 MB, 0 of 3 |
+  | 192 ended downloads nobody reads, client peak | 35.6 MB | 31.2 MB | 28.5 MB |
+  | One download, RTT 50 ms | 64.9 MB/s | 38.9 MB/s | 19.6 MB/s |
+  | One download, RTT 150 ms | 24.1 MB/s | 12.1 MB/s | 6.1 MB/s |
+  | 8 downloads, RTT 150 ms | 72.3 MB/s | 36.7 MB/s | 18.6 MB/s |
+
+  At the default, one download at RTT 50 ms reads the same on `da42e75f`,
+  `5ae2b3de` and `60e39569`: 67.9, 68.2 and 68.8 MB/s, six shuffled runs.
 - A stream past the limit keeps what the server's stack was shown at the
   start, 16 KiB since `5ae2b3de` (`flowShownLimited`; 65535 before): forty
   streams opened at once may be sent 4.4 MiB, not 4
