@@ -25,7 +25,13 @@ at --read-rate bytes per second (0 reads as fast as it comes), on a link of
 --mbit and --rtt. The stand then reports the client's anonymous memory
 (RssAnon, sampled every 50 ms) and the megabytes read per second, and with
 --client-limit-mb it kills the client the moment it holds more than that, as
-a process memory limit would. --readers and --read-rate also set the number
+a process memory limit would. --download-bytes makes each download that
+short, so the server ends it long before a slow reader has taken it, and
+--stagger starts the downloads that many seconds apart instead of at once.
+--app-buffer bounds what the kernel holds between the client and the reader
+(the reader's receive buffer and the send buffers of the client's namespace),
+so that what the reader has not taken stays in the client's own memory, as it
+does where the reader lives in the client's process. --readers and --read-rate also set the number
 of uploads and what the origin reads from each; with --read-rate 0 nothing
 is slowed, and the megabytes moved and the processor time of both Xray
 processes per gigabyte are the result:
@@ -79,6 +85,7 @@ XMUX = {"maxConnections": 3, "maxConcurrency": 0, "cMaxReuseTimes": 0,
         "hMaxRequestTimes": "600-900", "hMaxReusableSecs": "1800-3000", "hKeepAlivePeriod": 16}
 MBIT, RTT_MS = 100, 50
 UPLOADS, UPLOAD_RATE, DURATION, PING_EVERY = 20, 100_000, 12, 0.3
+DOWNLOAD_BYTES = 100_000_000_000
 PING_TIMEOUT, READY_TIMEOUT = 10.0, 20.0
 ANON_EVERY = 0.05
 # About the most one run's own waits allow: readiness and its last ping, the
@@ -125,7 +132,7 @@ def remove_namespace(ns):
         raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
 
 
-def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS):
+def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0):
     """Two namespaces of this run joined by a veth pair, shaped in both."""
     existing = subprocess.run(["ip", "netns", "list"], check=True, capture_output=True, text=True).stdout.split()
     for ns in (srv, cli):
@@ -145,8 +152,11 @@ def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS):
     for ns, dev in ((srv, vsrv), (cli, vcli)):
         sh(f"ip -n {ns} link set lo up")
         sh(f"ip -n {ns} link set {dev} up")
+        # The client sends next to nothing over the link in a download, so
+        # its send buffers can be bounded for the reader's sake.
+        wmem = f"4096 {min(16384, app_buffer)} {app_buffer}" if app_buffer and ns == cli else "4096 16384 33554432"
         sh(f'ip netns exec {ns} sysctl -qw net.ipv4.tcp_rmem="4096 131072 33554432" '
-           f'net.ipv4.tcp_wmem="4096 16384 33554432"')
+           f'net.ipv4.tcp_wmem="{wmem}"')
         sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {rtt_ms / 2:g}ms rate {mbit}mbit limit {limit}")
     subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", "net.ipv4.tcp_congestion_control=cubic"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -208,7 +218,8 @@ def outer(args):
                 show_log("origin", origin_log)
 
         stack.push(show_origin_log)
-        setup_network(stack, srv, cli, getattr(args, "mbit", MBIT), getattr(args, "rtt", RTT_MS))
+        setup_network(stack, srv, cli, getattr(args, "mbit", MBIT), getattr(args, "rtt", RTT_MS),
+                      getattr(args, "app_buffer", 0))
         private_key, public_key = reality_keys(next(iter(servers.values())))
         for name in servers:
             with open(f"{work}/server-{name}.json", "w") as f:
@@ -224,7 +235,10 @@ def outer(args):
                                    "--workload", getattr(args, "workload", "uploads"),
                                    "--readers", str(getattr(args, "readers", UPLOADS)),
                                    "--read-rate", str(getattr(args, "read_rate", UPLOAD_RATE)),
-                                   "--client-limit-mb", str(getattr(args, "client_limit_mb", 0))]
+                                   "--client-limit-mb", str(getattr(args, "client_limit_mb", 0)),
+                                   "--download-bytes", str(getattr(args, "download_bytes", DOWNLOAD_BYTES)),
+                                   "--stagger", str(getattr(args, "stagger", 0.0)),
+                                   "--app-buffer", str(getattr(args, "app_buffer", 0))]
                                   + [x for s in args.server for x in ("--server", s)])
         stack.callback(reap, inside, 15.0)  # it stops and reaps its own Xray processes
         # Past this the child is stuck, not slow; leaving here tears it down.
@@ -348,18 +362,23 @@ def upload(deadline, result, rate=UPLOAD_RATE):
         s.close()
 
 
-def download(deadline, rate, result):
-    """Reads a download until deadline, at rate bytes per second if rate is
-    set. result gets the bytes read and how it ended."""
+def download(deadline, rate, result, size=DOWNLOAD_BYTES, delay=0.0, app_buffer=0):
+    """Reads a download of size bytes until deadline, at rate bytes per second
+    if rate is set, starting after delay. result gets the bytes read and how
+    it ended; one read to its end before the deadline is kept open until
+    then."""
     got = 0
+    time.sleep(max(0, min(delay, deadline - time.time() - 1)))
     try:
         s = socks(time.time() + PING_TIMEOUT)
     except OSError as e:
         result.update(got=0, end=f"no session: {e}")
         return
     try:
+        if app_buffer:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, app_buffer)
         s.settimeout(time_left(deadline))
-        s.sendall(b"GET /down?bytes=100000000000 HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n")
+        s.sendall(b"GET /down?bytes=%d HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n" % size)
         head = b""
         while b"\r\n\r\n" not in head:
             s.settimeout(time_left(deadline))
@@ -373,6 +392,9 @@ def download(deadline, rate, result):
         buf = memoryview(bytearray(4096 if rate else 1 << 20))
         start = time.time()
         while time.time() < deadline:
+            if got >= size:
+                time.sleep(min(0.05, max(0, deadline - time.time())))
+                continue
             s.settimeout(max(0.05, deadline - time.time()))
             try:
                 n = s.recv_into(buf)
@@ -481,7 +503,10 @@ def one_run(server_binary, args, name):
         deadline = time.time() + DURATION
         outcomes = [{} for _ in range(args.readers)]
         if downloads:
-            uploads = [threading.Thread(target=download, args=(deadline, args.read_rate, o), daemon=True) for o in outcomes]
+            uploads = [threading.Thread(target=download, daemon=True,
+                                        args=(deadline, args.read_rate, o, args.download_bytes, i * args.stagger,
+                                              args.app_buffer))
+                       for i, o in enumerate(outcomes)]
         else:
             uploads = [threading.Thread(target=upload, args=(deadline, o, args.read_rate), daemon=True) for o in outcomes]
         try:
@@ -604,6 +629,10 @@ def main():
     ap.add_argument("--rtt", type=int, default=RTT_MS, help="round trip of the link, ms")
     ap.add_argument("--readers", type=int, default=UPLOADS, help="downloads at once")
     ap.add_argument("--read-rate", type=int, default=UPLOAD_RATE, help="bytes per second each download is read at, 0 for no limit")
+    ap.add_argument("--download-bytes", type=int, default=DOWNLOAD_BYTES, help="size of each download")
+    ap.add_argument("--stagger", type=float, default=0.0, help="seconds between the starts of the downloads")
+    ap.add_argument("--app-buffer", type=int, default=0,
+                    help="bytes the kernel may hold between the client and a download's reader, 0 for its defaults")
     ap.add_argument("--client-limit-mb", type=int, default=0,
                     help="kill the client above this much anonymous memory, 0 for never")
     ap.add_argument("--out", default="slowreader.jsonl", help="one JSON line per run, appended")
