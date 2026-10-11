@@ -120,6 +120,22 @@ const (
 // A constant larger than the lowest cap fails to compile here.
 const _ = uint(h2InitWindow - flowShownDown)
 
+// flowShownLimited is what a server with a send window shows its own HTTP/2
+// stack for the client's initial window: one frame. A stream has that much
+// whatever the connection's client holds, so it is what every stream past the
+// limit adds to it, and with hundreds of streams the protocol's 65535 each
+// was most of what the client held. The rest of a stream's window comes as
+// credit when it opens, as before. The value never leaves the process.
+const flowShownLimited = h2MinMaxFrameSize
+
+// shownDown is the initial window the sender of downloads is shown.
+func (c *flowConn) shownDown() int32 {
+	if !c.client && c.sendWindow != 0 {
+		return flowShownLimited
+	}
+	return max(c.down.init, flowShownDown)
+}
+
 type tcpStats struct {
 	rtt, minRTT, rttVar time.Duration
 }
@@ -1309,9 +1325,9 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 // of them took a client past 40 MiB within a second. What the client holds
 // is clientHolds. A client that itself announces a stream window above
 // sendWindow has that room, so its window is the limit then. A stream always
-// has the protocol's default window, which SETTINGS already gave it, so none
-// waits for the others; streams opened once the limit is used up add that
-// much each.
+// has the window the server was shown at the start, flowShownLimited, so
+// none waits for the others; streams opened once the limit is used up add
+// that much each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
 	held := int64(c.clientShown) + s.downForwarded - s.down.returned
@@ -1320,7 +1336,7 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 		return rel
 	}
 	limit := max(c.sendWindow, int64(c.clientInit))
-	return min(rel, max(limit-c.clientHolds(), h2InitWindow-held))
+	return min(rel, max(limit-c.clientHolds(), int64(c.clientShown)-held))
 }
 
 func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {
@@ -1349,8 +1365,8 @@ func rewriteInitialWindow(payload []byte, limit int32) (real, shown int32, found
 // for each stream shown + forwarded <= real + returned. Where no value is
 // low enough, ok is false and the connection has to go. Streams the sender
 // has finished do not count: nothing more is sent on them.
-func (c *flowConn) changeInitialWindow(payload []byte, l flowLimit, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
-	real, show, found := rewriteInitialWindow(payload, max(l.init, start))
+func (c *flowConn) changeInitialWindow(payload []byte, start int32, init, shown *int32, credit func(*flowStream) (returned, forwarded int64, done bool)) (ok bool) {
+	real, show, found := rewriteInitialWindow(payload, start)
 	if !found {
 		return true
 	}
@@ -1440,7 +1456,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.down.enabled() && !c.changeInitialWindow(payload, c.down, flowShownDown, &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
+			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
 				return s.down.returned, s.downForwarded, s.serverDone
 			}) {
 				c.giveUp()
@@ -1596,7 +1612,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
-			if c.up.enabled() && !c.changeInitialWindow(payload, c.up, flowShownUp, &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
+			if c.up.enabled() && !c.changeInitialWindow(payload, max(c.up.init, flowShownUp), &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
 				return s.up.returned, s.upForwarded, s.clientDone
 			}) {
 				c.giveUp()

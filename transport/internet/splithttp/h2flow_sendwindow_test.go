@@ -34,11 +34,11 @@ func openStreams(t *testing.T, sendWindow int64, clientWindow uint32, n int) *fl
 }
 
 // granted sums what the server may send, and counts the streams that have
-// only the protocol's default window.
+// only the window every stream has.
 func granted(h *flowHarness) (total int64, atDefault int) {
 	for _, w := range h.toServer.streams {
 		total += w
-		if w == h2InitWindow {
+		if w == flowShownLimited {
 			atDefault++
 		}
 	}
@@ -48,7 +48,7 @@ func granted(h *flowHarness) (total int64, atDefault int) {
 // TestFlowSendWindowBoundsManyStreams opens forty streams at once. Without a
 // limit each starts with flowStartWindow, 10 MiB in all that the client must
 // be ready to hold. With the limit the streams share it; those opened once it
-// is used up keep the protocol's default window, which cannot be withheld, and
+// is used up keep the window every stream has, which cannot be withheld, and
 // nothing more.
 func TestFlowSendWindowBoundsManyStreams(t *testing.T) {
 	const n = 40
@@ -60,16 +60,16 @@ func TestFlowSendWindowBoundsManyStreams(t *testing.T) {
 	h := openStreams(t, flowServerSendWindow, 4<<20, n)
 	total, atDefault := granted(h)
 	if atDefault == 0 || atDefault == n {
-		t.Fatalf("%d of %d streams have only the default window", atDefault, n)
+		t.Fatalf("%d of %d streams have only the window every stream has", atDefault, n)
 	}
 	// The streams that got more than the default fill the limit and stop.
-	above := total - int64(atDefault)*h2InitWindow
+	above := total - int64(atDefault)*flowShownLimited
 	if above > flowServerSendWindow || above < flowServerSendWindow-flowStartWindow {
 		t.Fatalf("streams above the default window may send %d, the limit is %d", above, flowServerSendWindow)
 	}
 	for id, w := range h.toServer.streams {
-		if w < h2InitWindow {
-			t.Fatalf("stream %d was left with a window of %d, below the protocol default", id, w)
+		if w < flowShownLimited {
+			t.Fatalf("stream %d was left with a window of %d, below what every stream has", id, w)
 		}
 	}
 	t.Logf("%d streams: %d in all with the limit, %d without", n, total, n*flowStartWindow)
@@ -87,13 +87,13 @@ func TestFlowSendWindowFollowsClientWindow(t *testing.T) {
 }
 
 // TestFlowSendWindowIsReturned fills the limit, lets the client read eight
-// streams, and checks that a stream held to the default window then gets more.
+// streams, and checks that a stream held to that then gets more.
 func TestFlowSendWindowIsReturned(t *testing.T) {
 	const n = 40
 	h := openStreams(t, flowServerSendWindow, 4<<20, n)
 	last := uint32(2*n - 1)
-	if got := h.toServer.streams[last]; got != h2InitWindow {
-		t.Fatalf("the last stream opened with %d, want the default %d once the limit is used up", got, h2InitWindow)
+	if got := h.toServer.streams[last]; got != flowShownLimited {
+		t.Fatalf("the last stream opened with %d, want %d once the limit is used up", got, flowShownLimited)
 	}
 	// The client reads all of the first eight streams' data.
 	for id := uint32(1); id <= 15; id += 2 {
@@ -104,11 +104,11 @@ func TestFlowSendWindowIsReturned(t *testing.T) {
 		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(id, uint32(w)) })
 	}
 	// The last stream sends its window and the client reads it.
-	h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, last, h2InitWindow) })
-	h.toServer.streams[last] -= h2InitWindow
-	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(last, h2InitWindow) })
-	if got := h.toServer.streams[last]; got <= h2InitWindow {
-		t.Fatalf("with the limit free again the last stream may send %d, want more than %d", got, h2InitWindow)
+	h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, last, flowShownLimited) })
+	h.toServer.streams[last] -= flowShownLimited
+	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(last, flowShownLimited) })
+	if got := h.toServer.streams[last]; got <= flowShownLimited {
+		t.Fatalf("with the limit free again the last stream may send %d, want more than %d", got, flowShownLimited)
 	}
 }
 
@@ -169,7 +169,7 @@ func goClientStart(t *testing.T, h *flowHarness) {
 // TestFlowSendWindowCountsFinishedDownloads has downloads the server ends and
 // the client does not read: their data is still the client's to hold, and
 // only the connection's credit tells. Once the limit is used up a new stream
-// has the protocol's default window and no more, until the client returns
+// has the window every stream has and no more, until the client returns
 // connection credit for what it read.
 func TestFlowSendWindowCountsFinishedDownloads(t *testing.T) {
 	h := openStreams(t, flowServerSendWindow, 4<<20, 0)
@@ -178,8 +178,8 @@ func TestFlowSendWindowCountsFinishedDownloads(t *testing.T) {
 	if sent[0] != flowServerSendWindow {
 		t.Fatalf("the first sixteen downloads were sent %d, want the limit %d", sent[0], flowServerSendWindow)
 	}
-	if sent[1] != 16*h2InitWindow {
-		t.Fatalf("with %d unread the next sixteen downloads were sent %d, want the default window each, %d", sent[0], sent[1], 16*h2InitWindow)
+	if sent[1] != 16*flowShownLimited {
+		t.Fatalf("with %d unread the next sixteen downloads were sent %d, want that window each, %d", sent[0], sent[1], 16*flowShownLimited)
 	}
 	// The client reads it all, 16 KiB at a time.
 	for left := sent[0] + sent[1]; left > 0; left -= min(left, 16<<10) {
@@ -356,6 +356,6 @@ func TestH2SendWindow(t *testing.T) {
 		}
 	}
 	if got := (&Config{}).h2SendWindow(); got != flowServerSendWindow {
-		t.Errorf("no h2Flow: limit %d, want the default %d", got, flowServerSendWindow)
+		t.Errorf("no h2Flow: limit %d, want %d", got, flowServerSendWindow)
 	}
 }
