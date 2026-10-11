@@ -1,6 +1,9 @@
 package splithttp
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"testing"
 
 	"golang.org/x/net/http2"
@@ -84,5 +87,52 @@ func TestFlowCreditWaitsForAQuantum(t *testing.T) {
 	send(window() - q/2)
 	if got := read(); got < piece {
 		t.Fatalf("with a window of %d the server was handed %d, want the piece at once", q/2, got)
+	}
+}
+
+// TestFlowUploadCreditGoesOnInQuanta is the upload side: the local server
+// returns an upload's credit 4 KiB at a time, for the stream and for the
+// connection, and the client is handed both in quanta. Without hold on the
+// two upload paths each piece went on as it came, 32 frames to 128 KiB.
+func TestFlowUploadCreditGoesOnInQuanta(t *testing.T) {
+	h := newFlowHarness(t)
+	t.Cleanup(func() { h.c.Close() })
+	h.c.up.init = flowShownUp
+	h.c.up.max = flowShownUp // the cap stays where it starts
+	h.track()
+	h.openStream(4 << 20)
+	h.fromServer(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 6<<20-h2InitWindow) })
+	h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, 1, 512<<10) })
+	credit := func() []byte {
+		return h.fromServer(func(fr *http2.Framer) {
+			fr.WriteWindowUpdate(1, 4<<10)
+			fr.WriteWindowUpdate(0, 4<<10)
+		})
+	}
+	// The first of it shows the reader reads and funds the connection's floor.
+	for i := 0; i < 8; i++ {
+		credit()
+	}
+	count, sum := map[uint32]int{}, map[uint32]uint64{}
+	for i := 0; i < 32; i++ {
+		fr := http2.NewFramer(nil, bytes.NewReader(credit()))
+		for {
+			f, err := fr.ReadFrame()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w, ok := f.(*http2.WindowUpdateFrame); ok {
+				count[w.StreamID]++
+				sum[w.StreamID] += uint64(w.Increment)
+			}
+		}
+	}
+	for _, id := range []uint32{0, 1} {
+		if count[id] != 4 || sum[id] != 128<<10 {
+			t.Errorf("stream %d: %d updates carrying %d bytes, want four quanta of 128 KiB in all", id, count[id], sum[id])
+		}
 	}
 }

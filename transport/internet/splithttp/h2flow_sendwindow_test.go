@@ -298,6 +298,38 @@ func TestFlowGuardKeepsSendWindow(t *testing.T) {
 	}
 }
 
+// TestFlowGuardLiftIsForGood fixes how far the guard's lift goes. One
+// download, far under the limit: the server uses its window, and the reader
+// has taken less than a Go client returns at once, so no credit has come.
+// The guard cannot tell that from a client waiting for half of its window,
+// and lifts the limit with the client holding half of it. When the reader
+// goes on and credit comes in small steps, the limit does not come back: one
+// stream returning small credit does not show that the others do.
+func TestFlowGuardLiftIsForGood(t *testing.T) {
+	h := openStreams(t, flowServerSendWindow, 4<<20, 1)
+	t.Cleanup(func() { h.c.Close() })
+	n := h.toServer.streams[1]
+	h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 1, int(n)) })
+	h.c.mu.Lock()
+	if h.c.guard != nil {
+		h.c.guard.Stop()
+	}
+	out := h.c.unstick(time.Now().Add(time.Hour), nil)
+	holds, lifted := h.c.clientHolds(), h.c.sendWindow == 0
+	h.c.mu.Unlock()
+	h.toServer.receive(t, out)
+	if !lifted || holds >= flowServerSendWindow {
+		t.Fatalf("after the guard: limit lifted %v with the client holding %d of %d", lifted, holds, flowServerSendWindow)
+	}
+	h.fromClient(func(fr *http2.Framer) {
+		fr.WriteWindowUpdate(1, 8<<10)
+		fr.WriteWindowUpdate(0, 8<<10)
+	})
+	if !h.c.incremental || h.c.sendWindow != 0 {
+		t.Fatalf("after 8 KiB of credit: small steps seen %v, limit %d, want true and 0", h.c.incremental, h.c.sendWindow)
+	}
+}
+
 // feedFrames passes frame from the client through the governor n times.
 func feedFrames(tb testing.TB, h *flowHarness, frame []byte, n int) {
 	buf := make([]byte, 64<<10)

@@ -3,6 +3,7 @@ package splithttp
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -145,7 +146,14 @@ func (h *flowHarness) fromClientRaw(b []byte) []byte {
 // streams change, with a walk over the streams.
 func (h *flowHarness) checkHolds() {
 	h.t.Helper()
-	c := h.c
+	if err := downCountersAgree(h.c); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// downCountersAgree walks the streams of c and compares them with the
+// counters the connection keeps of those the server has not finished.
+func downCountersAgree(c *flowConn) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var open, forwarded, sent, returned int64
@@ -158,9 +166,10 @@ func (h *flowHarness) checkHolds() {
 		}
 	}
 	if open != c.downOpen || forwarded != c.downOpenForwarded || sent != c.downOpenSent || returned != c.downOpenReturned {
-		h.t.Fatalf("unfinished streams: %d forwarded %d sent %d returned %d, the connection counts %d forwarded %d sent %d returned %d",
+		return fmt.Errorf("unfinished streams: %d forwarded %d sent %d returned %d, the connection counts %d forwarded %d sent %d returned %d",
 			open, forwarded, sent, returned, c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned)
 	}
+	return nil
 }
 
 func (h *flowHarness) fromClient(f func(fr *http2.Framer)) []byte {
