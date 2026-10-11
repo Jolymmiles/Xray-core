@@ -47,8 +47,8 @@ guard it.
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
   wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
   fork-owned: renumber it if upstream claims that number.
-  A governed server lets one connection's client hold 4 MiB of its data on
-  the streams it has not finished, or the stream window the client announces
+  A governed server lets one connection's client hold 4 MiB of its data,
+  unread or as window still open, or the stream window the client announces
   if that is larger; `h2Flow.maxConnectionSendWindow` sets it and `-1` lifts
   that limit, nothing else. A client with a governor of its own announces
   65535, so a governed bridge is held to the limit too.

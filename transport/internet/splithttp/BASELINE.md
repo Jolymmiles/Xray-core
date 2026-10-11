@@ -181,7 +181,7 @@ Limits:
 ### Credit quanta and the connection send window
 
 Measured for two changes: credit is handed on in quanta of 16 to 32 KiB
-(`hold`), and the unfinished streams of one server connection share
+(`hold`), and the streams of one server connection share
 `h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set.
 
 The stand is `testing/xhttpflow/slowreader/stand.py` with
@@ -195,19 +195,21 @@ NOLIMIT='nolimit={"enabled": true, "maxConnectionSendWindow": -1}'
 # twenty slow readers
 $S --workload downloads --mbit 1000 --readers 20 --read-rate 100000 --client-limit-mb 40 \
    --server stock=xray-da42e75f --h2flow 'stock={"enabled": false}' --server before=xray-da42e75f \
-   --server after=xray-439f0110 --server nolimit=xray-439f0110 --h2flow "$NOLIMIT" --runs 5
+   --server after=xray-323ca8b1 --server nolimit=xray-323ca8b1 --h2flow "$NOLIMIT" --runs 5
 # eight downloads, for --rtt 50, 150, 300; one download with --readers 1
 $S --workload downloads --mbit 1000 --rtt 150 --readers 8 --read-rate 0 \
-   --server before=xray-da42e75f --server after=xray-439f0110 \
-   --server nolimit=xray-439f0110 --h2flow "$NOLIMIT" --runs 5
+   --server before=xray-da42e75f --server after=xray-323ca8b1 \
+   --server nolimit=xray-323ca8b1 --h2flow "$NOLIMIT" --runs 5
 # four uploads; one with --readers 1
 $S --workload uploads --mbit 1000 --readers 4 --read-rate 0 \
-   --server before=xray-da42e75f --server after=xray-439f0110 --runs 5
+   --server before=xray-da42e75f --server after=xray-323ca8b1 --runs 5
 ```
 
-- Revisions: before `da42e75f` (clean tree), after `439f0110` (its tree,
+- Revisions: before `da42e75f` (clean tree), after `323ca8b1` (its tree,
   built before the commit was made), each with Go 1.27.2 and
-  `-tags http2legacy`. Client: official Xray v26.10.10, XHTTP over REALITY,
+  `-tags http2legacy`. The stock and "no limit" columns and the upload rows
+  are from `439f0110`, which differs only in `clientHolds`: a function those
+  paths do not reach. Client: official Xray v26.10.10, XHTTP over REALITY,
   `xmux.maxConnections` 3. Host: linux/amd64 privileged container under
   Docker Desktop (WSL2 kernel), AMD Ryzen 5 5600; the host was otherwise
   idle but is a desktop.
@@ -227,39 +229,44 @@ limit" is `maxConnectionSendWindow: -1`:
 
 | | Stock | Before | After | After, no limit |
 | --- | --- | --- | --- | --- |
-| Client peak RssAnon, median / worst | 43.8 / 44.6 MB | 41.6 / 44.3 MB | 23.7 / 24.6 MB | 42.5 / 43.9 MB |
+| Client peak RssAnon, median / worst | 43.8 / 44.6 MB | 42.7 / 43.4 MB | 24.1 / 24.6 MB | 42.5 / 43.9 MB |
 | Client killed at 40 MiB | 5 of 5 | 5 of 5 | 0 of 5 | 5 of 5 |
-| Requests failed or over 10 s | 183 of 192 | 182 of 194 | 0 of 167 | 183 of 194 |
-| Median ping p50 / p95 | 10 / 10 s | 10 / 10 s | 52 / 115 ms | 10 / 10 s |
+| Median ping p50 / p95 | 10 / 10 s | 10 / 10 s | 52 / 214 ms | 10 / 10 s |
 
 The client dies about 1.1 s after the start: it is the opening burst of
 twenty streams, not growth. At 100 Mbit/s the same scenario holds 12.7 MB
 before and 12.6 MB after, worst 13.9 MB both.
 
-The same scenario against other clients, server `439f0110`, three runs
-each. The limit rests on stream credit alone, which every client returns as
-it reads:
+The same scenario against other clients, three runs each, and eight
+downloads at RTT 150 ms, two runs each: the limit must hold for every client
+and must not slow one whose connection credit comes otherwise. Without the
+limit every one of these clients was killed, 3 of 3 (`439f0110`).
 
-| Client | With the limit: median / worst, killed | No limit: killed |
+| Client | Slow readers: median / worst, killed | 8 downloads, RTT 150 ms |
 | --- | --- | --- |
-| Xray v26.10.10, release | 24.2 / 24.7 MB, 0 of 3 | 3 of 3 |
-| Xray v26.9.30, release | 23.8 / 24.0 MB, 0 of 3 | 3 of 3 |
-| Xray v26.7.28, release | 23.9 / 24.0 MB, 0 of 3 | 3 of 3 |
-| Xray v26.5.9, release | 23.4 / 23.9 MB, 0 of 3 | 3 of 3 |
-| v26.10.10 built with `-tags http2legacy` | 23.5 / 23.6 MB, 0 of 3 | 3 of 3 |
-| v26.10.10 with `golang.org/x/net` v0.61.0 | 23.6 / 24.0 MB, 0 of 3 | 3 of 3 |
-| v26.10.10 with both | 23.5 / 23.9 MB, 0 of 3 | 3 of 3 |
+| Xray v26.10.10, release | 23.6 / 23.9 MB, 0 of 3 | 72.0 MB/s |
+| Xray v26.9.30, release | 23.3 / 23.5 MB, 0 of 3 | 71.9 MB/s |
+| Xray v26.7.28, release | 23.5 / 23.8 MB, 0 of 3 | 71.1 MB/s |
+| Xray v26.5.9, release | 23.3 / 24.2 MB, 0 of 3 | 48.4 and 71.4 MB/s |
+| v26.10.10 built with `-tags http2legacy` | 23.6 / 23.6 MB, 0 of 3 | 70.9 MB/s |
+| v26.10.10 with `golang.org/x/net` v0.61.0 | 23.4 / 23.5 MB, 0 of 3 | 70.8 MB/s |
+| v26.10.10 with both | 23.0 / 23.5 MB, 0 of 3 | 70.5 MB/s |
+
+v26.5.9 reads 48 MB/s in about one run of six whichever way the limit is
+counted: 1 of 6 on `439f0110`, 1 of 6 on `323ca8b1`, the rest 70 to 72.
 
 What the limit costs is the sum of many downloads on one connection on a
 long path, at most the limit per round trip. MB/s read, three connections:
 
 | | Before | After | After, no limit |
 | --- | --- | --- | --- |
-| 8 downloads, RTT 50 ms | 114.1 | 114.1 | 114.1 |
-| 8 downloads, RTT 150 ms | 103.3 | 71.5 | 102.7 |
-| 8 downloads, RTT 300 ms | 74.8 | 31.0 | 74.1 |
-| One download, RTT 50 ms | 74.6 | 75.7 | |
+| 8 downloads, RTT 50 ms | 114.1 | 113.9 | 114.1 |
+| 8 downloads, RTT 150 ms | 103.3 | 71.3 | 102.7 |
+| 8 downloads, RTT 300 ms | 72.2 | 30.9 | 74.1 |
+| One download, RTT 50 ms | 71.3 | 72.4 | |
 | One download, RTT 300 ms | 10.3 | 9.9 | |
+
+The last row is from `439f0110`.
 
 CPU seconds per gigabyte, server / client:
 
@@ -278,7 +285,7 @@ twenty uploads into a slow origin.
 One frame from the client on a server connection with streams open past the
 limit (`BenchmarkFlowClientFrame`, `-benchtime=2000x`, medians of three).
 With the total found by walking the streams (`154e636c`) a SETTINGS frame
-cost 35 µs with 100 streams and 5.2 ms with 1000:
+cost 35 µs with 100 streams and 5.2 ms with 1000; the table is `439f0110`:
 
 | Frame | Streams | No limit | Limit |
 | --- | --- | --- | --- |
@@ -314,13 +321,23 @@ stock Go differs from both as the rest of this file says:
 
 Limits:
 
-- The limit covers the streams the server has not finished. A download the
-  server has ended and the client has not read is outside it
-  (`TestFlowSendWindowLeavesFinishedDownloadsOut`): a Go client returns the
-  last of such a body through the connection only. Counting through the
-  connection's credit instead was tried and did not hold on the stand: the
-  client was killed at 40.0 to 44.1 MB in three runs of three, cause not
-  found.
+- What the client holds is counted by stream and by connection, and the
+  larger taken (`clientHolds`). The connection's count is what covers a
+  download the server has ended and the client has not read
+  (`TestFlowSendWindowCountsFinishedDownloads`). It is used only once the
+  client has returned connection credit in small steps; until then, and for
+  a client that never does, ended downloads are outside the limit
+  (`TestFlowSendWindowWithoutConnectionCredit`).
+- That part is shown by unit test only. On the stand an Xray client does
+  not keep short ended downloads in its own memory at all, governor on or
+  off (192 downloads of 256 KiB read at 1 KB/s each: 13 to 17 MB): it
+  writes them on to the application's socket, into the kernel. A client
+  whose reader lives in its own process would keep them; the stand has
+  none.
+- A first version counted every connection WINDOW_UPDATE as credit returned
+  and failed on the stand, client killed at 40 to 44 MB: a Go client opens
+  with one of 1 GiB to raise its window. The harness now has that frame
+  (`goClientStart`).
 - The limit is per connection and the server does not know how many
   connections a client keeps: the client holds about the limit times its
   connections above its base of about 11 MB.
@@ -331,7 +348,9 @@ Limits:
   `-1` on its inbound lifts that.
 - A stream past the limit keeps the protocol's 65535 bytes: forty streams
   opened at once may be sent 5.5 MiB, not 4
-  (`TestFlowSendWindowBoundsManyStreams`).
+  (`TestFlowSendWindowBoundsManyStreams`). With enough streams that is the
+  larger part: 192 slow downloads of 4 MB started over ten seconds killed
+  the client with the limit as without, after 8.1 s against 5.9 s.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. A Go client
@@ -343,7 +362,7 @@ Limits:
 - `TestFlowChainedGovernorsSlowReaders` stopped once in a full `-race` run
   of `154e636c` in review. It has not come back: 150 `-race` runs of it
   alone, with and without the send window, on a tree that differs from
-  `439f0110` only in how the send window is totalled, and a full `-race`
-  run of the package on `439f0110` pass. The cause of that one stop is not
+  `323ca8b1` only in how the send window is totalled, 40 more and a full
+  `-race` run of the package on `323ca8b1` pass. The cause of that one stop is not
   known; the test now logs its seed and both ends' counters if it happens
   again.
