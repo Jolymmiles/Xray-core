@@ -75,14 +75,44 @@ func TestFlowSendWindowBoundsManyStreams(t *testing.T) {
 	t.Logf("%d streams: %d in all with the limit, %d without", n, total, n*flowStartWindow)
 }
 
-// TestFlowSendWindowFollowsClientWindow gives the same streams to a client
-// that grants 16 MiB per stream, as a bridge with raised windows does: it has
-// room for more than the limit, so its own window is the limit.
-func TestFlowSendWindowFollowsClientWindow(t *testing.T) {
+// TestFlowSendWindowIgnoresClientWindow gives the same streams to a client
+// that grants 16 MiB per stream. The limit is what was configured, not what
+// the client announces: a client with a governor of its own announces the
+// protocol default whatever its window, so the announcement says nothing.
+func TestFlowSendWindowIgnoresClientWindow(t *testing.T) {
 	const n = 40
-	total, _ := granted(openStreams(t, flowServerSendWindow, 16<<20, n))
-	if total != n*flowStartWindow {
-		t.Fatalf("server may send %d to a client granting 16 MiB a stream, want %d", total, n*flowStartWindow)
+	with4, _ := granted(openStreams(t, flowServerSendWindow, 4<<20, n))
+	with16, _ := granted(openStreams(t, flowServerSendWindow, 16<<20, n))
+	if with16 != with4 {
+		t.Fatalf("server may send %d to a client granting 16 MiB a stream and %d to one granting 4 MiB", with16, with4)
+	}
+}
+
+// TestFlowSendWindowBelowClientWindow sets a limit under the 4 MiB a Go
+// client grants one stream: it holds, for forty streams and for one.
+func TestFlowSendWindowBelowClientWindow(t *testing.T) {
+	const limit = 1 << 20
+	h := openStreams(t, limit, 4<<20, 40)
+	total, atLeast := granted(h)
+	if above := total - int64(atLeast)*flowShownLimited; above > limit || above < limit-flowStartWindow {
+		t.Fatalf("streams above the least window may send %d, the limit is %d", above, limit)
+	}
+	// One stream alone grows as its reader takes, but not past the limit.
+	h = openStreams(t, limit, 4<<20, 1)
+	sent := int64(0)
+	for round := 0; round < 64; round++ {
+		w := h.toServer.streams[1] - sent
+		if w > limit {
+			t.Fatalf("round %d: one stream may be sent %d at once, the limit is %d", round, w, limit)
+		}
+		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 1, int(w)) })
+		sent += w
+		for left := w; left > 0; left -= min(left, 16<<10) {
+			h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(1, uint32(min(left, 16<<10))) })
+		}
+	}
+	if sent < 8*limit {
+		t.Fatalf("one stream was sent %d in 64 rounds: the limit stops it instead of pacing it", sent)
 	}
 }
 

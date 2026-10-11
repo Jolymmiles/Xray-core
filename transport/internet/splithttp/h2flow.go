@@ -1323,11 +1323,12 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 // follows its own reader, but many streams starting at once on a fast link
 // each look fast for a moment, and the client has to hold their sum: twenty
 // of them took a client past 40 MiB within a second. What the client holds
-// is clientHolds. A client that itself announces a stream window above
-// sendWindow has that room, so its window is the limit then. A stream always
-// has the window the server was shown at the start, flowShownLimited, so
-// none waits for the others; streams opened once the limit is used up add
-// that much each.
+// is clientHolds. The limit does not follow the window the client announces:
+// a client with a governor of its own announces the protocol default whatever
+// its window, so that says nothing, and a value under the 4 MiB a Go client
+// announces has to be able to hold. A stream always has the window the
+// server was shown at the start, flowShownLimited, so none waits for the
+// others; streams opened once the limit is used up add that much each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
 	held := int64(c.clientShown) + s.downForwarded - s.down.returned
@@ -1335,8 +1336,7 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
 	}
-	limit := max(c.sendWindow, int64(c.clientInit))
-	return min(rel, max(limit-c.clientHolds(), int64(c.clientShown)-held))
+	return min(rel, max(c.sendWindow-c.clientHolds(), int64(c.clientShown)-held))
 }
 
 func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {
