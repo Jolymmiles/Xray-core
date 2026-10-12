@@ -315,3 +315,25 @@ func BenchmarkUserConnectionsTrackReleaseParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestUserConnectionsSecondReleaseKeepsOtherConnections(t *testing.T) {
+	user := &protocol.MemoryUser{Email: "user@example.com"}
+	users := staticUserLookup{"user@example.com": user}
+	var connections UserConnections
+
+	_, released, err := connections.Track(context.Background(), users, user, newCountingCloser())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released.Release()
+	live := newCountingCloser()
+	_, tracked, err := connections.Track(context.Background(), users, user, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tracked.Release()
+	released.Release()
+
+	connections.Revoke(user)
+	live.waitClosed(t, "connection tracked after another one was released twice")
+}

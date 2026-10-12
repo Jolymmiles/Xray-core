@@ -582,3 +582,49 @@ func TestRemoveUserKeepsAReverseAnotherUserShares(t *testing.T) {
 		t.Fatal("removing the last user of a reverse tag kept the reverse")
 	}
 }
+
+func TestRemoveUserKeepsAReverseAUserWithoutEmailShares(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	manager := &revokeOutboundManager{}
+	handler := newRevokeHandler(t, validator, manager)
+	named := newRevokeUser(t, "named@example.com", "shared")
+	// A user without an email cannot be removed, so its reverse must stay.
+	anonymous := newRevokeUser(t, "", "shared")
+	addRevokeUsers(t, handler, named, anonymous)
+	shared := &closeCountingOutbound{tag: "shared"}
+	if err := manager.AddHandler(context.Background(), shared); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handler.RemoveUser(context.Background(), named.Email); err != nil {
+		t.Fatal(err)
+	}
+	if manager.GetHandler("shared") != shared || shared.closeCount() != 0 {
+		t.Fatalf("removing a user removed the reverse a user without an email shares (closed %d times)", shared.closeCount())
+	}
+}
+
+func TestRemoveUserKeepsAReverseAUserWithASharedUUIDKeeps(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	manager := &revokeOutboundManager{}
+	handler := newRevokeHandler(t, validator, manager)
+	removed := newRevokeUser(t, "removed@example.com", "shared")
+	kept := newRevokeUser(t, "kept@example.com", "shared")
+	// The validator accepts a second user with kept's UUID: authentication
+	// then finds the newer user, but kept stays a user of the inbound under
+	// its email, with its connections and its reverse.
+	shadow := newRevokeUser(t, "shadow@example.com", "other")
+	shadow.Account.(*vless.MemoryAccount).ID = kept.Account.(*vless.MemoryAccount).ID
+	addRevokeUsers(t, handler, removed, kept, shadow)
+	shared := &closeCountingOutbound{tag: "shared"}
+	if err := manager.AddHandler(context.Background(), shared); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handler.RemoveUser(context.Background(), removed.Email); err != nil {
+		t.Fatal(err)
+	}
+	if manager.GetHandler("shared") != shared || shared.closeCount() != 0 {
+		t.Fatalf("removing a user removed the reverse of a user whose UUID another user shares (closed %d times)", shared.closeCount())
+	}
+}
