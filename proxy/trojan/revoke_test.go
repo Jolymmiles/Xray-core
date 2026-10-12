@@ -296,3 +296,43 @@ func TestRemoveUserRejectsAnAuthenticationItOverlapped(t *testing.T) {
 		})
 	}
 }
+
+// TestUserChangesAreSerialized holds the lock AddUser and RemoveUser share.
+// RemoveUser looks a user up, deletes it and revokes its connections; if
+// another AddUser or RemoveUser ran in between, it could delete the user the
+// AddUser stored and revoke the connections of the one it looked up.
+// TestRemoveUserIsAtomicWithAddUser in proxy/vless/inbound races the same
+// steps through a validator hook, which the concrete Trojan validator does
+// not allow.
+func TestUserChangesAreSerialized(t *testing.T) {
+	victim := newRevokeUser(t, "victim@example.com")
+	readded := newRevokeUser(t, "victim@example.com")
+	server := newRevokeServer(t, victim)
+
+	for _, change := range []struct {
+		name string
+		run  func() error
+	}{
+		{"RemoveUser", func() error { return server.RemoveUser(context.Background(), victim.Email) }},
+		{"AddUser", func() error { return server.AddUser(context.Background(), readded) }},
+	} {
+		server.userMu.Lock()
+		done := make(chan error, 1)
+		go func() { done <- change.run() }()
+		select {
+		case err := <-done:
+			server.userMu.Unlock()
+			t.Fatalf("%s ran while another user change held the lock (err %v)", change.name, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		server.userMu.Unlock()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", change.name, err)
+			}
+		case <-time.After(revokeWait):
+			t.Fatalf("%s did not return after the lock was released", change.name)
+		}
+	}
+}
