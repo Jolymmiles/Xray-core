@@ -203,7 +203,10 @@ func TestWriteLosingToCloseSendsNothing(t *testing.T) {
 			}
 			close(header.release)
 			select {
-			case <-closed:
+			case err := <-closed:
+				if err != nil {
+					t.Fatalf("Close: %v", err)
+				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("Close did not return")
 			}
@@ -211,7 +214,10 @@ func TestWriteLosingToCloseSendsNothing(t *testing.T) {
 			if err := peer.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			got, _ := io.ReadAll(peer)
+			got, err := io.ReadAll(peer)
+			if err != nil {
+				t.Fatalf("the peer did not see the connection end: %v", err)
+			}
 			if !bytes.Equal(got, errorHeader) {
 				t.Fatalf("the peer got %q, want the error header alone", got)
 			}
