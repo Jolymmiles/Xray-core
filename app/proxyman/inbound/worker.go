@@ -50,7 +50,8 @@ type tcpWorker struct {
 	brutal          singmux.BrutalOptions
 	h2mux           singmux.H2MuxOptions
 
-	hub internet.Listener
+	hub   internet.Listener
+	conns liveConnections
 
 	ctx context.Context
 }
@@ -107,6 +108,15 @@ func physicalPeerFromUDPDestination(source net.Destination) netip.Addr {
 
 func (w *tcpWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
+	// Track the connection before anything reads it: reading its PROXY
+	// protocol header can block.
+	live := w.conns.add(conn, cancel)
+	if live == nil {
+		cancel()
+		conn.Close()
+		return
+	}
+	defer w.conns.remove(live)
 	sid := session.NewID()
 	physicalPeer := physicalPeerFromConn(conn, w.stream)
 
@@ -216,6 +226,9 @@ func (w *tcpWorker) Start() error {
 }
 
 func (w *tcpWorker) Close() error {
+	// End the connections before the hub: some hubs wait in Close for the
+	// handlers serving their connections.
+	w.conns.closeAll()
 	var errs []interface{}
 	if w.hub != nil {
 		if err := common.Close(w.hub); err != nil {
@@ -339,18 +352,24 @@ type udpWorker struct {
 
 	checker    *task.Periodic
 	activeConn map[connID]*udpConn
+	closed     bool // no new sessions once Close has run
 
 	ctx  context.Context
 	cone bool
 }
 
-func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
+// getConnection returns the session of id, opening it if needed together
+// with the context to serve it with. It returns nil once Close has run.
+func (w *udpWorker) getConnection(id connID) (*udpConn, context.Context, bool) {
 	w.Lock()
 	defer w.Unlock()
 
+	if w.closed {
+		return nil, nil, false
+	}
 	if conn, found := w.activeConn[id]; found && !conn.done.Done() {
 		conn.updateActivity()
-		return conn, true
+		return conn, nil, true
 	}
 
 	pReader, pWriter := pipe.New(pipe.DiscardOverflow(), pipe.WithSizeLimit(16*1024))
@@ -372,10 +391,14 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		uplink:   w.uplinkCounter,
 		downlink: w.downlinkCounter,
 	}
+	// Set the session's cancel before publishing it: the cleaner and Close
+	// cancel what they find in activeConn.
+	ctx, cancel := context.WithCancel(w.ctx)
+	conn.cancel = cancel
 	w.activeConn[id] = conn
 
 	conn.updateActivity()
-	return conn, false
+	return conn, ctx, false
 }
 
 func (w *udpWorker) callback(b *buf.Buffer, source, originalDest, physicalPeer net.Destination) {
@@ -388,17 +411,23 @@ func (w *udpWorker) callback(b *buf.Buffer, source, originalDest, physicalPeer n
 		}
 		b.UDP = &originalDest
 	}
-	conn, existing := w.getConnection(id)
+	conn, ctx, existing := w.getConnection(id)
+	if conn == nil {
+		b.Release()
+		return
+	}
 
 	// payload will be discarded in pipe is full.
 	conn.writer.WriteMultiBuffer(buf.MultiBuffer{b})
 
 	if !existing {
-		common.Must(w.checker.Start())
+		// Close may take the session away before the cleaner starts; the
+		// cleaner then finds no session and stops at once.
+		if err := w.checker.Start(); err != nil && !w.isClosed() {
+			common.Must(err)
+		}
 
 		go func() {
-			ctx, cancel := context.WithCancel(w.ctx)
-			conn.cancel = cancel
 			sid := session.NewID()
 			ctx = c.ContextWithID(ctx, sid)
 
@@ -430,19 +459,30 @@ func (w *udpWorker) callback(b *buf.Buffer, source, originalDest, physicalPeer n
 				errors.LogInfoInner(ctx, err, "connection ends")
 			}
 			conn.Close()
-			// conn not removed by checker TODO may be lock worker here is better
-			if !conn.inactive {
-				conn.setInactive()
-				w.removeConn(id)
-			}
+			w.removeConn(id, conn)
 		}()
 	}
 }
 
-func (w *udpWorker) removeConn(id connID) {
+// removeConn forgets conn, an ended session of id, unless the cleaner or
+// Close already did. A newer session of the same source, which a datagram
+// may have opened once conn was done, stays.
+func (w *udpWorker) removeConn(id connID, conn *udpConn) {
 	w.Lock()
-	delete(w.activeConn, id)
-	w.Unlock()
+	defer w.Unlock()
+	if conn.inactive {
+		return
+	}
+	conn.setInactive()
+	if w.activeConn[id] == conn {
+		delete(w.activeConn, id)
+	}
+}
+
+func (w *udpWorker) isClosed() bool {
+	w.RLock()
+	defer w.RUnlock()
+	return w.closed
 }
 
 func (w *udpWorker) handlePackets() {
@@ -500,6 +540,8 @@ func (w *udpWorker) Start() error {
 
 func (w *udpWorker) Close() error {
 	w.Lock()
+	// Open no more sessions; a datagram already in callback then opens none.
+	w.closed = true
 
 	var errs []interface{}
 
@@ -514,6 +556,20 @@ func (w *udpWorker) Close() error {
 		if err := w.checker.Close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+
+	// Take the sessions once the cleaner has stopped, and close them:
+	// closing a session cancels its context and ends its reads, so its
+	// Process returns.
+	w.Lock()
+	sessions := w.activeConn
+	w.activeConn = make(map[connID]*udpConn)
+	for _, conn := range sessions {
+		conn.setInactive()
+	}
+	w.Unlock()
+	for _, conn := range sessions {
+		conn.Close()
 	}
 
 	if err := common.Close(w.proxy); err != nil {
@@ -544,13 +600,23 @@ type dsWorker struct {
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 
-	hub internet.Listener
+	hub   internet.Listener
+	conns liveConnections
 
 	ctx context.Context
 }
 
 func (w *dsWorker) callback(conn stat.Connection) {
 	ctx, cancel := context.WithCancel(w.ctx)
+	// Track the connection before anything reads it: reading its PROXY
+	// protocol header can block.
+	live := w.conns.add(conn, cancel)
+	if live == nil {
+		cancel()
+		conn.Close()
+		return
+	}
+	defer w.conns.remove(live)
 	sid := session.NewID()
 	ctx = c.ContextWithID(ctx, sid)
 	physicalPeer := physicalPeerFromConn(conn, w.stream)
@@ -605,6 +671,9 @@ func (w *dsWorker) Start() error {
 }
 
 func (w *dsWorker) Close() error {
+	// End the connections before the hub: some hubs wait in Close for the
+	// handlers serving their connections.
+	w.conns.closeAll()
 	var errs []interface{}
 	if w.hub != nil {
 		if err := common.Close(w.hub); err != nil {

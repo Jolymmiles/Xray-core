@@ -215,6 +215,27 @@ guard it.
   `proxy/vmess/inbound`, the `TestRemovedUser*` process tests in
   `common/singmux` and `TestCommanderRemoveUserClosesItsConnections`
   (`testing/scenarios`).
+- HandlerService `RemoveInbound` (`xray api rmi`) and closing the instance
+  end the inbound's live connections; upstream closes only its listeners and
+  leaves each accepted connection running until it ends on its own (SMUX
+  carriers and gRPC streams already ended through their own `Close`). The
+  TCP and Unix socket workers track the connections they serve
+  (`liveConnections`, `app/proxyman/inbound/connections.go`); `Close`
+  cancels each one's context and closes it, in its own goroutine and without
+  waiting, before it closes the listener, whose `Close` may wait for the
+  handlers it started. A connection a closed worker receives is closed
+  without being served. The UDP worker closes its sessions on `Close`, opens
+  none afterwards, and an ended session no longer removes a newer session of
+  the same source. The XHTTP listener over HTTP/1.1 and HTTP/2 closes its
+  HTTP server as well, so the connections a client reuses for its next
+  sessions end with it. Not covered: REALITY authentication and the cover
+  forwarding of a failed one, which the REALITY listener runs before a
+  worker sees the connection, and inbounds without workers (TUN, WireGuard),
+  which close through their own `Close`. Covered by
+  `app/proxyman/inbound/close_connections_test.go`,
+  `TestListenerCloseEndsServedConnections`
+  (`transport/internet/splithttp`) and
+  `TestRemovedInboundConnectionsProcess` (`common/singmux`).
 - A server connection with the `http` TCP header
   (`transport/internet/headers/http`) orders its first `Write` against
   `Close`, which removing a user now calls from another goroutine: the peer

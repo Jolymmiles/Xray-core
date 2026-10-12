@@ -308,3 +308,24 @@ regression gate, not evidence for the 240 ns figure, which the
 microbenchmark measures. Not measured: throughput of established
 connections, which tracking does not touch, and contention at connection
 rates above what one client process generates.
+
+## Inbound connection tracking for removal (2026-10-12)
+
+Every TCP and Unix socket worker now tracks the connections it serves, so
+closing the inbound ends them. Same host and conditions as the section
+above; candidate is the branch fix/remove-inbound-closes-connections against
+`47108c0d`.
+
+```sh
+go test ./app/proxyman/inbound -run '^$' -bench '^BenchmarkTCPWorkerAcceptedConnection$' -benchmem -count=5
+```
+
+Two rounds alternating baseline and candidate, ten samples each: median
+160.5 ns, 544 B, 3 allocations per accepted connection before; 215.3 ns,
+569 B, 4 allocations after. The tracked entry is the added allocation; the
+existing budget of 11 allocations (`TestTCPWorkerAcceptedConnectionAllocationBudget`)
+holds.
+
+`BenchmarkVLESSTCPProcessUserEmail`, run as above (three rounds, 15 samples
+per cell, the candidate client against both servers), moved between -1.4%
+and +1.8% per cell with overlapping ranges: no change beyond noise.
