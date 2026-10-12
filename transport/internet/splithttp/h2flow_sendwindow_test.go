@@ -381,6 +381,11 @@ func nothingShown(t *testing.T) (h *flowHarness, unread int64) {
 		})
 		unread += n
 	}
+	// One more download opens at the full limit: it has its frame, shown.
+	h.openRequest(waitingStream)
+	if got := h.toServer.streams[waitingStream]; got != flowShownLimited {
+		t.Fatalf("a stream opened at the full limit with %d, want a frame, %d", got, flowShownLimited)
+	}
 	h.fromClient(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: uint32(idle)})
 	})
@@ -391,6 +396,24 @@ func nothingShown(t *testing.T) (h *flowHarness, unread int64) {
 		t.Fatalf("the client holds %d, want the limit %d used up", h.c.clientHolds(), limit)
 	}
 	return h, unread
+}
+
+// waitingStream is the download nothingShown leaves open and unused at the
+// full limit, besides the idle one.
+const waitingStream = 101
+
+// TestFlowSendWindowLoweringKeepsFrame looks at a stream that was open when
+// the stack came to be shown nothing. It held one frame of window, all of it
+// shown; the lowering took that from the stack, the client holds nothing of
+// the stream and so owes it no credit, and nothing would look at it again.
+// It is forwarded the frame with the SETTINGS frame that took it.
+func TestFlowSendWindowLoweringKeepsFrame(t *testing.T) {
+	h, _ := nothingShown(t)
+	s := h.c.streams[waitingStream]
+	if got := h.toServer.streams[waitingStream]; got != flowShownLimited || s.downForwarded != flowShownLimited {
+		t.Fatalf("with nothing shown the waiting stream may send %d, %d of it forwarded; want a frame, %d, all forwarded",
+			got, s.downForwarded, flowShownLimited)
+	}
 }
 
 // openRequest opens a download on id.

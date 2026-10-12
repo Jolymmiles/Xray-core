@@ -316,7 +316,11 @@ stock Go differs from both as the rest of this file says:
   governor cannot pass it on and gives the connection up. A new stream is
   forwarded 196609 bytes before any data, so a client that opens a GET and
   lowers its window under that is closed where stock answers, and it needs
-  no credentials for that. With a send window `5ae2b3de` to `ce4624fc`
+  no credentials for that. The threshold is what the stream was forwarded
+  less what the client returned, so it grows as a download runs and its cap
+  with it, up to the client's window less 65535: measured on `main`
+  (`9ce136ea`) with 4 MiB announced, 2097152 after 1 MiB read and 4128769
+  after 8 MiB, where any lowering by more than 64 KiB closes. With a send window `5ae2b3de` to `ce4624fc`
   forwarded 245760 and closed in that wider range; `09136349` forwards
   196609 again (`TestFlowInitialWindowDecrease`, with the send window off
   and at its default), and `0a5f8c08` keeps it so after a SETTINGS frame that
