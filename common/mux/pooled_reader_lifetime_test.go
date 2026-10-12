@@ -45,7 +45,7 @@ func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 
 	for i := 0; i < iterations; i++ {
 		server, client := stdnet.Pipe()
-		// proxy/vless/inbound.Process body reader construction
+		// A pooled reader such as VLESS Process once built for the body
 		pooled := buf.NewPooledBufferedReader(buf.NewPooledReader(server), nil)
 		link := &transport.Link{
 			Reader: pooled,
