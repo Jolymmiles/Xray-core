@@ -71,3 +71,64 @@ func TestServerCloseRacingFirstWriteSendsOneResponse(t *testing.T) {
 		}
 	}
 }
+
+// enteringConn reports when a Write starts.
+type enteringConn struct {
+	net.Conn
+	writing chan struct{}
+}
+
+func (c *enteringConn) Write(b []byte) (int, error) {
+	select {
+	case c.writing <- struct{}{}:
+	default:
+	}
+	return c.Conn.Write(b)
+}
+
+// TestCloseEndsAFirstWriteBlockedOnItsHeader closes a connection whose first
+// Write is blocked sending the response header to a peer that does not read.
+// Close must reach the underlying connection, which ends the Write, rather
+// than wait for the Write.
+func TestCloseEndsAFirstWriteBlockedOnItsHeader(t *testing.T) {
+	auth, err := NewAuthenticator(context.Background(), &Config{
+		Response: &ResponseConfig{
+			Version: &Version{Value: "1.1"},
+			Status:  &Status{Code: "200", Reason: "OK"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, peer := net.Pipe()
+	defer peer.Close()
+	inner := &enteringConn{Conn: local, writing: make(chan struct{}, 1)}
+	server := NewConn(inner, NoOpReader{}, auth.GetServerWriter(), NoOpWriter{}, NoOpWriter{}, NoOpWriter{})
+
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := server.Write([]byte("payload"))
+		wrote <- err
+	}()
+	select {
+	case <-inner.writing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first Write did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- server.Close() }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited for a Write blocked on its header and never closed the connection")
+	}
+	select {
+	case err := <-wrote:
+		if err == nil {
+			t.Fatal("a Write to a closed connection succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not end the blocked Write")
+	}
+}

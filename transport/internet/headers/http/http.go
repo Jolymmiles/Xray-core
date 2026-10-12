@@ -158,15 +158,24 @@ func (w *HeaderWriter) Write(writer io.Writer) error {
 	return err
 }
 
+// States of a Conn's one-time header.
+const (
+	headerPending uint32 = iota
+	headerWriting
+	headerDone
+)
+
 type Conn struct {
 	net.Conn
 
 	readBuffer    *buf.Buffer
 	oneTimeReader Reader
-	// headerMu orders the first Write's header against Close, which may run
-	// from another goroutine and then writes an error header instead.
+	// header is the state of the one-time header: the first Write sends
+	// oneTimeWriter's, or Close sends an error header if nothing was
+	// written. Close may run from another goroutine and never waits for a
+	// Write; headerMu orders concurrent writers.
+	header              atomic.Uint32
 	headerMu            sync.Mutex
-	headerDone          atomic.Bool
 	oneTimeWriter       Writer
 	errorWriter         Writer
 	errorMismatchWriter Writer
@@ -218,17 +227,16 @@ func (c *Conn) Write(b []byte) (int, error) {
 
 // writeHeader writes the one-time header unless it or Close already did.
 func (c *Conn) writeHeader() error {
-	if c.headerDone.Load() {
+	if c.header.Load() == headerDone {
 		return nil
 	}
 	c.headerMu.Lock()
 	defer c.headerMu.Unlock()
-	if c.oneTimeWriter == nil {
+	if c.oneTimeWriter == nil || !c.header.CompareAndSwap(headerPending, headerWriting) {
 		return nil
 	}
 	err := c.oneTimeWriter.Write(c.Conn)
-	c.oneTimeWriter = nil
-	c.headerDone.Store(true)
+	c.header.Store(headerDone)
 	return err
 }
 
@@ -244,9 +252,9 @@ func (c *Conn) CloseWrite() error {
 
 // Close implements net.Conn.Close().
 func (c *Conn) Close() error {
-	c.headerMu.Lock()
-	defer c.headerMu.Unlock()
-	if c.oneTimeWriter != nil && c.errorWriter != nil {
+	// A Write that took the header is not waited for: closing the
+	// connection ends it.
+	if c.header.CompareAndSwap(headerPending, headerDone) && c.oneTimeWriter != nil && c.errorWriter != nil {
 		// Connection is being closed but header wasn't sent. This means the client request
 		// is probably not valid. Sending back a server error header in this case.
 
@@ -260,8 +268,6 @@ func (c *Conn) Close() error {
 			c.errorWriter.Write(c.Conn)
 		}
 	}
-	c.oneTimeWriter = nil
-	c.headerDone.Store(true)
 
 	return c.Conn.Close()
 }
