@@ -1015,15 +1015,17 @@ func waitRevokeTransportStall(t *testing.T, cellName string, upstream *revokeTra
 		case <-upstream.closed:
 			t.Fatalf("%s: the victim upstream closed before its downlink stalled (%d bytes pushed)", cellName, upstream.pushed.Load())
 		case now := <-ticker.C:
+			// Check the deadline first: a downlink that keeps moving must
+			// still fail here, not run into the package timeout.
+			if now.After(deadline) {
+				t.Fatalf("%s: the victim downlink did not stall within 30s (%d bytes pushed)", cellName, upstream.pushed.Load())
+			}
 			if pushed := upstream.pushed.Load(); pushed != last {
 				last, lastChange = pushed, now
 				continue
 			}
 			if last >= floor && now.Sub(lastChange) >= quiet {
 				return last
-			}
-			if now.After(deadline) {
-				t.Fatalf("%s: the victim downlink did not stall within 30s (%d bytes pushed)", cellName, last)
 			}
 		}
 	}
