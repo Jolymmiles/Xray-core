@@ -505,12 +505,35 @@ Limits:
   steady rate is 23.4 MiB/s on all three. The stand's averages over 12 s
   did not show it, and neither did a test: the figure is logged, not
   asserted. Holding either credit alone changes nothing, 184 and 188 ms;
-  the sender needs both. What the quanta save is kept, since that is the
-  steady state. CPU seconds per gigabyte, server / client, five shuffled
+  the sender needs both. What the quanta save is kept for an upload that
+  comes to count as no longer speeding up, as a steady one does. One that
+  ends within two measured round trips, whose rounds keep growing, or that
+  is never measured has its stream credit handed on as before, piece by
+  piece; a connection WINDOW_UPDATE from the server waits for a quantum
+  whatever the stream. CPU seconds per gigabyte, server / client, five
+  shuffled
   runs, `da42e75f`, `16bd65ce`, `b5686538`: four uploads 25.9 / 18.2, 23.3 /
   14.8, 21.4 / 14.3 at 115.6 MB/s on each; one upload 25.9 / 18.1, 23.5 /
   16.0, 23.3 / 15.9 at 82.9, 88.8 and 85.6 MB/s; one upload at RTT 150 ms
   24.6 / 15.2, 21.9 / 12.6, 22.9 / 13.1 at 36.8, 36.6 and 36.8 MB/s.
+- That first-4-MiB figure still comes out a round trip longer in about a
+  third of runs, 184 ms for 145. It is where the mark falls, not a round
+  trip lost. Without the kernel's round trip, as in the test, an upload's
+  cap stops at `flowUnconfirmedUp`, 1 MiB: the upload moves a megabyte a
+  round trip, and 4 MiB is the end of a round. Two rounds that carry the
+  same make it count as no longer speeding up, 2.1 to 6.3 MiB in, and from
+  there its credit waits for a quantum, so the last of a round, under a
+  quantum, goes on with the next. When that begins early the mark at 4 MiB
+  falls into the next round: with the moment printed, 8 of 10 runs where it
+  began before 2.8 MiB took 183 to 203 ms, and all 17 where it began later
+  145 to 164 ms. Off the end of a round the mark shows nothing, whenever the
+  upload stopped speeding up; medians in ms, head and `da42e75f`, 8 to 12
+  shuffled runs each: 3.5 MiB 145 and 144, 4.5 MiB 187 and 186, 8.5 MiB 350
+  and 350, 16.5 MiB 682 and 678, 32.5 MiB 1338 and 1333. At 8 MiB, the end
+  of a round again, head gives 349 and `da42e75f` 311 to 340. The tail of a
+  round comes with the next one, and the upload as a whole is no later. Not
+  holding in the handler of a connection WINDOW_UPDATE changes nothing: 15
+  runs, 143 to 194 ms with the same two groups.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
