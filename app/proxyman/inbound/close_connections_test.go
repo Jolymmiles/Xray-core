@@ -114,36 +114,62 @@ func requirePeerSeesEnd(t *testing.T, peer stdnet.Conn, name string) {
 
 // connectionWorker is the common shape of the TCP and Unix socket workers.
 type connectionWorker struct {
-	name   string
 	serve  func(stat.Connection)
 	close  func() error
 	setHub func(internet.Listener)
+	// stop ends the worker's parent context, so a test that fails still
+	// releases a Process that waits on it.
+	stop context.CancelFunc
 }
 
-func connectionWorkers(proxy interface {
+var connectionWorkerKinds = []string{"tcp", "unix"}
+
+func newConnectionWorker(kind string, proxy interface {
 	Network() []net.Network
 	Process(context.Context, net.Network, stat.Connection, routing.Dispatcher) error
 },
-) []connectionWorker {
-	tcp := &tcpWorker{ctx: context.Background(), proxy: proxy, tag: "removed-in"}
-	unix := &dsWorker{ctx: context.Background(), proxy: proxy, tag: "removed-in", address: net.DomainAddress("/tmp/removed-in.sock")}
-	return []connectionWorker{
-		{name: "tcp", serve: tcp.handleConnection, close: tcp.Close, setHub: func(h internet.Listener) { tcp.hub = h }},
-		{name: "unix", serve: unix.callback, close: unix.Close, setHub: func(h internet.Listener) { unix.hub = h }},
+) connectionWorker {
+	ctx, stop := context.WithCancel(context.Background())
+	if kind == "tcp" {
+		w := &tcpWorker{ctx: ctx, proxy: proxy, tag: "removed-in"}
+		return connectionWorker{serve: w.handleConnection, close: w.Close, setHub: func(h internet.Listener) { w.hub = h }, stop: stop}
 	}
+	w := &dsWorker{ctx: ctx, proxy: proxy, tag: "removed-in", address: net.DomainAddress("/tmp/removed-in.sock")}
+	return connectionWorker{serve: w.callback, close: w.Close, setHub: func(h internet.Listener) { w.hub = h }, stop: stop}
+}
+
+// serveInBackground serves conn with worker in a goroutine and returns a
+// channel closed once it is done. Cleanup stops the worker's context and
+// joins the goroutine.
+func serveInBackground(t *testing.T, worker connectionWorker, conn stat.Connection, done func()) <-chan struct{} {
+	t.Helper()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		if done != nil {
+			defer done()
+		}
+		worker.serve(conn)
+	}()
+	t.Cleanup(func() {
+		worker.stop()
+		conn.Close()
+		select {
+		case <-served:
+		case <-time.After(closeWait):
+			t.Error("the worker goroutine did not return")
+		}
+	})
+	return served
 }
 
 func TestWorkerCloseClosesLiveConnections(t *testing.T) {
-	for i := range connectionWorkers(nil) {
-		proxy := newReadingInbound()
-		worker := connectionWorkers(proxy)[i]
-		t.Run(worker.name, func(t *testing.T) {
+	for _, kind := range connectionWorkerKinds {
+		t.Run(kind, func(t *testing.T) {
+			proxy := newReadingInbound()
+			worker := newConnectionWorker(kind, proxy)
 			server, client := loopbackPair(t)
-			served := make(chan struct{})
-			go func() {
-				worker.serve(server)
-				close(served)
-			}()
+			served := serveInBackground(t, worker, server, nil)
 			receiveWithin(t, proxy.started, "Process did not start")
 
 			if err := worker.close(); err != nil {
@@ -155,22 +181,18 @@ func TestWorkerCloseClosesLiveConnections(t *testing.T) {
 				t.Fatalf("Process still reads its connection %v after the worker closed", closeWait)
 			}
 			receiveWithin(t, served, "the worker did not finish the connection")
-			requirePeerSeesEnd(t, client, worker.name)
+			requirePeerSeesEnd(t, client, kind)
 		})
 	}
 }
 
 func TestWorkerCloseCancelsLiveConnections(t *testing.T) {
-	for i := range connectionWorkers(nil) {
-		proxy := &contextInbound{started: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
-		worker := connectionWorkers(proxy)[i]
-		t.Run(worker.name, func(t *testing.T) {
+	for _, kind := range connectionWorkerKinds {
+		t.Run(kind, func(t *testing.T) {
+			proxy := &contextInbound{started: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
+			worker := newConnectionWorker(kind, proxy)
 			server, _ := loopbackPair(t)
-			served := make(chan struct{})
-			go func() {
-				worker.serve(server)
-				close(served)
-			}()
+			served := serveInBackground(t, worker, server, nil)
 			receiveWithin(t, proxy.started, "Process did not start")
 
 			if err := worker.close(); err != nil {
@@ -183,26 +205,22 @@ func TestWorkerCloseCancelsLiveConnections(t *testing.T) {
 }
 
 func TestWorkerRefusesConnectionsAfterClose(t *testing.T) {
-	for i := range connectionWorkers(nil) {
-		proxy := newReadingInbound()
-		worker := connectionWorkers(proxy)[i]
-		t.Run(worker.name, func(t *testing.T) {
+	for _, kind := range connectionWorkerKinds {
+		t.Run(kind, func(t *testing.T) {
+			proxy := newReadingInbound()
+			worker := newConnectionWorker(kind, proxy)
 			if err := worker.close(); err != nil {
 				t.Fatal(err)
 			}
 			server, client := loopbackPair(t)
-			served := make(chan struct{})
-			go func() {
-				worker.serve(server)
-				close(served)
-			}()
+			served := serveInBackground(t, worker, server, nil)
 			receiveWithin(t, served, "a closed worker kept serving a late connection")
 			select {
 			case <-proxy.started:
 				t.Fatal("a closed worker passed a late connection to Process")
 			default:
 			}
-			requirePeerSeesEnd(t, client, worker.name)
+			requirePeerSeesEnd(t, client, kind)
 		})
 	}
 }
@@ -221,24 +239,33 @@ func (h *waitingHub) Close() error {
 }
 
 func TestWorkerCloseEndsConnectionsBeforeWaitingForItsHub(t *testing.T) {
-	for i := range connectionWorkers(nil) {
-		proxy := &contextInbound{started: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
-		worker := connectionWorkers(proxy)[i]
-		t.Run(worker.name, func(t *testing.T) {
+	for _, kind := range connectionWorkerKinds {
+		t.Run(kind, func(t *testing.T) {
+			proxy := &contextInbound{started: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
+			worker := newConnectionWorker(kind, proxy)
 			hub := &waitingHub{}
 			worker.setHub(hub)
+			closed := make(chan error, 1)
+			// Join the Close below last, once cleanup has released the handler.
+			t.Cleanup(func() {
+				select {
+				case <-closed:
+				case <-time.After(closeWait):
+					t.Error("the worker's Close did not return")
+				}
+			})
 			server, _ := loopbackPair(t)
 			hub.handlers.Add(1)
-			go func() {
-				defer hub.handlers.Done()
-				worker.serve(server)
-			}()
+			serveInBackground(t, worker, server, hub.handlers.Done)
 			receiveWithin(t, proxy.started, "Process did not start")
 
-			closed := make(chan error, 1)
 			go func() { closed <- worker.close() }()
 			select {
-			case <-closed:
+			case err := <-closed:
+				closed <- err
+				if err != nil {
+					t.Fatal(err)
+				}
 			case <-time.After(closeWait):
 				t.Fatal("the worker waited for its hub before ending the connections the hub waits for")
 			}
