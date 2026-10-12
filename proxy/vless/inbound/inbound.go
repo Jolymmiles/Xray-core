@@ -735,7 +735,6 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 
 	vision := requestAddons.Flow == vless.XRV
 	trafficState := encoding.NewTrafficStateForVision(userSentID[:], vision)
-	releaseReader = false
 	clientReader := encoding.DecodeBody(reader, request)
 	if vision {
 		clientReader = proxy.NewVisionReader(clientReader, trafficState, true, ctx, connection, input, rawInput, nil)
@@ -753,9 +752,11 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		if err != nil {
 			return err
 		}
+		releaseReader = false
 		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, link), h.observer, dispatch)
 	}
 
+	releaseReader = false
 	if err := dispatch.DispatchLink(ctx, request.Destination(), link); err != nil {
 		return errors.New("failed to dispatch request").Base(err)
 	}

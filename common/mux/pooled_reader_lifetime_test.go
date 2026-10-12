@@ -62,7 +62,7 @@ func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 		_ = server.Close()
 		<-worker.WaitClosed()
 
-		// VLESS: DispatchLink returned → defer reader.Release()
+		// A caller that waited on done releases the reader, as VLESS once did.
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -76,8 +76,9 @@ func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 }
 
-// TestClientWorkerDoneMeansLinkIsFullyReleased covers the reverse-mux path
-// (VLESS NewMux waits on ClientWorker.WaitClosed, then Process Releases).
+// TestClientWorkerDoneMeansLinkIsFullyReleased is the same check for a client
+// worker whose fetchOutput ends on EOF, the path a reverse bridge's worker
+// takes when its carrier closes.
 func TestClientWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 	const iterations = 1000
 
