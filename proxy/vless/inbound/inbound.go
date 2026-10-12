@@ -83,6 +83,8 @@ type Handler struct {
 	observer               features.Feature
 	defaultDispatcher      routing.Dispatcher
 	ctx                    context.Context
+	userMu                 sync.Mutex // serializes AddUser, RemoveUser and publishing a reverse
+	connections            proxy.UserConnections
 	reverseLifecycleMu     sync.Mutex
 	reverseClosed          bool
 	reverseClosing         chan struct{}
@@ -210,7 +212,9 @@ func isMuxAndNotXUDP(request *protocol.RequestHeader, first *buf.Buffer) bool {
 		firstBytes[6] == 2) // Network type: UDP
 }
 
-func (h *Handler) GetReverse(a *vless.MemoryAccount) (*Reverse, error) {
+// GetReverse returns the reverse outbound of user, an authenticated reverse
+// bridge, and publishes it on first use. It fails once user is removed.
+func (h *Handler) GetReverse(ctx context.Context, u *protocol.MemoryUser) (*Reverse, error) {
 	h.reverseLifecycleMu.Lock()
 	if h.reverseClosed {
 		h.reverseLifecycleMu.Unlock()
@@ -224,30 +228,38 @@ func (h *Handler) GetReverse(a *vless.MemoryAccount) (*Reverse, error) {
 	h.reverseLifecycleMu.Unlock()
 	defer h.reverseCalls.Done()
 
-	u := h.validator.Get(a.ID.UUID())
-	if u == nil {
-		return nil, errors.New("reverse: user " + a.ID.String() + " doesn't exist anymore")
-	}
-	a = u.Account.(*vless.MemoryAccount)
+	a := u.Account.(*vless.MemoryAccount)
 	if a.Reverse == nil || a.Reverse.Tag == "" {
 		return nil, errors.New("reverse: user " + a.ID.String() + " is not allowed to create reverse proxy")
+	}
+	if h.outboundHandlerManager.GetHandler(a.Reverse.Tag) == nil {
+		// Wait for the outbounds without userMu: the wait can last, and
+		// removing this user cancels ctx.
+		for len(h.outboundHandlerManager.ListHandlers(h.ctx)) == 0 {
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-reverseClosing:
+				timer.Stop()
+				return nil, errors.New("VLESS inbound reverse owner is closing")
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, errors.New("reverse: user " + a.ID.String() + " doesn't exist anymore").Base(ctx.Err())
+			case <-timer.C:
+			}
+		}
+	}
+
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	// RemoveUser deletes the user under userMu before it removes the reverse,
+	// so a removed user never publishes it again.
+	if h.validator.Get(a.ID.UUID()) != u {
+		return nil, errors.New("reverse: user " + a.ID.String() + " doesn't exist anymore")
 	}
 	r := h.outboundHandlerManager.GetHandler(a.Reverse.Tag)
 	if r == nil {
 		picker, _ := reverse.NewStaticMuxPicker()
 		r = &Reverse{tag: a.Reverse.Tag, picker: picker, client: &mux.ClientManager{Picker: picker}}
-		for len(h.outboundHandlerManager.ListHandlers(h.ctx)) == 0 {
-			timer := time.NewTimer(time.Second)
-			select {
-			case <-reverseClosing:
-				if !timer.Stop() {
-					<-timer.C
-				}
-				_ = r.Close()
-				return nil, errors.New("VLESS inbound reverse owner is closing")
-			case <-timer.C:
-			}
-		}
 		if err := h.outboundHandlerManager.AddHandler(h.ctx, r); err != nil {
 			_ = r.Close()
 			return nil, err
@@ -295,13 +307,46 @@ func (h *Handler) Close() error {
 
 // AddUser implements proxy.UserManager.AddUser().
 func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
-	return h.validator.Add(u)
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	// Store a copy: connections are revoked by user pointer, and the caller
+	// may add again a MemoryUser that an old connection authenticated.
+	user := *u
+	return h.validator.Add(&user)
 }
 
-// RemoveUser implements proxy.UserManager.RemoveUser().
+// RemoveUser implements proxy.UserManager.RemoveUser(). It closes the
+// removed user's connections and its reverse, unless another user of this
+// inbound shares the reverse tag.
 func (h *Handler) RemoveUser(ctx context.Context, e string) error {
-	h.RemoveReverse(h.validator.GetByEmail(e))
-	return h.validator.Del(e)
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	u := h.validator.GetByEmail(e)
+	if err := h.validator.Del(e); err != nil {
+		return err
+	}
+	h.connections.Revoke(u)
+	if tag := reverseTag(u); tag != "" {
+		shared := false
+		h.validator.Range(func(other *protocol.MemoryUser) bool {
+			shared = reverseTag(other) == tag
+			return !shared
+		})
+		if !shared {
+			h.RemoveReverse(u)
+		}
+	}
+	return nil
+}
+
+func reverseTag(u *protocol.MemoryUser) string {
+	if u == nil {
+		return ""
+	}
+	if a := u.Account.(*vless.MemoryAccount); a.Reverse != nil {
+		return a.Reverse.Tag
+	}
+	return ""
 }
 
 // GetUser implements proxy.UserManager.GetUser().
@@ -327,6 +372,9 @@ func (*Handler) Network() []net.Network {
 // Process implements proxy.Inbound.Process().
 func (h *Handler) Process(ctx context.Context, network net.Network, connection stat.Connection, dispatch routing.Dispatcher) error {
 	iConn := stat.TryUnwrapStatsConn(connection)
+	// The worker closes the connection it passed in; removing the user closes
+	// the same one, whatever wraps it below.
+	accepted := connection
 
 	if h.decryption != nil {
 		var err error
@@ -658,6 +706,12 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		return unknownRequestFlowError(requestAddons.Flow)
 	}
 
+	ctx, tracked, err := h.connections.Track(ctx, h.validator, request.User, accepted)
+	if err != nil {
+		return err
+	}
+	defer tracked.Release()
+
 	if request.Command != protocol.RequestCommandMux {
 		from, to := net.FormatAccessEndpoints(inbound.Source, request.Destination())
 		ctx = session.ContextWithAccessMessage(ctx, &log.AccessMessage{
@@ -685,7 +739,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	link := &transport.Link{Reader: clientReader, Writer: clientWriter}
 
 	if request.Command == protocol.RequestCommandRvs {
-		r, err := h.GetReverse(account)
+		r, err := h.GetReverse(ctx, request.User)
 		if err != nil {
 			return err
 		}

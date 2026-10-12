@@ -249,3 +249,62 @@ cryptographic handshake and scheduling noise dominate their millisecond scale.
 Linux runtime measurements remain required before making release-level server
 capacity claims; the Darwin gate proves behavior and gives a reproducible local
 directional signal only.
+
+## Removed-user connection tracking (2026-10-12)
+
+`Process` now tracks every connection it authenticates for a user with an
+email, so `RemoveUser` can close it (`proxy.UserConnections`). The cost is
+per connection, at setup and teardown; nothing runs per packet. Linux/amd64
+(Debian 13, kernel 6.12, 32 CPUs, `powersave` governor, not changed), Go
+1.27.2, `GOFLAGS=-tags=http2legacy`, candidate `0906ebf7` against baseline
+`9ce136ea`.
+
+Microbenchmarks, medians of five runs:
+
+```sh
+go test ./proxy/vless/inbound -run '^$' -bench 'BenchmarkProcess' -benchmem -count=5
+go test ./proxy -run '^$' -bench 'BenchmarkUserConnections' -benchmem -count=5
+```
+
+| Operation | ns/op | B/op | allocs/op |
+| --- | ---: | ---: | ---: |
+| Worker context alone (control) | 61.0 | 96 | 2 |
+| Worker context + tracking, real validator, 1 user | 298.1 | 624 | 8 |
+| Worker context + tracking, real validator, 10,000 users | 338.0 | 624 | 8 |
+| Same, 32 goroutines, 1,024 users | 727.6 | 624 | 8 |
+
+Tracking adds about 240 ns and 6 allocations per connection. A memory
+profile attributes them to the connection's own context and its cancel
+function, the tracked entry, and the parent's child map and done channel;
+the last two are allocated anyway once downstream code derives a context
+from the worker's, which now happens on the tracked one instead.
+
+Process benchmark: one Xray server and one Xray client per mode, a new VLESS
+connection per operation; the client binary is the candidate in every run
+and only the server changes. Three rounds alternating baseline and candidate
+servers, five samples of 200 connections each, so 15 samples per cell:
+
+```sh
+XRAY_E2E_BIN=<candidate> XRAY_E2E_SERVER_BIN=<baseline|candidate> \
+  go test -tags 'integration http2legacy' ./common/singmux -run '^$' \
+  -bench '^BenchmarkVLESSTCPProcessUserEmail$' -benchtime=200x -count=5
+```
+
+| Server mode | Baseline median | Candidate median | Change |
+| --- | ---: | ---: | ---: |
+| TLS, no flow, email | 1.222 ms | 1.227 ms | +0.4% |
+| TLS, no flow, no email | 1.224 ms | 1.226 ms | +0.2% |
+| TLS, Vision, email | 1.241 ms | 1.252 ms | +0.9% |
+| TLS, Vision, no email | 1.247 ms | 1.228 ms | -1.5% |
+| REALITY, no flow, email | 1.486 ms | 1.479 ms | -0.5% |
+| REALITY, no flow, no email | 1.471 ms | 1.506 ms | +2.3% |
+| REALITY, Vision, email | 1.484 ms | 1.505 ms | +1.4% |
+| REALITY, Vision, no email | 1.481 ms | 1.485 ms | +0.3% |
+
+The baseline and candidate sample ranges overlap in every cell, and the
+cells without an email, which take no tracking path, move as much as those
+with one: the process benchmark shows no regression beyond noise. It is a
+regression gate, not evidence for the 240 ns figure, which the
+microbenchmark measures. Not measured: throughput of established
+connections, which tracking does not touch, and contention at connection
+rates above what one client process generates.

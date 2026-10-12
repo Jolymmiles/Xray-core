@@ -74,14 +74,15 @@ func TestHandlerCloseUnblocksReverseWaitingForOutbound(t *testing.T) {
 	}
 	memoryAccount := account.(*vless.MemoryAccount)
 	validator := new(vless.MemoryValidator)
-	if err := validator.Add(&protocol.MemoryUser{Email: "waiting@example.com", Account: memoryAccount}); err != nil {
+	user := &protocol.MemoryUser{Email: "waiting@example.com", Account: memoryAccount}
+	if err := validator.Add(user); err != nil {
 		t.Fatal(err)
 	}
 	manager := &vlessReverseOutboundManager{listed: make(chan struct{})}
 	handler := &Handler{validator: validator, outboundHandlerManager: manager, ctx: context.Background()}
 	getDone := make(chan error, 1)
 	go func() {
-		_, err := handler.GetReverse(memoryAccount)
+		_, err := handler.GetReverse(context.Background(), user)
 		getDone <- err
 	}()
 	<-manager.listed
@@ -109,7 +110,8 @@ func TestHandlerCloseRejectsLateReverseRegistration(t *testing.T) {
 	}
 	memoryAccount := account.(*vless.MemoryAccount)
 	validator := new(vless.MemoryValidator)
-	if err := validator.Add(&protocol.MemoryUser{Email: "reverse@example.com", Account: memoryAccount}); err != nil {
+	user := &protocol.MemoryUser{Email: "reverse@example.com", Account: memoryAccount}
+	if err := validator.Add(user); err != nil {
 		t.Fatal(err)
 	}
 	manager := &vlessReverseOutboundManager{}
@@ -117,7 +119,7 @@ func TestHandlerCloseRejectsLateReverseRegistration(t *testing.T) {
 	if err := handler.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if reverseOwner, err := handler.GetReverse(memoryAccount); err == nil || reverseOwner != nil {
+	if reverseOwner, err := handler.GetReverse(context.Background(), user); err == nil || reverseOwner != nil {
 		t.Fatalf("closed VLESS inbound admitted late reverse owner: owner=%v err=%v", reverseOwner, err)
 	}
 	if got := manager.GetHandler("reverse"); got != nil {
