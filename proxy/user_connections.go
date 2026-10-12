@@ -38,7 +38,7 @@ type TrackedConnection struct {
 	conn       io.Closer
 	cancel     context.CancelFunc
 	prev, next *TrackedConnection
-	revoked    bool // guarded by registry.mu
+	detached   bool // released or revoked; guarded by registry.mu
 }
 
 // Track registers conn, which Process received and serves for user, until
@@ -76,14 +76,15 @@ func (c *UserConnections) Track(ctx context.Context, users UserLookup, user *pro
 }
 
 // Release ends tracking and cancels the connection's context. It is a no-op
-// on nil, so Process can defer it for an untracked user.
+// on nil, so Process can defer it for an untracked user, and when repeated.
 func (t *TrackedConnection) Release() {
 	if t == nil {
 		return
 	}
 	c := t.registry
 	c.mu.Lock()
-	if !t.revoked {
+	if !t.detached {
+		t.detached = true
 		t.unlink()
 	}
 	c.mu.Unlock()
@@ -112,7 +113,7 @@ func (c *UserConnections) Revoke(user *protocol.MemoryUser) {
 	c.mu.Lock()
 	var revoked []*TrackedConnection
 	for t := c.users[user]; t != nil; t = t.next {
-		t.revoked = true
+		t.detached = true
 		revoked = append(revoked, t)
 	}
 	delete(c.users, user)
