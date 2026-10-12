@@ -29,7 +29,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const revokedConnectionWait = 5 * time.Second
+const (
+	revokedConnectionWait = 5 * time.Second
+	revokeAPIWait         = 10 * time.Second // bounds the API dial and each call
+)
 
 func revokePolicy() *serial.TypedMessage {
 	return serial.ToTypedMessage(&policy.Config{
@@ -209,12 +212,18 @@ func TestCommanderRemoveUserClosesItsConnections(t *testing.T) {
 	bystander := dialRevokeClient(t, bystanderPort)
 	requireEcho(t, bystander, "bystander before removal")
 
-	cmdConn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%d", cmdPort), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-	common.Must(err)
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), revokeAPIWait)
+	cmdConn, err := grpc.DialContext(dialCtx, fmt.Sprintf("127.0.0.1:%d", cmdPort), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	cancelDial()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer cmdConn.Close()
 	hsClient := command.NewHandlerServiceClient(cmdConn)
 
-	if _, err := hsClient.AlterInbound(context.Background(), &command.AlterInboundRequest{
+	removeCtx, cancelRemove := context.WithTimeout(context.Background(), revokeAPIWait)
+	defer cancelRemove()
+	if _, err := hsClient.AlterInbound(removeCtx, &command.AlterInboundRequest{
 		Tag:       "v",
 		Operation: serial.ToTypedMessage(&command.RemoveUserOperation{Email: victimEmail}),
 	}); err != nil {
@@ -226,7 +235,9 @@ func TestCommanderRemoveUserClosesItsConnections(t *testing.T) {
 	}
 	requireEcho(t, bystander, "bystander after removal")
 
-	if _, err := hsClient.AlterInbound(context.Background(), &command.AlterInboundRequest{
+	addCtx, cancelAdd := context.WithTimeout(context.Background(), revokeAPIWait)
+	defer cancelAdd()
+	if _, err := hsClient.AlterInbound(addCtx, &command.AlterInboundRequest{
 		Tag: "v",
 		Operation: serial.ToTypedMessage(&command.AddUserOperation{
 			User: &protocol.User{
