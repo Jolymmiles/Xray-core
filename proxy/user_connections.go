@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
+	"net"
 	"sync"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -127,7 +129,9 @@ func (c *UserConnections) Revoke(user *protocol.MemoryUser) {
 }
 
 func closeRevokedConnection(email string, conn io.Closer) {
-	if err := conn.Close(); err != nil {
+	// The worker closes the connection too once Process returns; whichever
+	// Close comes second finds it closed.
+	if err := conn.Close(); err != nil && !stderrors.Is(err, net.ErrClosed) {
 		errors.LogInfoInner(context.Background(), err, "failed to close a connection of removed user ", email)
 	}
 }
