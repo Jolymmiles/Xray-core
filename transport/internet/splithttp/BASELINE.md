@@ -469,8 +469,9 @@ Limits:
   was under a quantum, and gave freed room to the oldest stream instead of
   the one whose reader reads. It is gone: a stream is looked at when its
   own client returns credit, as before (`TestFlowSendWindowIsReturned`),
-  and connection credit costs the same whatever the number of streams
-  (`TestFlowSendWindowFrameCost`).
+  and connection credit looks at no stream, whatever their number
+  (`TestFlowSendWindowConnectionCreditAllocs`,
+  `BenchmarkFlowConnectionCredit`).
 - `9b302e11` against `09136349`, five shuffled runs, median and range. MB/s
   read: one download 73.3 (67.3 to 75.1) against 72.5 (70.1 to 73.6), at
   RTT 150 ms 23.6 (23.5 to 24.3) against 24.0 (23.3 to 24.1); eight

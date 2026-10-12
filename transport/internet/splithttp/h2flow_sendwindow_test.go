@@ -402,6 +402,10 @@ func nothingShown(t *testing.T) (h *flowHarness, unread int64) {
 // full limit, besides the idle one.
 const waitingStream = 101
 
+// lateStream is a download opened after nothingShown; a client's stream
+// numbers only go up.
+const lateStream = waitingStream + 2
+
 // TestFlowSendWindowLoweringKeepsFrame looks at a stream that was open when
 // the stack came to be shown nothing. It held one frame of window, all of it
 // shown; the lowering took that from the stack, the client holds nothing of
@@ -432,16 +436,16 @@ func (h *flowHarness) openRequest(id uint32) {
 // is full.
 func TestFlowSendWindowFrameWhateverShown(t *testing.T) {
 	h, _ := nothingShown(t)
-	h.openRequest(17)
+	h.openRequest(lateStream)
 	sent := int64(0)
 	for turn := 0; turn < 8; turn++ {
-		window := h.toServer.streams[17] - sent
+		window := h.toServer.streams[lateStream] - sent
 		if window != flowShownLimited {
 			t.Fatalf("turn %d: the new stream may send %d at a full limit with nothing shown, want a frame, %d", turn, window, flowShownLimited)
 		}
-		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 17, int(window)) })
+		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, lateStream, int(window)) })
 		sent += window
-		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(17, uint32(window)) })
+		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(lateStream, uint32(window)) })
 	}
 }
 
@@ -453,7 +457,7 @@ func TestFlowSendWindowServerFreesRoom(t *testing.T) {
 	for _, reset := range []bool{false, true} {
 		t.Run(map[bool]string{false: "END_STREAM", true: "RST_STREAM"}[reset], func(t *testing.T) {
 			h, _ := nothingShown(t)
-			h.openRequest(17)
+			h.openRequest(lateStream)
 			h.fromServer(func(fr *http2.Framer) {
 				if reset {
 					fr.WriteRSTStream(3, http2.ErrCodeCancel)
@@ -461,7 +465,7 @@ func TestFlowSendWindowServerFreesRoom(t *testing.T) {
 					fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: []byte{0x88}, EndHeaders: true, EndStream: true})
 				}
 			})
-			if got := h.toServer.streams[17]; got < flowShownLimited {
+			if got := h.toServer.streams[lateStream]; got < flowShownLimited {
 				t.Fatalf("the new stream may send %d and the client owes no frame, want at least %d", got, flowShownLimited)
 			}
 		})
@@ -643,39 +647,29 @@ func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
 	return c, c.downConnWindow
 }
 
-// TestFlowSendWindowConnectionCreditCost times connection WINDOW_UPDATE
-// frames of 4 KiB on that connection, with sixty and with two hundred and
-// forty streams kept credit from: more would hold the limit by their frames
-// alone and leave a credit no room to free. Such a frame looks at no stream
-// and costs the same whatever their number. A queue of those streams, walked
-// after every frame from the client, handed nothing on here, since 4 KiB is
-// under a quantum, and walked itself whole each time: four times the streams,
-// four times the cost.
-func TestFlowSendWindowConnectionCreditCost(t *testing.T) {
+// TestFlowSendWindowConnectionCreditAllocs counts what a connection
+// WINDOW_UPDATE of 4 KiB allocates on that connection. Such a frame looks at
+// no stream and allocates nothing. A queue of the streams the limit kept
+// credit from, walked after every frame from the client, handed nothing on
+// here, since 4 KiB is under a quantum, and put every stream back: it
+// allocated once a frame with sixty streams. The count does not depend on
+// the clock; BenchmarkFlowConnectionCredit has the time, which a walk that
+// allocated nothing would show only there.
+func TestFlowSendWindowConnectionCreditAllocs(t *testing.T) {
 	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
-	cost := func(streams int) time.Duration {
-		c, window := refusedAtFullLimit(t, streams)
-		out := make([]byte, 0, 64)
-		best := time.Duration(math.MaxInt64)
-		for try := 0; try < 7; try++ {
-			start := time.Now()
-			for i := 0; i < 2000; i++ {
-				c.downConnWindow = window
-				out = c.readFrames(credit, out[:0])
-			}
-			best = min(best, time.Since(start))
-		}
-		// The state under test: room for the credit, and under a quantum.
-		c.downConnWindow = window + 4<<10
-		if room := flowServerSendWindow - c.clientHolds(); room <= 0 || room >= flowQuantumMin {
-			t.Fatalf("a credit leaves %d of room, want some and under a quantum, %d", room, flowQuantumMin)
-		}
-		return best
+	c, window := refusedAtFullLimit(t, 60)
+	// The state under test: room for the credit, and under a quantum.
+	c.downConnWindow = window + 4<<10
+	if room := flowServerSendWindow - c.clientHolds(); room <= 0 || room >= flowQuantumMin {
+		t.Fatalf("a credit leaves %d of room, want some and under a quantum, %d", room, flowQuantumMin)
 	}
-	few, many := cost(60), cost(240)
-	t.Logf("2000 connection WINDOW_UPDATE frames: %v with 60 streams kept credit from, %v with 240", few, many)
-	if many > 2*few {
-		t.Fatalf("four times the streams made connection credit %.1f times dearer", float64(many)/float64(few))
+	out := make([]byte, 0, 64)
+	allocs := testing.AllocsPerRun(1000, func() {
+		c.downConnWindow = window
+		out = c.readFrames(credit, out[:0])
+	})
+	if allocs != 0 {
+		t.Fatalf("connection credit allocated %g times a frame, want none", allocs)
 	}
 }
 
