@@ -11,6 +11,8 @@ import (
 	mrand "math/rand/v2"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -302,6 +304,11 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 // back. Every download must still complete: with the client showing more than
 // the lowest cap (see flowShownDown) the two governors wait for each other.
 // It runs without the server's send window and with the default one.
+//
+// The readers pause after every read until a cap has been seen to fall at
+// both ends, so the state the test is about is reached before it is judged,
+// and only then read in the stops and starts of the seed. The seed is logged
+// and XRAY_FLOW_TEST_SEED sets it.
 func TestFlowChainedGovernorsSlowReaders(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -367,12 +374,20 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 	// The pauses of each reader come from the seed, so a failing pacing can
 	// be run again.
 	seed := uint64(time.Now().UnixNano())
+	if set := os.Getenv("XRAY_FLOW_TEST_SEED"); set != "" {
+		var err error
+		if seed, err = strconv.ParseUint(set, 10, 64); err != nil {
+			t.Fatalf("XRAY_FLOW_TEST_SEED: %v", err)
+		}
+	}
 	t.Logf("seed %d", seed)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Watch the caps: the test means nothing unless they shrink at both ends.
 	lowServer, lowClient := int32(math.MaxInt32), int32(math.MaxInt32)
+	var fell atomic.Bool
+	fallBy := time.Now().Add(20 * time.Second)
 	watched := make(chan struct{})
 	stop := make(chan struct{})
 	go func() {
@@ -386,6 +401,9 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 			case <-tick.C:
 				lowServer = min(lowServer, lowestDownCap(serverConns()))
 				lowClient = min(lowClient, lowestDownCap(clientConns()))
+				if lowServer < flowStartWindow && lowClient < flowStartWindow {
+					fell.Store(true)
+				}
 			}
 		}
 	}()
@@ -416,8 +434,12 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 					errs <- fmt.Errorf("download %d after %d of %d bytes: %w", i, got, size, err)
 					return
 				}
-				// Stop and start for the first two thirds.
-				if got < size*2/3 && rng.IntN(8) == 0 {
+				switch {
+				case !fell.Load() && time.Now().Before(fallBy):
+					// A slow reader, until the caps have fallen.
+					time.Sleep(time.Duration(1+rng.IntN(20)) * time.Millisecond)
+				case got < size*2/3 && rng.IntN(8) == 0:
+					// Then stops and starts for the first two thirds.
 					time.Sleep(time.Duration(rng.IntN(60)) * time.Millisecond)
 				}
 			}
