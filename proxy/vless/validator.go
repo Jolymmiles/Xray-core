@@ -251,10 +251,23 @@ func (v *MemoryValidator) refreshEmailSnapshot(generation uint64) {
 	}
 }
 
-// Range implements Validator.Range.
+// Range implements Validator.Range. Users with an email are taken from the
+// email map: one with the same UUID as a later user stays a user there.
+// Users without one are only in the UUID map.
 func (v *MemoryValidator) Range(f func(*protocol.MemoryUser) bool) {
+	more := true
+	v.email.Range(func(_, value any) bool {
+		more = f(value.(*protocol.MemoryUser))
+		return more
+	})
+	if !more {
+		return
+	}
 	v.users.Range(func(_, value any) bool {
-		return f(value.(*protocol.MemoryUser))
+		if user := value.(*protocol.MemoryUser); user.Email == "" {
+			return f(user)
+		}
+		return true
 	})
 }
 
