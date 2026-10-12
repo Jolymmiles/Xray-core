@@ -76,15 +76,14 @@ func TestHandlerSnapshotsAuthenticatedUserAndPhysicalPeer(t *testing.T) {
 	}).AsAccount()
 	common.Must(err)
 	user := &protocol.MemoryUser{Email: "alice@example.com", Level: 7, Account: account}
-	clients := vmess.NewTimedUserValidator()
-	common.Must(clients.Add(user))
 	handler := &Handler{
 		policyManager:  policy.DefaultManager{},
-		clients:        clients,
+		clients:        vmess.NewTimedUserValidator(),
 		usersByEmail:   newUserByEmail(&DefaultConfig{}),
 		sessionHistory: encoding.NewSessionHistory(),
 	}
 	t.Cleanup(func() { _ = handler.Close() })
+	common.Must(handler.AddUser(context.Background(), user))
 
 	serverPipe, clientConn := stdnet.Pipe()
 	serverConn := &vmessPresenceConn{
