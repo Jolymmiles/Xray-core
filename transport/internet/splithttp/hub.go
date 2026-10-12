@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	gotls "crypto/tls"
 	"encoding/base64"
+	stderrors "errors"
 	"fmt"
 	"io"
+	stdnet "net"
 	"net/http"
 	"runtime"
 	"slices"
@@ -631,7 +633,13 @@ func (ln *Listener) Close() error {
 			return
 		}
 		if ln.listener != nil {
-			ln.closeErr = ln.listener.Close()
+			// Close the server as well: it keeps serving the connections it
+			// accepted, and a client opens its next sessions on them.
+			ln.closeErr = ln.server.Close()
+			// Serve may not have taken the listener yet.
+			if err := ln.listener.Close(); err != nil && ln.closeErr == nil && !stderrors.Is(err, stdnet.ErrClosed) {
+				ln.closeErr = err
+			}
 			return
 		}
 		ln.closeErr = errors.New("listener does not have an HTTP/3 server or a net.listener")
