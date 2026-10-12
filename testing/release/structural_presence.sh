@@ -25,7 +25,7 @@ go test -race ./...
 go test -gcflags=all=-d=checkptr=2 ./...
 go test -tags 'integration http2legacy' ./common/singmux -run '^TestFreeTCPUDPPort' -count=1
 go test -tags 'integration http2legacy' ./common/singmux \
-	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix/)' -count=3 -v
+	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix)$' -count=3 -v
 go test -tags 'integration http2legacy' ./testing/scenarios \
 	-run '^(TestDirectVersionSkew|TestLegacyMuxVersionSkew|TestXUDPVersionSkew|TestReverseVersionSkew|TestWireGuardVersionSkew)$' -count=1 -v
 go test -race ./testing/presence -run '^(TestSevenThousandExactOwnersEndAtZero|TestProductionPresenceOwnershipSourceAudit)$' -count=3
