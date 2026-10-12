@@ -256,9 +256,13 @@ every one of these clients was killed, 3 of 3 (`439f0110`).
 | v26.10.10 with both | 23.2 / 24.1 MB, 0 of 5 | 17.0 / 17.2 MB, 0 of 5 | 71.5 (48.8 to 72.0) MB/s |
 
 A run of 47 to 49 MB/s turns up now and then on any of these clients and on
-any way of counting the limit: on v26.5.9 in 1 of 6 runs of `439f0110` and
-1 of 6 of `323ca8b1`, on v26.7.28 in 1 of 2 of `60e39569`, on the last two
-rows here. Its cause was not looked for.
+any way of counting the limit. It is the client's choice of connection, not
+the governor: an Xray client picks one of its connections at random for each
+new session (`GetXmuxClient`), so eight downloads land on only two of three
+connections in 11.7% of runs, and the limit is per connection. Of 130 runs
+of this scenario at 4 MiB, 13 read 48 MB/s, two thirds of the others' 72.
+With the client held to one, two and three connections the eight downloads
+read 24.7, 48.4 and 72.3 MB/s (four runs each, `f84a597c`).
 
 What the limit costs is the sum of many downloads on one connection on a
 long path, at most the limit per round trip. MB/s read, three connections:
