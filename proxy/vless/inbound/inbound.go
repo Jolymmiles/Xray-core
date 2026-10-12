@@ -400,9 +400,11 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		Reader: buf.NewReader(connection),
 		Buffer: buf.MultiBuffer{first},
 	}
-	// The reader's leftover buffers go back to the pool when Process returns,
-	// unless a reverse bridge's mux worker took the reader over: NewMux can
-	// return on a canceled context while that worker still reads.
+	// The reader's leftover buffers go back to the pool when Process returns
+	// before anything else reads it. A fallback copy, a dispatched link and a
+	// reverse bridge's mux worker can still read it after Process returns on
+	// a canceled context (task.Run, DispatchLink and NewMux do not wait for
+	// their readers), so from there on the reader is theirs.
 	releaseReader := true
 	defer func() {
 		if releaseReader {
@@ -625,6 +627,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 				return nil
 			}
 
+			releaseReader = false
 			if err := task.Run(ctx, task.OnSuccessClose(postRequest, serverWriter), task.OnSuccessClose(getResponse, writer)); err != nil {
 				common.Interrupt(serverReader)
 				common.Interrupt(serverWriter)
@@ -732,6 +735,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 
 	vision := requestAddons.Flow == vless.XRV
 	trafficState := encoding.NewTrafficStateForVision(userSentID[:], vision)
+	releaseReader = false
 	clientReader := encoding.DecodeBody(reader, request)
 	if vision {
 		clientReader = proxy.NewVisionReader(clientReader, trafficState, true, ctx, connection, input, rawInput, nil)
@@ -749,7 +753,6 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		if err != nil {
 			return err
 		}
-		releaseReader = false
 		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, link), h.observer, dispatch)
 	}
 

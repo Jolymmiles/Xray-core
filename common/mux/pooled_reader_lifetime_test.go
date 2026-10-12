@@ -37,8 +37,9 @@ func (noopDispatcher) Type() interface{} { return routing.DispatcherType() }
 // then defer-Releases a pooled BufferedReader that is still link.Reader →
 // use-after-pool / SIGSEGV.
 //
-// Contract: WaitClosed/done only after finish() has Interrupted the link.
-// Callers may then Release pooled readers without racing the worker.
+// Contract: WaitClosed/done only after finish() has Interrupted the link. This
+// covers run ending on its own; when Close calls finish, run is not joined,
+// so VLESS Process no longer releases a reader it has handed on.
 func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 	const iterations = 1000
 
