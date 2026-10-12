@@ -193,10 +193,10 @@ guard it.
   `TestRemovedReverse*`, `TestReverseCloseAborts*` and `TestTestpre*` tests in
   `proxy/vless/outbound`.
 - HandlerService `RemoveUser` (`xray api rmu`) on a VLESS, Trojan or VMess
-  inbound closes the removed user's live connections; upstream only deletes the user
-  from the validator, so its plain, UDP, Mux.Cool, XUDP, SMUX and reverse
-  connections kept running (XTLS/Xray-core#5844, open, proposes a tracker in
-  every inbound and the dispatcher instead). `Process` tracks each
+  inbound closes the removed user's live connections; upstream only deletes
+  the user from the validator, so its plain, UDP, Mux.Cool, XUDP, SMUX and
+  reverse connections kept running (XTLS/Xray-core#5844, open, proposes a
+  tracker in every inbound and the dispatcher instead). `Process` tracks each
   connection it has authenticated for a user with an email
   (`proxy.UserConnections`, `proxy/user_connections.go`); `RemoveUser`
   deletes the user, cancels each tracked connection's context and closes the
