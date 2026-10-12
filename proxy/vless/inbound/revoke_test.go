@@ -433,6 +433,8 @@ type revokeOutboundManager struct {
 	// onLookup runs once, on the first GetHandler.
 	onLookup func()
 	looked   atomic.Bool
+	// onAdd runs after each AddHandler.
+	onAdd func()
 }
 
 func (*revokeOutboundManager) Type() interface{} { return outbound.ManagerType() }
@@ -457,6 +459,9 @@ func (m *revokeOutboundManager) AddHandler(_ context.Context, handler outbound.H
 		m.handlers = make(map[string]outbound.Handler)
 	}
 	m.handlers[handler.Tag()] = handler
+	if m.onAdd != nil {
+		m.onAdd()
+	}
 	return nil
 }
 
@@ -508,6 +513,33 @@ func TestRemoveUserStopsAReverseWaitingToPublish(t *testing.T) {
 	if handler := manager.GetHandler("reverse"); handler != nil {
 		t.Fatal("published the reverse outbound of a removed user")
 	}
+}
+
+// TestRemoveUserEndsAReverseBridgeWithoutRacingItsReader removes the user of a
+// published reverse bridge. Process returns on the canceled context while the
+// bridge's mux worker still reads the connection through Process's reader, so
+// Process must leave that reader alone; -race reports it if Process releases
+// the reader's buffers.
+func TestRemoveUserEndsAReverseBridgeWithoutRacingItsReader(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	published := make(chan struct{})
+	var publishOnce sync.Once
+	manager := &revokeOutboundManager{ready: true}
+	manager.onAdd = func() { publishOnce.Do(func() { close(published) }) }
+	handler := newRevokeHandler(t, validator, manager)
+	victim := newRevokeUser(t, "victim@example.com", "reverse")
+	addRevokeUsers(t, handler, victim)
+
+	connection := startRevokeConnection(t, handler, newRevokeDispatcher(), victim, protocol.RequestCommandRvs, "")
+	select {
+	case <-published:
+	case <-time.After(revokeWait):
+		t.Fatal("the reverse bridge did not publish its outbound")
+	}
+	if err := handler.RemoveUser(context.Background(), victim.Email); err != nil {
+		t.Fatal(err)
+	}
+	connection.requireEnded(t, "published reverse bridge of the removed user")
 }
 
 func TestRemoveUserBeforeAReversePublishesKeepsItUnpublished(t *testing.T) {

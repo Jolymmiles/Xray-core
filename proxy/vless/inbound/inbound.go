@@ -400,8 +400,14 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		Reader: buf.NewReader(connection),
 		Buffer: buf.MultiBuffer{first},
 	}
+	// The reader's leftover buffers go back to the pool when Process returns,
+	// unless a reverse bridge's mux worker took the reader over: NewMux can
+	// return on a canceled context while that worker still reads.
+	releaseReader := true
 	defer func() {
-		reader.Buffer = buf.ReleaseMulti(reader.Buffer)
+		if releaseReader {
+			reader.Buffer = buf.ReleaseMulti(reader.Buffer)
+		}
 	}()
 
 	var userSentID [16]byte // not MemoryAccount.ID
@@ -743,6 +749,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		if err != nil {
 			return err
 		}
+		releaseReader = false
 		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, link), h.observer, dispatch)
 	}
 
