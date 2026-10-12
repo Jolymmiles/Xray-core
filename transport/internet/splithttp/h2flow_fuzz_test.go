@@ -26,6 +26,11 @@ func FuzzFlowConn(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 4, 0, 0, 0, 0, 0}, []byte{0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1}, uint8(1))
 	f.Add([]byte{0xff, 0xff, 0xff, 1, 0xff, 0x7f, 0xff, 0xff, 0xff}, []byte{0, 0, 4, 8, 0, 0, 0, 0, 3, 0, 0, 0, 0}, uint8(3))
 
+	// A client that announces a large window, opens a stream and lowers the
+	// window under what the server was forwarded: the governor gives the
+	// connection up, and the server's write fails.
+	f.Add([]byte("\x00\x00\x06\x040\x00\x00\x00\x00\x00\x040000\x00\x00\x01\x01700010\x00\x00\x1e\x040\x00\x00\x00\x00000000\x00\x04\x00\x0000000000000000000000"), []byte("0"), uint8(3))
+
 	f.Fuzz(func(t *testing.T, fromClient, fromServer []byte, cut uint8) {
 		// The same input with the send window off and at its default.
 		for _, sendWindow := range []int64{0, flowServerSendWindow} {
@@ -43,7 +48,11 @@ func FuzzFlowConn(f *testing.F) {
 			for in := fromServer; len(in) > 0; {
 				n := min(step, len(in))
 				if _, err := c.Write(in[:n]); err != nil {
-					t.Fatal(err)
+					// A connection the governor gave up takes no more.
+					if !c.isBroken() {
+						t.Fatal(err)
+					}
+					break
 				}
 				in = in[n:]
 			}
