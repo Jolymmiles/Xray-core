@@ -83,6 +83,8 @@ type Handler struct {
 	observer               features.Feature
 	defaultDispatcher      routing.Dispatcher
 	ctx                    context.Context
+	userMu                 sync.Mutex // serializes AddUser and RemoveUser
+	connections            proxy.UserConnections
 	reverseLifecycleMu     sync.Mutex
 	reverseClosed          bool
 	reverseClosing         chan struct{}
@@ -295,13 +297,26 @@ func (h *Handler) Close() error {
 
 // AddUser implements proxy.UserManager.AddUser().
 func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
-	return h.validator.Add(u)
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	// Store a copy: connections are revoked by user pointer, and the caller
+	// may add again a MemoryUser that an old connection authenticated.
+	user := *u
+	return h.validator.Add(&user)
 }
 
-// RemoveUser implements proxy.UserManager.RemoveUser().
+// RemoveUser implements proxy.UserManager.RemoveUser(). It closes the
+// removed user's connections and its reverse.
 func (h *Handler) RemoveUser(ctx context.Context, e string) error {
-	h.RemoveReverse(h.validator.GetByEmail(e))
-	return h.validator.Del(e)
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	u := h.validator.GetByEmail(e)
+	if err := h.validator.Del(e); err != nil {
+		return err
+	}
+	h.connections.Revoke(u)
+	h.RemoveReverse(u)
+	return nil
 }
 
 // GetUser implements proxy.UserManager.GetUser().
@@ -327,6 +342,9 @@ func (*Handler) Network() []net.Network {
 // Process implements proxy.Inbound.Process().
 func (h *Handler) Process(ctx context.Context, network net.Network, connection stat.Connection, dispatch routing.Dispatcher) error {
 	iConn := stat.TryUnwrapStatsConn(connection)
+	// The worker closes the connection it passed in; removing the user closes
+	// the same one, whatever wraps it below.
+	accepted := connection
 
 	if h.decryption != nil {
 		var err error
@@ -657,6 +675,12 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	default:
 		return unknownRequestFlowError(requestAddons.Flow)
 	}
+
+	ctx, tracked, err := h.connections.Track(ctx, h.validator, request.User, accepted)
+	if err != nil {
+		return err
+	}
+	defer tracked.Release()
 
 	if request.Command != protocol.RequestCommandMux {
 		from, to := net.FormatAccessEndpoints(inbound.Source, request.Destination())
