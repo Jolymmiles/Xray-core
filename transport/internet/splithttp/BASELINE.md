@@ -448,24 +448,37 @@ Limits:
   35.7 MB target, and `GOGC` changes nothing (23.6, 23.6, 23.2 MB, three
   runs each). A client buffer of its own (`policy.bufferSize` 0) changes
   nothing either.
-- A stream the limit kept credit from waits in a queue and is handed the
-  room that frees, oldest first, after any frame from the client
-  (`releaseRefused`, `0a5f8c08`). Before, such a stream was looked at again only
-  when its own client returned credit, and one left with no window, or with
-  less than a Go client returns credit for, sent nothing that would bring
-  any: with the stack shown under 4 KiB after a lowering, a stream opened at
-  a full limit stayed where it was when the limit freed
-  (`TestFlowSendWindowRefusedStreamResumes`). Credit from the queue goes on
-  in quanta like any other (`TestFlowSendWindowRefusedCreditWaitsForAQuantum`);
-  a first version handed it on as it came and one download read 56.3
-  against 72.8 MB/s, 19.8 against 23.6 at RTT 150 ms. `0a5f8c08` against
-  `09136349`, five shuffled runs: one download 74.5 against 74.5 MB/s, at
-  RTT 150 ms 23.6 against 23.6; eight downloads 114.0 against 114.2, at
-  RTT 150 ms 72.1 against 72.1; twenty slow readers 23.3 against 23.4 MB;
-  192 short, completed downloads 35.5 against 35.5 MB; 192 slow downloads
-  at 2 MiB 36.1 against 34.6 MB, none killed, at 4 MiB killed 5 of 5 both;
-  at 100 Mbit/s the request beside eight downloads 65 / 350 against
-  66 / 291 ms and beside twenty slow readers 52 / 331 against 52 / 383 ms.
+- A stream may hold a frame, 16 KiB, whatever the stack is shown
+  (`downRelease`, `9b302e11`). After a client's lowering of its window the
+  stack can be shown less, or nothing; a stream opened then at a full limit
+  had no window, or less than a Go client returns credit for, sent nothing
+  that would bring credit of its own, and stayed there when the limit
+  freed, whether the client or the server freed it. Now it is forwarded
+  the frame (`TestFlowSendWindowFrameWhateverShown`,
+  `TestFlowSendWindowServerFreesRoom`). `0a5f8c08` had a queue of such
+  streams instead, walked after every frame from the client; it missed room
+  the server freed, cost a walk of the queue for every frame where the room
+  was under a quantum, and gave freed room to the oldest stream instead of
+  the one whose reader reads. It is gone: a stream is looked at when its
+  own client returns credit, as before (`TestFlowSendWindowIsReturned`),
+  and connection credit costs the same whatever the number of streams
+  (`TestFlowSendWindowFrameCost`).
+- `9b302e11` against `09136349`, five shuffled runs, median and range. MB/s
+  read: one download 73.3 (67.3 to 75.1) against 72.5 (70.1 to 73.6), at
+  RTT 150 ms 23.6 (23.5 to 24.3) against 24.0 (23.3 to 24.1); eight
+  downloads 114.0 (109.8 to 114.1) against 113.9 (113.3 to 114.1), at
+  RTT 150 ms 72.0 (71.3 to 72.8) against 72.6 (68.9 to 73.1). Client peak,
+  median / worst: twenty slow readers 23.7 / 24.0 against 24.1 / 24.5 MB;
+  192 short, completed downloads 36.4 / 36.8 against 36.1 / 36.6 MB; 192
+  slow downloads at 2 MiB 34.9 / 36.5 against 35.4 / 36.0 MB, none killed,
+  at 4 MiB killed 4 of 5 against 5 of 5. Request beside the load, p95,
+  median of runs and range: beside eight downloads 117 (112 to 170) against
+  107 (94 to 119) ms, at RTT 150 ms 452 (302 to 456) against 217 (168 to
+  458); at 100 Mbit/s beside eight downloads 327 (244 to 379) against 333
+  (228 to 366), beside twenty slow readers 308 (208 to 314) against 313
+  (263 to 386). Throughput and memory do not differ; the p95 of single
+  runs falls near 300 or near 450 ms at RTT 150 ms on either build, and
+  five runs do not tell the two apart.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
@@ -480,6 +493,11 @@ Limits:
   are not counted, and a spike shorter than 50 ms can be missed.
 - CPU differences on downloads are inside the noise of five runs; the
   upload rows repeat across runs.
+- `TestFlowChainedGovernorsSlowReaders` failed about one run in a hundred
+  because the server's cap had not fallen when the downloads ended: it
+  judged a state it had not reached. Its readers now pause after every
+  read until a cap has been seen to fall at both ends, and
+  `XRAY_FLOW_TEST_SEED` sets the seed (`9b302e11`): 0 of 150 runs, 300 subtests.
 - `TestFlowChainedGovernorsSlowReaders` stopped once in a full `-race` run
   of `154e636c` in review. It has not come back: 150 `-race` runs of it
   alone, with and without the send window, on a tree that differs from
