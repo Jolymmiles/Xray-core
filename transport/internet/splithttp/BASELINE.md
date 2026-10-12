@@ -495,6 +495,22 @@ Limits:
   request failed (506 and 509 sent), and the downloads read 72.4 against
   72.3 MB/s. The two builds do not differ, and five runs of this figure
   say nothing.
+- An upload that is still speeding up is not held to quanta, stream or
+  connection (`b5686538`, `TestFlowUploadCreditNotHeldWhileRamping`). Its cap
+  opens with every credit, and credit that waited for a quantum cost the
+  start of an upload a round trip: `TestFlowFastReaderKeepsThroughput` at
+  RTT 40 ms logs the first 4 MiB of a governed upload at 155 ms on
+  `da42e75f` (60 runs), 189 ms with every upload credit held (`16bd65ce`,
+  60 runs) and 157 ms on `b5686538` (12 runs), against 167 ms for stock; the
+  steady rate is 23.4 MiB/s on all three. The stand's averages over 12 s
+  did not show it, and neither did a test: the figure is logged, not
+  asserted. Holding either credit alone changes nothing, 184 and 188 ms;
+  the sender needs both. What the quanta save is kept, since that is the
+  steady state. CPU seconds per gigabyte, server / client, five shuffled
+  runs, `da42e75f`, `16bd65ce`, `b5686538`: four uploads 25.9 / 18.2, 23.3 /
+  14.8, 21.4 / 14.3 at 115.6 MB/s on each; one upload 25.9 / 18.1, 23.5 /
+  16.0, 23.3 / 15.9 at 82.9, 88.8 and 85.6 MB/s; one upload at RTT 150 ms
+  24.6 / 15.2, 21.9 / 12.6, 22.9 / 13.1 at 36.8, 36.6 and 36.8 MB/s.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
