@@ -1138,9 +1138,12 @@ func (c *flowConn) upConnRelease() int64 {
 	return min(bank, flowConnFloor+reading-unread-window, h2MaxWindow)
 }
 
-func (c *flowConn) appendUpConnRelease(out []byte) []byte {
+// appendUpConnRelease hands the client what connection credit is due. It
+// waits for a quantum, see hold, unless ramping says the stream whose credit
+// brought it here is still speeding up.
+func (c *flowConn) appendUpConnRelease(out []byte, ramping bool) []byte {
 	rel := c.upConnRelease()
-	if rel <= 0 || hold(rel, h2InitWindow+c.upConnForwarded-c.upConnSent, flowQuantumMax) {
+	if rel <= 0 || !ramping && hold(rel, h2InitWindow+c.upConnForwarded-c.upConnSent, flowQuantumMax) {
 		return out
 	}
 	c.upConnForwarded += rel
@@ -1159,6 +1162,10 @@ func quantum(cap int32) int64 {
 // the sender still has a quantum of window it loses nothing by waiting, and
 // what it sends then brings the next credit; once it has less, all credit
 // goes out at once. No cap changes, so the reader holds no more than before.
+//
+// An upload that is still speeding up is not held, stream or connection: its
+// cap opens with every credit, and credit that waited for a quantum cost its
+// first megabytes a round trip.
 func hold(rel, window, quantum int64) bool {
 	return rel < quantum && window >= quantum
 }
@@ -1705,7 +1712,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			if !c.upConnGrantKnown && c.upConnSent == 0 {
 				c.upConnGrant += inc
 			}
-			return c.appendUpConnRelease(out)
+			return c.appendUpConnRelease(out, false)
 		}
 		s := c.stream(f.stream)
 		if s == nil || inc == 0 || !c.up.enabled() {
@@ -1730,12 +1737,12 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			s.up.cap = min(s.up.cap, flowUnconfirmedUp)
 		}
 		c.upLearned.note(now, c.up.init, s.up.cap)
-		if rel := c.upRelease(s); rel > 0 && !hold(rel, int64(c.serverShown)+s.upForwarded-s.upSent, quantum(s.up.cap)) {
+		if rel := c.upRelease(s); rel > 0 && (!s.up.ramped || !hold(rel, int64(c.serverShown)+s.upForwarded-s.upSent, quantum(s.up.cap))) {
 			s.upForwarded += rel
 			out = appendWindowUpdate(out, f.stream, rel)
 		}
 		// What the reader took also frees room on the connection.
-		return c.appendUpConnRelease(out)
+		return c.appendUpConnRelease(out, !s.up.ramped)
 	}
 	out = append(out, header...)
 	return append(out, payload...)

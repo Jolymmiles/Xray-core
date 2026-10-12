@@ -113,6 +113,10 @@ func TestFlowUploadCreditGoesOnInQuanta(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		credit()
 	}
+	// The upload has stopped speeding up: from here its credit is held.
+	h.c.mu.Lock()
+	h.c.streams[1].up.ramped = true
+	h.c.mu.Unlock()
 	count, sum := map[uint32]int{}, map[uint32]uint64{}
 	for i := 0; i < 32; i++ {
 		fr := http2.NewFramer(nil, bytes.NewReader(credit()))
@@ -133,6 +137,55 @@ func TestFlowUploadCreditGoesOnInQuanta(t *testing.T) {
 	for _, id := range []uint32{0, 1} {
 		if count[id] != 4 || sum[id] != 128<<10 {
 			t.Errorf("stream %d: %d updates carrying %d bytes, want four quanta of 128 KiB in all", id, count[id], sum[id])
+		}
+	}
+}
+
+// TestFlowUploadCreditNotHeldWhileRamping is the same upload while it is
+// still speeding up. Its cap opens with every credit, so each piece goes on
+// as it comes, for the stream and for the connection: held to a quantum, the
+// first megabytes of an upload took a round trip longer.
+func TestFlowUploadCreditNotHeldWhileRamping(t *testing.T) {
+	h := newFlowHarness(t)
+	t.Cleanup(func() { h.c.Close() })
+	h.c.up.init = flowShownUp
+	h.c.up.max = flowShownUp
+	h.track()
+	h.openStream(4 << 20)
+	h.fromServer(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 6<<20-h2InitWindow) })
+	h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, 1, 512<<10) })
+	if h.c.streams[1].up.ramped {
+		t.Fatal("a new upload counts as one that has stopped speeding up")
+	}
+	for i := 0; i < 8; i++ {
+		h.fromServer(func(fr *http2.Framer) {
+			fr.WriteWindowUpdate(0, 4<<10)
+			fr.WriteWindowUpdate(1, 4<<10)
+		})
+	}
+	count := map[uint32]int{}
+	for i := 0; i < 16; i++ {
+		got := h.fromServer(func(fr *http2.Framer) {
+			fr.WriteWindowUpdate(0, 4<<10)
+			fr.WriteWindowUpdate(1, 4<<10)
+		})
+		fr := http2.NewFramer(nil, bytes.NewReader(got))
+		for {
+			f, err := fr.ReadFrame()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w, ok := f.(*http2.WindowUpdateFrame); ok {
+				count[w.StreamID]++
+			}
+		}
+	}
+	for _, id := range []uint32{0, 1} {
+		if count[id] != 16 {
+			t.Errorf("stream %d: %d updates for 16 pieces of credit while the upload speeds up, want each at once", id, count[id])
 		}
 	}
 }
