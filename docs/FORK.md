@@ -216,8 +216,8 @@ guard it.
 - A server connection with the `http` TCP header
   (`transport/internet/headers/http`) orders its first `Write` against
   `Close`, which removing a user now calls from another goroutine: the peer
-  gets the configured response header or the error header, never both, as
-  upstream's unsynchronized `Conn` sent. Covered by
+  gets the configured response header or the error header, never both;
+  upstream's unsynchronized `Conn` can send both. Covered by
   `TestServerCloseRacingFirstWriteSendsOneResponse`.
 - The WebSocket client connection with early data
   (`delayDialConn` in `transport/internet/websocket/dialer.go`), which dials on
