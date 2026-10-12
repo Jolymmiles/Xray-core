@@ -575,44 +575,124 @@ func feedFrames(tb testing.TB, h *flowHarness, frame []byte, n int) {
 	}
 }
 
-// TestFlowSendWindowFrameCost times frames from the client on connections
-// with two hundred and two thousand streams past the limit. A SETTINGS frame
-// looks at every stream once, so ten times the streams may cost ten times as
-// much; when each look walked all the streams again it cost a hundred times.
-// Connection credit looks at no stream, and must cost the same whatever their
-// number: a queue of the streams the limit kept credit from was walked on
-// every frame.
-func TestFlowSendWindowFrameCost(t *testing.T) {
+// TestFlowSendWindowSettingsCost times SETTINGS frames on connections with
+// two hundred and two thousand streams past the limit. A SETTINGS frame looks
+// at every stream once, so ten times the streams may cost ten times as much;
+// when each look walked all the streams again it cost a hundred times.
+func TestFlowSendWindowSettingsCost(t *testing.T) {
 	settings := frames(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
 	})
-	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
-	cost := func(frame []byte, streams int) time.Duration {
+	cost := func(streams int) time.Duration {
 		h := openStreams(t, flowServerSendWindow, 4<<20, streams)
 		t.Cleanup(func() { h.c.Close() })
-		// Slow readers' caps, so that no stream takes what a credit frees.
-		h.c.mu.Lock()
-		for _, s := range h.c.streams {
-			s.down.cap = h2InitWindow
-		}
-		h.c.mu.Unlock()
 		best := time.Duration(math.MaxInt64)
 		for try := 0; try < 5; try++ {
 			start := time.Now()
-			feedFrames(t, h, frame, 200)
+			feedFrames(t, h, settings, 50)
 			best = min(best, time.Since(start))
 		}
 		return best
 	}
-	few, many := cost(settings, 200), cost(settings, 2000)
-	t.Logf("200 SETTINGS frames: %v with 200 streams, %v with 2000", few, many)
+	few, many := cost(200), cost(2000)
+	t.Logf("50 SETTINGS frames: %v with 200 streams, %v with 2000", few, many)
 	if many > 40*few {
 		t.Fatalf("ten times the streams made a SETTINGS frame %d times dearer", many/few)
 	}
-	few, many = cost(credit, 200), cost(credit, 2000)
-	t.Logf("200 connection WINDOW_UPDATE frames: %v with 200 streams, %v with 2000", few, many)
-	if many > 4*few {
-		t.Fatalf("ten times the streams made connection credit %d times dearer", many/few)
+}
+
+// refusedAtFullLimit stages a connection at a full limit where every credit
+// from the client frees less than a quantum: n streams the limit kept credit
+// from, at a slow reader's cap and with a quantum of window each, and
+// completed bodies the client holds and returns 4 KiB of at a time. It
+// returns the connection and where its connection window stood, to put back
+// before each frame.
+func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
+	tb.Helper()
+	c = newFlowConn(&scriptConn{}, flowDefault, flowDefault)
+	tb.Cleanup(func() { c.Close() })
+	c.sendWindow = flowServerSendWindow
+	c.readFrames([]byte(h2Preface), nil)
+	c.readFrames(frames(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
+		for i := 0; i < n+32; i++ {
+			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: uint32(2*i + 1), BlockFragment: []byte{0x82}, EndHeaders: true, EndStream: true})
+		}
+	}), nil)
+	// The streams that took the limit complete; the ones it kept credit
+	// from stay open, at a slow reader's cap.
+	for id, s := range c.streams {
+		if s.downForwarded > 0 {
+			c.drop(id)
+			continue
+		}
+		s.down.cap = h2InitWindow
+	}
+	if len(c.streams) < n {
+		tb.Fatalf("%d streams were kept credit from, want at least %d", len(c.streams), n)
+	}
+	// What the client holds of the completed bodies leaves no room.
+	held := c.downOpen*int64(c.clientShown) + c.downOpenForwarded
+	c.downConnHigh = 1 << 30
+	c.downConnWindow = c.downConnHigh - max(flowServerSendWindow-held, 0)
+	c.downConnSmall = true
+	c.lastPing = time.Now()
+	if c.clientHolds() < flowServerSendWindow {
+		tb.Fatalf("the client holds %d, want the limit %d used up", c.clientHolds(), flowServerSendWindow)
+	}
+	return c, c.downConnWindow
+}
+
+// TestFlowSendWindowConnectionCreditCost times connection WINDOW_UPDATE
+// frames of 4 KiB on that connection, with sixty and with two hundred and
+// forty streams kept credit from: more would hold the limit by their frames
+// alone and leave a credit no room to free. Such a frame looks at no stream
+// and costs the same whatever their number. A queue of those streams, walked
+// after every frame from the client, handed nothing on here, since 4 KiB is
+// under a quantum, and walked itself whole each time: four times the streams,
+// four times the cost.
+func TestFlowSendWindowConnectionCreditCost(t *testing.T) {
+	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
+	cost := func(streams int) time.Duration {
+		c, window := refusedAtFullLimit(t, streams)
+		out := make([]byte, 0, 64)
+		best := time.Duration(math.MaxInt64)
+		for try := 0; try < 7; try++ {
+			start := time.Now()
+			for i := 0; i < 2000; i++ {
+				c.downConnWindow = window
+				out = c.readFrames(credit, out[:0])
+			}
+			best = min(best, time.Since(start))
+		}
+		// The state under test: room for the credit, and under a quantum.
+		c.downConnWindow = window + 4<<10
+		if room := flowServerSendWindow - c.clientHolds(); room <= 0 || room >= flowQuantumMin {
+			t.Fatalf("a credit leaves %d of room, want some and under a quantum, %d", room, flowQuantumMin)
+		}
+		return best
+	}
+	few, many := cost(60), cost(240)
+	t.Logf("2000 connection WINDOW_UPDATE frames: %v with 60 streams kept credit from, %v with 240", few, many)
+	if many > 2*few {
+		t.Fatalf("four times the streams made connection credit %.1f times dearer", float64(many)/float64(few))
+	}
+}
+
+// BenchmarkFlowConnectionCredit is the cost of that frame.
+func BenchmarkFlowConnectionCredit(b *testing.B) {
+	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
+	for _, n := range []int{60, 240} {
+		b.Run(fmt.Sprintf("streams=%d", n), func(b *testing.B) {
+			c, window := refusedAtFullLimit(b, n)
+			out := make([]byte, 0, 64)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				c.downConnWindow = window
+				out = c.readFrames(credit, out[:0])
+			}
+		})
 	}
 }
 

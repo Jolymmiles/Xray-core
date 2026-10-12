@@ -480,9 +480,11 @@ Limits:
   107 (94 to 119) ms, at RTT 150 ms 452 (302 to 456) against 217 (168 to
   458); at 100 Mbit/s beside eight downloads 327 (244 to 379) against 333
   (228 to 366), beside twenty slow readers 308 (208 to 314) against 313
-  (263 to 386). Throughput and memory do not differ; the p95 of single
-  runs falls near 300 or near 450 ms at RTT 150 ms on either build, and
-  five runs do not tell the two apart.
+  (263 to 386). Throughput and memory do not differ. The p95 at RTT 150 ms
+  is inconclusive: the five runs gave 302, 307, 452, 456 and 456 ms against
+  168, 170, 217, 301 and 458, which reads as worse, but `09136349` itself
+  had a median of 451 ms in the five runs before these, and 217 here. Five
+  runs do not settle it either way.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
