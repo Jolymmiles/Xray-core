@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
@@ -31,8 +32,10 @@ type DNS struct {
 	domainMatcher          geodata.DomainMatcher
 	matcherInfos           []*DomainMatcherInfo
 	checkSystem            bool
-	script                 *scriptEngine
-	scriptPath             string
+	// script is compiled in New; activeScript holds it once Start has
+	// started its pool. Until then the servers answer.
+	script       *scriptEngine
+	activeScript atomic.Pointer[scriptEngine]
 }
 
 // DomainMatcherInfo contains information attached to index returned by Server.domainMatcher.
@@ -171,6 +174,13 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 		clients = append(clients, NewLocalDNSClient(ipOption))
 	}
 
+	var script *scriptEngine
+	if config.Script != "" {
+		if script, err = newScriptEngine(config.Script); err != nil {
+			return nil, errors.New("failed to prepare DNS script").Base(err)
+		}
+	}
+
 	return &DNS{
 		hosts:                  hosts,
 		ipOption:               &ipOption,
@@ -182,7 +192,7 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 		disableFallbackIfMatch: config.DisableFallbackIfMatch,
 		enableParallelQuery:    config.EnableParallelQuery,
 		checkSystem:            checkSystem,
-		scriptPath:             config.Script,
+		script:                 script,
 	}, nil
 }
 
@@ -193,12 +203,11 @@ func (*DNS) Type() interface{} {
 
 // Start implements common.Runnable.
 func (s *DNS) Start() error {
-	if s.scriptPath != "" {
-		engine, err := newScriptEngine(s.scriptPath, s)
-		if err != nil {
+	if s.script != nil {
+		if err := s.script.start(s); err != nil {
 			return errors.New("failed to initialize DNS script").Base(err)
 		}
-		s.script = engine
+		s.activeScript.Store(s.script)
 	}
 	return nil
 }
@@ -206,6 +215,7 @@ func (s *DNS) Start() error {
 // Close implements common.Closable.
 func (s *DNS) Close() error {
 	if s.script != nil {
+		s.activeScript.Store(nil)
 		s.script.close()
 	}
 	return nil
@@ -292,8 +302,8 @@ func (s *DNS) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, er
 	}
 
 	// Name servers lookup
-	if s.script != nil {
-		return s.script.query(domain, option)
+	if script := s.activeScript.Load(); script != nil {
+		return script.query(domain, option)
 	}
 	if s.enableParallelQuery {
 		return s.parallelQuery(domain, option)
