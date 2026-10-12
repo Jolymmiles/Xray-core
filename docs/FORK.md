@@ -14,6 +14,8 @@ guard it.
   (a `replace` in `go.mod`). A Client Hello that offers X25519MLKEM768 in
   neither `supported_groups` nor `key_share` authenticates through its single
   X25519 key share; hellos that offer the hybrid group keep upstream's rules.
+  A server with `"requireMlkem": true` in `realitySettings` rejects such a
+  hello as upstream does; it is `false` by default.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and

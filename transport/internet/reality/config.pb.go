@@ -36,6 +36,7 @@ type Config struct {
 	Mldsa65Seed           []byte                 `protobuf:"bytes,11,opt,name=mldsa65_seed,json=mldsa65Seed,proto3" json:"mldsa65_seed,omitempty"`
 	LimitFallbackUpload   *LimitFallback         `protobuf:"bytes,12,opt,name=limit_fallback_upload,json=limitFallbackUpload,proto3" json:"limit_fallback_upload,omitempty"`
 	LimitFallbackDownload *LimitFallback         `protobuf:"bytes,13,opt,name=limit_fallback_download,json=limitFallbackDownload,proto3" json:"limit_fallback_download,omitempty"`
+	RequireMlkem          bool                   `protobuf:"varint,14,opt,name=require_mlkem,json=requireMlkem,proto3" json:"require_mlkem,omitempty"`
 	Fingerprint           string                 `protobuf:"bytes,21,opt,name=Fingerprint,proto3" json:"Fingerprint,omitempty"`
 	ServerName            string                 `protobuf:"bytes,22,opt,name=server_name,json=serverName,proto3" json:"server_name,omitempty"`
 	PublicKey             []byte                 `protobuf:"bytes,23,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
@@ -169,6 +170,13 @@ func (x *Config) GetLimitFallbackDownload() *LimitFallback {
 	return nil
 }
 
+func (x *Config) GetRequireMlkem() bool {
+	if x != nil {
+		return x.RequireMlkem
+	}
+	return false
+}
+
 func (x *Config) GetFingerprint() string {
 	if x != nil {
 		return x.Fingerprint
@@ -289,7 +297,7 @@ var File_transport_internet_reality_config_proto protoreflect.FileDescriptor
 
 const file_transport_internet_reality_config_proto_rawDesc = "" +
 	"\n" +
-	"'transport/internet/reality/config.proto\x12\x1fxray.transport.internet.reality\"\x98\x06\n" +
+	"'transport/internet/reality/config.proto\x12\x1fxray.transport.internet.reality\"\xbd\x06\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04show\x18\x01 \x01(\bR\x04show\x12\x12\n" +
 	"\x04dest\x18\x02 \x01(\tR\x04dest\x12\x12\n" +
@@ -305,7 +313,8 @@ const file_transport_internet_reality_config_proto_rawDesc = "" +
 	" \x03(\fR\bshortIds\x12!\n" +
 	"\fmldsa65_seed\x18\v \x01(\fR\vmldsa65Seed\x12b\n" +
 	"\x15limit_fallback_upload\x18\f \x01(\v2..xray.transport.internet.reality.LimitFallbackR\x13limitFallbackUpload\x12f\n" +
-	"\x17limit_fallback_download\x18\r \x01(\v2..xray.transport.internet.reality.LimitFallbackR\x15limitFallbackDownload\x12 \n" +
+	"\x17limit_fallback_download\x18\r \x01(\v2..xray.transport.internet.reality.LimitFallbackR\x15limitFallbackDownload\x12#\n" +
+	"\rrequire_mlkem\x18\x0e \x01(\bR\frequireMlkem\x12 \n" +
 	"\vFingerprint\x18\x15 \x01(\tR\vFingerprint\x12\x1f\n" +
 	"\vserver_name\x18\x16 \x01(\tR\n" +
 	"serverName\x12\x1d\n" +

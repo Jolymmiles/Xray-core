@@ -183,7 +183,8 @@ func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, shape helloShap
 
 // runKeyShareHandshake runs one REALITY server handshake against a client
 // whose hello was reshaped and returns whether both sides authenticated.
-func runKeyShareHandshake(t *testing.T, shape helloShape) (clientVerified, serverAccepted bool) {
+// requireMLKEM is the server's "requireMlkem".
+func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (clientVerified, serverAccepted bool) {
 	t.Helper()
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -196,6 +197,8 @@ func runKeyShareHandshake(t *testing.T, shape helloShape) (clientVerified, serve
 		ServerNames: []string{keyShareTestServerName},
 		PrivateKey:  privateKey.Bytes(),
 		ShortIds:    [][]byte{shortID},
+
+		RequireMlkem: requireMLKEM,
 	}).GetREALITYConfig()
 	detectCoverRecords(t, serverConfig)
 	clientConfig := &Config{
@@ -264,18 +267,25 @@ func detectCoverRecords(t *testing.T, config *reality.Config) {
 
 func TestREALITYServerKeyShareAcceptance(t *testing.T) {
 	tests := []struct {
-		name   string
-		shape  helloShape
-		accept bool
+		name         string
+		shape        helloShape
+		requireMLKEM bool
+		accept       bool
 	}{
 		{name: "chrome hybrid key share", shape: keepHello, accept: true},
 		{name: "hybrid group not offered", shape: withoutHybridGroup, accept: true},
 		{name: "hybrid group offered without key share", shape: withoutHybridKeyShare, accept: false},
 		{name: "classic key share before hybrid", shape: classicKeyShareFirst, accept: false},
+		// "requireMlkem" is upstream's rule: no hello without the hybrid key
+		// share authenticates.
+		{name: "required, chrome hybrid key share", shape: keepHello, requireMLKEM: true, accept: true},
+		{name: "required, hybrid group not offered", shape: withoutHybridGroup, requireMLKEM: true, accept: false},
+		{name: "required, hybrid group offered without key share", shape: withoutHybridKeyShare, requireMLKEM: true, accept: false},
+		{name: "required, classic key share before hybrid", shape: classicKeyShareFirst, requireMLKEM: true, accept: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			clientVerified, serverAccepted := runKeyShareHandshake(t, test.shape)
+			clientVerified, serverAccepted := runKeyShareHandshake(t, test.shape, test.requireMLKEM)
 			if serverAccepted != test.accept || clientVerified != test.accept {
 				t.Fatalf("server accepted = %v, client verified = %v, want both %v", serverAccepted, clientVerified, test.accept)
 			}

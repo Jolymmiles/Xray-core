@@ -16,6 +16,11 @@ Keep this list complete; everything else must match upstream byte for byte.
   sing-box that strip the hybrid group. Hellos that offer the hybrid group
   keep upstream's rules. Covered by
   `transport/internet/reality/keyshare_test.go`.
+- `Config.RequireMLKEM` (`common.go`, copied in `Clone`), read by
+  `fork_keyshare.go`: when set, the change above is off and every hello
+  without an X25519MLKEM768 key share is rejected, as upstream does. Xray's
+  `realitySettings.requireMlkem` sets it; it is off by default. Covered by the
+  same test.
 
 ## Updating
 
