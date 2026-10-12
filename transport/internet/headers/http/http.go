@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -159,8 +161,12 @@ func (w *HeaderWriter) Write(writer io.Writer) error {
 type Conn struct {
 	net.Conn
 
-	readBuffer          *buf.Buffer
-	oneTimeReader       Reader
+	readBuffer    *buf.Buffer
+	oneTimeReader Reader
+	// headerMu orders the first Write's header against Close, which may run
+	// from another goroutine and then writes an error header instead.
+	headerMu            sync.Mutex
+	headerDone          atomic.Bool
 	oneTimeWriter       Writer
 	errorWriter         Writer
 	errorMismatchWriter Writer
@@ -204,22 +210,31 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 // Write implements io.Writer.
 func (c *Conn) Write(b []byte) (int, error) {
-	if c.oneTimeWriter != nil {
-		err := c.oneTimeWriter.Write(c.Conn)
-		c.oneTimeWriter = nil
-		if err != nil {
-			return 0, err
-		}
+	if err := c.writeHeader(); err != nil {
+		return 0, err
 	}
-
 	return c.Conn.Write(b)
 }
 
+// writeHeader writes the one-time header unless it or Close already did.
+func (c *Conn) writeHeader() error {
+	if c.headerDone.Load() {
+		return nil
+	}
+	c.headerMu.Lock()
+	defer c.headerMu.Unlock()
+	if c.oneTimeWriter == nil {
+		return nil
+	}
+	err := c.oneTimeWriter.Write(c.Conn)
+	c.oneTimeWriter = nil
+	c.headerDone.Store(true)
+	return err
+}
+
 func (c *Conn) CloseWrite() error {
-	if c.oneTimeWriter != nil {
-		if _, err := c.Write(nil); err != nil {
-			return err
-		}
+	if err := c.writeHeader(); err != nil {
+		return err
 	}
 	if closeWriter, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return closeWriter.CloseWrite()
@@ -229,6 +244,8 @@ func (c *Conn) CloseWrite() error {
 
 // Close implements net.Conn.Close().
 func (c *Conn) Close() error {
+	c.headerMu.Lock()
+	defer c.headerMu.Unlock()
 	if c.oneTimeWriter != nil && c.errorWriter != nil {
 		// Connection is being closed but header wasn't sent. This means the client request
 		// is probably not valid. Sending back a server error header in this case.
@@ -243,6 +260,8 @@ func (c *Conn) Close() error {
 			c.errorWriter.Write(c.Conn)
 		}
 	}
+	c.oneTimeWriter = nil
+	c.headerDone.Store(true)
 
 	return c.Conn.Close()
 }
