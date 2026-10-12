@@ -12,15 +12,20 @@ import (
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/common/signal/done"
 	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/stat"
+	"github.com/xtls/xray-core/transport/pipe"
 )
 
 func TestUDPWorkerCloseAllowsAdmittedCleanupToFinish(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		// A session as getConnection opens it: Close now closes the
+		// sessions it finds.
+		_, sessionWriter := pipe.New()
 		worker := &udpWorker{activeConn: map[connID]*udpConn{
-			{}: {lastActivityTime: time.Now().Unix()},
+			{}: {lastActivityTime: time.Now().Unix(), done: done.New(), writer: sessionWriter},
 		}}
 		continueCleanup := make(chan struct{})
 		cleanupResult := make(chan error, 1)
