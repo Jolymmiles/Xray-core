@@ -232,6 +232,15 @@ func (s *revokeScenario) openVictimFlows() []*revokeFlow {
 		}
 	}
 	if s.cell.flow != "" {
+		// A client may switch its writing side to direct copy only on its
+		// next write after the inner handshake: Mihomo can send its last
+		// handshake-time data in a padded block without the switch. Echo once
+		// more on every flow so both sides have switched.
+		for i, flow := range flows {
+			if err := flow.roundTrip(time.Now().Add(revokeDeadline)); err != nil {
+				t.Fatalf("%s: victim flow %d did not echo a second time: %v", s.name, i+1, err)
+			}
+		}
 		revokeWaitLogMatches(t, s.name, s.server, revokeVisionDirectIn, revokeVictimFlows)
 		revokeWaitLogMatches(t, s.name, s.server, revokeVisionDirectOut, revokeVictimFlows)
 	}
