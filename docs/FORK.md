@@ -226,10 +226,10 @@ guard it.
   none afterwards, and an ended session no longer removes a newer session of
   the same source. The XHTTP listener over HTTP/1.1 and HTTP/2 closes its
   HTTP server as well, so the connections a client reuses for its next
-  sessions end with it. Not covered: connections still in a TLS or REALITY
-  handshake and REALITY cover forwarding, which the transport handles before
-  a worker sees them, and inbounds without workers (TUN, WireGuard), which
-  close through their own `Close`. Covered by
+  sessions end with it. Not covered: REALITY authentication and the cover
+  forwarding of a failed one, which the REALITY listener runs before a
+  worker sees the connection, and inbounds without workers (TUN, WireGuard),
+  which close through their own `Close`. Covered by
   `app/proxyman/inbound/close_connections_test.go`,
   `TestListenerCloseEndsServedConnections`
   (`transport/internet/splithttp`) and
