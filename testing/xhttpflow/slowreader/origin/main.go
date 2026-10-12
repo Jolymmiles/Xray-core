@@ -1,6 +1,6 @@
 // Command origin is the far end of the slow-reader stand: an HTTP server that
-// answers /ping at once and reads /up at a fixed rate, and a TLS 1.3 server
-// that stands in as the REALITY target.
+// answers /ping at once, reads /up at a fixed rate and writes /down as fast
+// as it is taken, and a TLS 1.3 server that stands in as the REALITY target.
 package main
 
 import (
@@ -34,6 +34,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ping", servePing)
 	mux.HandleFunc("/up", serveUp)
+	mux.HandleFunc("/down", serveDown)
 	panic(http.ListenAndServe(*httpAddr, mux))
 }
 
@@ -44,15 +45,19 @@ func servePing(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveUp reads the body at ?rate= bytes per second, in pieces of a twentieth
-// of that, so the reader is slow but steady. It answers 200 with the byte
-// count for a whole body, 400 for a bad rate or a body that ends in an error.
+// of that, so the reader is slow but steady; a rate of 0 reads all it gets.
+// It answers 200 with the byte count for a whole body, 400 for a bad rate or
+// a body that ends in an error.
 func serveUp(w http.ResponseWriter, r *http.Request) {
 	rate, err := strconv.ParseInt(r.URL.Query().Get("rate"), 10, 64)
-	if err != nil || rate < 1 || rate > maxRate {
-		fail(w, r, fmt.Sprintf("rate must be 1 to %d bytes per second", maxRate), http.StatusBadRequest)
+	if err != nil || rate < 0 || rate > maxRate {
+		fail(w, r, fmt.Sprintf("rate must be 0 to %d bytes per second", maxRate), http.StatusBadRequest)
 		return
 	}
 	buf := make([]byte, max(rate/20, 1024))
+	if rate == 0 {
+		buf = make([]byte, 64<<10)
+	}
 	start := time.Now()
 	var got int64
 	for {
@@ -65,6 +70,9 @@ func serveUp(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, fmt.Sprintf("after %d bytes: %v", got, err), http.StatusBadRequest)
 			return
 		}
+		if rate == 0 {
+			continue
+		}
 		want := time.Duration(float64(got) / float64(rate) * float64(time.Second))
 		if d := want - time.Since(start); d > 0 {
 			time.Sleep(d)
@@ -72,6 +80,25 @@ func serveUp(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = fmt.Fprintf(w, "%d", got)
 	logWrite(r, err)
+}
+
+// serveDown writes ?bytes= bytes of zeros, as fast as the client takes them.
+func serveDown(w http.ResponseWriter, r *http.Request) {
+	left, err := strconv.ParseInt(r.URL.Query().Get("bytes"), 10, 64)
+	if err != nil || left < 1 {
+		fail(w, r, "bytes must be a positive number", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(left, 10))
+	buf := make([]byte, 64<<10)
+	for left > 0 {
+		n, err := w.Write(buf[:min(left, int64(len(buf)))])
+		left -= int64(n)
+		if err != nil {
+			logWrite(r, err)
+			return
+		}
+	}
 }
 
 // serveHello is the page of the TLS server that stands in as the REALITY

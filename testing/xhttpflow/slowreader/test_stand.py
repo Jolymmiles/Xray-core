@@ -138,7 +138,7 @@ class ComparisonStatusTests(unittest.TestCase):
         args = types.SimpleNamespace(server=["before=/before", "after=/after"], runs=len(before), out=str(out))
         runs = {"/before": iter(before), "/after": iter(after)}
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(stand, "one_run", lambda binary, _: next(runs[binary])), \
+        with mock.patch.object(stand, "one_run", lambda binary, *_: next(runs[binary])), \
                 mock.patch.object(stand.signal, "signal"), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = stand.inside(args)
@@ -341,6 +341,65 @@ class RemoveNamespaceTests(unittest.TestCase):
         self.assertIn("Device or resource busy", str(raised))
         self.assertEqual(calls, ["ip netns pids xslow-1-cli", "ip netns del xslow-1-cli"],
                          "deletion is still tried when listing fails")
+
+
+class DownloadSocket:
+    """A session whose origin has sent the headers and body bytes of a
+    download and then nothing more: a further read times out."""
+
+    def __init__(self, clock, body):
+        self.clock, self.timeout = clock, None
+        self.head, self.body = b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n", body
+
+    def settimeout(self, value):
+        self.timeout = value
+
+    def sendall(self, data):
+        pass
+
+    def recv(self, n):
+        head, self.head = self.head, b""
+        return head
+
+    def recv_into(self, buf):
+        if not self.body:
+            self.clock.now += self.timeout
+            raise socket.timeout("timed out")
+        n = min(len(buf), len(self.body))
+        buf[:n], self.body = self.body[:n], self.body[n:]
+        return n
+
+    def close(self):
+        pass
+
+
+class DownloadTests(unittest.TestCase):
+    def download(self, size, body):
+        clock = Clock()
+
+        def sleep(seconds):
+            clock.now += seconds
+
+        result = {}
+        with mock.patch.object(stand, "time", types.SimpleNamespace(time=clock.time, sleep=sleep)), \
+                mock.patch.object(stand, "socks", lambda deadline: DownloadSocket(clock, body)):
+            stand.download(clock.now + stand.DURATION, 0, result, size)
+        return result
+
+    def test_a_download_read_to_its_end_is_not_one_still_reading(self):
+        self.assertEqual(self.download(4, b"abcd"), {"got": 4, "end": "complete"})
+        self.assertEqual(self.download(8, b"abcd"), {"got": 4, "end": "deadline"})
+
+
+class ServerConfigTests(unittest.TestCase):
+    def h2flow(self, value):
+        config = stand.server_config("key", value)
+        return config["inbounds"][0]["streamSettings"]["xhttpSettings"]["extra"]["h2Flow"]
+
+    def test_an_empty_h2flow_object_reaches_the_server_as_given(self):
+        self.assertEqual(self.h2flow(None), {"enabled": True})
+        self.assertEqual(self.h2flow({}), {})
+        self.assertEqual(self.h2flow({"enabled": False}), {"enabled": False})
 
 
 if __name__ == "__main__":

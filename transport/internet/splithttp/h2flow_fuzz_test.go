@@ -26,39 +26,55 @@ func FuzzFlowConn(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 4, 0, 0, 0, 0, 0}, []byte{0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1}, uint8(1))
 	f.Add([]byte{0xff, 0xff, 0xff, 1, 0xff, 0x7f, 0xff, 0xff, 0xff}, []byte{0, 0, 4, 8, 0, 0, 0, 0, 3, 0, 0, 0, 0}, uint8(3))
 
+	// A client that announces a large window, opens a stream and lowers the
+	// window under what the server was forwarded: the governor gives the
+	// connection up, and the server's write fails.
+	f.Add([]byte("\x00\x00\x06\x040\x00\x00\x00\x00\x00\x040000\x00\x00\x01\x01700010\x00\x00\x1e\x040\x00\x00\x00\x00000000\x00\x04\x00\x0000000000000000000000"), []byte("0"), uint8(3))
+
 	f.Fuzz(func(t *testing.T, fromClient, fromServer []byte, cut uint8) {
-		capture := &captureConn{}
-		c := newFlowConn(capture, testUp, testDown)
-		c.rtt = 1
-		step := int(cut%16) + 1
-		out := c.readFrames([]byte(h2Preface), nil)
-		for in := fromClient; len(in) > 0; {
-			n := min(step, len(in))
-			out = c.readFrames(append([]byte(nil), in[:n]...), out)
-			in = in[n:]
-		}
-		for in := fromServer; len(in) > 0; {
-			n := min(step, len(in))
-			if _, err := c.Write(in[:n]); err != nil {
-				t.Fatal(err)
+		// The same input with the send window off and at its default.
+		for _, sendWindow := range []int64{0, flowServerSendWindow} {
+			capture := &captureConn{}
+			c := newFlowConn(capture, testUp, testDown)
+			c.sendWindow = sendWindow
+			c.rtt = 1
+			step := int(cut%16) + 1
+			out := c.readFrames([]byte(h2Preface), nil)
+			for in := fromClient; len(in) > 0; {
+				n := min(step, len(in))
+				out = c.readFrames(append([]byte(nil), in[:n]...), out)
+				in = in[n:]
 			}
-			in = in[n:]
+			for in := fromServer; len(in) > 0; {
+				n := min(step, len(in))
+				if _, err := c.Write(in[:n]); err != nil {
+					// A connection the governor gave up takes no more.
+					if !c.isBroken() {
+						t.Fatal(err)
+					}
+					break
+				}
+				in = in[n:]
+			}
+			c.wmu.Lock()
+			c.wmu.Unlock()
+			c.mu.Lock()
+			streams, queued := len(c.streams), queuedBytes(c)
+			c.mu.Unlock()
+			if streams > len(fromClient)/h2FrameHeader+1 {
+				t.Fatalf("%d streams tracked from %d input bytes", streams, len(fromClient))
+			}
+			if queued > 1<<16 {
+				t.Fatalf("%d bytes queued for the client", queued)
+			}
+			if limit := len(h2Preface) + len(fromClient) + 64*(len(fromClient)/h2FrameHeader+2); len(out) > limit {
+				t.Fatalf("read side produced %d bytes from %d", len(out), len(fromClient))
+			}
+			if err := downCountersAgree(c); err != nil {
+				t.Fatalf("send window %d: %v", sendWindow, err)
+			}
+			c.Close()
 		}
-		c.wmu.Lock()
-		c.wmu.Unlock()
-		c.mu.Lock()
-		streams, queued := len(c.streams), queuedBytes(c)
-		c.mu.Unlock()
-		if streams > len(fromClient)/h2FrameHeader+1 {
-			t.Fatalf("%d streams tracked from %d input bytes", streams, len(fromClient))
-		}
-		if queued > 1<<16 {
-			t.Fatalf("%d bytes queued for the client", queued)
-		}
-		if limit := len(h2Preface) + len(fromClient) + 64*(len(fromClient)/h2FrameHeader+2); len(out) > limit {
-			t.Fatalf("read side produced %d bytes from %d", len(out), len(fromClient))
-		}
-		c.Close()
 
 		for _, client := range []bool{false, true} {
 			in := append([]byte(h2Preface), fromClient...)
@@ -68,6 +84,7 @@ func FuzzFlowConn(f *testing.F) {
 			rnd := mrand.New(mrand.NewPCG(uint64(cut), uint64(len(in))))
 			cc := &chunkConn{data: in, rnd: rnd}
 			rc := newFlowConn(cc, testUp, testDown)
+			rc.sendWindow = flowServerSendWindow
 			if client {
 				rc = newFlowClientConn(cc)
 				rc.mode.Store(flowH2)
@@ -83,6 +100,9 @@ func FuzzFlowConn(f *testing.F) {
 			}
 			if len(got) > len(in)+64*(len(in)/h2FrameHeader+2) {
 				t.Fatalf("Read produced %d bytes from %d", len(got), len(in))
+			}
+			if err := downCountersAgree(rc); err != nil {
+				t.Fatalf("client %v: %v", client, err)
 			}
 		}
 	})
