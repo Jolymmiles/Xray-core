@@ -86,17 +86,17 @@ guard it.
 - The Hysteria client-pool cleaner (`clientManager.cleanOnce` in
   `transport/internet/hysteria/dialer.go`) snapshots the process-wide pool
   and releases the pool lock before it waits for an instance's status or a
-  client's lock; upstream's XTLS/Xray-core#7107 (`c7dbfd5e`, v26.10.10) holds
-  the read lock across both waits. A forced client is closed before it is
-  removed, and removed only if the pool still holds that pointer, so
-  overlapping passes keep a replacement client. Keep this when syncing nearby
-  code. Covered by
+  client's lock, as upstream's XTLS/Xray-core#7122 (`2bea2df6`) now does too.
+  Unlike upstream, a forced client is closed before it is removed, and
+  removed only if the pool still holds that pointer, so overlapping passes
+  keep a replacement client; upstream deletes the key whatever it now holds.
+  Keep this when syncing nearby code. Covered by
   `transport/internet/hysteria/instance_cleanup_test.go`
   (`TestCleanerWaitingForInstanceStatusDoesNotBlockDials`,
   `TestCleanerWaitingForOneClientDoesNotBlockOthers`,
   `TestConcurrentCleanersKeepReplacementClients`).
 - A Hysteria client dial honors its context as in upstream's
-  XTLS/Xray-core#7119 (`61faab4d`), with two differences. `client.dial`
+  XTLS/Xray-core#7119 (`7c2e05dc`), with two differences. `client.dial`
   checks the context after it takes the client lock: a done context and a
   free lock are both ready in the `select`, so upstream can hand a stream to
   a dial that was already canceled. A rejected authentication closes the
