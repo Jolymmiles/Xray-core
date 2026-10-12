@@ -15,6 +15,7 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	X "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/features/outbound"
@@ -429,6 +430,9 @@ type revokeOutboundManager struct {
 	mu       sync.Mutex
 	handlers map[string]outbound.Handler
 	ready    bool
+	// onLookup runs once, on the first GetHandler.
+	onLookup func()
+	looked   atomic.Bool
 }
 
 func (*revokeOutboundManager) Type() interface{} { return outbound.ManagerType() }
@@ -436,6 +440,9 @@ func (*revokeOutboundManager) Start() error      { return nil }
 func (*revokeOutboundManager) Close() error      { return nil }
 
 func (m *revokeOutboundManager) GetHandler(tag string) outbound.Handler {
+	if m.onLookup != nil && m.looked.CompareAndSwap(false, true) {
+		m.onLookup()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.handlers[tag]
@@ -471,4 +478,107 @@ func (m *revokeOutboundManager) ListHandlers(context.Context) []outbound.Handler
 		return nil
 	}
 	return []outbound.Handler{nil}
+}
+
+func (m *revokeOutboundManager) setReady() {
+	m.mu.Lock()
+	m.ready = true
+	m.mu.Unlock()
+}
+
+func TestRemoveUserStopsAReverseWaitingToPublish(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	manager := &revokeOutboundManager{}
+	handler := newRevokeHandler(t, validator, manager)
+	victim := newRevokeUser(t, "victim@example.com", "reverse")
+	addRevokeUsers(t, handler, victim)
+	looked := make(chan struct{})
+	manager.onLookup = func() { close(looked) }
+
+	// The outbound manager is not ready, so the reverse waits before it
+	// publishes its outbound.
+	connection := startRevokeConnection(t, handler, newRevokeDispatcher(), victim, protocol.RequestCommandRvs, "")
+	<-looked
+	if err := handler.RemoveUser(context.Background(), victim.Email); err != nil {
+		t.Fatal(err)
+	}
+
+	connection.requireEnded(t, "reverse bridge of the removed user, waiting for outbounds")
+	manager.setReady()
+	if handler := manager.GetHandler("reverse"); handler != nil {
+		t.Fatal("published the reverse outbound of a removed user")
+	}
+}
+
+func TestRemoveUserBeforeAReversePublishesKeepsItUnpublished(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	manager := &revokeOutboundManager{ready: true}
+	handler := newRevokeHandler(t, validator, manager)
+	victim := newRevokeUser(t, "victim@example.com", "reverse")
+	addRevokeUsers(t, handler, victim)
+	// The reverse bridge has authenticated and looks its outbound up when
+	// its user is removed.
+	manager.onLookup = func() {
+		if err := handler.RemoveUser(context.Background(), victim.Email); err != nil {
+			t.Error(err)
+		}
+	}
+
+	connection := startRevokeConnection(t, handler, newRevokeDispatcher(), victim, protocol.RequestCommandRvs, "")
+	connection.requireEnded(t, "reverse bridge of the removed user")
+	if handler := manager.GetHandler("reverse"); handler != nil {
+		t.Fatal("published the reverse outbound of a removed user")
+	}
+}
+
+type closeCountingOutbound struct {
+	tag    string
+	mu     sync.Mutex
+	closes int
+}
+
+func (h *closeCountingOutbound) Tag() string                             { return h.tag }
+func (*closeCountingOutbound) Start() error                              { return nil }
+func (*closeCountingOutbound) Dispatch(context.Context, *transport.Link) {}
+func (*closeCountingOutbound) SenderSettings() *serial.TypedMessage      { return nil }
+func (*closeCountingOutbound) ProxySettings() *serial.TypedMessage       { return nil }
+
+func (h *closeCountingOutbound) Close() error {
+	h.mu.Lock()
+	h.closes++
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *closeCountingOutbound) closeCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closes
+}
+
+func TestRemoveUserKeepsAReverseAnotherUserShares(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	manager := &revokeOutboundManager{}
+	handler := newRevokeHandler(t, validator, manager)
+	first := newRevokeUser(t, "first@example.com", "shared")
+	second := newRevokeUser(t, "second@example.com", "shared")
+	addRevokeUsers(t, handler, first, second)
+	shared := &closeCountingOutbound{tag: "shared"}
+	if err := manager.AddHandler(context.Background(), shared); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handler.RemoveUser(context.Background(), first.Email); err != nil {
+		t.Fatal(err)
+	}
+	if manager.GetHandler("shared") != shared || shared.closeCount() != 0 {
+		t.Fatalf("removing one user of a shared reverse tag removed the reverse (closed %d times)", shared.closeCount())
+	}
+
+	if err := handler.RemoveUser(context.Background(), second.Email); err != nil {
+		t.Fatal(err)
+	}
+	if manager.GetHandler("shared") != nil || shared.closeCount() == 0 {
+		t.Fatal("removing the last user of a reverse tag kept the reverse")
+	}
 }
