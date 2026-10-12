@@ -160,9 +160,10 @@ func (w *HeaderWriter) Write(writer io.Writer) error {
 
 // States of a Conn's one-time header.
 const (
-	headerPending uint32 = iota
-	headerWriting
-	headerDone
+	headerPending uint32 = iota // nobody has claimed it
+	headerWriting               // the first Write is sending it
+	headerSent                  // writes go through
+	headerClosed                // Close claimed it; writes fail
 )
 
 type Conn struct {
@@ -171,9 +172,10 @@ type Conn struct {
 	readBuffer    *buf.Buffer
 	oneTimeReader Reader
 	// header is the state of the one-time header: the first Write sends
-	// oneTimeWriter's, or Close sends an error header if nothing was
-	// written. Close may run from another goroutine and never waits for a
-	// Write; headerMu orders concurrent writers.
+	// oneTimeWriter's, or Close sends an error header if no Write claimed
+	// it first, after which writes fail. Close may run from another
+	// goroutine and never waits for a Write; headerMu orders concurrent
+	// writers.
 	header              atomic.Uint32
 	headerMu            sync.Mutex
 	oneTimeWriter       Writer
@@ -225,18 +227,28 @@ func (c *Conn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 
-// writeHeader writes the one-time header unless it or Close already did.
+// writeHeader writes the one-time header unless a Write already did. It
+// fails once Close has claimed the header.
 func (c *Conn) writeHeader() error {
-	if c.header.Load() == headerDone {
+	switch c.header.Load() {
+	case headerSent:
 		return nil
+	case headerClosed:
+		return net.ErrClosed
 	}
 	c.headerMu.Lock()
 	defer c.headerMu.Unlock()
-	if c.oneTimeWriter == nil || !c.header.CompareAndSwap(headerPending, headerWriting) {
+	if !c.header.CompareAndSwap(headerPending, headerWriting) {
+		if c.header.Load() == headerClosed {
+			return net.ErrClosed
+		}
 		return nil
 	}
-	err := c.oneTimeWriter.Write(c.Conn)
-	c.header.Store(headerDone)
+	var err error
+	if c.oneTimeWriter != nil {
+		err = c.oneTimeWriter.Write(c.Conn)
+	}
+	c.header.Store(headerSent)
 	return err
 }
 
@@ -254,7 +266,7 @@ func (c *Conn) CloseWrite() error {
 func (c *Conn) Close() error {
 	// A Write that took the header is not waited for: closing the
 	// connection ends it.
-	if c.header.CompareAndSwap(headerPending, headerDone) && c.oneTimeWriter != nil && c.errorWriter != nil {
+	if c.header.CompareAndSwap(headerPending, headerClosed) && c.oneTimeWriter != nil && c.errorWriter != nil {
 		// Connection is being closed but header wasn't sent. This means the client request
 		// is probably not valid. Sending back a server error header in this case.
 
