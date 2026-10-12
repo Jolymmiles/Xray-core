@@ -28,9 +28,13 @@ type Router struct {
 	domainRuleIndex     *strmatcher.MphMatcherGroup
 	nonAggregateRules   []indexedRule
 	simpleTargetIPRules bool
-	script              *scriptEngine
-	balancers           atomic.Pointer[map[string]*Balancer]
-	dns                 dns.Client
+	// script is compiled in Init; activeScript holds it once Start has
+	// started its pool. Until then routing takes the JSON rules
+	// (docs/FORK.md).
+	script       *scriptEngine
+	activeScript atomic.Pointer[scriptEngine]
+	balancers    atomic.Pointer[map[string]*Balancer]
+	dns          dns.Client
 
 	ctx                     context.Context
 	ohm                     outbound.Manager
@@ -91,8 +95,8 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 
 // PickRoute implements routing.Router.
 func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
-	if r.script != nil {
-		return r.script.pickRoute(ctx)
+	if script := r.activeScript.Load(); script != nil {
+		return script.pickRoute(ctx)
 	}
 
 	originalCtx := ctx
@@ -115,8 +119,8 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 // for callers that need the resolved routing context or group tags. A routing
 // script decides here exactly as it does in PickRoute.
 func (r *Router) PickRouteTag(ctx routing.Context) (outboundTag string, ruleTag string, err error) {
-	if r.script != nil {
-		route, err := r.script.pickRoute(ctx)
+	if script := r.activeScript.Load(); script != nil {
+		route, err := script.pickRoute(ctx)
 		if err != nil {
 			return "", "", err
 		}
@@ -299,7 +303,7 @@ func (r *Router) RemoveRule(tag string) error {
 // script, may consume HTTP attributes. The dispatcher uses it to avoid
 // collecting unused headers.
 func (r *Router) NeedsSniffingAttributes() bool {
-	return r.script != nil || r.needsSniffingAttributes.Load()
+	return r.activeScript.Load() != nil || r.needsSniffingAttributes.Load()
 }
 
 // ListRule implements routing.Router
@@ -560,6 +564,7 @@ func (r *Router) Start() error {
 		if err := r.script.start(r); err != nil {
 			return errors.New("failed to initialize routing script").Base(err)
 		}
+		r.activeScript.Store(r.script)
 	}
 	return nil
 }
@@ -576,6 +581,7 @@ func closeWebhooks(rules []*Rule) {
 // Close implements common.Closable.
 func (r *Router) Close() error {
 	if r.script != nil {
+		r.activeScript.Store(nil)
 		r.script.close()
 	}
 	r.mu.Lock()

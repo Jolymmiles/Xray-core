@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
@@ -31,7 +32,10 @@ type DNS struct {
 	domainMatcher          geodata.DomainMatcher
 	matcherInfos           []*DomainMatcherInfo
 	checkSystem            bool
-	script                 *scriptEngine
+	// script is compiled in New; activeScript holds it once Start has
+	// started its pool. Until then the servers answer.
+	script       *scriptEngine
+	activeScript atomic.Pointer[scriptEngine]
 }
 
 // DomainMatcherInfo contains information attached to index returned by Server.domainMatcher.
@@ -203,6 +207,7 @@ func (s *DNS) Start() error {
 		if err := s.script.start(s); err != nil {
 			return errors.New("failed to initialize DNS script").Base(err)
 		}
+		s.activeScript.Store(s.script)
 	}
 	return nil
 }
@@ -210,6 +215,7 @@ func (s *DNS) Start() error {
 // Close implements common.Closable.
 func (s *DNS) Close() error {
 	if s.script != nil {
+		s.activeScript.Store(nil)
 		s.script.close()
 	}
 	return nil
@@ -296,8 +302,8 @@ func (s *DNS) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, er
 	}
 
 	// Name servers lookup
-	if s.script != nil {
-		return s.script.query(domain, option)
+	if script := s.activeScript.Load(); script != nil {
+		return script.query(domain, option)
 	}
 	if s.enableParallelQuery {
 		return s.parallelQuery(domain, option)

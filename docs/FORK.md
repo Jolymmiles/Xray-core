@@ -121,9 +121,13 @@ guard it.
   script's data, per concurrent call with no bound; a plain bound would
   deadlock a routing script whose DNS lookup re-enters routing, and an
   acquisition error sends the connection to the default outbound. Scripts
-  load in `Start`, after the inbound manager starts, so the first connections
-  and the TUN DNS takeover probe see only the JSON rules. Do not gate the
-  scripts again without the maintainer.
+  compile when the config loads but run only from `Start`, after the inbound
+  manager starts, so the first connections and the TUN DNS takeover probe see
+  only the JSON rules, and DNS lookups before then go to the servers; upstream
+  routes through the compiled script before its pool exists and panics there.
+  Covered by `TestRouterRoutesByRulesBeforeScriptStarts` and
+  `TestDNSQueriesServersBeforeScriptStarts`. Do not gate the scripts again
+  without the maintainer.
 - The XDNS client's `WriteTo` sends without the client mutex; upstream's
   synchronous upload (XTLS/Xray-core#7095) holds it, so `Close`, which needs
   that mutex to close the resolvers, waits forever behind a resolver write
