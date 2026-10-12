@@ -7,7 +7,6 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -559,7 +558,6 @@ func (l *flowLearned) note(now time.Time, init, cap int32) {
 }
 
 type flowStream struct {
-	id            uint32
 	up, down      flowWindow
 	upSent        int64
 	upForwarded   int64
@@ -567,9 +565,6 @@ type flowStream struct {
 	downForwarded int64
 	clientDone    bool
 	serverDone    bool
-	// refused says the send window kept credit from the stream and it waits
-	// in flowConn.downRefused for room.
-	refused bool
 }
 
 type flowConn struct {
@@ -651,9 +646,6 @@ type flowConn struct {
 	// shownLimited says the server's stack was shown flowShownLimited for
 	// the client's initial window, see shownDown and downRelease.
 	shownLimited bool
-	// downRefused are the streams the send window kept credit from, in the
-	// order it did, see releaseRefused.
-	downRefused []*flowStream
 
 	tcp   syscall.RawConn
 	kstat tcpStats
@@ -861,7 +853,6 @@ func (c *flowConn) release() {
 func (c *flowConn) releaseLocked() {
 	c.streams = map[uint32]*flowStream{}
 	c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned = 0, 0, 0, 0
-	c.downRefused = nil
 	c.opened = nil
 	c.wqueue = nil
 	clear(c.wcredit)
@@ -1372,10 +1363,10 @@ func (c *flowConn) upRelease(s *flowStream) int64 {
 // is clientHolds. The limit does not follow the window the client announces:
 // a client with a governor of its own announces the protocol default whatever
 // its window, so that says nothing, and a value under the 4 MiB a Go client
-// announces has to be able to hold. A stream always has the window the
-// server's stack is shown for it, clientShown (see shownDown), so none waits
-// for the others; streams opened once the limit is used up add that much
-// each.
+// announces has to be able to hold. A stream may always hold a frame, or what
+// the server's stack is shown for it where that is more (clientShown, see
+// shownDown), so none waits for the others; streams opened once the limit is
+// used up add that much each.
 func (c *flowConn) downRelease(s *flowStream) int64 {
 	bank := int64(c.clientInit) + s.down.returned - int64(c.clientShown) - s.downForwarded
 	held := int64(c.clientShown) + s.downForwarded - s.down.returned
@@ -1397,51 +1388,13 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
 	}
-	room := max(c.sendWindow-c.clientHolds(), int64(c.clientShown)-held)
-	if room < rel && !s.refused {
-		s.refused = true
-		if len(c.downRefused) >= 64 && len(c.downRefused) >= 2*len(c.streams) {
-			c.downRefused = slices.DeleteFunc(c.downRefused, func(s *flowStream) bool { return s.serverDone })
-		}
-		c.downRefused = append(c.downRefused, s)
-	}
-	return min(rel, room)
-}
-
-// releaseRefused hands the streams the send window kept credit from what
-// room there is now, oldest first. Nothing else would: such a stream is
-// looked at again when its own client returns credit, and one that was left
-// with no window, or with less than a client returns credit for, sends
-// nothing that would bring any. A client that reads what it held of other
-// streams returns that through the connection, or on those streams.
-//
-// Credit waits here as anywhere, see hold: a stream whose stack still has a
-// quantum of window sends, and is looked at again when that is read. Each
-// stream is looked at once a call; downRelease puts one back that the send
-// window still keeps credit from.
-func (c *flowConn) releaseRefused(out []byte) []byte {
-	for n := len(c.downRefused); n > 0; n-- {
-		s := c.downRefused[0]
-		if !s.serverDone && c.sendWindow != 0 && c.sendWindow <= c.clientHolds() {
-			return out
-		}
-		c.downRefused[0] = nil
-		c.downRefused = c.downRefused[1:]
-		if s.serverDone {
-			continue
-		}
-		s.refused = false
-		rel := c.downRelease(s)
-		if rel <= 0 || hold(rel, int64(c.clientShown)+s.downForwarded-s.downSent, quantum(s.down.cap)) {
-			continue
-		}
-		c.forwardDown(s, rel)
-		out = appendWindowUpdate(out, s.id, rel)
-	}
-	if len(c.downRefused) == 0 {
-		c.downRefused = nil
-	}
-	return out
+	// Whatever the client holds, a stream may hold a frame: what the stack
+	// was shown for it, or forwarded up to that where a client's lowering of
+	// its window left the stack shown less. With less, a stream at a full
+	// limit sent less than a Go client returns credit for, or nothing, and
+	// nothing looked at it again when the limit freed.
+	floor := max(int64(c.clientShown), flowShownLimited) - held
+	return min(rel, max(c.sendWindow-c.clientHolds(), floor))
 }
 
 func appendWindowUpdate(out []byte, stream uint32, n int64) []byte {
@@ -1531,7 +1484,7 @@ func (r *flowReader) frame(f h2Frame) {
 				return
 			}
 			now := time.Now()
-			s = &flowStream{id: f.stream}
+			s = &flowStream{}
 			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
 			s.down.cap = max(c.downLearned.value(now, c.down.init), flowStartWindow)
 			c.streams[f.stream] = s
@@ -1677,9 +1630,6 @@ func (r *flowReader) boundary(out []byte) []byte {
 		}
 	}
 	c.opened = c.opened[:0]
-	if len(c.downRefused) > 0 && c.down.enabled() {
-		out = c.releaseRefused(out)
-	}
 	if c.client {
 		out = c.appendPing(out)
 	}

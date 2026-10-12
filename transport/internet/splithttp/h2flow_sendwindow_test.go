@@ -116,37 +116,46 @@ func TestFlowSendWindowBelowClientWindow(t *testing.T) {
 	}
 }
 
-// TestFlowSendWindowIsReturned fills the limit and lets the server end eight
-// streams whose data the client then returns. The room that frees goes to the
-// streams the limit kept credit from, in the order it did, and the limit
-// still holds.
+// TestFlowSendWindowIsReturned fills the limit with forty downloads, lets the
+// server end eight of them, and has only the last one read. A stream is
+// looked at when its own client returns credit, so the reader that reads is
+// the one that gets the room: it comes to its opening window with its first
+// credit and keeps it, whatever the streams before it that nobody reads.
 func TestFlowSendWindowIsReturned(t *testing.T) {
 	const n = 40
 	h := openStreams(t, flowServerSendWindow, 4<<20, n)
-	_, held := granted(h)
+	t.Cleanup(func() { h.c.Close() })
 	last := uint32(2*n - 1)
 	if got := h.toServer.streams[last]; got != flowShownLimited {
 		t.Fatalf("the last stream opened with %d, want %d once the limit is used up", got, flowShownLimited)
 	}
-	sent := int64(0)
 	for id := uint32(1); id <= 15; id += 2 {
 		w := int(h.toServer.streams[id])
-		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, id, w) })
-		h.fromServer(func(fr *http2.Framer) { fr.WriteData(id, true, nil) })
+		h.fromServer(func(fr *http2.Framer) {
+			writeDataSplit(fr, id, w)
+			fr.WriteData(id, true, nil)
+		})
 		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(id, uint32(w)) })
-		sent += int64(w)
 		delete(h.toServer.streams, id)
 	}
-	total, stillHeld := granted(h)
-	if stillHeld > held-7 {
-		t.Fatalf("%d streams had only the least window, %d still do after eight downloads of %d in all ended", held, stillHeld, sent)
+	sent := int64(0)
+	for turn := 0; turn < 64; turn++ {
+		window := h.toServer.streams[last] - sent
+		if want := int64(flowShownLimited); turn > 0 {
+			want = openingWindow(flowServerSendWindow)
+			if window < want {
+				t.Fatalf("turn %d: the reading stream may send %d, want at least %d", turn, window, want)
+			}
+		} else if window != want {
+			t.Fatalf("turn 0: the reading stream may send %d, want %d", window, want)
+		}
+		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, last, int(window)) })
+		sent += window
+		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(last, uint32(window)) })
 	}
-	if above := total - int64(stillHeld)*flowShownLimited; above > flowServerSendWindow {
-		t.Fatalf("streams above the least window may send %d, the limit is %d", above, flowServerSendWindow)
-	}
-	// The oldest of them got it; the last waits its turn.
-	if got := h.toServer.streams[last]; got != flowShownLimited {
-		t.Fatalf("the last stream may send %d, want %d: older streams wait before it", got, flowShownLimited)
+	total, _ := granted(h)
+	if above := total - sent - int64(n-9)*flowShownLimited; above > flowServerSendWindow {
+		t.Fatalf("the reading stream and the limit's own streams may send %d more, the limit is %d", above, flowServerSendWindow)
 	}
 }
 
@@ -350,30 +359,21 @@ func TestFlowSendWindowSettingsWithoutWindow(t *testing.T) {
 	}
 }
 
-// TestFlowSendWindowRefusedStreamResumes has a stream the limit left with no
-// window at all. An idle stream holds credit it has not used; downloads the
-// server has ended and the client has not read fill the rest of the limit;
-// the client lowers its initial window to just what the idle stream was
-// forwarded, so the stack is shown nothing. A stream opened then has no
-// window: nothing shown, and no room. When the client reads what it held it
-// returns that through the connection, and the new stream sends nothing that
-// would bring credit of its own, so nothing looked at it again and it stayed
-// at nothing for good.
-func TestFlowSendWindowRefusedStreamResumes(t *testing.T) {
+// nothingShown brings a connection to a full limit with the stack shown
+// nothing. An idle stream holds credit it has not used; downloads the server
+// has ended and the client has not read fill the rest of the limit; the
+// client lowers its initial window to just what the idle stream was
+// forwarded. It returns the harness and what lies unread.
+func nothingShown(t *testing.T) (h *flowHarness, unread int64) {
+	t.Helper()
 	const limit = 1 << 20
-	h := openStreams(t, limit, 4<<20, 0)
+	h = openStreams(t, limit, 4<<20, 0)
 	t.Cleanup(func() { h.c.Close() })
 	goClientStart(t, h)
-	open := func(id uint32) {
-		h.fromClient(func(fr *http2.Framer) {
-			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true, EndStream: true})
-		})
-	}
-	open(3) // stays idle
+	h.openRequest(3) // stays idle
 	idle := h.c.streams[3].downForwarded
-	unread := int64(0)
 	for id := uint32(5); id <= 15; id += 2 {
-		open(id)
+		h.openRequest(id)
 		n := h.toServer.streams[id]
 		h.fromServer(func(fr *http2.Framer) {
 			writeDataSplit(fr, id, int(n))
@@ -387,56 +387,61 @@ func TestFlowSendWindowRefusedStreamResumes(t *testing.T) {
 	if h.readErr != nil || h.c.clientShown != 0 {
 		t.Fatalf("after a lowering to the %d forwarded: error %v, stack shown %d, want none and 0", idle, h.readErr, h.c.clientShown)
 	}
-	open(17)
-	if got := h.toServer.streams[17]; got != 0 {
-		t.Fatalf("the new stream opened with %d at a full limit and nothing shown, want 0", got)
+	if h.c.clientHolds() < limit {
+		t.Fatalf("the client holds %d, want the limit %d used up", h.c.clientHolds(), limit)
 	}
-	// The client gives up the idle download and reads all it held.
-	h.fromClient(func(fr *http2.Framer) { fr.WriteRSTStream(3, http2.ErrCodeCancel) })
-	for left := unread; left > 0; left -= min(left, 16<<10) {
-		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, uint32(min(left, 16<<10))) })
-	}
-	if got := h.toServer.streams[17]; got <= 0 {
-		t.Fatalf("with everything read and %d held, the new stream may send %d: nothing looks at it again", h.c.clientHolds(), got)
+	return h, unread
+}
+
+// openRequest opens a download on id.
+func (h *flowHarness) openRequest(id uint32) {
+	h.fromClient(func(fr *http2.Framer) {
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true, EndStream: true})
+	})
+}
+
+// TestFlowSendWindowFrameWhateverShown opens a download at a full limit with
+// the stack shown nothing. The stream has a frame of window all the same, by
+// credit: with none it sent nothing that would bring credit of its own, and
+// with less than a Go client returns credit for it sent that once, and stayed
+// there when the limit freed, whether the client or the server freed it. With
+// a frame it goes on as its reader reads, a frame at a time while the limit
+// is full.
+func TestFlowSendWindowFrameWhateverShown(t *testing.T) {
+	h, _ := nothingShown(t)
+	h.openRequest(17)
+	sent := int64(0)
+	for turn := 0; turn < 8; turn++ {
+		window := h.toServer.streams[17] - sent
+		if window != flowShownLimited {
+			t.Fatalf("turn %d: the new stream may send %d at a full limit with nothing shown, want a frame, %d", turn, window, flowShownLimited)
+		}
+		h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 17, int(window)) })
+		sent += window
+		h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(17, uint32(window)) })
 	}
 }
 
-// TestFlowSendWindowRefusedCreditWaitsForAQuantum is one download on a
-// connection whose limit is under the stream's cap, so the limit keeps credit
-// from it all along and it waits among the refused. Its reader returns credit
-// 4 KiB at a time. The room that brings is looked at after every frame, and
-// must go on in quanta like any credit: handed on as it came, it made the
-// server write a small frame for each piece, and one download at the limit
-// read a quarter slower.
-func TestFlowSendWindowRefusedCreditWaitsForAQuantum(t *testing.T) {
-	const limit, piece = 128 << 10, 4 << 10
-	h := newFlowHarnessWindow(t, limit)
-	t.Cleanup(func() { h.c.Close() })
-	h.c.down.max = flowStartWindow // the cap stays where it starts
-	h.track()
-	h.openStream(4 << 20)
-	if got := h.toServer.streams[1]; got != limit || !h.c.streams[1].refused {
-		t.Fatalf("the stream opened with %d, refused %v; want the limit %d and true", got, h.c.streams[1].refused, limit)
-	}
-	q := quantum(flowStartWindow)
-	h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 1, limit/2) })
-	updates := 0
-	for returned := int64(piece); returned <= limit/2; returned += piece {
-		before := h.toServer.streams[1]
-		h.fromClient(func(fr *http2.Framer) {
-			fr.WriteWindowUpdate(0, piece)
-			fr.WriteWindowUpdate(1, piece)
+// TestFlowSendWindowServerFreesRoom is the same connection when the server
+// ends the idle stream, by END_STREAM or by RST_STREAM, and the client sends
+// nothing: it waits for the new stream's answer. The stream needs no frame
+// from the client to have a window.
+func TestFlowSendWindowServerFreesRoom(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		t.Run(map[bool]string{false: "END_STREAM", true: "RST_STREAM"}[reset], func(t *testing.T) {
+			h, _ := nothingShown(t)
+			h.openRequest(17)
+			h.fromServer(func(fr *http2.Framer) {
+				if reset {
+					fr.WriteRSTStream(3, http2.ErrCodeCancel)
+				} else {
+					fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: []byte{0x88}, EndHeaders: true, EndStream: true})
+				}
+			})
+			if got := h.toServer.streams[17]; got < flowShownLimited {
+				t.Fatalf("the new stream may send %d and the client owes no frame, want at least %d", got, flowShownLimited)
+			}
 		})
-		switch got := h.toServer.streams[1] - before; {
-		case got == 0:
-		case got < q:
-			t.Fatalf("credit of %d handed on while the server had a window of %d", got, before-limit/2)
-		default:
-			updates++
-		}
-	}
-	if want := int(limit / 2 / q); updates != want {
-		t.Fatalf("%d KiB of credit went out in %d pieces, want %d", limit/2>>10, updates, want)
 	}
 }
 
@@ -547,28 +552,44 @@ func feedFrames(tb testing.TB, h *flowHarness, frame []byte, n int) {
 	}
 }
 
-// TestFlowSendWindowSettingsCost times SETTINGS frames on connections with
-// two hundred and two thousand streams past the limit. A SETTINGS frame looks
-// at every stream once, so ten times the streams may cost ten times as much;
-// when each look walked all the streams again it cost a hundred times.
-func TestFlowSendWindowSettingsCost(t *testing.T) {
+// TestFlowSendWindowFrameCost times frames from the client on connections
+// with two hundred and two thousand streams past the limit. A SETTINGS frame
+// looks at every stream once, so ten times the streams may cost ten times as
+// much; when each look walked all the streams again it cost a hundred times.
+// Connection credit looks at no stream, and must cost the same whatever their
+// number: a queue of the streams the limit kept credit from was walked on
+// every frame.
+func TestFlowSendWindowFrameCost(t *testing.T) {
 	settings := frames(func(fr *http2.Framer) {
 		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
 	})
-	cost := func(streams int) time.Duration {
+	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
+	cost := func(frame []byte, streams int) time.Duration {
 		h := openStreams(t, flowServerSendWindow, 4<<20, streams)
+		t.Cleanup(func() { h.c.Close() })
+		// Slow readers' caps, so that no stream takes what a credit frees.
+		h.c.mu.Lock()
+		for _, s := range h.c.streams {
+			s.down.cap = h2InitWindow
+		}
+		h.c.mu.Unlock()
 		best := time.Duration(math.MaxInt64)
 		for try := 0; try < 5; try++ {
 			start := time.Now()
-			feedFrames(t, h, settings, 50)
+			feedFrames(t, h, frame, 200)
 			best = min(best, time.Since(start))
 		}
 		return best
 	}
-	few, many := cost(200), cost(2000)
-	t.Logf("50 SETTINGS frames: %v with 200 streams, %v with 2000", few, many)
+	few, many := cost(settings, 200), cost(settings, 2000)
+	t.Logf("200 SETTINGS frames: %v with 200 streams, %v with 2000", few, many)
 	if many > 40*few {
 		t.Fatalf("ten times the streams made a SETTINGS frame %d times dearer", many/few)
+	}
+	few, many = cost(credit, 200), cost(credit, 2000)
+	t.Logf("200 connection WINDOW_UPDATE frames: %v with 200 streams, %v with 2000", few, many)
+	if many > 4*few {
+		t.Fatalf("ten times the streams made connection credit %d times dearer", many/few)
 	}
 }
 
