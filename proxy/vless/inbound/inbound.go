@@ -327,12 +327,14 @@ func (h *Handler) RemoveUser(ctx context.Context, e string) error {
 	}
 	h.connections.Revoke(u)
 	if tag := reverseTag(u); tag != "" {
-		for _, other := range h.validator.GetAll() {
-			if reverseTag(other) == tag {
-				return nil
-			}
+		shared := false
+		h.validator.Range(func(other *protocol.MemoryUser) bool {
+			shared = reverseTag(other) == tag
+			return !shared
+		})
+		if !shared {
+			h.RemoveReverse(u)
 		}
-		h.RemoveReverse(u)
 	}
 	return nil
 }

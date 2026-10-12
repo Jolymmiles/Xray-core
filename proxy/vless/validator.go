@@ -31,6 +31,9 @@ type Validator interface {
 	GetByEmail(email string) *protocol.MemoryUser
 	GetAll() []*protocol.MemoryUser
 	GetCount() int64
+	// Range calls f for every user, with or without an email, until f
+	// returns false. GetAll and GetCount count only users with an email.
+	Range(f func(*protocol.MemoryUser) bool)
 }
 
 func ProcessUUID(id [16]byte) [16]byte {
@@ -246,6 +249,13 @@ func (v *MemoryValidator) refreshEmailSnapshot(generation uint64) {
 	if generation == v.emailGeneration.Load() {
 		v.emailSnapshot.Store(&validatorEmailSnapshot{generation: generation, users: users, byEmail: byEmail})
 	}
+}
+
+// Range implements Validator.Range.
+func (v *MemoryValidator) Range(f func(*protocol.MemoryUser) bool) {
+	v.users.Range(func(_, value any) bool {
+		return f(value.(*protocol.MemoryUser))
+	})
 }
 
 // Get users count

@@ -582,3 +582,24 @@ func TestRemoveUserKeepsAReverseAnotherUserShares(t *testing.T) {
 		t.Fatal("removing the last user of a reverse tag kept the reverse")
 	}
 }
+
+func TestRemoveUserKeepsAReverseAUserWithoutEmailShares(t *testing.T) {
+	validator := new(vless.MemoryValidator)
+	manager := &revokeOutboundManager{}
+	handler := newRevokeHandler(t, validator, manager)
+	named := newRevokeUser(t, "named@example.com", "shared")
+	// A user without an email cannot be removed, so its reverse must stay.
+	anonymous := newRevokeUser(t, "", "shared")
+	addRevokeUsers(t, handler, named, anonymous)
+	shared := &closeCountingOutbound{tag: "shared"}
+	if err := manager.AddHandler(context.Background(), shared); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handler.RemoveUser(context.Background(), named.Email); err != nil {
+		t.Fatal(err)
+	}
+	if manager.GetHandler("shared") != shared || shared.closeCount() != 0 {
+		t.Fatalf("removing a user removed the reverse a user without an email shares (closed %d times)", shared.closeCount())
+	}
+}
