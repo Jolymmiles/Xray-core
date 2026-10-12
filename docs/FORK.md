@@ -192,6 +192,33 @@ guard it.
   `TestRemovedOutboundClosesTUNOnce` (`proxy/wireguard`), and the
   `TestRemovedReverse*`, `TestReverseCloseAborts*` and `TestTestpre*` tests in
   `proxy/vless/outbound`.
+- HandlerService `RemoveUser` (`xray api rmu`) on a VLESS or Trojan inbound
+  closes the removed user's live connections; upstream only deletes the user
+  from the validator, so its plain, UDP, Mux.Cool, XUDP, SMUX and reverse
+  connections kept running (XTLS/Xray-core#5844, open, proposes a tracker in
+  every inbound and the dispatcher instead). `Process` tracks each
+  connection it has authenticated for a user with an email
+  (`proxy.UserConnections`, `proxy/user_connections.go`); `RemoveUser`
+  deletes the user, cancels each tracked connection's context and closes the
+  connection the worker passed to `Process`, the one the worker closes when
+  `Process` returns. The closes run in their own goroutines and `RemoveUser`
+  does not wait for them. `AddUser` and `RemoveUser` are serialized per
+  inbound and `AddUser` stores a copy of the user, so a connection that
+  authenticated before a removal and registers after it is refused, also when
+  the same email is added again. A VLESS reverse of a removed user is not
+  published after the removal, and `RemoveUser` keeps the reverse of a tag
+  another user of the same inbound still uses (upstream closes it). Users
+  without an email cannot be removed and are not tracked. Other inbounds with
+  `RemoveUser` (VMess, Shadowsocks, Shadowsocks 2022, Hysteria) still keep a
+  removed user's connections. Covered by `proxy/user_connections_test.go`,
+  `revoke_test.go` in `proxy/vless/inbound` and `proxy/trojan`, and the
+  `TestRemovedUser*` process tests in `common/singmux`.
+- A server connection with the `http` TCP header
+  (`transport/internet/headers/http`) orders its first `Write` against
+  `Close`, which removing a user now calls from another goroutine: the peer
+  gets the configured response header or the error header, never both, as
+  upstream's unsynchronized `Conn` sent. Covered by
+  `TestServerCloseRacingFirstWriteSendsOneResponse`.
 - The WebSocket client connection with early data
   (`delayDialConn` in `transport/internet/websocket/dialer.go`), which dials on
   its first write, may be read from one goroutine, written from another and
