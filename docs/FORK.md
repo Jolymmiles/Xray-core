@@ -192,11 +192,11 @@ guard it.
   `TestRemovedOutboundClosesTUNOnce` (`proxy/wireguard`), and the
   `TestRemovedReverse*`, `TestReverseCloseAborts*` and `TestTestpre*` tests in
   `proxy/vless/outbound`.
-- HandlerService `RemoveUser` (`xray api rmu`) on a VLESS or Trojan inbound
-  closes the removed user's live connections; upstream only deletes the user
-  from the validator, so its plain, UDP, Mux.Cool, XUDP, SMUX and reverse
-  connections kept running (XTLS/Xray-core#5844, open, proposes a tracker in
-  every inbound and the dispatcher instead). `Process` tracks each
+- HandlerService `RemoveUser` (`xray api rmu`) on a VLESS, Trojan or VMess
+  inbound closes the removed user's live connections; upstream only deletes
+  the user from the validator, so its plain, UDP, Mux.Cool, XUDP, SMUX and
+  reverse connections kept running (XTLS/Xray-core#5844, open, proposes a
+  tracker in every inbound and the dispatcher instead). `Process` tracks each
   connection it has authenticated for a user with an email
   (`proxy.UserConnections`, `proxy/user_connections.go`); `RemoveUser`
   deletes the user, cancels each tracked connection's context and closes the
@@ -209,10 +209,12 @@ guard it.
   published after the removal, and `RemoveUser` keeps the reverse of a tag
   another user of the same inbound still uses (upstream closes it). Users
   without an email cannot be removed and are not tracked. Other inbounds with
-  `RemoveUser` (VMess, Shadowsocks, Shadowsocks 2022, Hysteria) still keep a
-  removed user's connections. Covered by `proxy/user_connections_test.go`,
-  `revoke_test.go` in `proxy/vless/inbound` and `proxy/trojan`, and the
-  `TestRemovedUser*` process tests in `common/singmux`.
+  `RemoveUser` (Shadowsocks, Shadowsocks 2022, Hysteria) still keep a removed
+  user's connections. Covered by `proxy/user_connections_test.go`,
+  `revoke_test.go` in `proxy/vless/inbound`, `proxy/trojan` and
+  `proxy/vmess/inbound`, the `TestRemovedUser*` process tests in
+  `common/singmux` and `TestCommanderRemoveUserClosesItsConnections`
+  (`testing/scenarios`).
 - A server connection with the `http` TCP header
   (`transport/internet/headers/http`) orders its first `Write` against
   `Close`, which removing a user now calls from another goroutine: the peer
