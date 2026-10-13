@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -52,6 +53,29 @@ func TestQuietStressConfigDisablesXrayAccessLog(t *testing.T) {
 	quiet := quietStressConfig([]byte(`{"log":{"loglevel": "debug"}}`))
 	if !bytes.Contains(quiet, []byte(`"access": "none"`)) {
 		t.Fatalf("quiet Xray config still enables access logging: %s", quiet)
+	}
+}
+
+// TestQuitStressTopologyDumpsBothEnds checks the evidence a stalled stress
+// stream leaves: both processes of the topology write every goroutine's stack
+// to their logs and exit, while the stall is still in place.
+func TestQuitStressTopologyDumpsBothEnds(t *testing.T) {
+	workDir := t.TempDir()
+	xrayRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaries := e2eBinaries{xray: buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main")}
+	certificate, privateKey := generateCertificate(t, workDir)
+	topology := startStressTopology(t, workDir, binaries, certificate, privateKey, "xray", "trojan")
+	quitStressTopology(topology)
+	for name, process := range map[string]*e2eProcess{"client": topology.client, "server": topology.server} {
+		if !process.stopped.Load() {
+			t.Errorf("%s still runs after SIGQUIT", name)
+		}
+		if logs := process.logs.String(); !strings.Contains(logs, "SIGQUIT") || !strings.Contains(logs, "goroutine ") {
+			t.Errorf("%s logs hold no goroutine dump:\n%s", name, logs)
+		}
 	}
 }
 
@@ -133,7 +157,7 @@ func TestSMUXProcessStressAndReconnect(t *testing.T) {
 				resources := make([]processResourceSnapshot, 0, cycles)
 				for cycle := 0; cycle < cycles; cycle++ {
 					t.Run(fmt.Sprintf("cycle-%d", cycle+1), func(t *testing.T) {
-						stressTCP(t, topology.socksPort, tcpEcho, peerTCPStreams)
+						stressTCP(t, topology, tcpEcho, peerTCPStreams)
 						stressUDP(t, topology.socksPort, udpEchoes)
 					})
 					resources = append(resources, captureProcessResources(t, topology.client.command.Process.Pid))
@@ -253,7 +277,10 @@ func assertStressPathReady(t *testing.T, client *e2eProcess, socksPort int, dest
 	}
 }
 
-func stressTCP(t *testing.T, socksPort int, destination *net.TCPAddr, streamCount int) {
+// stressTCP runs streamCount concurrent echo streams through the topology. If
+// one fails, it quits both processes so that their logs hold the stacks of the
+// stall before the test reports it.
+func stressTCP(t *testing.T, topology *stressTopology, destination *net.TCPAddr, streamCount int) {
 	t.Helper()
 	payload := bytes.Repeat([]byte("xray-smux-stress"), stressTCPBytes/len("xray-smux-stress")+1)[:stressTCPBytes]
 	errors := make(chan error, streamCount)
@@ -262,14 +289,37 @@ func stressTCP(t *testing.T, socksPort int, destination *net.TCPAddr, streamCoun
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			errors <- stressTCPRoundTrip(socksPort, destination, payload)
+			errors <- stressTCPRoundTrip(topology.socksPort, destination, payload)
 		}()
 	}
 	wait.Wait()
 	close(errors)
 	for err := range errors {
 		if err != nil {
+			quitStressTopology(topology)
 			t.Fatal(err)
+		}
+	}
+}
+
+// quitStressTopology sends SIGQUIT to the client and the server at once. A Go
+// process then writes every goroutine's stack to its log and exits, so the
+// logs show where both ends of a stalled stream wait.
+func quitStressTopology(topology *stressTopology) {
+	processes := []*e2eProcess{topology.client, topology.server}
+	for _, process := range processes {
+		if !process.stopped.Load() && process.command.Process != nil {
+			_ = process.command.Process.Signal(syscall.SIGQUIT)
+		}
+	}
+	for _, process := range processes {
+		if process.stopped.Load() {
+			continue
+		}
+		select {
+		case <-process.done:
+			process.stopped.Store(true)
+		case <-time.After(5 * time.Second):
 		}
 	}
 }
