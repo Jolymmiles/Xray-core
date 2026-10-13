@@ -247,8 +247,10 @@ func (m *ClientWorker) WaitClosed() <-chan struct{} {
 }
 
 // finish tears down sessions and the carrier link, then signals done.
-// Same contract as ServerWorker: done/WaitClosed mean the link is no longer used,
-// so callers (e.g. VLESS reverse NewMux → defer pooled Release) cannot race monitor.
+// As with ServerWorker, done/WaitClosed follow the Interrupt but do not join
+// fetchOutput: when Close or monitor calls finish, fetchOutput can still be
+// returning from a read of the link. A caller must not release what the link
+// reads (VLESS Process leaves its reader to a reverse bridge's worker).
 func (m *ClientWorker) finish() {
 	m.finishOnce.Do(func() {
 		m.sessionManager.close()

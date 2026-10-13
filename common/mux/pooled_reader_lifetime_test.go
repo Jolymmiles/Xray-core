@@ -37,14 +37,15 @@ func (noopDispatcher) Type() interface{} { return routing.DispatcherType() }
 // then defer-Releases a pooled BufferedReader that is still link.Reader →
 // use-after-pool / SIGSEGV.
 //
-// Contract: WaitClosed/done only after finish() has Interrupted the link.
-// Callers may then Release pooled readers without racing the worker.
+// Contract: WaitClosed/done only after finish() has Interrupted the link. This
+// covers run ending on its own; when Close calls finish, run is not joined,
+// so VLESS Process no longer releases a reader it has handed on.
 func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 	const iterations = 1000
 
 	for i := 0; i < iterations; i++ {
 		server, client := stdnet.Pipe()
-		// proxy/vless/inbound.Process body reader construction
+		// A pooled reader such as VLESS Process once built for the body
 		pooled := buf.NewPooledBufferedReader(buf.NewPooledReader(server), nil)
 		link := &transport.Link{
 			Reader: pooled,
@@ -61,7 +62,7 @@ func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 		_ = server.Close()
 		<-worker.WaitClosed()
 
-		// VLESS: DispatchLink returned → defer reader.Release()
+		// A caller that waited on done releases the reader, as VLESS once did.
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -75,8 +76,9 @@ func TestServerWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 }
 
-// TestClientWorkerDoneMeansLinkIsFullyReleased covers the reverse-mux path
-// (VLESS NewMux waits on ClientWorker.WaitClosed, then Process Releases).
+// TestClientWorkerDoneMeansLinkIsFullyReleased is the same check for a client
+// worker whose fetchOutput ends on EOF, the path a reverse bridge's worker
+// takes when its carrier closes.
 func TestClientWorkerDoneMeansLinkIsFullyReleased(t *testing.T) {
 	const iterations = 1000
 
