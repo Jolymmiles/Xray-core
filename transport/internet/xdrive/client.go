@@ -96,9 +96,8 @@ func newServiceClient(streamSettings *internet.MemoryStreamConfig, timeout time.
 
 		if tlsConfig != nil {
 			if fingerprint := tls.GetFingerprint(tlsConfig.Fingerprint); fingerprint != nil {
-				uconn := tls.UClient(conn, gotlsConfig, fingerprint)
-				if err := uconn.(*tls.UConn).HandshakeContext(ctx); err != nil {
-					conn.Close()
+				uconn, err := tls.ClientHandshake(ctx, conn, gotlsConfig, fingerprint)
+				if err != nil {
 					return nil, err
 				}
 				return uconn, nil

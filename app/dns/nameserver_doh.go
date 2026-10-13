@@ -23,6 +23,7 @@ import (
 	dns_feature "github.com/xtls/xray-core/features/dns"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet"
+	xtls "github.com/xtls/xray-core/transport/internet/tls"
 	"golang.org/x/net/http2"
 )
 
@@ -99,10 +100,15 @@ func NewDoHNameServer(url *url.URL, dispatcher routing.Dispatcher, h2c bool, dis
 					}
 				}
 				if !h2c {
-					conn = utls.UClient(conn, &utls.Config{ServerName: url.Hostname()}, utls.HelloChrome_Auto)
-					if err := conn.(*utls.UConn).HandshakeContext(ctx); err != nil {
+					uConn, err := xtls.NewUClient(conn, &utls.Config{ServerName: url.Hostname()}, utls.HelloChrome_Auto)
+					if err == nil {
+						err = uConn.HandshakeContext(ctx)
+					}
+					if err != nil {
+						conn.Close()
 						return nil, err
 					}
+					conn = uConn
 				}
 				return conn, nil
 			},

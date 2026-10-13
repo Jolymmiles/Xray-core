@@ -72,11 +72,13 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			}
 		}
 		if fingerprint := tls.GetFingerprint(config.Fingerprint); fingerprint != nil {
-			conn = tls.UClient(conn, tlsConfig, fingerprint)
+			var options []tls.UClientOption
 			if len(tlsConfig.NextProtos) == 1 && tlsConfig.NextProtos[0] == "http/1.1" { // allow manually specify
-				err = conn.(*tls.UConn).WebsocketHandshakeContext(ctx)
-			} else {
-				err = conn.(*tls.UConn).HandshakeContext(ctx)
+				options = append(options, tls.WithHTTP11ALPN())
+			}
+			var uConn *tls.UConn
+			if uConn, err = tls.ClientHandshake(ctx, conn, tlsConfig, fingerprint, options...); err == nil {
+				conn = uConn
 			}
 		} else {
 			conn = tls.Client(conn, tlsConfig)

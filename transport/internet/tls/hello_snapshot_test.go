@@ -100,13 +100,11 @@ var helloPaths = []helloPath{
 // way Xray's TLS dialers do, and returns its record.
 func emitClientHello(path helloPath, fingerprint utls.ClientHelloID) ([]byte, error) {
 	capture := &hellotest.Capture{}
-	conn := xraytls.UClient(capture, path.config(), &fingerprint).(*xraytls.UConn)
-	var err error
+	var options []xraytls.UClientOption
 	if path.http11 {
-		err = conn.WebsocketHandshakeContext(context.Background())
-	} else {
-		err = conn.HandshakeContext(context.Background())
+		options = append(options, xraytls.WithHTTP11ALPN())
 	}
+	_, err := xraytls.ClientHandshake(context.Background(), capture, path.config(), &fingerprint, options...)
 	record, recordErr := capture.FirstRecord()
 	if recordErr != nil && err != nil {
 		// What failed, not where: building the hello may fail before or
