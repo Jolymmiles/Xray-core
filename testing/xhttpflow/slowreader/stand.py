@@ -204,7 +204,10 @@ def server_config(private_key, h2flow=None):
                                                                "finalRules": [{"action": "allow", "ip": ["127.0.0.1"]}]}}]}
 
 
-def client_config(public_key):
+def client_config(public_key, h2flow=None):
+    """The client's config; h2flow is its "h2Flow" object, none by default:
+    the stands measure a server against a client as it comes."""
+    extra = {"xmux": XMUX} if h2flow is None else {"xmux": XMUX, "h2Flow": h2flow}
     return {"log": {"loglevel": "error"},
             "inbounds": [{"listen": SOCKS[0], "port": SOCKS[1], "protocol": "socks", "settings": {"udp": False}}],
             "outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": "10.9.0.1", "port": 443,
@@ -212,7 +215,7 @@ def client_config(public_key):
                            "streamSettings": {"network": "xhttp", "security": "reality",
                                               "realitySettings": {"serverName": "www.example.com", "fingerprint": "chrome",
                                                                   "publicKey": public_key, "shortId": "ab12"},
-                                              "xhttpSettings": {"extra": {"xmux": XMUX}}}}]}
+                                              "xhttpSettings": {"extra": extra}}}]}
 
 
 def outer(args):

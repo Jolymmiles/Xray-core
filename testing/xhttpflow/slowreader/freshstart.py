@@ -28,6 +28,9 @@ congestion control as in stand.py. HyStart is the host's, not a namespace's
 measure without it, set it by hand on a host that runs nothing else and put
 it back.
 
+--client-h2flow '{"enabled": true}' turns the governor on in the client as
+well, which needs a client built with it.
+
 With --connections 1 every download uses the connection that carried
 --before; with the 3 of stand.py a download lands on any of three, and only
 some of them carried it.
@@ -266,7 +269,7 @@ def outer(args):
             with open(f"{work}/server-{name}.json", "w") as f:
                 json.dump(stand.server_config(private_key, h2flow.get(name)), f)
         with open(f"{work}/client.json", "w") as f:
-            json.dump(stand.client_config(public_key), f)
+            json.dump(stand.client_config(public_key, json.loads(args.client_h2flow) if args.client_h2flow else None), f)
         origin = subprocess.Popen(["ip", "netns", "exec", srv, args.origin],
                                   stdout=subprocess.DEVNULL, stderr=origin_log)
         stack.callback(stand.reap, origin)
@@ -295,6 +298,8 @@ def main():
                     help="Xray binary used as the server; repeat for each build to compare")
     ap.add_argument("--h2flow", action="append", metavar="NAME=JSON",
                     help='"h2Flow" object of that server instead of {"enabled": true}')
+    ap.add_argument("--client-h2flow", metavar="JSON",
+                    help='"h2Flow" object of the client, for a client that has the governor; none by default')
     ap.add_argument("--runs", type=int, default=6)
     ap.add_argument("--before", choices=tuple(BEFORE_BYTES), default="upload",
                     help="what the connection carries before the timed downloads")
