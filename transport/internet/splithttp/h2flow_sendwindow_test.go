@@ -600,6 +600,9 @@ func TestFlowSendWindowSettingsCost(t *testing.T) {
 	}
 	few, many := cost(200), cost(2000)
 	t.Logf("50 SETTINGS frames: %v with 200 streams, %v with 2000", few, many)
+	if few == 0 {
+		t.Skip("the clock does not resolve 50 SETTINGS frames")
+	}
 	if many > 40*few {
 		t.Fatalf("ten times the streams made a SETTINGS frame %d times dearer", many/few)
 	}
