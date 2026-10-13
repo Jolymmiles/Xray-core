@@ -677,7 +677,9 @@ Limits:
   without the quanta, which `da42e75f` has too.
 - A window follows the path model only once its reader has settled: no
   longer speeding up, and less than a quarter faster than the round before
-  for two round trips in a row (`settled`, `TestFlowWindowSettles`). Until
+  for two round trips in a row, counted from the round that ended its ramp
+  (`settled`, `TestFlowWindowSettles`,
+  `TestFlowWindowSlowGrowthThenLowRoundIsNotSettled`). Until
   `581a4d1b` one round trip without growth was enough. The end of a round may
   fall between the reader getting data and returning its credit; that
   round reads low and the next makes up for it. At the start of a stream
@@ -731,11 +733,21 @@ Limits:
     on `e17be671`, and nearer to a client without a governor, whose window
     never falls at a start. The same holds for an upload on a server whose
     kernel vouches for the path. A stream whose rounds stay irregular
-    keeps `adjust`'s windows, twice what its reader took, where the model
-    gave it a quarter over its fastest recent round.
+    from the start keeps `adjust`'s windows until two flat rounds come:
+    raised to twice a round when that is more, lowered by a quarter only
+    after three low rounds and never under `init`. The model would have
+    given it the fastest rate of its last ten rounds over the empty path's
+    round trip, plus a quarter, within `init` and the limit. Once a window
+    is modelled it is not judged again, as before.
   - A TLS terminator in front of the server sees the same frames with
-    other window sizes at those moments. An active prober that cannot
-    authenticate opens no stream, so it sees none of it.
+    other window sizes at those moments.
+  - An active prober that cannot authenticate. Under REALITY it goes to
+    the target and never reaches the governor. On TLS it can open a
+    stream: the governor tracks one from its HEADERS frame, the hub
+    answers 200, and VLESS decides at the stream's first bytes. It gets no
+    data on that stream, so it sees no download; what it can reach of this
+    change is the upload side, the credit a server whose kernel vouches
+    for the path returns for bytes the prober sends before it is refused.
   - Not measured: record counts and timing of the first round trips, on
     this change or against stock.
 - A client that has returned nothing in small steps when the guard fires has

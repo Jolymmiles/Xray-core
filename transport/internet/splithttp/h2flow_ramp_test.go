@@ -95,6 +95,38 @@ func TestFlowWindowGrowingSlowlyIsNotSettled(t *testing.T) {
 	}
 }
 
+// TestFlowWindowSlowGrowthThenLowRoundIsNotSettled is that reader followed
+// by one round that reads low, as a start in congestion avoidance may give.
+// The low round ends the ramp. The flat rounds before it are not rounds at a
+// found rate, and the model would have the low round to go by.
+func TestFlowWindowSlowGrowthThenLowRoundIsNotSettled(t *testing.T) {
+	const rtt = 50 * time.Millisecond
+	start := time.Unix(0, 0)
+	w := flowWindow{cap: flowStartWindow}
+	credit := int64(400 << 10)
+	at := time.Duration(0)
+	round := func(credit int64) {
+		w.returned += credit
+		w.adjust(start.Add(at), rtt, h2InitWindow, 1<<30, true, false)
+		at += rtt
+	}
+	for i := 0; i < 6; i++ {
+		round(credit)
+		credit += credit / 10
+	}
+	round(8 << 10)
+	if !w.ramped {
+		t.Fatal("a round under the one before did not end the ramp")
+	}
+	if w.settled() {
+		t.Fatalf("one low round after slow growth settled the window, with %d to model the path from", w.prev)
+	}
+	round(8 << 10)
+	if !w.settled() {
+		t.Fatalf("%d round trips at the same rate after the ramp did not settle the reader", flowSettledRounds)
+	}
+}
+
 func TestFlowLearnedHalfLife(t *testing.T) {
 	var l flowLearned
 	start := time.Unix(0, 0)

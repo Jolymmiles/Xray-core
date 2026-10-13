@@ -22,10 +22,10 @@ func vouchedPath(c *flowConn) {
 
 // lowRoundBehind puts w where a stream is after one round trip that read low
 // at its start: ramped, since that round was not above the one before, with
-// flat such rounds behind it, a small round to go by, and a round trip that
+// steady flat rounds since, a small round to go by, and a round trip that
 // ends with the next credit.
-func lowRoundBehind(w *flowWindow, flat int) {
-	w.ramped, w.flat = true, flat
+func lowRoundBehind(w *flowWindow, steady int) {
+	w.ramped, w.flat, w.steady = true, steady, steady
 	w.prev, w.measured = 8<<10, true
 	w.mark, w.markBase = time.Now().Add(-time.Second), w.returned
 }

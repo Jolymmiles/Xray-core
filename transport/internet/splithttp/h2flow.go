@@ -385,6 +385,7 @@ type flowWindow struct {
 	rates    [flowModelRounds]int64
 	rateAt   int
 	flat     int
+	steady   int
 	piPrev   float64
 }
 
@@ -425,8 +426,11 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 	}
 	if w.prev > 0 && 4*copied < 5*w.prev {
 		w.flat++
+		if w.ramped {
+			w.steady++
+		}
 	} else {
-		w.flat = 0
+		w.flat, w.steady = 0, 0
 	}
 	w.prev, w.measured = copied, true
 	w.mark, w.markBase = now, w.returned
@@ -456,16 +460,18 @@ const (
 	flowModelMinRound    = 20 * time.Millisecond
 )
 
-// settled reports whether the reader has found its rate: ramped, and less
-// than a quarter faster than the round before for flowSettledRounds rounds in
-// a row. Only then does a window follow the path model. One round without
+// settled reports whether the reader has found its rate: less than a
+// quarter faster than the round before for flowSettledRounds rounds in a
+// row, counted from the round that ended its ramp. Flat rounds before that
+// do not count: a reader that grew slowly would otherwise be settled by the
+// first low round after them. Only then does a window follow the path model. One round without
 // growth is not enough for that: the end of a round may fall between the
 // reader getting data and returning its credit, so that it reads low and the
 // next makes up for it. A window that took such a round at the start of a
 // stream for its rate had that one small round to model the path from, fell
 // to it, and grew back a quarter at a time.
 func (w *flowWindow) settled() bool {
-	return w.ramped && w.flat >= flowSettledRounds
+	return w.steady >= flowSettledRounds
 }
 
 // model sets the cap from the path model; rtprop is the empty path's round
