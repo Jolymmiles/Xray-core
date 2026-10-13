@@ -675,6 +675,50 @@ Limits:
   Not looked for: the same start on a governed client, whose download
   credit was held. Not removed: what an upload does to the next download
   without the quanta, which `da42e75f` has too.
+- A window follows the path model only once its reader has settled: no
+  longer speeding up, and less than a quarter faster than the round before
+  for two round trips in a row (`settled`, `TestFlowWindowSettles`). Until
+  `581a4d1b` one round trip without growth was enough. The end of a round may
+  fall between the reader getting data and returning its credit; that
+  round reads low and the next makes up for it. At the start of a stream
+  the model then had that one small round to go by: the window fell from
+  its 256 KiB to little over the 64 KiB it never goes under and grew back
+  a quarter a round trip. It showed with a governor at both ends, where
+  the client's window is the one that follows the model during a download.
+  `freshstart.py` with `--client-h2flow '{"enabled":true}' --before
+  nothing --starts 1 --idle 0.5 --connections 1`: each run is a new tunnel
+  and one download of 3 MB, 100 Mbit/s, RTT 50 ms, the same build as
+  client and server, blocks of 25 runs alternating between the builds.
+
+  | | `e17be671` | `581a4d1b` |
+  | --- | --- | --- |
+  | Starts | 300 | 300 |
+  | Median, least to most, s | 0.53, 0.53-0.83 | 0.53, 0.53-0.59 |
+  | Over 0.7 s | 10, all 0.82 to 0.83 | 0 |
+  | Over 0.55 s | 10 | 14, all 0.57 to 0.59 |
+
+  The low round still ends the ramp, as before, and costs the start a
+  round trip in those fourteen; it no longer costs six.
+  What ends the ramp is not changed, on purpose. Requiring two flat rounds
+  for that as well was tried first: a slow reader takes a little,
+  irregularly, never has two such rounds, and had every larger round
+  taken for a ramp. Twenty uploads into an origin that reads 100 KB/s
+  each (the stand's default), five runs: the server's peak RSS rose from
+  40.4 to 45.1 MB and the p95 of the request beside them from 425 to 643
+  ms, in every run. With only the model waiting, twelve runs each: RSS
+  41.5 and 41.1 MB, p95 467 (370-754) and 533 (368-753) ms, worst 0.75 s
+  on both.
+  Against an official client without a governor, `e17be671` and `581a4d1b`,
+  five shuffled runs, medians: eight downloads 113.8 and 114.1 MB/s, at
+  RTT 150 ms 72.3 and 71.3; one download at RTT 150 ms 24.1 and 24.1; four
+  uploads 115.7 and 114.5; one upload at RTT 150 ms 36.7 and 36.9; twenty
+  slow downloads with `--client-limit-mb 40`, the client holds 23.8 and
+  23.5 MB; a download after an upload starts in 0.66 and 0.67 s. Builds,
+  client and host as in the item above; `581a4d1b` was measured as its
+  tree, built before the commit was made. A stream whose reader keeps
+  taking irregular amounts now stays with `adjust` where it went to the
+  model after its first flat round; the runs with slow readers above are
+  what was looked at for that.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
