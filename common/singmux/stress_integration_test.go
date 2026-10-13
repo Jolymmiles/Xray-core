@@ -68,7 +68,7 @@ func TestQuitStressTopologyDumpsBothEnds(t *testing.T) {
 	binaries := e2eBinaries{xray: buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main")}
 	certificate, privateKey := generateCertificate(t, workDir)
 	topology := startStressTopology(t, workDir, binaries, certificate, privateKey, "xray", "trojan")
-	quitStressTopology(topology)
+	quitStressTopology(t, topology)
 	for name, process := range map[string]*e2eProcess{"client": topology.client, "server": topology.server} {
 		if !process.stopped.Load() {
 			t.Errorf("%s still runs after SIGQUIT", name)
@@ -76,6 +76,57 @@ func TestQuitStressTopologyDumpsBothEnds(t *testing.T) {
 		if logs := process.logs.String(); !strings.Contains(logs, "SIGQUIT") || !strings.Contains(logs, "goroutine ") {
 			t.Errorf("%s logs hold no goroutine dump:\n%s", name, logs)
 		}
+	}
+}
+
+// TestStressTCPQuitsWhileTheStallHolds stalls a stream on an upstream that
+// never answers. Both processes must be quit while the stream still holds its
+// connections, or the stacks no longer show where it waited.
+func TestStressTCPQuitsWhileTheStallHolds(t *testing.T) {
+	workDir := t.TempDir()
+	xrayRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaries := e2eBinaries{xray: buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray"), xrayRoot, "./main")}
+	certificate, privateKey := generateCertificate(t, workDir)
+	topology := startStressTopology(t, workDir, binaries, certificate, privateKey, "xray", "trojan")
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	upstreamClosed := make(chan struct{}, 1)
+	go func() {
+		for {
+			connection, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				_, _ = io.Copy(io.Discard, connection)
+				select {
+				case upstreamClosed <- struct{}{}:
+				default:
+				}
+			}()
+		}
+	}()
+	upstreamOpen := false
+	failed := func() {
+		select {
+		case <-upstreamClosed:
+		case <-time.After(time.Second):
+			upstreamOpen = true
+		}
+		quitStressTopology(t, topology)
+	}
+	if err := runStressTCP(topology, silent.Addr().(*net.TCPAddr), 1, 2*time.Second, failed); err == nil {
+		t.Fatal("a stream to an upstream that never answers got its echo")
+	}
+	if !upstreamOpen {
+		t.Fatal("the stalled stream had closed its upstream before both ends were quit")
 	}
 }
 
@@ -277,60 +328,88 @@ func assertStressPathReady(t *testing.T, client *e2eProcess, socksPort int, dest
 	}
 }
 
-// stressTCP runs streamCount concurrent echo streams through the topology. If
-// one fails, it quits both processes so that their logs hold the stacks of the
-// stall before the test reports it.
+// stressTCP runs streamCount concurrent echo streams through the topology and
+// fails the test if one of them fails. The first failure quits both processes
+// so that their logs hold the stacks of the stall.
 func stressTCP(t *testing.T, topology *stressTopology, destination *net.TCPAddr, streamCount int) {
 	t.Helper()
+	failed := func() { quitStressTopology(t, topology) }
+	if err := runStressTCP(topology, destination, streamCount, 2*time.Minute, failed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runStressTCP runs streamCount concurrent echo streams, each within deadline,
+// and returns the first error. failed runs once, for the first stream that
+// fails, before that stream closes its connection; other failing streams wait
+// for it to return before they close theirs.
+func runStressTCP(topology *stressTopology, destination *net.TCPAddr, streamCount int, deadline time.Duration, failed func()) error {
 	payload := bytes.Repeat([]byte("xray-smux-stress"), stressTCPBytes/len("xray-smux-stress")+1)[:stressTCPBytes]
 	errors := make(chan error, streamCount)
+	var once sync.Once
+	failedOnce := func() { once.Do(failed) }
 	var wait sync.WaitGroup
 	for stream := 0; stream < streamCount; stream++ {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			errors <- stressTCPRoundTrip(topology.socksPort, destination, payload)
+			errors <- stressTCPRoundTrip(topology.socksPort, destination, payload, deadline, failedOnce)
 		}()
 	}
 	wait.Wait()
 	close(errors)
 	for err := range errors {
 		if err != nil {
-			quitStressTopology(topology)
-			t.Fatal(err)
+			return err
 		}
 	}
+	return nil
 }
 
 // quitStressTopology sends SIGQUIT to the client and the server at once. A Go
 // process then writes every goroutine's stack to its log and exits, so the
 // logs show where both ends of a stalled stream wait.
-func quitStressTopology(topology *stressTopology) {
-	processes := []*e2eProcess{topology.client, topology.server}
-	for _, process := range processes {
-		if !process.stopped.Load() && process.command.Process != nil {
-			_ = process.command.Process.Signal(syscall.SIGQUIT)
+func quitStressTopology(t testing.TB, topology *stressTopology) {
+	ends := []struct {
+		name    string
+		process *e2eProcess
+	}{{"client", topology.client}, {"server", topology.server}}
+	for _, end := range ends {
+		if end.process.stopped.Load() || end.process.command.Process == nil {
+			continue
+		}
+		if err := end.process.command.Process.Signal(syscall.SIGQUIT); err != nil {
+			t.Logf("stress %s: no goroutine dump, SIGQUIT failed: %v", end.name, err)
 		}
 	}
-	for _, process := range processes {
-		if process.stopped.Load() {
+	for _, end := range ends {
+		if end.process.stopped.Load() {
 			continue
 		}
 		select {
-		case <-process.done:
-			process.stopped.Store(true)
+		case <-end.process.done:
+			end.process.stopped.Store(true)
 		case <-time.After(5 * time.Second):
+			t.Logf("stress %s did not exit within 5s of SIGQUIT; its log may lack the goroutine dump", end.name)
 		}
 	}
 }
 
-func stressTCPRoundTrip(socksPort int, destination *net.TCPAddr, payload []byte) error {
+func stressTCPRoundTrip(socksPort int, destination *net.TCPAddr, payload []byte, deadline time.Duration, failed func()) (err error) {
 	connection, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 10*time.Second)
 	if err != nil {
+		failed()
 		return err
 	}
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(2 * time.Minute))
+	// Deferred after Close, so it runs first: a failed stream still holds its
+	// connection, and the path behind it, while failed runs.
+	defer func() {
+		if err != nil {
+			failed()
+		}
+	}()
+	_ = connection.SetDeadline(time.Now().Add(deadline))
 	if err := socksGreeting(connection); err != nil {
 		return err
 	}
