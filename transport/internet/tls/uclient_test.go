@@ -28,6 +28,51 @@ func handshakeUClient(ctx context.Context, conn stdnet.Conn, config *gotls.Confi
 	return xraytls.ClientHandshake(ctx, conn, config, fingerprint, options...)
 }
 
+// A fingerprint without ALPN gets the WebSocket ALPN extension added. With a
+// session ticket loaded the hello also carries pre_shared_key, which RFC
+// 8446, Section 4.2.11, requires to be the last extension; added after it,
+// ALPN breaks the resumed handshake.
+func TestUClientHTTP11ALPNWithResumedSession(t *testing.T) {
+	listener, serverErrors := startTLSServer(t, 2, gotls.VersionTLS13)
+	defer listener.Close()
+	config := &gotls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         fmt.Sprintf("session-%d.test", sessionResumptionTestID.Add(1)),
+		ClientSessionCache: gotls.NewLRUClientSessionCache(1),
+		NextProtos:         []string{"http/1.1"},
+	}
+	fingerprint := randomizedFingerprint(t, "randomizednoalpn", randomizedSeeds[0].seed)
+	for i := range 2 {
+		rawConn, err := stdnet.DialTimeout("tcp", listener.Addr().String(), 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rawConn.SetDeadline(time.Now().Add(3 * time.Second))
+		conn, err := handshakeUClient(context.Background(), rawConn, config, fingerprint, true)
+		if err != nil {
+			rawConn.Close()
+			t.Fatalf("handshake %d: %v", i+1, err)
+		}
+		var marker [1]byte
+		if _, err := io.ReadFull(conn, marker[:]); err != nil || marker[0] != byte(i) {
+			conn.Close()
+			t.Fatalf("marker %d: %v %v", i+1, marker, err)
+		}
+		resumed := conn.ConnectionState().DidResume
+		if _, err := conn.Write(marker[:]); err != nil {
+			conn.Close()
+			t.Fatal(err)
+		}
+		conn.Close()
+		if resumed != (i == 1) {
+			t.Fatalf("connection %d resumed = %v", i+1, resumed)
+		}
+	}
+	if err := <-serverErrors; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // testECHKeys returns a one-config ECHConfigList for publicName and the
 // server key that decrypts it.
 func testECHKeys(t *testing.T, publicName string) (list []byte, key gotls.EncryptedClientHelloKey) {

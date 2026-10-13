@@ -97,8 +97,9 @@ func http11ALPN(requested []string) []string {
 	return []string{"http/1.1"}
 }
 
-// setALPN makes the hello offer protocols, adding the extension to a
-// fingerprint without one.
+// setALPN makes the hello offer protocols. A fingerprint without ALPN gets
+// the extension before pre_shared_key, which must stay the last extension
+// (RFC 8446, Section 4.2.11).
 func setALPN(uConn *utls.UConn, protocols []string) {
 	for _, extension := range uConn.Extensions {
 		if alpn, ok := extension.(*utls.ALPNExtension); ok {
@@ -106,5 +107,12 @@ func setALPN(uConn *utls.UConn, protocols []string) {
 			return
 		}
 	}
-	uConn.Extensions = append(uConn.Extensions, &utls.ALPNExtension{AlpnProtocols: protocols})
+	at := len(uConn.Extensions)
+	for i, extension := range uConn.Extensions {
+		if _, ok := extension.(utls.PreSharedKeyExtension); ok {
+			at = i
+			break
+		}
+	}
+	uConn.Extensions = slices.Insert(uConn.Extensions, at, utls.TLSExtension(&utls.ALPNExtension{AlpnProtocols: protocols}))
 }
