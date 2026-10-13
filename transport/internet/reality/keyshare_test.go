@@ -1,11 +1,13 @@
 package reality
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
 	gotls "crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -28,8 +30,9 @@ const keyShareTestServerName = "localhost"
 // startCoverTarget runs the TLS 1.3 site REALITY falls back to for
 // unauthenticated clients. It selects X25519 without a HelloRetryRequest,
 // which REALITY cannot mirror, so a handshake completes exactly when REALITY
-// authenticated the client.
-func startCoverTarget(t *testing.T) string {
+// authenticated the client. It returns the site's address and its leaf
+// certificate, which is what a client that was turned away must be shown.
+func startCoverTarget(t *testing.T) (address string, leaf []byte) {
 	t.Helper()
 	generated, _ := cert.MustGenerate(nil, cert.CommonName(keyShareTestServerName))
 	certificate, err := gotls.X509KeyPair(generated.ToPEM())
@@ -57,7 +60,7 @@ func startCoverTarget(t *testing.T) string {
 			}()
 		}
 	}()
-	return listener.Addr().String()
+	return listener.Addr().String(), certificate.Certificate[0]
 }
 
 // helloShape rewrites the uTLS Chrome hello before the REALITY session ID is
@@ -134,13 +137,19 @@ func rebuildHello(t *testing.T, uConn *utls.UConn) {
 	}
 }
 
-// dialREALITY performs the client side of UClient with a reshaped hello and
-// reports whether the server proved it authenticated the client.
-func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, shape helloShape) bool {
+// dialREALITY performs the client side of UClient with a reshaped hello. It
+// reports whether the server proved it authenticated the client, and the
+// leaf certificate the client was shown, nil if it was shown none.
+func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, shape helloShape) (verified bool, leaf []byte) {
 	t.Helper()
 	uConn := &UConn{Config: config, ServerName: config.ServerName}
 	uConn.UConn = utls.UClient(conn, &utls.Config{
-		VerifyPeerCertificate:  uConn.VerifyPeerCertificate,
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(rawCerts) > 0 {
+				leaf = rawCerts[0]
+			}
+			return uConn.VerifyPeerCertificate(rawCerts, verifiedChains)
+		},
 		ServerName:             config.ServerName,
 		InsecureSkipVerify:     true,
 		SessionTicketsDisabled: true,
@@ -178,21 +187,24 @@ func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, shape helloShap
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = uConn.HandshakeContext(ctx)
-	return uConn.Verified
+	return uConn.Verified, leaf
 }
 
 // runKeyShareHandshake runs one REALITY server handshake against a client
 // whose hello was reshaped and returns whether both sides authenticated.
-// requireMLKEM is the server's "requireMlkem".
-func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (clientVerified, serverAccepted bool) {
+// requireMLKEM is the server's "requireMlkem". fromCover says the client was
+// shown the cover target's certificate: the server forwarded it there, as
+// it must a client it turns away, and did not drop it.
+func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (clientVerified, serverAccepted, fromCover bool) {
 	t.Helper()
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	shortID := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	cover, coverLeaf := startCoverTarget(t)
 	serverConfig := (&Config{
-		Dest:        startCoverTarget(t),
+		Dest:        cover,
 		Type:        "tcp",
 		ServerNames: []string{keyShareTestServerName},
 		PrivateKey:  privateKey.Bytes(),
@@ -231,14 +243,14 @@ func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (cl
 	if err != nil {
 		t.Fatal(err)
 	}
-	clientVerified = dialREALITY(t, conn, clientConfig, shape)
+	clientVerified, leaf := dialREALITY(t, conn, clientConfig, shape)
 	_ = conn.Close()
 	select {
 	case err := <-serverResult:
-		return clientVerified, err == nil
+		return clientVerified, err == nil, bytes.Equal(leaf, coverLeaf)
 	case <-time.After(10 * time.Second):
 		t.Fatal(errors.New("REALITY server handshake did not finish"))
-		return false, false
+		return false, false, false
 	}
 }
 
@@ -285,9 +297,17 @@ func TestREALITYServerKeyShareAcceptance(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			clientVerified, serverAccepted := runKeyShareHandshake(t, test.shape, test.requireMLKEM)
+			clientVerified, serverAccepted, fromCover := runKeyShareHandshake(t, test.shape, test.requireMLKEM)
 			if serverAccepted != test.accept || clientVerified != test.accept {
 				t.Fatalf("server accepted = %v, client verified = %v, want both %v", serverAccepted, clientVerified, test.accept)
+			}
+			// What a prober sees of a rejection is the cover target; a
+			// connection dropped instead would tell it apart.
+			if fromCover == test.accept {
+				if test.accept {
+					t.Fatal("accepted hello was answered with the cover target's certificate")
+				}
+				t.Fatal("rejected hello was not answered by the cover target's certificate")
 			}
 		})
 	}

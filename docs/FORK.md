@@ -15,7 +15,16 @@ guard it.
   neither `supported_groups` nor `key_share` authenticates through its single
   X25519 key share; hellos that offer the hybrid group keep upstream's rules.
   A server with `"requireMlkem": true` in `realitySettings` rejects such a
-  hello as upstream does; it is `false` by default.
+  hello as upstream does and forwards it to the target; it is `false` by
+  default. With `true`, clients that send no hybrid key share are answered
+  by the target: sing-box, Mihomo unless
+  `reality-opts.support-x25519mlkem768` is set, and Xray fingerprints other
+  than `chrome`, `firefox` and `safari` and their current `hello*` forms,
+  `random` among them on most starts. Field 100 (`require_mlkem`) of the
+  REALITY `Config` message is fork-owned and outside upstream's blocks (1-13
+  server, 21-27 client, 31); if upstream ships the option under another
+  number or type, migrate persisted protobuf configs and API clients rather
+  than renumber silently.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
