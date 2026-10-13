@@ -562,6 +562,10 @@ type Config struct {
 	MaxTimeDiff  time.Duration
 	ShortIds     map[[8]byte]bool
 
+	// RequireMLKEM rejects a Client Hello without an X25519MLKEM768 key
+	// share, as upstream does. Xray-core fork change, see fork_keyshare.go.
+	RequireMLKEM bool
+
 	Mldsa65Key []byte
 
 	LimitFallbackUpload   LimitFallback
@@ -981,6 +985,7 @@ func (c *Config) Clone() *Config {
 		MaxClientVer:                        c.MaxClientVer,
 		MaxTimeDiff:                         c.MaxTimeDiff,
 		ShortIds:                            c.ShortIds,
+		RequireMLKEM:                        c.RequireMLKEM,
 		LimitFallbackUpload:                 c.LimitFallbackUpload,
 		LimitFallbackDownload:               c.LimitFallbackDownload,
 		Rand:                                c.Rand,

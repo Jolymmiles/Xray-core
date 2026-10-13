@@ -232,7 +232,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			}
 			if peerPub2 == nil {
 				// Xray-core fork: a hello that does not offer X25519MLKEM768 may use its X25519 key share.
-				if peerPub = classicX25519KeyShare(hs.clientHello); peerPub == nil {
+				if peerPub = classicX25519KeyShare(config, hs.clientHello); peerPub == nil {
 					break // reject outdated/strange Client Hello that doesn't have X25519MLKEM768 before optional X25519
 				}
 			}
