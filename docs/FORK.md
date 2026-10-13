@@ -80,6 +80,23 @@ guard it.
   ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
   the ClientHello snapshot tests and the fork's
   `TestSecondaryKeyShareSelectedByServer`.
+- The REALITY client's spider, which browses the site over the connection
+  when the server shows a real certificate (the server forwarded the hello to
+  its target, or a middlebox redirected or intercepted it), works over TCP as
+  over the other transports and in upstream: the TCP dialer no longer closes
+  the connection `UClient` hands to the spider, which fork commit d26e94396
+  did, cutting the spider off right after the handshake. The spider owns the
+  connection for a lease drawn from 660-720 s; then it closes the raw
+  connection, without GOAWAY or close_notify as Chrome closes an idle HTTP/2
+  connection, ending requests still in flight. Upstream keeps it until the
+  peer closes. Servers close an idle HTTP/2 connection sooner by default
+  (nginx after 75 s, Cloudflare after 400 s, Google Cloud load balancers after
+  610 s), so with them the server still closes first; a peer that keeps the
+  connection open sees the client close it after 11-12 minutes. The spider's
+  requests and pauses end with the lease, and it uses its one connection only:
+  a redirect to another host no longer starts a second HTTP/2 session on it,
+  which the site rejected. Covered by
+  `transport/internet/reality/spider_test.go` and `spider_lease_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
   `-tags http2legacy`, which keeps x/net's own `http2.Transport` and
   `http2.Server` (the XHTTP client, H2MUX and DoH among them; MASQUE uses only

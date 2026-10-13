@@ -216,9 +216,18 @@ func (c *UConn) seal() error {
 	return nil
 }
 
+// spiderLease is how long the spider keeps the connection it is handed.
+// Servers close an idle HTTP/2 connection sooner by default (nginx after 75
+// s, Cloudflare after 400 s, Google Cloud load balancers after 610 s), so
+// normally the server closes it first; the lease ends a connection the peer
+// keeps open.
+var spiderLease = func() time.Duration {
+	return time.Duration(crypto.RandBetween(660, 720)) * time.Second
+}
+
 // UClient dials REALITY over c. It owns c: on failure c is closed, except
-// when the server shows a real certificate; then the spider keeps browsing
-// over the connection and UClient returns an error.
+// when the server shows a real certificate; then UClient hands c to the
+// spider, which browses over it for a lease, and returns an error.
 func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destination) (net.Conn, error) {
 	localAddr := c.LocalAddr().String()
 	uConn, err := func() (*UConn, error) {
@@ -247,98 +256,131 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 	}
 	if !uConn.Verified {
 		errors.LogError(ctx, "REALITY: received real certificate (potential MITM or redirection)")
-		go func() {
-			client := &http.Client{
-				Transport: &http2.Transport{
-					DialTLSContext: func(ctx context.Context, network, addr string, cfg *gotls.Config) (net.Conn, error) {
-						if config.Show {
-							fmt.Printf("REALITY localAddr: %v\tDialTLSContext\n", localAddr)
-						}
-						return uConn, nil
-					},
-				},
-			}
-			prefix := []byte("https://" + uConn.ServerName)
-			maps.Lock()
-			if maps.maps == nil {
-				maps.maps = make(map[string]map[string]struct{})
-			}
-			paths := maps.maps[uConn.ServerName]
-			if paths == nil {
-				paths = make(map[string]struct{})
-				paths[config.SpiderX] = struct{}{}
-				maps.maps[uConn.ServerName] = paths
-			}
-			firstURL := string(prefix) + getPathLocked(paths)
-			maps.Unlock()
-			get := func(first bool) {
-				var (
-					req  *http.Request
-					resp *http.Response
-					err  error
-					body []byte
-				)
-				if first {
-					req, _ = http.NewRequest("GET", firstURL, nil)
-				} else {
-					maps.Lock()
-					req, _ = http.NewRequest("GET", string(prefix)+getPathLocked(paths), nil)
-					maps.Unlock()
-				}
-				if req == nil {
-					return
-				}
-				utils.TryDefaultHeadersWith(req.Header, "nav")
-				if first && config.Show {
-					fmt.Printf("REALITY localAddr: %v\treq.UserAgent(): %v\n", localAddr, req.UserAgent())
-				}
-				times := 1
-				if !first {
-					times = int(crypto.RandBetween(config.SpiderY[4], config.SpiderY[5]))
-				}
-				for j := 0; j < times; j++ {
-					if !first && j == 0 {
-						req.Header.Set("Referer", firstURL)
-					}
-					req.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", int(crypto.RandBetween(config.SpiderY[0], config.SpiderY[1])))})
-					if resp, err = client.Do(req); err != nil {
-						break
-					}
-					defer resp.Body.Close()
-					req.Header.Set("Referer", req.URL.String())
-					if body, err = io.ReadAll(resp.Body); err != nil {
-						break
-					}
-					maps.Lock()
-					for _, m := range href.FindAllSubmatch(body, -1) {
-						m[1] = bytes.TrimPrefix(m[1], prefix)
-						if !bytes.Contains(m[1], dot) {
-							paths[string(m[1])] = struct{}{}
-						}
-					}
-					req.URL.Path = getPathLocked(paths)
-					if config.Show {
-						fmt.Printf("REALITY localAddr: %v\treq.Referer(): %v\n", localAddr, req.Referer())
-						fmt.Printf("REALITY localAddr: %v\tlen(body): %v\n", localAddr, len(body))
-						fmt.Printf("REALITY localAddr: %v\tlen(paths): %v\n", localAddr, len(paths))
-					}
-					maps.Unlock()
-					if !first {
-						time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[6], config.SpiderY[7])) * time.Millisecond) // interval
-					}
-				}
-			}
-			get(true)
-			concurrency := int(crypto.RandBetween(config.SpiderY[2], config.SpiderY[3]))
-			for i := 0; i < concurrency; i++ {
-				go get(false)
-			}
-			// Do not close the connection
-		}()
+		go uConn.spider(c, localAddr, spiderLease())
 		time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[8], config.SpiderY[9])) * time.Millisecond) // return
 		return nil, errors.New("REALITY: processed invalid connection")
 	}
 	return uConn, nil
+}
+
+// spider browses the site whose real certificate the server showed, over the
+// connection that showed it, as a browser sent there would. It owns raw, the
+// connection under uConn: when lease has passed it closes raw, ending what is
+// still in flight, unless the peer has closed it first. It sends nothing to
+// close it, neither GOAWAY nor close_notify, as Chrome closes an idle
+// HTTP/2 connection.
+func (uConn *UConn) spider(raw net.Conn, localAddr string, lease time.Duration) {
+	config := uConn.Config
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(lease, func() {
+		cancel()
+		_ = raw.Close()
+	})
+	var dialed atomic.Bool
+	client := &http.Client{
+		Transport: &http2.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string, cfg *gotls.Config) (net.Conn, error) {
+				if config.Show {
+					fmt.Printf("REALITY localAddr: %v\tDialTLSContext\n", localAddr)
+				}
+				// The spider has this one connection. Another dial, for a
+				// redirect to another host or a retry, would start a second
+				// HTTP/2 session on it.
+				if !dialed.CompareAndSwap(false, true) {
+					return nil, errors.New("REALITY: the spider has a single connection")
+				}
+				return uConn, nil
+			},
+		},
+	}
+	prefix := []byte("https://" + uConn.ServerName)
+	maps.Lock()
+	if maps.maps == nil {
+		maps.maps = make(map[string]map[string]struct{})
+	}
+	paths := maps.maps[uConn.ServerName]
+	if paths == nil {
+		paths = make(map[string]struct{})
+		paths[config.SpiderX] = struct{}{}
+		maps.maps[uConn.ServerName] = paths
+	}
+	firstURL := string(prefix) + getPathLocked(paths)
+	maps.Unlock()
+	get := func(first bool) {
+		var (
+			req  *http.Request
+			resp *http.Response
+			err  error
+			body []byte
+		)
+		if first {
+			req, _ = http.NewRequestWithContext(ctx, "GET", firstURL, nil)
+		} else {
+			maps.Lock()
+			req, _ = http.NewRequestWithContext(ctx, "GET", string(prefix)+getPathLocked(paths), nil)
+			maps.Unlock()
+		}
+		if req == nil {
+			return
+		}
+		utils.TryDefaultHeadersWith(req.Header, "nav")
+		if first && config.Show {
+			fmt.Printf("REALITY localAddr: %v\treq.UserAgent(): %v\n", localAddr, req.UserAgent())
+		}
+		times := 1
+		if !first {
+			times = int(crypto.RandBetween(config.SpiderY[4], config.SpiderY[5]))
+		}
+		for j := 0; j < times; j++ {
+			if !first && j == 0 {
+				req.Header.Set("Referer", firstURL)
+			}
+			req.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", int(crypto.RandBetween(config.SpiderY[0], config.SpiderY[1])))})
+			if resp, err = client.Do(req); err != nil {
+				break
+			}
+			defer resp.Body.Close()
+			req.Header.Set("Referer", req.URL.String())
+			if body, err = io.ReadAll(resp.Body); err != nil {
+				break
+			}
+			maps.Lock()
+			for _, m := range href.FindAllSubmatch(body, -1) {
+				m[1] = bytes.TrimPrefix(m[1], prefix)
+				if !bytes.Contains(m[1], dot) {
+					paths[string(m[1])] = struct{}{}
+				}
+			}
+			req.URL.Path = getPathLocked(paths)
+			if config.Show {
+				fmt.Printf("REALITY localAddr: %v\treq.Referer(): %v\n", localAddr, req.Referer())
+				fmt.Printf("REALITY localAddr: %v\tlen(body): %v\n", localAddr, len(body))
+				fmt.Printf("REALITY localAddr: %v\tlen(paths): %v\n", localAddr, len(paths))
+			}
+			maps.Unlock()
+			if !first && !sleepContext(ctx, time.Duration(crypto.RandBetween(config.SpiderY[6], config.SpiderY[7]))*time.Millisecond) { // interval
+				break
+			}
+		}
+	}
+	get(true)
+	concurrency := int(crypto.RandBetween(config.SpiderY[2], config.SpiderY[3]))
+	for i := 0; i < concurrency && ctx.Err() == nil; i++ {
+		go get(false)
+	}
+	// Do not close the connection: the lease does
+}
+
+// sleepContext sleeps for d and reports whether it did so before ctx ended.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 var (

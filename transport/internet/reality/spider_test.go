@@ -217,3 +217,69 @@ func TestREALITYSpiderOverTCP(t *testing.T) {
 		t.Fatal("the spider sent no request after Dial returned: its connection was closed")
 	}
 }
+
+// awaitClosed waits until the cover's connection that carried the spider is
+// closed, and reports how long that took.
+func awaitClosed(t *testing.T, cover *spiderCover, limit time.Duration) time.Duration {
+	t.Helper()
+	start := time.Now()
+	select {
+	case <-cover.closed:
+		return time.Since(start)
+	case <-time.After(limit):
+		t.Fatalf("the spider's connection is still open after %v", limit)
+		return 0
+	}
+}
+
+// The spider owns the connection it is handed for a lease: when it ends the
+// connection is closed, whether the spider is done or still waiting.
+func TestREALITYSpiderLease(t *testing.T) {
+	if !inTrustingChild(t) {
+		return
+	}
+	const lease = 500 * time.Millisecond
+	reality.SetSpiderLease(t, lease)
+	for name, handler := range map[string]func(*spiderCover, http.ResponseWriter, *http.Request){
+		"idle after the page": func(_ *spiderCover, w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, "<html></html>")
+		},
+		"response never comes": func(_ *spiderCover, _ http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cover := startSpiderCover(t, handler)
+			server := startREALITYServer(t, cover.address)
+			dialSpider(t, server, "/", make([]int64, 10))
+			awaitClosed(t, cover, lease+5*time.Second)
+		})
+	}
+}
+
+// A redirect to another host does not open a second HTTP/2 session on the
+// spider's one connection, which the cover would reject at once.
+func TestREALITYSpiderKeepsOneConnection(t *testing.T) {
+	if !inTrustingChild(t) {
+		return
+	}
+	// Well past the second the cover's HTTP/2 server waits after a protocol
+	// error before it closes the connection.
+	const lease = 4 * time.Second
+	reality.SetSpiderLease(t, lease)
+	redirected := make(chan struct{})
+	cover := startSpiderCover(t, func(_ *spiderCover, w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://elsewhere.test/", http.StatusFound)
+		close(redirected)
+	})
+	server := startREALITYServer(t, cover.address)
+	dialSpider(t, server, "/", make([]int64, 10))
+	select {
+	case <-redirected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the spider sent no request")
+	}
+	if open := awaitClosed(t, cover, lease+5*time.Second); open < lease/2 {
+		t.Fatalf("the connection closed %v after the redirect, before the lease ended", open)
+	}
+}
