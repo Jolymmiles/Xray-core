@@ -22,6 +22,15 @@ SS_ONE_CONNECTION = ("cubic wscale:7,7 rto:252 rtt:50.1/0.2 mss:1448 cwnd:236 ss
 SS_IN_SLOW_START = "cubic wscale:7,7 rto:252 rtt:50.1/0.2 mss:1448 cwnd:10 rcv_ssthresh:64076\n"
 
 
+def ss_hangs(cmd, timeout=None, **kwargs):
+    """An ss that does not finish. It can only be given up on by a caller
+    that set a timeout: one run without would hang the stand, or count
+    whenever ss did answer."""
+    if timeout is None:
+        raise AssertionError("ss was run without a timeout")
+    raise subprocess.TimeoutExpired(cmd, timeout)
+
+
 class RequestTests(unittest.TestCase):
     """request() and what it must not take for a transfer."""
 
@@ -112,11 +121,8 @@ class TCPStateTests(unittest.TestCase):
         self.assertIn("Cannot open network namespace", str(raised.exception))
 
     def test_an_ss_that_does_not_finish_is_no_measurement(self):
-        def hangs(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
         with self.assertRaises(OSError):
-            self.state(hangs)
+            self.state(ss_hangs)
 
     def test_an_ss_that_shows_no_connection_is_no_measurement(self):
         with self.assertRaises(OSError):
@@ -151,11 +157,7 @@ class RunTests(unittest.TestCase):
             "status 1": lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no namespace"),
             "no connection": lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
         }
-
-        def hangs(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-        failures["timeout"] = hangs
+        failures["timeout"] = ss_hangs
         for name, ss in failures.items():
             with self.subTest(name):
                 r = self.one_run(ss)

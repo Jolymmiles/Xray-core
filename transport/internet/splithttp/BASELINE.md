@@ -607,8 +607,8 @@ Limits:
   An open hypothesis for why the window ends lower, read from
   `tcp_cubic.c` and `tcp_input.c` and not observed: while an upload runs
   the server sends the client little but credit, in small segments; the
-  congestion window grows only while it is under twice the packets in
-  flight; HyStart then ends slow start there. Fewer credit segments,
+  congestion window grows in slow start only while it is under twice the
+  most packets recently out; HyStart then ends slow start there. Fewer credit segments,
   about a third as many with the quanta in the capture cited above, would
   leave a smaller window. Which of HyStart's two detectors fired was not
   looked at.
