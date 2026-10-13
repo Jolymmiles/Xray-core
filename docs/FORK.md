@@ -22,9 +22,9 @@ guard it.
   default options, where by its source only `chrome` with
   `reality-opts.support-x25519mlkem768: true` keeps it (not run); Xray
   `edge`, `ios`, `qq` and the older `hello*` forms. Xray `chrome`, `firefox`,
-  `safari` and their current `hello*` forms pass. Xray `random`,
-  `randomized` and `randomizednoalpn` depend on what is drawn at process
-  start and pass on some starts only. `android` and `360` have no TLS 1.3
+  `safari`, their current `hello*` forms, `randomized` and
+  `randomizednoalpn` pass. Xray `random` depends on the fingerprint drawn at
+  process start and passes on some starts only. `android` and `360` have no TLS 1.3
   and work in neither mode. Field 100 (`require_mlkem`) of the REALITY
   `Config` message is fork-owned and outside upstream's blocks (1-13 server,
   21-27 client, 31); if upstream claims it or ships the option under another
@@ -32,6 +32,40 @@ guard it.
   than renumber silently.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
+- Every uTLS client Xray dials with is created in the fork-owned
+  `transport/internet/tls/uclient.go`: `NewUClient`, `UClient` and
+  `ClientHandshake` build the ClientHello when the client is created and
+  return the error, where upstream builds it during the handshake.
+  `ClientHandshake`, which the TCP, WebSocket, HTTPUpgrade, XHTTP, gRPC,
+  MASQUE and xdrive dialers use, closes the connection on any failure.
+  `WithHTTP11ALPN` replaces upstream's `WebsocketHandshakeContext` without
+  reading uTLS's private config; for a fingerprint without ALPN it adds the
+  extension before `pre_shared_key`, where upstream appends it after, which
+  breaks a handshake that resumes a session. The `randomized` and
+  `randomizednoalpn` presets always offer X25519MLKEM768 with its key share
+  and send key shares for X25519MLKEM768 and X25519 only; upstream draws the
+  hybrid group and its key share independently, so a process could start
+  with a hello that REALITY rejects, that a post-quantum-preferring server
+  answers with a HelloRetryRequest uTLS cannot follow, or that breaks RFC
+  8446, Section 4.2.8, and draws a P-256 key share whose private key uTLS
+  does not keep. The raw `hellorandomized*` forms keep uTLS's behavior. The
+  REALITY client builds its hello the same way, returns an error instead of
+  panicking for a fingerprint whose hello cannot carry the session ID (the
+  `*_psk` forms), reads the server's certificates through `VerifyConnection`
+  instead of reflection, and closes the connection on failure except when it
+  hands it to the spider. The gRPC dialer completes the uTLS handshake under
+  gRPC's connect context instead of on gRPC's first write. Building the
+  hello at creation takes a resumption ticket from the cache then, and with
+  ECH the hello is built once more. Covered by
+  `transport/internet/tls/hello_snapshot_test.go` and
+  `transport/internet/reality/hello_snapshot_test.go` (every byte of the
+  first ClientHello of every fingerprint on each path, under fixed
+  randomness), `transport/internet/tls/uclient_test.go`,
+  `transport/internet/tls/randomized_fingerprint_test.go`,
+  `transport/internet/tls/fingerprint_health_test.go`,
+  `transport/internet/reality/uclient_test.go`,
+  `transport/internet/reality/randomized_test.go` and
+  `transport/internet/grpc/dial_test.go`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
   `-tags http2legacy`, which keeps x/net's own `http2.Transport` and
   `http2.Server` (the XHTTP client, H2MUX and DoH among them; MASQUE uses only
