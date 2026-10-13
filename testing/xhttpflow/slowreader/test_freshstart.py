@@ -98,6 +98,22 @@ class RequestTests(unittest.TestCase):
         self.assertIn("not b'70000'", str(result))
 
 
+class ClientConfigTests(unittest.TestCase):
+    """--client-h2flow reaches the client's config, and only when given."""
+
+    def extra(self, h2flow):
+        config = stand.client_config("public", h2flow)
+        return config["outbounds"][0]["streamSettings"]["xhttpSettings"]["extra"]
+
+    def test_a_client_gets_no_governor_unless_asked(self):
+        self.assertEqual(self.extra(None), {"xmux": stand.XMUX},
+                         "the stands measure a server against a client as it comes")
+
+    def test_the_clients_h2flow_object_is_passed_as_given(self):
+        self.assertEqual(self.extra({"enabled": True}), {"xmux": stand.XMUX, "h2Flow": {"enabled": True}})
+        self.assertEqual(self.extra({}), {"xmux": stand.XMUX, "h2Flow": {}}, "an empty object is an object")
+
+
 class TCPStateTests(unittest.TestCase):
     """tcp_state() must tell "no threshold" from "no measurement"."""
 

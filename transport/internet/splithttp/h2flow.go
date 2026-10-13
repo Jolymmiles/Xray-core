@@ -68,9 +68,13 @@ const (
 	flowConnFloor   = 1 << 20
 	flowSmallCredit = 64 << 10
 	flowShrinkAfter = 3
-	flowKernelEvery = 20 * time.Millisecond
-	flowQueueHold   = 15 * time.Millisecond
-	flowQueueShrink = 40 * time.Millisecond
+	// flowSettledRounds is how many round trips in a row a reader must
+	// take less than a quarter more than before to be modelled, see
+	// settled.
+	flowSettledRounds = 2
+	flowKernelEvery   = 20 * time.Millisecond
+	flowQueueHold     = 15 * time.Millisecond
+	flowQueueShrink   = 40 * time.Millisecond
 
 	flowUndecided = 0
 	flowH2        = 1
@@ -381,6 +385,7 @@ type flowWindow struct {
 	rates    [flowModelRounds]int64
 	rateAt   int
 	flat     int
+	steady   int
 	piPrev   float64
 }
 
@@ -390,6 +395,10 @@ type flowWindow struct {
 // Until the first round trip is measured the cap opens with every credit, and
 // while the reader keeps speeding up it also covers the sender doubling its
 // rate, as Linux receive autotuning does. hold keeps the cap from growing.
+//
+// One round trip without growth ends that: ramped. A reader that takes a
+// little, irregularly, would otherwise have every larger round taken for a
+// ramp. It does not yet say the reader has found its rate, see settled.
 func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32, shrink, hold bool) {
 	if w.mark.IsZero() {
 		w.mark, w.markBase = now, w.returned
@@ -417,8 +426,11 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 	}
 	if w.prev > 0 && 4*copied < 5*w.prev {
 		w.flat++
+		if w.ramped {
+			w.steady++
+		}
 	} else {
-		w.flat = 0
+		w.flat, w.steady = 0, 0
 	}
 	w.prev, w.measured = copied, true
 	w.mark, w.markBase = now, w.returned
@@ -447,6 +459,20 @@ const (
 	flowModelGainPercent = 125
 	flowModelMinRound    = 20 * time.Millisecond
 )
+
+// settled reports whether the reader has found its rate: less than a
+// quarter faster than the round before for flowSettledRounds rounds in a
+// row, counted from the round that ended its ramp. Flat rounds before that
+// do not count: a reader that grew slowly would otherwise be settled by the
+// first low round after them. Only then does a window follow the path model. One round without
+// growth is not enough for that: the end of a round may fall between the
+// reader getting data and returning its credit, so that it reads low and the
+// next makes up for it. A window that took such a round at the start of a
+// stream for its rate had that one small round to model the path from, fell
+// to it, and grew back a quarter at a time.
+func (w *flowWindow) settled() bool {
+	return w.steady >= flowSettledRounds
+}
 
 // model sets the cap from the path model; rtprop is the empty path's round
 // trip.
@@ -1548,7 +1574,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			q = c.queueing(now)
 		}
 		switch {
-		case c.client && c.modelled(now) && s.down.ramped:
+		case c.client && c.modelled(now) && s.down.settled():
 			s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
 		case !c.client && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
 			// Only clients that credit in small steps: one that waits for
@@ -1691,7 +1717,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		s.up.returned += inc
 		var q int
 		switch {
-		case c.modelled(now) && s.up.ramped:
+		case c.modelled(now) && s.up.settled():
 			s.up.model(now, c.currentRTT(), c.up.init, c.up.max)
 		case c.modelled(now):
 			s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, false)
