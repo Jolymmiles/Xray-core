@@ -73,6 +73,28 @@ func TestFlowWindowSettles(t *testing.T) {
 	}
 }
 
+// TestFlowWindowGrowingSlowlyIsNotSettled is a reader a tenth faster every
+// round trip. Its rounds are flat, under a quarter more each, but none has
+// ended the ramp: it still speeds up, and stays with adjust, which follows
+// it at twice its rate, as before.
+func TestFlowWindowGrowingSlowlyIsNotSettled(t *testing.T) {
+	const rtt = 50 * time.Millisecond
+	start := time.Unix(0, 0)
+	w := flowWindow{cap: flowStartWindow}
+	credit := int64(400 << 10)
+	for i := 0; i < 6; i++ {
+		w.returned += credit
+		w.adjust(start.Add(time.Duration(i)*rtt), rtt, h2InitWindow, 1<<30, true, false)
+		credit += credit / 10
+	}
+	if w.flat < flowSettledRounds {
+		t.Fatalf("%d flat rounds counted for a reader that grows a tenth a round, want at least %d", w.flat, flowSettledRounds)
+	}
+	if w.ramped || w.settled() {
+		t.Fatalf("a reader that still speeds up counts as ramped %v, settled %v", w.ramped, w.settled())
+	}
+}
+
 func TestFlowLearnedHalfLife(t *testing.T) {
 	var l flowLearned
 	start := time.Unix(0, 0)
