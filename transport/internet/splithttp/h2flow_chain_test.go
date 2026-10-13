@@ -108,9 +108,8 @@ func (ch *chain) sendAll(id uint32) int64 {
 
 // TestFlowChainedStallAtSendWindow has a governed client in front of a
 // governed server whose connection is at its send window. The client governor
-// showed the server 65535 and counts on all of it; it holds back credit under
-// a quantum while it takes the sender to have a quantum left. A server that
-// showed its own stack less (flowShownLimited) kept the difference back at
+// showed the server 65535 and counts on all of it. A server that showed its
+// own stack less (flowShownLimited) kept the difference back at
 // the limit, the client governor took it for window the sender had, and a
 // slow reader whose client cap had shrunk to init then returned nothing: the
 // download stopped for good, even once the limit was free. Nothing here sets
@@ -251,7 +250,7 @@ func TestFlowSendWindowRaiseDropsUnread(t *testing.T) {
 	if before := h.c.clientHolds(); before != sent {
 		t.Fatalf("%d unread, counted %d", sent, before)
 	}
-	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, uint32(sent+flowQuantumMin)) })
+	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, uint32(sent+h2MinMaxFrameSize)) })
 	if after := h.c.clientHolds(); after != 0 {
 		t.Fatalf("after a raise past the high mark the count is %d, want 0", after)
 	}

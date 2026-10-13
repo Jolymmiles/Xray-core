@@ -67,11 +67,6 @@ const (
 	// before its readers prove they need more: Go's default.
 	flowConnFloor   = 1 << 20
 	flowSmallCredit = 64 << 10
-	// A server's own stack is handed download credit in pieces of at least
-	// flowQuantumMin and at most flowQuantumMax where it is not about to run
-	// dry, see hold.
-	flowQuantumMin  = 16 << 10
-	flowQuantumMax  = 32 << 10
 	flowShrinkAfter = 3
 	flowKernelEvery = 20 * time.Millisecond
 	flowQueueHold   = 15 * time.Millisecond
@@ -134,11 +129,10 @@ const flowShownFull = max(h2InitWindow, flowShownDown)
 // client that announces real.
 //
 // A client that announces no more than the protocol default gets all of it,
-// limit or not. It may be a governor: one shows exactly that, counts on every
-// byte of it, and holds back credit under a quantum while it takes the sender
-// to have a quantum left. A server that kept its stack under what such a
-// client showed would wait for that credit while the client waits for data,
-// for good; see flowShownDown. With all of it shown, what the stream's floor
+// limit or not. It may be a governor: one shows exactly that and counts on
+// every byte of it. A server that kept its stack under what such a client
+// showed would wait for credit while the client waits for data, for good;
+// see flowShownDown. With all of it shown, what the stream's floor
 // in downRelease hands on is all the client has returned, so the limit holds
 // nothing back from it, and what such a client holds is up to its own
 // governor.
@@ -1145,32 +1139,6 @@ func (c *flowConn) appendUpConnRelease(out []byte) []byte {
 	return out
 }
 
-// quantum is the least credit worth handing on for a window of cap: an
-// eighth of it, between one and two default frames.
-func quantum(cap int32) int64 {
-	return min(max(int64(cap)/8, flowQuantumMin), flowQuantumMax)
-}
-
-// hold reports whether credit rel should wait for more. A reader returns
-// credit a few KiB at a time; handed on like that, each piece makes the
-// sender write one small frame, a system call and a TLS record each. While
-// the sender still has a quantum of window it loses nothing by waiting, and
-// what it sends then brings the next credit; once it has less, all credit
-// goes out at once. No cap changes, so the reader holds no more than before.
-//
-// Only a server's download credit is held: it goes to the HTTP/2 stack next
-// to the governor. Credit that crosses the network is not, upload credit
-// from a server and download credit from a client. Each WINDOW_UPDATE is a
-// packet of its own, and those packets are all the peer's kernel sees of
-// this side's sending while the transfer runs the other way. Linux leaves
-// slow start there at about twice their number in flight and keeps that as
-// the connection's slow start threshold; held to quanta they were half as
-// many, and a download that followed an upload on the same connection after
-// an idle second started that much slower.
-func hold(rel, window, quantum int64) bool {
-	return rel < quantum && window >= quantum
-}
-
 // currentRTT is the kernel's min_rtt where it vouches for the path, otherwise
 // the lowest PING over the last one to two windows: PING queues behind data,
 // so anything above the minimum is our own backlog and must not feed back into
@@ -1605,7 +1573,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
-		if rel <= 0 || !c.client && hold(rel, int64(c.clientShown)+s.downForwarded-s.downSent, quantum(s.down.cap)) {
+		if rel <= 0 {
 			return out
 		}
 		c.forwardDown(s, rel)

@@ -609,8 +609,8 @@ func TestFlowSendWindowSettingsCost(t *testing.T) {
 }
 
 // refusedAtFullLimit stages a connection at a full limit where every credit
-// from the client frees less than a quantum: n streams the limit kept credit
-// from, at a slow reader's cap and with a quantum of window each, and
+// from the client frees less than a frame: n streams the limit kept credit
+// from, at a slow reader's cap and with a frame of window each, and
 // completed bodies the client holds and returns 4 KiB of at a time. It
 // returns the connection and where its connection window stood, to put back
 // before each frame.
@@ -654,17 +654,17 @@ func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
 // WINDOW_UPDATE of 4 KiB allocates on that connection. Such a frame looks at
 // no stream and allocates nothing. A queue of the streams the limit kept
 // credit from, walked after every frame from the client, handed nothing on
-// here, since 4 KiB is under a quantum, and put every stream back: it
+// here, since 4 KiB of room is under a frame, and put every stream back: it
 // allocated once a frame with sixty streams. The count does not depend on
 // the clock; BenchmarkFlowConnectionCredit has the time, which a walk that
 // allocated nothing would show only there.
 func TestFlowSendWindowConnectionCreditAllocs(t *testing.T) {
 	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
 	c, window := refusedAtFullLimit(t, 60)
-	// The state under test: room for the credit, and under a quantum.
+	// The state under test: room for the credit, and under a frame.
 	c.downConnWindow = window + 4<<10
-	if room := flowServerSendWindow - c.clientHolds(); room <= 0 || room >= flowQuantumMin {
-		t.Fatalf("a credit leaves %d of room, want some and under a quantum, %d", room, flowQuantumMin)
+	if room := flowServerSendWindow - c.clientHolds(); room <= 0 || room >= h2MinMaxFrameSize {
+		t.Fatalf("a credit leaves %d of room, want some and under a frame, %d", room, h2MinMaxFrameSize)
 	}
 	out := make([]byte, 0, 64)
 	allocs := testing.AllocsPerRun(1000, func() {

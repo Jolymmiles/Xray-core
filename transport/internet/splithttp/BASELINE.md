@@ -183,11 +183,12 @@ Limits:
 
 ### Credit quanta and the connection send window
 
-Measured for two changes: credit is handed on in quanta of 16 to 32 KiB
+Measured for two changes: credit was handed on in quanta of 16 to 32 KiB
 (`hold`), and the streams of one server connection share
-`h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set. Since
-then only a server's download credit is held to quanta; "Limits" below says
-why, and which figures here went with the rest.
+`h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set. The
+quanta have been withdrawn; "Limits" below says why and what they were
+measured to give. Of the figures here, the CPU of the upload rows went with
+them.
 
 The stand is `testing/xhttpflow/slowreader/stand.py` with
 `--workload downloads` or `--workload uploads`; see its head for what a run
@@ -305,10 +306,8 @@ SETTINGS frame cost 35 µs with 100 streams and 5.2 ms with 1000:
 | WINDOW_UPDATE | 100 | 2.56 µs | 2.56 µs |
 | WINDOW_UPDATE | 1000 | 2.56 µs | 2.55 µs |
 
-`BenchmarkFlowRead` and `BenchmarkFlowWrite` do not show the quanta: the
+`BenchmarkFlowRead` and `BenchmarkFlowWrite` did not show the quanta: the
 replay connection has no system calls and no peer that answers credit.
-`TestFlowCreditWaitsForAQuantum` fixes the local effect instead: 128 KiB of
-credit in 4 WINDOW_UPDATE frames where there were 32.
 
 What an observer sees of these changes, against the governor before them;
 stock Go differs from both as the rest of this file says:
@@ -331,18 +330,17 @@ stock Go differs from both as the rest of this file says:
   196609 again (`TestFlowInitialWindowDecrease`, with the send window off
   and at its default), and `0a5f8c08` keeps it so after a SETTINGS frame that
   carries no initial window (`TestFlowSendWindowSettingsWithoutWindow`).
-- Passive, on the path, TLS records only. A governed server during uploads,
-  and a governed client during downloads, sends fewer credit records: one
-  per 16 to 32 KiB the reader took instead of one per 4 KiB or so. A
+- Passive, on the path, TLS records only. Credit records are as before
+  these changes, one per 4 KiB or so the reader took; with the quanta a
+  governed server during uploads and a governed client during downloads
+  sent one per 16 to 32 KiB. A
   governed server with more than sixteen downloads starting on one
   connection sends less in the first round trip, and with many downloads on
   a long path less per round trip from then on.
-- A TLS terminator in front of the server reads the frames: it sees
-  WINDOW_UPDATE increments of 16 to 32 KiB from either governed end where
-  they were about 4 KiB, and a server that leaves stream window unused.
+- A TLS terminator in front of the server reads the frames: it sees a
+  server that leaves stream window unused.
 - An active prober that cannot authenticate gets no data on a stream, so
-  it sees none of the quanta and none of the limit; what it can do is the
-  lowering above.
+  it sees none of the limit; what it can do is the lowering above.
 - Not measured: record sizes and timing were not captured and compared, and
   nothing was run against a classifier. The record counts above follow from
   the frame counts in the unit test, not from a capture.
@@ -497,42 +495,68 @@ Limits:
   request failed (506 and 509 sent), and the downloads read 72.4 against
   72.3 MB/s. The two builds do not differ, and five runs of this figure
   say nothing.
-- Credit that crosses the network is not held to quanta: upload credit from
-  a server, download credit from a governed client
-  (`TestFlowUploadCreditNotHeld`, `TestFlowClientDownloadCreditNotHeld`).
-  Only a server's download credit is, which goes to the HTTP/2 stack next
-  to it. The upload rows of the CPU table above were measured with upload
-  credit held and no longer apply: uploads cost what they did before.
-  The reason is what the held credit did to the connection's TCP. While an
-  upload runs, the server sends the client little but WINDOW_UPDATE frames,
-  a packet each. Linux (CUBIC with HyStart) leaves slow start on that
-  stream of small packets, at a congestion window of about twice their
-  number in flight, and keeps it as the connection's slow start threshold.
-  A download on the same connection after an idle second restarts from ten
-  packets, doubles up to that threshold and then grows slowly. Held to
-  quanta the packets were half as many and so was the threshold. Server's
-  `ssthresh` right after a 30 MB upload at 100 Mbit/s, RTT 50 ms, in
-  packets, `ss -ti` on the server: 190 to 258 without the governor, 170 to
-  213 on `da42e75f`, 81 to 136 with upload credit held (`391e5f06`); a
-  connection that carried a download first has 530 to 680.
-  A fresh 3 MB download through an official client, eight a run, six of
-  them each after 3 s idle; seconds, the idle ones:
+- Credit is not held to quanta any more: every piece a reader returns
+  goes on as it comes, in both directions and at both ends, as before these
+  changes (`TestFlowUploadCreditNotHeld`, `TestFlowDownloadCreditNotHeld`,
+  `TestFlowClientDownloadCreditNotHeld`).
+  What the quanta did to a connection's TCP: while an upload runs, the
+  server sends the client little but WINDOW_UPDATE frames, a packet each.
+  Linux with CUBIC and HyStart leaves slow start on that stream of small
+  packets, at a congestion window of about twice their number in flight,
+  and keeps it as the connection's slow start threshold. A download on the
+  same connection after an idle second restarts from ten packets, doubles
+  up to that threshold and then grows slowly. Held to quanta the packets
+  were half as many and so was the threshold: server's `ssthresh` right
+  after a 30 MB upload at 100 Mbit/s, RTT 50 ms, in packets (`ss -ti`), 190
+  to 258 without the governor, 170 to 213 on `da42e75f`, 81 to 136 with
+  upload credit held (`391e5f06`); a connection that carried a download
+  first has 530 to 680.
+  A fresh 3 MB download through an official client after a 30 MB upload,
+  each after 3 s idle, 24 per build, builds shuffled, seconds; "upload"
+  holds upload and download credit as `391e5f06` did, "download" only a
+  server's download credit, "none" is this code:
 
-  | Before the download | No governor | `da42e75f` | Upload credit held | Now |
+  | Server TCP | No governor | `da42e75f` | Upload | Download | None |
+  | --- | --- | --- | --- | --- | --- |
+  | CUBIC, range | 0.53 to 0.67 | 0.53 to 0.73 | 0.53 to 1.02 | 0.53 to 0.73 | 0.53 to 0.73 |
+  | CUBIC, over 0.7 s | 0 | 3 | 8 | 4 | 2 |
+  | BBR, range | 0.30 to 0.77 | 0.30 to 0.74 | 0.30 to 0.81 | 0.30 to 0.82 | 0.30 to 0.60 |
+  | BBR, over 0.7 s | 3 | 1 | 1 | 2 | 0 |
+
+  After a 60 MB download instead, or on a connection that carried nothing,
+  every build starts in 0.53 s under CUBIC. With HyStart off
+  (`/sys/module/tcp_cubic/parameters/hystart` 0) all 24 on `391e5f06` take
+  0.53 s.
+  What the quanta saved, on the stand above at 1 Gbit/s, CPU seconds per
+  gigabyte, server / client, five shuffled runs:
+
+  | | `da42e75f` | Upload | Download | None |
   | --- | --- | --- | --- | --- |
-  | a 30 MB upload, 24 each | 0.53 to 0.67 | 0.53 to 0.76 | 0.53 to 1.02 | 0.53 to 0.73 |
-  | over 0.7 s | 0 | 4 | 9 | 4 |
-  | a 60 MB download, 12 each | 0.50 to 0.53 | 0.53 | 0.53 | |
-  | nothing, 15 each | 0.53 | 0.53 | 0.53 to 0.59 | |
+  | 4 uploads, CUBIC | 24.4 / 18.4 | 23.0 / 15.9 | 26.7 / 18.5 | 24.4 / 17.3 |
+  | 4 uploads, BBR | 26.0 / 18.5 | 22.9 / 15.4 | 24.0 / 17.2 | 26.3 / 17.5 |
+  | One upload, RTT 150 ms, CUBIC | 23.3 / 14.6 | 22.3 / 12.8 | 24.4 / 15.1 | 24.1 / 15.1 |
+  | One upload, RTT 150 ms, BBR | 24.8 / 15.2 | 22.0 / 12.5 | 25.4 / 15.8 | 24.3 / 15.1 |
+  | 8 downloads, CUBIC | 24.2 / 21.2 | 24.5 / 22.2 | 24.7 / 22.5 | 24.1 / 21.3 |
+  | 8 downloads, BBR | 21.2 / 17.6 | 25.2 / 22.9 | 25.1 / 22.9 | 24.8 / 22.5 |
+  | One download, RTT 150 ms, CUBIC | 21.1 / 16.0 | 20.6 / 15.9 | 21.4 / 16.7 | 21.1 / 16.0 |
+  | One download, RTT 150 ms, BBR | 32.1 / 24.6 | 30.4 / 22.2 | 31.6 / 23.9 | 31.7 / 24.0 |
 
-  With HyStart off (`/sys/module/tcp_cubic/parameters/hystart` 0) all 24 on
-  `391e5f06` take 0.53 s; with BBR on the server the governor makes no
-  difference, 0.30 to 0.81 s with it and 0.30 to 0.77 s without. The stand
-  is not in the repository: a server in a network namespace behind netem at
-  100 Mbit/s and 25 ms each way, curl through the client's SOCKS inbound.
-  Not looked for: the same on a governed client, whose download credit was
-  held; the test above only fixes that it no longer is. Not removed: the
-  floor a governor cannot lift, the threshold an upload leaves without it.
+  The rates do not differ in any row, nor does the memory of twenty slow
+  readers (23.3 to 23.9 MB with the limit, whatever is held). Holding
+  download credit saved nothing in any row. Holding upload credit saved
+  about a tenth of the server's processor time on uploads and a seventh of
+  the client's, under either algorithm, and under BBR it cost the next
+  download nothing. It could be brought back for connections whose kernel
+  does not use CUBIC; that is not done, for a tenth of the cost of uploads.
+  The "8 downloads, BBR" row is the send window, not the quanta: eight runs
+  each give 23.2 / 21.1 on `da42e75f`, 25.3 / 22.9 with the limit and
+  22.6 / 20.5 with `maxConnectionSendWindow: -1`; under CUBIC the three do
+  not differ (23.9, 23.1, 22.5).
+  The stand for the starts is not in the repository: a server in a network
+  namespace behind netem at 100 Mbit/s and 25 ms each way, curl through the
+  client's SOCKS inbound, kernel 6.18. Not looked for: the same on a
+  governed client, whose download credit was held. Not removed: the
+  threshold an upload leaves without the quanta, which `da42e75f` has too.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
