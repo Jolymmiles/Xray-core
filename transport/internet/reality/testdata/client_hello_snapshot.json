@@ -1,0 +1,2130 @@
+{
+  "360": {
+    "error": "transport/internet/reality: Current fingerprint 360Browser7.5 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "android": {
+    "error": "transport/internet/reality: Current fingerprint Android11 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "chrome": {
+    "sha256": "d006b1ed678c71c4ae24b6b71349db99c7eb5e77b7a676dc51cefc7a2e197f77",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "edge": {
+    "sha256": "5f51e453073d863ebc15e91730ac1e682d1cc4bb3e27aa4ceee20e571752335a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "firefox": {
+    "sha256": "29fb0a0308592cf4204bd5e094d2d4698381f9ce8e5d03eaddfc8c12aad1c28e",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hello360_11_0": {
+    "sha256": "a1f5808d6816bb5c51e1675cd3e04fc2e00d17891f712fe4248555f993fc33e0",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      30032,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hello360_7_5": {
+    "error": "transport/internet/reality: Current fingerprint 360Browser7.5 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hello360_auto": {
+    "error": "transport/internet/reality: Current fingerprint 360Browser7.5 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "helloandroid_11_okhttp": {
+    "error": "transport/internet/reality: Current fingerprint Android11 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hellochrome_100": {
+    "sha256": "b955dd509f496ca1de74d871b98d8b0054604715d49680e7614db02b7f444fba",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_100_psk": {
+    "error": "panic: runtime error: slice bounds out of range [39:0]"
+  },
+  "hellochrome_102": {
+    "sha256": "b955dd509f496ca1de74d871b98d8b0054604715d49680e7614db02b7f444fba",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_106_shuffle": {
+    "sha256": "dc92b2e8c3395868410cd6323a44a5e05c66c30c9b5206dff5caac6ae4af4407",
+    "length": 517,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906,
+      21
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_112_psk_shuf": {
+    "error": "panic: runtime error: slice bounds out of range [39:0]"
+  },
+  "hellochrome_114_padding_psk_shuf": {
+    "error": "panic: runtime error: slice bounds out of range [39:0]"
+  },
+  "hellochrome_115_pq": {
+    "sha256": "b9a520531dae1a8f1c93897756d1322e8f68471cb9a9038299b1902e21819173",
+    "length": 1531,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_115_pq_psk": {
+    "error": "panic: runtime error: slice bounds out of range [39:0]"
+  },
+  "hellochrome_120": {
+    "sha256": "a7d5eae79f613f5b9fa07992d15a614d678e9c32241b47eb9a78e5b6f71e5a32",
+    "length": 595,
+    "extensions": [
+      60138,
+      65281,
+      13,
+      10,
+      27,
+      18,
+      0,
+      43,
+      11,
+      16,
+      23,
+      51,
+      5,
+      45,
+      35,
+      17513,
+      65037,
+      14906
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_120_pq": {
+    "sha256": "39fb782ed721cf8f71988ad16308b7b9ac10b334940c3956fca5b35fc46a11ce",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_131": {
+    "sha256": "b51a86c49c403749cf305e966e55cb8ee2c79f72145a857bbeada81ce4881546",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_133": {
+    "sha256": "d006b1ed678c71c4ae24b6b71349db99c7eb5e77b7a676dc51cefc7a2e197f77",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_58": {
+    "error": "transport/internet/reality: Current fingerprint Chrome58 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hellochrome_62": {
+    "error": "transport/internet/reality: Current fingerprint Chrome62 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hellochrome_70": {
+    "sha256": "975b828e3e1bb6a4379d08367981b7ee797f58988762da09532db82a005d0721",
+    "length": 517,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      51,
+      45,
+      43,
+      10,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_72": {
+    "sha256": "a95759f1752fd020bfc019ecaf6d8fda589777f86d89c3c4371ca9825314905f",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_83": {
+    "sha256": "5f51e453073d863ebc15e91730ac1e682d1cc4bb3e27aa4ceee20e571752335a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_87": {
+    "sha256": "5f51e453073d863ebc15e91730ac1e682d1cc4bb3e27aa4ceee20e571752335a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_96": {
+    "sha256": "beaf6ff8a1dcdf6a69c252b6dbdcb669667513aad55e948a17e9cf91e3b9ff81",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellochrome_auto": {
+    "sha256": "d006b1ed678c71c4ae24b6b71349db99c7eb5e77b7a676dc51cefc7a2e197f77",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloedge_106": {
+    "sha256": "b955dd509f496ca1de74d871b98d8b0054604715d49680e7614db02b7f444fba",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloedge_85": {
+    "sha256": "5f51e453073d863ebc15e91730ac1e682d1cc4bb3e27aa4ceee20e571752335a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloedge_auto": {
+    "sha256": "5f51e453073d863ebc15e91730ac1e682d1cc4bb3e27aa4ceee20e571752335a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_102": {
+    "sha256": "85a3d95ed10e906f4ac49970e06d29e540a3f2caa7e0607fd632ef40c8413157",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2"
+    ]
+  },
+  "hellofirefox_105": {
+    "sha256": "f47f3bda46eaa4f549631bd66e2cadd110702bcc619f4589daece895ef090f88",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_120": {
+    "sha256": "48c596cf41d85b4490430c6b6ba8819e0238b81534272ca3dd20cdc7ad03e2d0",
+    "length": 659,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      65037
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_148": {
+    "sha256": "29fb0a0308592cf4204bd5e094d2d4698381f9ce8e5d03eaddfc8c12aad1c28e",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_55": {
+    "error": "transport/internet/reality: Current fingerprint Firefox55 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hellofirefox_56": {
+    "error": "transport/internet/reality: Current fingerprint Firefox56 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hellofirefox_63": {
+    "sha256": "a289db13296238f300d0cdeca04980d68579545ac6732b9a581e43bf400c4996",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_65": {
+    "sha256": "a289db13296238f300d0cdeca04980d68579545ac6732b9a581e43bf400c4996",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_99": {
+    "sha256": "47ca1f8948d30e05eaa4cecacbe0b9333e4d7ebc84483c61b635df920af7fd4a",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellofirefox_auto": {
+    "sha256": "29fb0a0308592cf4204bd5e094d2d4698381f9ce8e5d03eaddfc8c12aad1c28e",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloios_11_1": {
+    "error": "transport/internet/reality: Current fingerprint iOS111 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "helloios_12_1": {
+    "error": "transport/internet/reality: Current fingerprint iOS12.1 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "helloios_13": {
+    "sha256": "836a79d5408b631a389ebaa180b91a049b9f8438d84224d7430e01f634197a79",
+    "length": 517,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      18,
+      16,
+      11,
+      51,
+      45,
+      43,
+      10,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloios_14": {
+    "sha256": "80034d916e94455cec40f28049910638de3a05e4ad104e9207271e681a788adb",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloios_auto": {
+    "sha256": "80034d916e94455cec40f28049910638de3a05e4ad104e9207271e681a788adb",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloqq_11_1": {
+    "sha256": "beaf6ff8a1dcdf6a69c252b6dbdcb669667513aad55e948a17e9cf91e3b9ff81",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "helloqq_auto": {
+    "sha256": "beaf6ff8a1dcdf6a69c252b6dbdcb669667513aad55e948a17e9cf91e3b9ff81",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellorandomized": {
+    "error": "transport/internet/reality: Current fingerprint Randomized0 does not support TLS 1.3, REALITY handshake cannot establish."
+  },
+  "hellorandomizedalpn": {
+    "sha256": "220ea417ddd66921b518b3b5a3c7b1445f81e962c5298829805aef37e4fe65a0",
+    "length": 1501,
+    "extensions": [
+      18,
+      23,
+      65281,
+      43,
+      45,
+      11,
+      10,
+      13,
+      0,
+      35,
+      16,
+      17513,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellorandomizednoalpn": {
+    "sha256": "a937a64c8d73699677edc7f2636d2ba958e0fbc83eaae30d1b41eb0cae336a23",
+    "length": 1474,
+    "extensions": [
+      18,
+      45,
+      43,
+      13,
+      11,
+      35,
+      65281,
+      0,
+      10,
+      23,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "hellosafari_16_0": {
+    "sha256": "d1c28fa8159929c9f23580a0d5eff09832e36a3f3b1587ada4a3b11afb6900a8",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellosafari_26_3": {
+    "sha256": "6aad98b9cfe1a6669545ebe2fd4ca1be2e2e219f0f2b43c678f8bba838632b97",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "hellosafari_auto": {
+    "sha256": "6aad98b9cfe1a6669545ebe2fd4ca1be2e2e219f0f2b43c678f8bba838632b97",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "ios": {
+    "sha256": "80034d916e94455cec40f28049910638de3a05e4ad104e9207271e681a788adb",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "qq": {
+    "sha256": "beaf6ff8a1dcdf6a69c252b6dbdcb669667513aad55e948a17e9cf91e3b9ff81",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "randomized@32b8ac49": {
+    "sha256": "59b81d9b17945725a42c1892a734ac5efb5979f9e2d918cae970df472193bf3e",
+    "length": 517,
+    "extensions": [
+      11,
+      51,
+      35,
+      16,
+      43,
+      21,
+      23,
+      10,
+      65281,
+      18,
+      5,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "randomized@417dcd23": {
+    "sha256": "0aa1871665cf35503ce669864b8836283f059bba2000c4dd5e01796894b040ac",
+    "length": 517,
+    "extensions": [
+      51,
+      11,
+      45,
+      43,
+      21,
+      65281,
+      5,
+      10,
+      16,
+      0,
+      23,
+      13,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "randomized@4f4f221b": {
+    "sha256": "19083ec2ffbb94a3204cd0f65ed28a971c712c754f56575b2ac0566686255bef",
+    "length": 1490,
+    "extensions": [
+      0,
+      11,
+      13,
+      65281,
+      35,
+      23,
+      16,
+      43,
+      45,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "randomized@601028d9": {
+    "sha256": "9e6e4cbfb4657dbfb0c9b5a0290b0b73dc3ee0a7b675915883c96643aa6ce682",
+    "length": 1574,
+    "extensions": [
+      45,
+      11,
+      23,
+      10,
+      13,
+      16,
+      35,
+      5,
+      51,
+      65281,
+      43,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "randomizednoalpn@32b8ac49": {
+    "sha256": "fcc762462f7bc9dda0ebe7d38c9a6e1a8f6d8a24060954f6912332490f19b527",
+    "length": 517,
+    "extensions": [
+      51,
+      35,
+      21,
+      43,
+      5,
+      10,
+      11,
+      65281,
+      23,
+      18,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "randomizednoalpn@417dcd23": {
+    "sha256": "dd6ca0a803d357177ce4309d80b54fd371be7acfba74057bbbf9b8fb8c86ff49",
+    "length": 517,
+    "extensions": [
+      51,
+      13,
+      45,
+      65281,
+      5,
+      11,
+      10,
+      21,
+      0,
+      23,
+      43,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ]
+  },
+  "randomizednoalpn@4f4f221b": {
+    "sha256": "fb8e71191be7cb4ab23c9931e0d3d6bed5dd4c558356a18971f2a88be319df7a",
+    "length": 1472,
+    "extensions": [
+      23,
+      13,
+      45,
+      0,
+      35,
+      43,
+      11,
+      65281,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "randomizednoalpn@601028d9": {
+    "sha256": "9cd1a56fc8a11c051927f6ddab11ecefe0c01f7486692dbd0f24db32cf0a74fd",
+    "length": 1556,
+    "extensions": [
+      13,
+      23,
+      11,
+      10,
+      35,
+      45,
+      51,
+      65281,
+      43,
+      5,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "safari": {
+    "sha256": "6aad98b9cfe1a6669545ebe2fd4ca1be2e2e219f0f2b43c678f8bba838632b97",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  }
+}
