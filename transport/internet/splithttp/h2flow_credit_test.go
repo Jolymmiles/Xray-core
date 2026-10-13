@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -136,7 +137,16 @@ func TestFlowUploadConnectionCreditFollowsCap(t *testing.T) {
 			// Under the cap a stream starts with, so the cap is what the stream
 			// counts for on the connection, and more than is returned below.
 			h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, id, 200<<10) })
+			// The cap opens with every credit only until the first round trip
+			// is measured, and the governor measures real time against a round
+			// trip of 200 ms here. The round is started anew before every
+			// frame, so that a stall of the machine cannot end it.
 			credit := func(stream uint32) map[uint32]uint64 {
+				h.c.mu.Lock()
+				if s := h.c.streams[id]; !s.up.mark.IsZero() {
+					s.up.mark = time.Now()
+				}
+				h.c.mu.Unlock()
 				count, sum := map[uint32]int{}, map[uint32]uint64{}
 				windowUpdates(t, h.fromServer(func(fr *http2.Framer) { fr.WriteWindowUpdate(stream, piece) }), count, sum)
 				return sum
@@ -159,6 +169,9 @@ func TestFlowUploadConnectionCreditFollowsCap(t *testing.T) {
 				opened := uint64(h.c.streams[id].up.cap - before)
 				if opened == 0 {
 					t.Fatalf("piece %d: the cap stayed at %d, so no connection credit followed it", i, before)
+				}
+				if h.c.streams[id].up.measured {
+					t.Fatalf("piece %d: a round trip was measured, and the cap no longer opens with every credit", i)
 				}
 				if sum[0] != opened {
 					t.Fatalf("piece %d, the stream's frame: %d bytes of connection credit went on, want the %d the cap opened by", i, sum[0], opened)
