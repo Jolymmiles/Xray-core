@@ -609,7 +609,7 @@ func TestFlowSendWindowSettingsCost(t *testing.T) {
 	n := 50
 	few := cost(hFew, n)
 	for few < enough && n < mostFrames {
-		n *= 2
+		n = min(2*n, mostFrames)
 		few = cost(hFew, n)
 	}
 	if few < enough {
@@ -669,8 +669,8 @@ func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
 // no stream and allocates nothing. A queue of the streams the limit kept
 // credit from, walked after every frame from the client, handed nothing on
 // here while credit quanta held a grant of 4 KiB back, and put every stream
-// back: it allocated once a frame with sixty streams. The quanta are gone
-// and so is the queue; that connection credit looks at no stream stays. The count does not depend on
+// back: it allocated once a frame with sixty streams. The quanta and the
+// queue are gone; connection credit still looks at no stream. The count does not depend on
 // the clock; BenchmarkFlowConnectionCredit has the time, which a walk that
 // allocated nothing would show only there.
 func TestFlowSendWindowConnectionCreditAllocs(t *testing.T) {
