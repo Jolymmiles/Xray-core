@@ -34,8 +34,8 @@ func TestCandidatePerformanceAgainstPreviousRelease(t *testing.T) {
 		t.Run(carrier, func(t *testing.T) {
 			baseline := startXrayPerformanceTopologyWithServer(t, workDir, binaries, oldBinary, certificate, privateKey, carrier, "baseline")
 			candidate := startXrayPerformanceTopologyWithServer(t, workDir, binaries, binaries.xray, certificate, privateKey, carrier, "candidate")
-			stressTCP(t, baseline.socksPort, tcpEcho, stressTCPStreams)
-			stressTCP(t, candidate.socksPort, tcpEcho, stressTCPStreams)
+			stressTCP(t, baseline, tcpEcho, stressTCPStreams)
+			stressTCP(t, candidate, tcpEcho, stressTCPStreams)
 			baselineStart := waitProcessResourcesStable(t, baseline.server.command.Process.Pid)
 			candidateStart := waitProcessResourcesStable(t, candidate.server.command.Process.Pid)
 
@@ -43,7 +43,7 @@ func TestCandidatePerformanceAgainstPreviousRelease(t *testing.T) {
 			candidateSamples := make([]time.Duration, 0, performanceRounds)
 			measure := func(topology *stressTopology) time.Duration {
 				started := time.Now()
-				stressTCP(t, topology.socksPort, tcpEcho, stressTCPStreams)
+				stressTCP(t, topology, tcpEcho, stressTCPStreams)
 				return time.Since(started)
 			}
 			for round := 0; round < performanceRounds; round++ {
@@ -164,5 +164,11 @@ func startXrayPerformanceTopologyWithServer(t *testing.T, workDir string, binari
 	waitTCP(t, server, serverPort)
 	client := startE2EProcess(t, binaries.xray, "run", "-config", clientPath)
 	waitSOCKS(t, client, socksPort)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("%s server logs:\n%s", name, server.logs.String())
+			t.Logf("%s client logs:\n%s", name, client.logs.String())
+		}
+	})
 	return &stressTopology{serverBinary: serverBinary, serverArgs: serverArgs, serverPort: serverPort, client: client, server: server, socksPort: socksPort}
 }
