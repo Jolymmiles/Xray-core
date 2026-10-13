@@ -99,7 +99,8 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	} else if config := reality.ConfigFromStreamSettings(streamSettings); config != nil {
 		newConn, err := reality.UClient(conn, config, ctx, dest)
 		if err != nil {
-			_ = conn.Close()
+			// UClient closes conn on failure, except when it hands it to the
+			// spider, which then owns it.
 			return nil, err
 		}
 		conn = newConn
