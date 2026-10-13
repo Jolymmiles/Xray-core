@@ -235,7 +235,7 @@
     ]
   },
   "hellochrome_100_psk": {
-    "error": "panic: runtime error: slice bounds out of range [39:0]"
+    "error": "transport/internet/reality: REALITY: failed to build the ClientHello \u003e tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "hellochrome_102": {
     "sha256": "b955dd509f496ca1de74d871b98d8b0054604715d49680e7614db02b7f444fba",
@@ -324,10 +324,10 @@
     ]
   },
   "hellochrome_112_psk_shuf": {
-    "error": "panic: runtime error: slice bounds out of range [39:0]"
+    "error": "transport/internet/reality: REALITY: failed to build the ClientHello \u003e tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "hellochrome_114_padding_psk_shuf": {
-    "error": "panic: runtime error: slice bounds out of range [39:0]"
+    "error": "transport/internet/reality: REALITY: failed to build the ClientHello \u003e tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "hellochrome_115_pq": {
     "sha256": "b9a520531dae1a8f1c93897756d1322e8f68471cb9a9038299b1902e21819173",
@@ -374,7 +374,7 @@
     ]
   },
   "hellochrome_115_pq_psk": {
-    "error": "panic: runtime error: slice bounds out of range [39:0]"
+    "error": "transport/internet/reality: REALITY: failed to build the ClientHello \u003e tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "hellochrome_120": {
     "sha256": "a7d5eae79f613f5b9fa07992d15a614d678e9c32241b47eb9a78e5b6f71e5a32",
