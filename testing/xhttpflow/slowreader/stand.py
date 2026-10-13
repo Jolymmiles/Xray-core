@@ -600,7 +600,13 @@ def inside(args):
     random.shuffle(jobs)
     with open(args.out, "a") as out:
         for i, name in enumerate(jobs, 1):
-            r = one_run(servers[name], args, name)
+            try:
+                r = one_run(servers[name], args, name)
+            except BaseException:
+                # The work directory goes with the stand; what Xray wrote
+                # before the failure is shown first.
+                show_xray_logs(getattr(args, "work", None))
+                raise
             out.write(json.dumps({"server": name, **r}) + "\n")
             out.flush()
             if "invalid" in r:

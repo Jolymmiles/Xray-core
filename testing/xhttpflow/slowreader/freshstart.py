@@ -35,13 +35,15 @@ some of them carried it.
 After --before each run also reads, with ss, the slow start threshold and
 the congestion window of the server's connections, in packets; a connection
 that has not left slow start has no threshold. After the idle time the kernel
-restarts from the larger of that threshold and three quarters of the window.
-A run whose ss fails is invalid.
+cuts the window back towards the initial one and sets the threshold to the
+larger of the old one and three quarters of the window it had: that is what
+the next download slow-starts up to. A run whose ss fails is invalid.
 
 A run is valid if the tunnel came up, --before was moved whole, the server's
 TCP state could be read, and every timed download was read whole within its
-deadline. What the two Xray processes of an invalid run wrote is printed. Invalid runs are reported and left out, and a
-single one makes the stand exit with status 1.
+deadline. What the two Xray processes of an invalid run wrote is printed.
+Invalid runs are reported and left out, and a single one makes the stand
+exit with status 1.
 """
 
 import argparse
@@ -64,10 +66,12 @@ BEFORE_BYTES = {"upload": 30_000_000, "download": 60_000_000, "nothing": 0}
 MOVE_TIMEOUT = 60.0
 
 
-def request(head, deadline, body=0):
+def request(head, deadline, body=0, length=None, text=None):
     """Sends a request through the tunnel, with body bytes of zeros after
-    its head, and returns the response's body and the seconds from the first
-    byte sent to the last byte read. The origin gives a Content-Length."""
+    its head, and returns the seconds from the first byte sent to the last
+    byte of the response read. Raises OSError unless the response is a 200
+    that is whole before the deadline, with a body of length bytes if length
+    is given and equal to text if text is."""
     s = stand.socks(deadline)
     try:
         start = time.time()
@@ -88,31 +92,42 @@ def request(head, deadline, body=0):
         head, _, got = buf.partition(b"\r\n\r\n")
         if not head.startswith(b"HTTP/1.1 200"):
             raise OSError(f"answered {head.splitlines()[0]!r}")
-        length = re.search(rb"(?i)\r\ncontent-length: *(\d+)", head)
-        if not length:
+        declared = re.search(rb"(?i)\r\ncontent-length: *(\d+)", head)
+        if not declared:
             raise OSError("no Content-Length")
-        left = int(length.group(1)) - len(got)
+        declared = int(declared.group(1))
+        if length is not None and declared != length:
+            raise OSError(f"a body of {declared} bytes, not the {length} asked for")
+        left = declared - len(got)
+        kept = got if text is not None else b""
         while left > 0:
             s.settimeout(stand.time_left(deadline))
             chunk = s.recv(min(left, 262144))
             if not chunk:
                 raise OSError(f"closed with {left} bytes to come")
             left -= len(chunk)
+            if text is not None:
+                kept += chunk
         end = time.time()
         if end >= deadline:
             raise OSError("the last byte came after the deadline")
+        if text is not None and kept != text:
+            raise OSError(f"answered {kept[:40]!r}, not {text!r}")
         return end - start
     finally:
         s.close()
 
 
 def fetch(size, deadline):
-    return request(b"GET /down?bytes=%d HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n" % size, deadline)
+    """Downloads size bytes; a response of another length is no download."""
+    return request(b"GET /down?bytes=%d HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n" % size,
+                   deadline, length=size)
 
 
 def send(size, deadline):
+    """Uploads size bytes; the origin answers with the number it read."""
     return request(b"POST /up?rate=0 HTTP/1.1\r\nHost: target.test\r\nContent-Length: %d\r\n"
-                   b"Connection: close\r\n\r\n" % size, deadline, size)
+                   b"Connection: close\r\n\r\n" % size, deadline, body=size, text=b"%d" % size)
 
 
 def tcp_state(srv_ns):
@@ -121,10 +136,13 @@ def tcp_state(srv_ns):
     has not left slow start has no threshold. Raises OSError if ss fails or
     names no connection: that is no measurement, not "no threshold"."""
     try:
-        out = subprocess.run(["ip", "netns", "exec", srv_ns, "ss", "-tinH", "sport = :443"],
-                             capture_output=True, text=True, check=True, timeout=10).stdout
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        raise OSError(f"ss failed: {e}") from e
+        ss = subprocess.run(["ip", "netns", "exec", srv_ns, "ss", "-tinH", "sport = :443"],
+                            capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired as e:
+        raise OSError(f"ss did not finish: {e}") from e
+    if ss.returncode:
+        raise OSError(f"ss failed with status {ss.returncode}: {ss.stderr.strip()}")
+    out = ss.stdout
     cwnd = sorted(int(x) for x in re.findall(r"(?<![a-z_])cwnd:(\d+)", out))
     if not cwnd:
         raise OSError("ss showed no connection of the server")
@@ -169,7 +187,13 @@ def inside(args):
     random.shuffle(jobs)
     with open(args.out, "a") as out:
         for i, name in enumerate(jobs, 1):
-            r = one_run(servers[name], args, name)
+            try:
+                r = one_run(servers[name], args, name)
+            except BaseException:
+                # The work directory goes with the stand; what Xray wrote
+                # before the failure is shown first.
+                stand.show_xray_logs(args.work)
+                raise
             out.write(json.dumps({"server": name, "before": args.before, **r}) + "\n")
             out.flush()
             if "invalid" in r:

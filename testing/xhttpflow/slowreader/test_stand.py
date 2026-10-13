@@ -158,6 +158,45 @@ class ComparisonStatusTests(unittest.TestCase):
         self.assertIn({"server": "after", **invalid}, records)
 
 
+class XrayLogTests(unittest.TestCase):
+    """What the two Xray processes wrote is shown for a run that does not
+    count, also when the run ends in an exception: the work directory that
+    holds it goes when the stand ends."""
+
+    def inside(self, one_run):
+        work = self.enterContext(tempfile.TemporaryDirectory())
+        for who in ("server", "client"):
+            pathlib.Path(work, f"{who}.log").write_text(f"{who} diagnostic\n")
+        args = types.SimpleNamespace(server=["a=/a"], runs=1, out=str(pathlib.Path(work, "runs.jsonl")), work=work)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(stand, "one_run", one_run), mock.patch.object(stand.signal, "signal"), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                result = stand.inside(args)
+            except Exception as e:
+                result = e
+        return result, stderr.getvalue()
+
+    def test_an_invalid_run_shows_what_xray_wrote(self):
+        result, stderr = self.inside(lambda *_: {"invalid": "the tunnel did not come up"})
+        self.assertEqual(result, 1)
+        self.assertIn("server diagnostic", stderr)
+        self.assertIn("client diagnostic", stderr)
+
+    def test_a_run_that_raises_shows_what_xray_wrote(self):
+        def raises(*_):
+            raise FileNotFoundError("/client")
+
+        result, stderr = self.inside(raises)
+        self.assertIsInstance(result, FileNotFoundError)
+        self.assertIn("server diagnostic", stderr, "the server had started and its output would go with the work directory")
+
+    def test_a_valid_run_shows_nothing(self):
+        result, stderr = self.inside(lambda *_: dict(VALID_RUN))
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr, "")
+
+
 class WaitedForever(Exception):
     """Stands in for a wait with no deadline on a child that never exits."""
 
