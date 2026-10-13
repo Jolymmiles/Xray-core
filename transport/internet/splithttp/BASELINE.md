@@ -598,10 +598,12 @@ Limits:
   the upload with half the window of the others, or a quarter, and its
   first start follows it run by run, 1.18 and 1.21 s with a window of 64,
   0.83 to 0.88 with 110 to 125, where the others have 199 to 267 and 0.67
-  to 0.77 s. After the idle time the kernel restarts from the larger of
-  the threshold and three quarters of the window (`tcp_cwnd_restart`,
-  `tcp_current_ssthresh`), which fits: about 150 to 200 packets for the
-  four builds, 58 to 125 for `391e5f06`.
+  to 0.77 s. After the idle time the kernel cuts the window back towards
+  the initial one and sets the threshold to the larger of the old one and
+  three quarters of the window it had (`tcp_cwnd_restart`,
+  `tcp_current_ssthresh`). That threshold is what the next download
+  slow-starts up to, and it fits: about 150 to 200 packets for the four
+  builds, 58 to 125 for `391e5f06`.
   An open hypothesis for why the window ends lower, read from
   `tcp_cubic.c` and `tcp_input.c` and not observed: while an upload runs
   the server sends the client little but credit, in small segments; the
