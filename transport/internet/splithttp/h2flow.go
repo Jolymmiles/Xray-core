@@ -67,12 +67,6 @@ const (
 	// before its readers prove they need more: Go's default.
 	flowConnFloor   = 1 << 20
 	flowSmallCredit = 64 << 10
-	// Credit is handed on in pieces of at least flowQuantumMin and at most
-	// flowQuantumMax where the sender is not about to run dry, see hold. The
-	// larger stays under flowSmallCredit, so a governor at the other end
-	// still sees a peer that credits in small steps.
-	flowQuantumMin  = 16 << 10
-	flowQuantumMax  = 32 << 10
 	flowShrinkAfter = 3
 	flowKernelEvery = 20 * time.Millisecond
 	flowQueueHold   = 15 * time.Millisecond
@@ -135,11 +129,10 @@ const flowShownFull = max(h2InitWindow, flowShownDown)
 // client that announces real.
 //
 // A client that announces no more than the protocol default gets all of it,
-// limit or not. It may be a governor: one shows exactly that, counts on every
-// byte of it, and holds back credit under a quantum while it takes the sender
-// to have a quantum left. A server that kept its stack under what such a
-// client showed would wait for that credit while the client waits for data,
-// for good; see flowShownDown. With all of it shown, what the stream's floor
+// limit or not. It may be a governor: one shows exactly that and counts on
+// every byte of it. A server that kept its stack under what such a client
+// showed would wait for credit while the client waits for data, for good;
+// see flowShownDown. With all of it shown, what the stream's floor
 // in downRelease hands on is all the client has returned, so the limit holds
 // nothing back from it, and what such a client holds is up to its own
 // governor.
@@ -1138,36 +1131,12 @@ func (c *flowConn) upConnRelease() int64 {
 	return min(bank, flowConnFloor+reading-unread-window, h2MaxWindow)
 }
 
-// appendUpConnRelease hands the client what connection credit is due. It
-// waits for a quantum, see hold, unless ramping says the stream whose credit
-// brought it here is still speeding up.
-func (c *flowConn) appendUpConnRelease(out []byte, ramping bool) []byte {
-	rel := c.upConnRelease()
-	if rel <= 0 || !ramping && hold(rel, h2InitWindow+c.upConnForwarded-c.upConnSent, flowQuantumMax) {
-		return out
+func (c *flowConn) appendUpConnRelease(out []byte) []byte {
+	if rel := c.upConnRelease(); rel > 0 {
+		c.upConnForwarded += rel
+		out = appendWindowUpdate(out, 0, rel)
 	}
-	c.upConnForwarded += rel
-	return appendWindowUpdate(out, 0, rel)
-}
-
-// quantum is the least credit worth handing on for a window of cap: an
-// eighth of it, between one and two default frames.
-func quantum(cap int32) int64 {
-	return min(max(int64(cap)/8, flowQuantumMin), flowQuantumMax)
-}
-
-// hold reports whether credit rel should wait for more. A reader returns
-// credit a few KiB at a time; handed on like that, each piece makes the
-// sender write one small frame, a system call and a TLS record each. While
-// the sender still has a quantum of window it loses nothing by waiting, and
-// what it sends then brings the next credit; once it has less, all credit
-// goes out at once. No cap changes, so the reader holds no more than before.
-//
-// An upload that is still speeding up is not held, stream or connection: its
-// cap opens with every credit, and credit that waited for a quantum cost its
-// first megabytes a round trip.
-func hold(rel, window, quantum int64) bool {
-	return rel < quantum && window >= quantum
+	return out
 }
 
 // currentRTT is the kernel's min_rtt where it vouches for the path, otherwise
@@ -1604,7 +1573,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
-		if rel <= 0 || hold(rel, int64(c.clientShown)+s.downForwarded-s.downSent, quantum(s.down.cap)) {
+		if rel <= 0 {
 			return out
 		}
 		c.forwardDown(s, rel)
@@ -1712,7 +1681,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			if !c.upConnGrantKnown && c.upConnSent == 0 {
 				c.upConnGrant += inc
 			}
-			return c.appendUpConnRelease(out, false)
+			return c.appendUpConnRelease(out)
 		}
 		s := c.stream(f.stream)
 		if s == nil || inc == 0 || !c.up.enabled() {
@@ -1737,12 +1706,12 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			s.up.cap = min(s.up.cap, flowUnconfirmedUp)
 		}
 		c.upLearned.note(now, c.up.init, s.up.cap)
-		if rel := c.upRelease(s); rel > 0 && (!s.up.ramped || !hold(rel, int64(c.serverShown)+s.upForwarded-s.upSent, quantum(s.up.cap))) {
+		if rel := c.upRelease(s); rel > 0 {
 			s.upForwarded += rel
 			out = appendWindowUpdate(out, f.stream, rel)
 		}
 		// What the reader took also frees room on the connection.
-		return c.appendUpConnRelease(out, !s.up.ramped)
+		return c.appendUpConnRelease(out)
 	}
 	out = append(out, header...)
 	return append(out, payload...)

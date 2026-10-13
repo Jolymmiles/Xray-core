@@ -158,6 +158,45 @@ class ComparisonStatusTests(unittest.TestCase):
         self.assertIn({"server": "after", **invalid}, records)
 
 
+class XrayLogTests(unittest.TestCase):
+    """What the two Xray processes wrote is shown for a run that does not
+    count, also when the run ends in an exception: the work directory that
+    holds it goes when the stand ends."""
+
+    def inside(self, one_run):
+        work = self.enterContext(tempfile.TemporaryDirectory())
+        for who in ("server", "client"):
+            pathlib.Path(work, f"{who}.log").write_text(f"{who} diagnostic\n")
+        args = types.SimpleNamespace(server=["a=/a"], runs=1, out=str(pathlib.Path(work, "runs.jsonl")), work=work)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(stand, "one_run", one_run), mock.patch.object(stand.signal, "signal"), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                result = stand.inside(args)
+            except Exception as e:
+                result = e
+        return result, stderr.getvalue()
+
+    def test_an_invalid_run_shows_what_xray_wrote(self):
+        result, stderr = self.inside(lambda *_: {"invalid": "the tunnel did not come up"})
+        self.assertEqual(result, 1)
+        self.assertIn("server diagnostic", stderr)
+        self.assertIn("client diagnostic", stderr)
+
+    def test_a_run_that_raises_shows_what_xray_wrote(self):
+        def raises(*_):
+            raise FileNotFoundError("/client")
+
+        result, stderr = self.inside(raises)
+        self.assertIsInstance(result, FileNotFoundError)
+        self.assertIn("server diagnostic", stderr, "the server had started and its output would go with the work directory")
+
+    def test_a_valid_run_shows_nothing(self):
+        result, stderr = self.inside(lambda *_: dict(VALID_RUN))
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr, "")
+
+
 class WaitedForever(Exception):
     """Stands in for a wait with no deadline on a child that never exits."""
 
@@ -195,6 +234,11 @@ class FakeHost:
     killed; the measuring child exits with inside_exit, or never if None. The
     ip commands listed in failing exit with status 1."""
 
+    # The congestion controls the kernel has loaded, and the one it keeps
+    # for the server's namespace whatever it is asked.
+    available = "reno cubic"
+    congestion_control = "cubic"
+
     def __init__(self, inside_exit=0, origin_stderr=b"", failing=()):
         self.inside_exit, self.origin_stderr, self.failing = inside_exit, origin_stderr, failing
         self.events = []
@@ -212,6 +256,10 @@ class FakeHost:
         self.events.append(("run", line))
         if line in self.failing:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=f"{line}: Device or resource busy\n")
+        if line.endswith("sysctl -n net.ipv4.tcp_available_congestion_control"):
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.available + "\n", stderr="")
+        if line.endswith("sysctl -n net.ipv4.tcp_congestion_control"):
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.congestion_control + "\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     def teardown(self):
@@ -234,11 +282,11 @@ class FakeHost:
 class OuterTests(unittest.TestCase):
     RUNS = 36
 
-    def outer(self, host):
+    def outer(self, host, **more):
         """Runs outer() against host; returns its exit code or the exception
         it raised, what it wrote to stderr, and its temporary directory."""
         args = types.SimpleNamespace(server=["before=/before", "after=/after"], runs=self.RUNS,
-                                     origin="/origin", client="/client", out="runs.jsonl")
+                                     origin="/origin", client="/client", out="runs.jsonl", **more)
         real_mkdtemp, real_rmtree = tempfile.mkdtemp, shutil.rmtree
         work = []
 
@@ -262,7 +310,7 @@ class OuterTests(unittest.TestCase):
                 contextlib.redirect_stderr(stderr):
             try:
                 result = stand.outer(args)
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 result = e
         return result, stderr.getvalue(), work[0]
 
@@ -282,6 +330,37 @@ class OuterTests(unittest.TestCase):
         self.assertEqual(host.teardown(), ["inside", "origin", "cli", "srv", "work"])
         self.assertIn(("inside", "terminate"), host.events)
         self.assertFalse(os.path.exists(work))
+
+    def assert_stopped_before_it_started(self, host, result, work):
+        self.assertIsInstance(result, SystemExit)
+        self.assertNotIn("origin", [e[0] for e in host.events], "nothing was started")
+        for ns in ("srv", "cli"):
+            self.assertIn(("run", f"ip netns del xslow-{os.getpid()}-{ns}"), host.events)
+        self.assertFalse(os.path.exists(work))
+
+    def test_a_congestion_control_the_kernel_has_not_loaded_is_not_asked_for(self):
+        host = FakeHost()
+        result, _, work = self.outer(host, server_cc="bbr")
+        self.assert_stopped_before_it_started(host, result, work)
+        self.assertIn("no bbr loaded", str(result))
+        self.assertFalse([e for e in host.events if e[0] == "run" and "sysctl -qw net.ipv4.tcp_congestion_control" in e[1]],
+                         "writing the sysctl would make the kernel load the module for the whole host")
+
+    def test_a_congestion_control_the_kernel_did_not_apply_stops_the_stand(self):
+        host = FakeHost()
+        host.available = "reno cubic bbr"
+        result, _, work = self.outer(host, server_cc="bbr")
+        self.assert_stopped_before_it_started(host, result, work)
+        self.assertIn("cubic, not bbr", str(result))
+
+    def test_the_congestion_control_asked_for_is_set_in_the_servers_namespace(self):
+        host = FakeHost()
+        host.available = "reno cubic bbr"
+        host.congestion_control = "bbr"
+        result, _, _ = self.outer(host, server_cc="bbr")
+        self.assertEqual(result, 0)
+        srv = f"xslow-{os.getpid()}-srv"
+        self.assertIn(("run", f"ip netns exec {srv} sysctl -qw net.ipv4.tcp_congestion_control=bbr"), host.events)
 
     def test_a_namespace_that_cannot_be_removed_is_reported_and_the_rest_removed(self):
         cli = f"xslow-{os.getpid()}-cli"

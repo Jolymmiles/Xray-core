@@ -18,7 +18,9 @@ Every --server build runs --runs times, all runs shuffled together. The server
 has the governor on ("h2Flow": {"enabled": true}) unless --h2flow NAME=JSON
 gives that server another "h2Flow" object; the client is whatever --client is,
 with its own defaults. REALITY keys are made on the spot with
-"<first server> x25519" and live in a temporary directory.
+"<first server> x25519" and live in a temporary directory. What the two Xray
+processes of a run write is kept there too and printed if the run is
+invalid.
 
 With --workload downloads the load is --readers downloads instead, each read
 at --read-rate bytes per second (0 reads as fast as it comes), on a link of
@@ -43,6 +45,11 @@ processes per gigabyte are the result:
       --server limit=/path/to/xray \\
       --server nolimit=/path/to/xray --h2flow 'nolimit={"enabled": true, "maxConnectionSendWindow": -1}' \\
       --runs 5
+
+The server's namespace uses CUBIC whatever the host does; --server-cc bbr
+gives it BBR if the kernel has it loaded. The stand does not load it: where
+net.ipv4.tcp_available_congestion_control does not name it, it does not
+start.
 
 The stand creates two network namespaces and a veth pair with names of its
 own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
@@ -133,8 +140,10 @@ def remove_namespace(ns):
         raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
 
 
-def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0):
-    """Two namespaces of this run joined by a veth pair, shaped in both."""
+def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, server_cc="cubic"):
+    """Two namespaces of this run joined by a veth pair, shaped in both. The
+    server's namespace gets server_cc as its TCP congestion control, or the
+    stand does not start."""
     existing = subprocess.run(["ip", "netns", "list"], check=True, capture_output=True, text=True).stdout.split()
     for ns in (srv, cli):
         if ns in existing:
@@ -159,8 +168,19 @@ def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0):
         sh(f'ip netns exec {ns} sysctl -qw net.ipv4.tcp_rmem="4096 131072 33554432" '
            f'net.ipv4.tcp_wmem="{wmem}"')
         sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {rtt_ms / 2:g}ms rate {mbit}mbit limit {limit}")
-    subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", "net.ipv4.tcp_congestion_control=cubic"],
+    # Setting one the kernel has not loaded would make it load the module,
+    # for the whole host and for good.
+    available = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_available_congestion_control"],
+                               capture_output=True, text=True).stdout.split()
+    if server_cc not in available:
+        sys.exit(f"the kernel has no {server_cc} loaded (it has {' '.join(available) or 'nothing it names'}); "
+                 "the stand does not load it")
+    subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", f"net.ipv4.tcp_congestion_control={server_cc}"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    got = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_congestion_control"],
+                         capture_output=True, text=True).stdout.strip()
+    if got != server_cc:
+        sys.exit(f"the server's namespace uses {got or 'an unknown congestion control'}, not {server_cc}")
 
 
 def reality_keys(xray):
@@ -220,7 +240,7 @@ def outer(args):
 
         stack.push(show_origin_log)
         setup_network(stack, srv, cli, getattr(args, "mbit", MBIT), getattr(args, "rtt", RTT_MS),
-                      getattr(args, "app_buffer", 0))
+                      getattr(args, "app_buffer", 0), getattr(args, "server_cc", "cubic"))
         private_key, public_key = reality_keys(next(iter(servers.values())))
         for name in servers:
             with open(f"{work}/server-{name}.json", "w") as f:
@@ -257,7 +277,7 @@ def show_log(name, f):
     f.seek(0)
     text = f.read().decode(errors="replace").rstrip()
     if text:
-        print(f"{name} stderr:\n{text}", file=sys.stderr)
+        print(f"{name} output:\n{text}", file=sys.stderr)
 
 
 def time_left(deadline):
@@ -441,18 +461,34 @@ def percentile(values, p):
     return values[min(len(values) - 1, int(p * len(values)))]
 
 
+def start_xray(stack, server_binary, args, name):
+    """Starts the server in its namespace and the client here; the stack
+    stops them. What they write goes to two files in the work directory,
+    started afresh for every run, for show_xray_logs."""
+    logs = [stack.enter_context(open(f"{args.work}/{who}.log", "w+b")) for who in ("server", "client")]
+    server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
+                               f"{args.work}/server-{name}.json"], stdout=logs[0], stderr=subprocess.STDOUT)
+    stack.callback(reap, server)  # "ip netns exec" execs Xray in place, so this is Xray
+    client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
+                              stdout=logs[1], stderr=subprocess.STDOUT)
+    stack.callback(reap, client)
+    return server, client
+
+
+def show_xray_logs(work):
+    """Prints what the server and the client of the current run wrote; for a
+    run that is about to be reported invalid."""
+    for who in ("server", "client"):
+        # A run that never started Xray left no log.
+        with contextlib.suppress(OSError), open(f"{work}/{who}.log", "rb") as f:
+            show_log(f"xray {who}", f)
+
+
 def one_run(server_binary, args, name):
     """One run. Returns its numbers, with "invalid" set to the reason if it must not count."""
     downloads = args.workload == "downloads"
     with contextlib.ExitStack() as stack:
-        server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
-                                   f"{args.work}/server-{name}.json"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stack.callback(reap, server)  # "ip netns exec" execs Xray in place, so this is Xray
-        client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stack.callback(reap, client)
-
+        server, client = start_xray(stack, server_binary, args, name)
         ready_by = time.time() + READY_TIMEOUT
         while ping(2) is None:
             if time.time() > ready_by or server.poll() is not None or client.poll() is not None:
@@ -564,12 +600,19 @@ def inside(args):
     random.shuffle(jobs)
     with open(args.out, "a") as out:
         for i, name in enumerate(jobs, 1):
-            r = one_run(servers[name], args, name)
+            try:
+                r = one_run(servers[name], args, name)
+            except BaseException:
+                # The work directory goes with the stand; what Xray wrote
+                # before the failure is shown first.
+                show_xray_logs(getattr(args, "work", None))
+                raise
             out.write(json.dumps({"server": name, **r}) + "\n")
             out.flush()
             if "invalid" in r:
                 invalid[name] += 1
                 print(f"[{i}/{len(jobs)}] {name}: INVALID, {r['invalid']}", flush=True)
+                show_xray_logs(getattr(args, "work", None))
                 continue
             results[name].append(r)
             print(f"[{i}/{len(jobs)}] {name}: ping p50 {r['p50']:.0f} ms, p95 {r['p95']:.0f} ms, "
@@ -593,10 +636,10 @@ def inside(args):
     def cpu_per_gb(rs, key):
         moved = "download_mb_s" if downloads else "upload_mb"
         values = [r[key] / (r[moved] * (DURATION if downloads else 1) / 1000) for r in rs if r.get(key) is not None and r.get(moved)]
-        return f"{statistics.median(values):.1f}" if values else "-"
+        return f"{statistics.median(values):.1f} ({min(values):.1f}-{max(values):.1f})" if values else "-"
 
-    rows.append(("Median CPU per GB, server / client", lambda n, rs: f"{cpu_per_gb(rs, 'server_cpu_s')} / "
-                                                                    f"{cpu_per_gb(rs, 'client_cpu_s')} s"))
+    rows.append(("CPU per GB, server / client, median (least-most)", lambda n, rs: f"{cpu_per_gb(rs, 'server_cpu_s')} / "
+                                                                                  f"{cpu_per_gb(rs, 'client_cpu_s')} s"))
     if not downloads:
         rows.append(("Median sent", lambda n, rs: f"{statistics.median(r['upload_mb'] for r in rs) / DURATION:.1f} MB/s"))
     if downloads:
@@ -628,6 +671,7 @@ def main():
     ap.add_argument("--workload", choices=("uploads", "downloads"), default="uploads")
     ap.add_argument("--mbit", type=int, default=MBIT, help="link rate")
     ap.add_argument("--rtt", type=int, default=RTT_MS, help="round trip of the link, ms")
+    ap.add_argument("--server-cc", default="cubic", help="TCP congestion control of the server's namespace")
     ap.add_argument("--readers", type=int, default=UPLOADS, help="downloads at once")
     ap.add_argument("--read-rate", type=int, default=UPLOAD_RATE, help="bytes per second each download is read at, 0 for no limit")
     ap.add_argument("--download-bytes", type=int, default=DOWNLOAD_BYTES, help="size of each download")
