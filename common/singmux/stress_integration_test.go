@@ -130,6 +130,93 @@ func TestStressTCPQuitsWhileTheStallHolds(t *testing.T) {
 	}
 }
 
+// TestRunStressTCPReportsTheStreamThatFailedFirst fails one stream with a
+// wrong echo while the others wait. The failure hook ends the others, as
+// SIGQUIT does, and runStressTCP must still report the first failure rather
+// than the end of a stream the hook cut.
+func TestRunStressTCPReportsTheStreamThatFailedFirst(t *testing.T) {
+	for round := 0; round < 200; round++ {
+		socks := startScriptedSOCKS(t)
+		topology := &stressTopology{socksPort: socks.port}
+		err := runStressTCP(topology, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9}, 32, 10*time.Second, socks.closeAll)
+		if err == nil || !strings.Contains(err.Error(), "payload mismatch") {
+			t.Fatalf("round %d: runStressTCP returned %v, want the first stream's payload mismatch", round, err)
+		}
+	}
+}
+
+// scriptedSOCKS answers every SOCKS connect. Its first connection echoes
+// zeros instead of the payload; the others echo nothing until closeAll.
+type scriptedSOCKS struct {
+	port        int
+	mu          sync.Mutex
+	accepted    int
+	closed      bool
+	connections []net.Conn
+}
+
+func startScriptedSOCKS(t *testing.T) *scriptedSOCKS {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socks := &scriptedSOCKS{port: listener.Addr().(*net.TCPAddr).Port}
+	t.Cleanup(func() {
+		listener.Close()
+		socks.closeAll()
+	})
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			socks.mu.Lock()
+			socks.accepted++
+			first, closed := socks.accepted == 1, socks.closed
+			socks.connections = append(socks.connections, connection)
+			socks.mu.Unlock()
+			if closed {
+				connection.Close()
+				continue
+			}
+			go socks.serve(connection, first)
+		}
+	}()
+	return socks
+}
+
+func (socks *scriptedSOCKS) serve(connection net.Conn, first bool) {
+	greeting := make([]byte, 3)
+	request := make([]byte, 10)
+	if _, err := io.ReadFull(connection, greeting); err != nil {
+		return
+	}
+	if _, err := connection.Write([]byte{5, 0}); err != nil {
+		return
+	}
+	if _, err := io.ReadFull(connection, request); err != nil {
+		return
+	}
+	if _, err := connection.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		return
+	}
+	go io.Copy(io.Discard, connection)
+	if first {
+		_, _ = connection.Write(make([]byte, stressTCPBytes))
+	}
+}
+
+func (socks *scriptedSOCKS) closeAll() {
+	socks.mu.Lock()
+	defer socks.mu.Unlock()
+	socks.closed = true
+	for _, connection := range socks.connections {
+		connection.Close()
+	}
+}
+
 func TestMihomoStressSpreadsOnlyStressClientConnections(t *testing.T) {
 	if got := stressTCPStreamsForPeer("mihomo", 128); got != 32 {
 		t.Fatalf("Mihomo peak streams = %d, want 32", got)
@@ -340,30 +427,30 @@ func stressTCP(t *testing.T, topology *stressTopology, destination *net.TCPAddr,
 }
 
 // runStressTCP runs streamCount concurrent echo streams, each within deadline,
-// and returns the first error. failed runs once, for the first stream that
-// fails, before that stream closes its connection; other failing streams wait
-// for it to return before they close theirs.
+// and returns the error of the first stream that fails. failed runs once, for
+// that stream, before it closes its connection; other failing streams wait for
+// it to return before they close theirs. Streams that failed hook cut short
+// are not reported in place of the first failure.
 func runStressTCP(topology *stressTopology, destination *net.TCPAddr, streamCount int, deadline time.Duration, failed func()) error {
 	payload := bytes.Repeat([]byte("xray-smux-stress"), stressTCPBytes/len("xray-smux-stress")+1)[:stressTCPBytes]
-	errors := make(chan error, streamCount)
+	var first error
 	var once sync.Once
-	failedOnce := func() { once.Do(failed) }
+	streamFailed := func(err error) {
+		once.Do(func() {
+			first = err
+			failed()
+		})
+	}
 	var wait sync.WaitGroup
 	for stream := 0; stream < streamCount; stream++ {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			errors <- stressTCPRoundTrip(topology.socksPort, destination, payload, deadline, failedOnce)
+			_ = stressTCPRoundTrip(topology.socksPort, destination, payload, deadline, streamFailed)
 		}()
 	}
 	wait.Wait()
-	close(errors)
-	for err := range errors {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return first
 }
 
 // quitStressTopology sends SIGQUIT to the client and the server at once. A Go
@@ -395,10 +482,10 @@ func quitStressTopology(t testing.TB, topology *stressTopology) {
 	}
 }
 
-func stressTCPRoundTrip(socksPort int, destination *net.TCPAddr, payload []byte, deadline time.Duration, failed func()) (err error) {
+func stressTCPRoundTrip(socksPort int, destination *net.TCPAddr, payload []byte, deadline time.Duration, failed func(error)) (err error) {
 	connection, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), 10*time.Second)
 	if err != nil {
-		failed()
+		failed(err)
 		return err
 	}
 	defer connection.Close()
@@ -406,7 +493,7 @@ func stressTCPRoundTrip(socksPort int, destination *net.TCPAddr, payload []byte,
 	// connection, and the path behind it, while failed runs.
 	defer func() {
 		if err != nil {
-			failed()
+			failed(err)
 		}
 	}()
 	_ = connection.SetDeadline(time.Now().Add(deadline))
