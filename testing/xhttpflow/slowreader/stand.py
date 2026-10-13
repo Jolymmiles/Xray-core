@@ -18,7 +18,9 @@ Every --server build runs --runs times, all runs shuffled together. The server
 has the governor on ("h2Flow": {"enabled": true}) unless --h2flow NAME=JSON
 gives that server another "h2Flow" object; the client is whatever --client is,
 with its own defaults. REALITY keys are made on the spot with
-"<first server> x25519" and live in a temporary directory.
+"<first server> x25519" and live in a temporary directory. What the two Xray
+processes of a run write is kept there too and printed if the run is
+invalid.
 
 With --workload downloads the load is --readers downloads instead, each read
 at --read-rate bytes per second (0 reads as fast as it comes), on a link of
@@ -45,7 +47,9 @@ processes per gigabyte are the result:
       --runs 5
 
 The server's namespace uses CUBIC whatever the host does; --server-cc bbr
-gives it BBR, if the kernel has it, and the stand does not start otherwise.
+gives it BBR if the kernel has it loaded. The stand does not load it: where
+net.ipv4.tcp_available_congestion_control does not name it, it does not
+start.
 
 The stand creates two network namespaces and a veth pair with names of its
 own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
@@ -164,6 +168,13 @@ def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, serve
         sh(f'ip netns exec {ns} sysctl -qw net.ipv4.tcp_rmem="4096 131072 33554432" '
            f'net.ipv4.tcp_wmem="{wmem}"')
         sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {rtt_ms / 2:g}ms rate {mbit}mbit limit {limit}")
+    # Setting one the kernel has not loaded would make it load the module,
+    # for the whole host and for good.
+    available = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_available_congestion_control"],
+                               capture_output=True, text=True).stdout.split()
+    if server_cc not in available:
+        sys.exit(f"the kernel has no {server_cc} loaded (it has {' '.join(available) or 'nothing it names'}); "
+                 "the stand does not load it")
     subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", f"net.ipv4.tcp_congestion_control={server_cc}"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     got = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_congestion_control"],
@@ -266,7 +277,7 @@ def show_log(name, f):
     f.seek(0)
     text = f.read().decode(errors="replace").rstrip()
     if text:
-        print(f"{name} stderr:\n{text}", file=sys.stderr)
+        print(f"{name} output:\n{text}", file=sys.stderr)
 
 
 def time_left(deadline):
@@ -450,18 +461,34 @@ def percentile(values, p):
     return values[min(len(values) - 1, int(p * len(values)))]
 
 
+def start_xray(stack, server_binary, args, name):
+    """Starts the server in its namespace and the client here; the stack
+    stops them. What they write goes to two files in the work directory,
+    started afresh for every run, for show_xray_logs."""
+    logs = [stack.enter_context(open(f"{args.work}/{who}.log", "w+b")) for who in ("server", "client")]
+    server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
+                               f"{args.work}/server-{name}.json"], stdout=logs[0], stderr=subprocess.STDOUT)
+    stack.callback(reap, server)  # "ip netns exec" execs Xray in place, so this is Xray
+    client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
+                              stdout=logs[1], stderr=subprocess.STDOUT)
+    stack.callback(reap, client)
+    return server, client
+
+
+def show_xray_logs(work):
+    """Prints what the server and the client of the current run wrote; for a
+    run that is about to be reported invalid."""
+    for who in ("server", "client"):
+        # A run that never started Xray left no log.
+        with contextlib.suppress(OSError), open(f"{work}/{who}.log", "rb") as f:
+            show_log(f"xray {who}", f)
+
+
 def one_run(server_binary, args, name):
     """One run. Returns its numbers, with "invalid" set to the reason if it must not count."""
     downloads = args.workload == "downloads"
     with contextlib.ExitStack() as stack:
-        server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
-                                   f"{args.work}/server-{name}.json"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stack.callback(reap, server)  # "ip netns exec" execs Xray in place, so this is Xray
-        client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stack.callback(reap, client)
-
+        server, client = start_xray(stack, server_binary, args, name)
         ready_by = time.time() + READY_TIMEOUT
         while ping(2) is None:
             if time.time() > ready_by or server.poll() is not None or client.poll() is not None:
@@ -579,6 +606,7 @@ def inside(args):
             if "invalid" in r:
                 invalid[name] += 1
                 print(f"[{i}/{len(jobs)}] {name}: INVALID, {r['invalid']}", flush=True)
+                show_xray_logs(getattr(args, "work", None))
                 continue
             results[name].append(r)
             print(f"[{i}/{len(jobs)}] {name}: ping p50 {r['p50']:.0f} ms, p95 {r['p95']:.0f} ms, "

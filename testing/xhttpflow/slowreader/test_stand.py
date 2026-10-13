@@ -195,7 +195,9 @@ class FakeHost:
     killed; the measuring child exits with inside_exit, or never if None. The
     ip commands listed in failing exit with status 1."""
 
-    # What the kernel keeps for the server's namespace, whatever it is asked.
+    # The congestion controls the kernel has loaded, and the one it keeps
+    # for the server's namespace whatever it is asked.
+    available = "reno cubic"
     congestion_control = "cubic"
 
     def __init__(self, inside_exit=0, origin_stderr=b"", failing=()):
@@ -215,6 +217,8 @@ class FakeHost:
         self.events.append(("run", line))
         if line in self.failing:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=f"{line}: Device or resource busy\n")
+        if line.endswith("sysctl -n net.ipv4.tcp_available_congestion_control"):
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.available + "\n", stderr="")
         if line.endswith("sysctl -n net.ipv4.tcp_congestion_control"):
             return subprocess.CompletedProcess(cmd, 0, stdout=self.congestion_control + "\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -288,18 +292,31 @@ class OuterTests(unittest.TestCase):
         self.assertIn(("inside", "terminate"), host.events)
         self.assertFalse(os.path.exists(work))
 
-    def test_a_congestion_control_the_kernel_lacks_stops_the_stand(self):
-        host = FakeHost()
-        result, _, work = self.outer(host, server_cc="bbr")
-        self.assertIsInstance(result, SystemExit, "the stand must not measure under another congestion control")
-        self.assertIn("cubic, not bbr", str(result))
+    def assert_stopped_before_it_started(self, host, result, work):
+        self.assertIsInstance(result, SystemExit)
         self.assertNotIn("origin", [e[0] for e in host.events], "nothing was started")
         for ns in ("srv", "cli"):
             self.assertIn(("run", f"ip netns del xslow-{os.getpid()}-{ns}"), host.events)
         self.assertFalse(os.path.exists(work))
 
+    def test_a_congestion_control_the_kernel_has_not_loaded_is_not_asked_for(self):
+        host = FakeHost()
+        result, _, work = self.outer(host, server_cc="bbr")
+        self.assert_stopped_before_it_started(host, result, work)
+        self.assertIn("no bbr loaded", str(result))
+        self.assertFalse([e for e in host.events if e[0] == "run" and "sysctl -qw net.ipv4.tcp_congestion_control" in e[1]],
+                         "writing the sysctl would make the kernel load the module for the whole host")
+
+    def test_a_congestion_control_the_kernel_did_not_apply_stops_the_stand(self):
+        host = FakeHost()
+        host.available = "reno cubic bbr"
+        result, _, work = self.outer(host, server_cc="bbr")
+        self.assert_stopped_before_it_started(host, result, work)
+        self.assertIn("cubic, not bbr", str(result))
+
     def test_the_congestion_control_asked_for_is_set_in_the_servers_namespace(self):
         host = FakeHost()
+        host.available = "reno cubic bbr"
         host.congestion_control = "bbr"
         result, _, _ = self.outer(host, server_cc="bbr")
         self.assertEqual(result, 0)

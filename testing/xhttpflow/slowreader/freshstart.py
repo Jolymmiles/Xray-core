@@ -19,22 +19,28 @@ It needs what stand.py needs, and ss from iproute2:
       --before upload --runs 6
 
 Every --server build runs --runs times, all runs shuffled together, and each
-run gives --starts times. The table has their median, the least and the most,
-and how many took longer than --slow seconds. --server-cc sets the server's
-congestion control as in stand.py. --hystart 0 turns HyStart off in
-/sys/module/tcp_cubic/parameters/hystart for the length of the stand and puts
-back what was there; that file is the host's, not a namespace's.
+run gives --starts times. Only the first of them follows --before; the later
+ones follow a timed download on the same connection, so the table gives the
+two apart: median, least and most, and how many took longer than --slow
+seconds. --server-cc sets the server's
+congestion control as in stand.py. HyStart is the host's, not a namespace's
+(/sys/module/tcp_cubic/parameters/hystart), so the stand leaves it alone; to
+measure without it, set it by hand on a host that runs nothing else and put
+it back.
 
 With --connections 1 every download uses the connection that carried
 --before; with the 3 of stand.py a download lands on any of three, and only
 some of them carried it.
 
-After --before each run also reads the slow start threshold of the server's
-connections with ss, in packets; a connection that has not left slow start
-has none and is left out.
+After --before each run also reads, with ss, the slow start threshold and
+the congestion window of the server's connections, in packets; a connection
+that has not left slow start has no threshold. After the idle time the kernel
+restarts from the larger of that threshold and three quarters of the window.
+A run whose ss fails is invalid.
 
-A run is valid if the tunnel came up, --before was moved whole, and every
-timed download was read whole. Invalid runs are reported and left out, and a
+A run is valid if the tunnel came up, --before was moved whole, the server's
+TCP state could be read, and every timed download was read whole within its
+deadline. What the two Xray processes of an invalid run wrote is printed. Invalid runs are reported and left out, and a
 single one makes the stand exit with status 1.
 """
 
@@ -54,7 +60,6 @@ import time
 
 import stand
 
-HYSTART = "/sys/module/tcp_cubic/parameters/hystart"
 BEFORE_BYTES = {"upload": 30_000_000, "download": 60_000_000, "nothing": 0}
 MOVE_TIMEOUT = 60.0
 
@@ -93,7 +98,10 @@ def request(head, deadline, body=0):
             if not chunk:
                 raise OSError(f"closed with {left} bytes to come")
             left -= len(chunk)
-        return time.time() - start
+        end = time.time()
+        if end >= deadline:
+            raise OSError("the last byte came after the deadline")
+        return end - start
     finally:
         s.close()
 
@@ -107,22 +115,25 @@ def send(size, deadline):
                    b"Connection: close\r\n\r\n" % size, deadline, size)
 
 
-def thresholds(srv_ns):
-    """Slow start thresholds of the server's connections, in packets."""
-    out = subprocess.run(["ip", "netns", "exec", srv_ns, "ss", "-tinH", "sport = :443"],
-                         capture_output=True, text=True).stdout
-    return sorted(int(x) for x in re.findall(r"(?<![a-z_])ssthresh:(\d+)", out))
+def tcp_state(srv_ns):
+    """What the server's kernel holds for its connections: their slow start
+    thresholds and their congestion windows, in packets. A connection that
+    has not left slow start has no threshold. Raises OSError if ss fails or
+    names no connection: that is no measurement, not "no threshold"."""
+    try:
+        out = subprocess.run(["ip", "netns", "exec", srv_ns, "ss", "-tinH", "sport = :443"],
+                             capture_output=True, text=True, check=True, timeout=10).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        raise OSError(f"ss failed: {e}") from e
+    cwnd = sorted(int(x) for x in re.findall(r"(?<![a-z_])cwnd:(\d+)", out))
+    if not cwnd:
+        raise OSError("ss showed no connection of the server")
+    return sorted(int(x) for x in re.findall(r"(?<![a-z_])ssthresh:(\d+)", out)), cwnd
 
 
 def one_run(server_binary, args, name):
     with contextlib.ExitStack() as stack:
-        server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
-                                   f"{args.work}/server-{name}.json"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stack.callback(stand.reap, server)
-        client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stack.callback(stand.reap, client)
+        server, client = stand.start_xray(stack, server_binary, args, name)
         ready_by = time.time() + stand.READY_TIMEOUT
         while stand.ping(2) is None:
             if time.time() > ready_by or server.poll() is not None or client.poll() is not None:
@@ -135,7 +146,10 @@ def one_run(server_binary, args, name):
                 fetch(BEFORE_BYTES["download"], time.time() + MOVE_TIMEOUT)
         except OSError as e:
             return {"invalid": f"the {args.before} before the starts failed: {e}"}
-        ssthresh = thresholds(args.srv_ns)
+        try:
+            ssthresh, cwnd = tcp_state(args.srv_ns)
+        except OSError as e:
+            return {"invalid": f"the server's TCP state could not be read: {e}"}
         starts = []
         for _ in range(args.starts):
             time.sleep(args.idle)
@@ -143,7 +157,7 @@ def one_run(server_binary, args, name):
                 starts.append(fetch(args.bytes, time.time() + MOVE_TIMEOUT))
             except OSError as e:
                 return {"invalid": f"a timed download failed: {e}", "starts": starts}
-        return {"starts": starts, "ssthresh": ssthresh}
+        return {"starts": starts, "ssthresh": ssthresh, "cwnd": cwnd}
 
 
 def inside(args):
@@ -161,28 +175,37 @@ def inside(args):
             if "invalid" in r:
                 invalid[name] += 1
                 print(f"[{i}/{len(jobs)}] {name}: INVALID, {r['invalid']}", flush=True)
+                stand.show_xray_logs(args.work)
                 continue
             results[name].append(r)
             print(f"[{i}/{len(jobs)}] {name}: " + " ".join(f"{s:.2f}" for s in r["starts"])
-                  + f" s, ssthresh {r['ssthresh'] or 'none'}", flush=True)
+                  + f" s, ssthresh {r['ssthresh'] or 'none'}, cwnd {r['cwnd']}", flush=True)
 
     print("\n| | " + " | ".join(results) + " |")
     print("|---|" + "---|" * len(results))
 
-    def starts(rs):
-        return [s for r in rs for s in r["starts"]]
+    def first(rs):
+        return [r["starts"][0] for r in rs]
 
-    def packets(rs):
-        values = [x for r in rs for x in r["ssthresh"]]
+    def later(rs):
+        return [s for r in rs for s in r["starts"][1:]]
+
+    def packets(rs, key):
+        values = [x for r in rs for x in r[key]]
         return f"{min(values)}-{max(values)}" if values else "none"
+
+    def times(starts):
+        if not starts:
+            return "-"
+        return (f"{statistics.median(starts):.2f} ({min(starts):.2f}-{max(starts):.2f}) s, "
+                f"{sum(s > args.slow for s in starts)} of {len(starts)} over {args.slow:g}")
 
     rows = [
         ("Valid runs", lambda n, rs: f"{len(rs)} of {len(rs) + invalid[n]}"),
-        ("Starts", lambda n, rs: str(len(starts(rs)))),
-        ("Median start", lambda n, rs: f"{statistics.median(starts(rs)):.2f} s"),
-        ("Least-most", lambda n, rs: f"{min(starts(rs)):.2f}-{max(starts(rs)):.2f} s"),
-        (f"Starts over {args.slow:g} s", lambda n, rs: str(sum(s > args.slow for s in starts(rs)))),
-        ("Server ssthresh before the starts, packets", lambda n, rs: packets(rs)),
+        (f"First start, after {args.before}: median (least-most)", lambda n, rs: times(first(rs))),
+        ("Later starts, after a timed download", lambda n, rs: times(later(rs))),
+        ("Server ssthresh before the starts, packets", lambda n, rs: packets(rs, "ssthresh")),
+        ("Server cwnd before the starts, packets", lambda n, rs: packets(rs, "cwnd")),
     ]
     for label, f in rows:
         print(f"| {label} | " + " | ".join(f(n, rs) if rs else "-" for n, rs in results.items()) + " |")
@@ -190,18 +213,6 @@ def inside(args):
     if failed:
         print(f"\n{failed} of {len(jobs)} runs were invalid: the comparison is incomplete", file=sys.stderr)
     return 1 if failed or not all(results.values()) else 0
-
-
-def set_hystart(stack, value):
-    with open(HYSTART) as f:
-        was = f.read().strip()
-
-    def put(v):
-        with open(HYSTART, "w") as f:
-            f.write(v)
-
-    put(value)
-    stack.callback(put, was)
 
 
 def outer(args):
@@ -224,8 +235,6 @@ def outer(args):
                 stand.show_log("origin", origin_log)
 
         stack.push(show_origin_log)
-        if args.hystart is not None:
-            set_hystart(stack, args.hystart)
         stand.setup_network(stack, srv, cli, args.mbit, args.rtt, 0, args.server_cc)
         private_key, public_key = stand.reality_keys(next(iter(servers.values())))
         stand.XMUX["maxConnections"] = args.connections
@@ -272,7 +281,6 @@ def main():
     ap.add_argument("--mbit", type=int, default=stand.MBIT, help="link rate")
     ap.add_argument("--rtt", type=int, default=stand.RTT_MS, help="round trip of the link, ms")
     ap.add_argument("--server-cc", default="cubic", help="TCP congestion control of the server's namespace")
-    ap.add_argument("--hystart", choices=("0", "1"), help="set HyStart for the host while the stand runs")
     ap.add_argument("--connections", type=int, default=3, help="xmux.maxConnections of the client")
     ap.add_argument("--out", default="freshstart.jsonl", help="one JSON line per run, appended")
     ap.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
