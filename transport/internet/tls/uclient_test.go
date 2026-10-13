@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	stdnet "net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -213,5 +214,29 @@ func TestGrpcUtlsClosesOnConstructionFailure(t *testing.T) {
 	}
 	if !raw.closed.Load() {
 		t.Fatalf("ClientHandshake failed with %v and left its connection open", err)
+	}
+}
+
+// NewUClient leaves the caller's config alone. uTLS sets NextProtos to the
+// fingerprint's ALPN while it builds a hello, and WithHTTP11ALPN sets the
+// inner hello's ALPN when ECH is on; a config reused for another dial must
+// not carry either.
+func TestNewUClientKeepsCallerConfig(t *testing.T) {
+	list, _ := testECHKeys(t, "public.example")
+	for name, config := range map[string]*utls.Config{
+		"without ECH": {ServerName: "example.com", NextProtos: []string{"x-caller"}},
+		"with ECH":    {ServerName: "example.com", NextProtos: []string{"x-caller"}, EncryptedClientHelloConfigList: list},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := stdnet.Pipe()
+			defer client.Close()
+			defer server.Close()
+			if _, err := xraytls.NewUClient(client, config, utls.HelloChrome_Auto, xraytls.WithHTTP11ALPN()); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(config.NextProtos, []string{"x-caller"}) {
+				t.Fatalf("caller's NextProtos became %v", config.NextProtos)
+			}
+		})
 	}
 }

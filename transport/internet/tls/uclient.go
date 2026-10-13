@@ -58,10 +58,11 @@ func WithHTTP11ALPN() UClientOption {
 
 // NewUClient returns a uTLS client for c whose ClientHello is built: the
 // fingerprint is applied and Xray's changes to it are made. The handshake
-// sends this hello; REALITY seals its session ID into it first. When
-// NewUClient fails the caller still owns c.
+// sends this hello; REALITY seals its session ID into it first. The client
+// works on a copy of config, which uTLS would otherwise change while building
+// the hello. When NewUClient fails the caller still owns c.
 func NewUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID, options ...UClientOption) (*utls.UConn, error) {
-	return newUClient(c, config, fingerprint, clientSessionResumption{}, options)
+	return newUClient(c, config.Clone(), fingerprint, clientSessionResumption{}, options)
 }
 
 // ClientHandshake creates the client of UClient and completes its handshake.
