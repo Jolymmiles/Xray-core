@@ -185,7 +185,9 @@ Limits:
 
 Measured for two changes: credit is handed on in quanta of 16 to 32 KiB
 (`hold`), and the streams of one server connection share
-`h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set.
+`h2Flow.maxConnectionSendWindow` (`downRelease`), 4 MiB unless set. Since
+then only a server's download credit is held to quanta; "Limits" below says
+why, and which figures here went with the rest.
 
 The stand is `testing/xhttpflow/slowreader/stand.py` with
 `--workload downloads` or `--workload uploads`; see its head for what a run
@@ -495,45 +497,42 @@ Limits:
   request failed (506 and 509 sent), and the downloads read 72.4 against
   72.3 MB/s. The two builds do not differ, and five runs of this figure
   say nothing.
-- An upload that is still speeding up is not held to quanta, stream or
-  connection (`b5686538`, `TestFlowUploadCreditNotHeldWhileRamping`). Its cap
-  opens with every credit, and credit that waited for a quantum cost the
-  start of an upload a round trip: `TestFlowFastReaderKeepsThroughput` at
-  RTT 40 ms logs the first 4 MiB of a governed upload at 155 ms on
-  `da42e75f` (60 runs), 189 ms with every upload credit held (`16bd65ce`,
-  60 runs) and 157 ms on `b5686538` (12 runs), against 167 ms for stock; the
-  steady rate is 23.4 MiB/s on all three. The stand's averages over 12 s
-  did not show it, and neither did a test: the figure is logged, not
-  asserted. Holding either credit alone changes nothing, 184 and 188 ms;
-  the sender needs both. What the quanta save is kept for an upload that
-  comes to count as no longer speeding up, as a steady one does. One that
-  ends within two measured round trips, whose rounds keep growing, or that
-  is never measured has its stream credit handed on as before, piece by
-  piece; a connection WINDOW_UPDATE from the server waits for a quantum
-  whatever the stream. CPU seconds per gigabyte, server / client, five
-  shuffled
-  runs, `da42e75f`, `16bd65ce`, `b5686538`: four uploads 25.9 / 18.2, 23.3 /
-  14.8, 21.4 / 14.3 at 115.6 MB/s on each; one upload 25.9 / 18.1, 23.5 /
-  16.0, 23.3 / 15.9 at 82.9, 88.8 and 85.6 MB/s; one upload at RTT 150 ms
-  24.6 / 15.2, 21.9 / 12.6, 22.9 / 13.1 at 36.8, 36.6 and 36.8 MB/s.
-- That first-4-MiB figure still comes out a round trip longer in about a
-  third of runs, 184 ms for 145. It is where the mark falls, not a round
-  trip lost. Without the kernel's round trip, as in the test, an upload's
-  cap stops at `flowUnconfirmedUp`, 1 MiB: the upload moves a megabyte a
-  round trip, and 4 MiB is the end of a round. Two rounds that carry the
-  same make it count as no longer speeding up, 2.1 to 6.3 MiB in, and from
-  there its credit waits for a quantum, so the last of a round, under a
-  quantum, goes on with the next. When that begins early the mark at 4 MiB
-  falls into the next round: with the moment printed, 8 of 10 runs where it
-  began before 2.8 MiB took 183 to 203 ms, and all 17 where it began later
-  145 to 164 ms. Off the end of a round the mark shows nothing, whenever the
-  upload stopped speeding up; medians in ms, head and `da42e75f`, 8 to 12
-  shuffled runs each: 3.5 MiB 145 and 144, 4.5 MiB 187 and 186, 8.5 MiB 350
-  and 350, 16.5 MiB 682 and 678, 32.5 MiB 1338 and 1333. At 8 MiB, the end
-  of a round again, head gives 349 and `da42e75f` 311 to 340. The tail of a
-  round comes with the next one, and the upload as a whole is no later. Not
-  holding in the handler of a connection WINDOW_UPDATE changes nothing: 15
-  runs, 143 to 194 ms with the same two groups.
+- Credit that crosses the network is not held to quanta: upload credit from
+  a server, download credit from a governed client
+  (`TestFlowUploadCreditNotHeld`, `TestFlowClientDownloadCreditNotHeld`).
+  Only a server's download credit is, which goes to the HTTP/2 stack next
+  to it. The upload rows of the CPU table above were measured with upload
+  credit held and no longer apply: uploads cost what they did before.
+  The reason is what the held credit did to the connection's TCP. While an
+  upload runs, the server sends the client little but WINDOW_UPDATE frames,
+  a packet each. Linux (CUBIC with HyStart) leaves slow start on that
+  stream of small packets, at a congestion window of about twice their
+  number in flight, and keeps it as the connection's slow start threshold.
+  A download on the same connection after an idle second restarts from ten
+  packets, doubles up to that threshold and then grows slowly. Held to
+  quanta the packets were half as many and so was the threshold. Server's
+  `ssthresh` right after a 30 MB upload at 100 Mbit/s, RTT 50 ms, in
+  packets, `ss -ti` on the server: 190 to 258 without the governor, 170 to
+  213 on `da42e75f`, 81 to 136 with upload credit held (`391e5f06`); a
+  connection that carried a download first has 530 to 680.
+  A fresh 3 MB download through an official client, eight a run, six of
+  them each after 3 s idle; seconds, the idle ones:
+
+  | Before the download | No governor | `da42e75f` | Upload credit held | Now |
+  | --- | --- | --- | --- | --- |
+  | a 30 MB upload, 24 each | 0.53 to 0.67 | 0.53 to 0.76 | 0.53 to 1.02 | 0.53 to 0.73 |
+  | over 0.7 s | 0 | 4 | 9 | 4 |
+  | a 60 MB download, 12 each | 0.50 to 0.53 | 0.53 | 0.53 | |
+  | nothing, 15 each | 0.53 | 0.53 | 0.53 to 0.59 | |
+
+  With HyStart off (`/sys/module/tcp_cubic/parameters/hystart` 0) all 24 on
+  `391e5f06` take 0.53 s; with BBR on the server the governor makes no
+  difference, 0.30 to 0.81 s with it and 0.30 to 0.77 s without. The stand
+  is not in the repository: a server in a network namespace behind netem at
+  100 Mbit/s and 25 ms each way, curl through the client's SOCKS inbound.
+  Not looked for: the same on a governed client, whose download credit was
+  held; the test above only fixes that it no longer is. Not removed: the
+  floor a governor cannot lift, the threshold an upload leaves without it.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
