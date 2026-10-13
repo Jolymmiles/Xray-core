@@ -160,9 +160,8 @@ func runUClientHandshakes(
 			t.Fatalf("set client deadline for connection %d: %v", i+1, err)
 		}
 
-		clientConn := xraytls.UClient(rawConn, clientConfig, fingerprint).(*xraytls.UConn)
-		if err := clientConn.HandshakeContext(context.Background()); err != nil {
-			clientConn.Close()
+		clientConn, err := xraytls.ClientHandshake(context.Background(), rawConn, clientConfig, fingerprint)
+		if err != nil {
 			t.Fatalf("handshake TLS connection %d: %v", i+1, err)
 		}
 

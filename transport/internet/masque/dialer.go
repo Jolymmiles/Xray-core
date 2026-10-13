@@ -169,15 +169,19 @@ func dialHTTP2(ctx context.Context, dest net.Destination, streamSettings *intern
 		return nil, errors.New("failed to dial to dest").Base(err)
 	}
 	if fingerprint := tls.GetFingerprint(tlsConfig.Fingerprint); fingerprint != nil {
-		conn = tls.UClient(conn, gotlsConfig, fingerprint)
+		uConn, err := tls.ClientHandshake(ctx, conn, gotlsConfig, fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		conn = uConn
 	} else {
 		conn = tls.Client(conn, gotlsConfig)
+		if err := conn.(tls.Interface).HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, err
+		}
 	}
 	tlsConn := conn.(tls.Interface)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		conn.Close()
-		return nil, err
-	}
 	if protocol := tlsConn.NegotiatedProtocol(); protocol != http2.NextProtoTLS && (config.Warp == nil || protocol != "") {
 		conn.Close()
 		return nil, errors.New("the server negotiated ", strconv.Quote(protocol), " instead of h2")

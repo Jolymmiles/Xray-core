@@ -18,6 +18,7 @@ import (
 	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/tagged"
+	xtls "github.com/xtls/xray-core/transport/internet/tls"
 	"golang.org/x/net/http2"
 )
 
@@ -97,7 +98,11 @@ func newClient(baseCtx context.Context, dispatcher routing.Dispatcher, outbound 
 						return nil, err
 					}
 					host, _, _ := net.SplitHostPort(address)
-					tlsConn := utls.UClient(conn, &utls.Config{ServerName: host}, utls.HelloChrome_Auto)
+					tlsConn, err := xtls.NewUClient(conn, &utls.Config{ServerName: host}, utls.HelloChrome_Auto)
+					if err != nil {
+						conn.Close()
+						return nil, err
+					}
 					handshakeCtx, cancel := context.WithTimeout(ctx, idleTimeout)
 					defer cancel()
 					if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {

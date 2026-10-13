@@ -5,10 +5,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
-	"crypto/sha256"
 	gotls "crypto/tls"
-	"crypto/x509"
-	"encoding/binary"
 	"errors"
 	"io"
 	stdnet "net"
@@ -20,10 +17,8 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/reality"
-	"github.com/xtls/xray-core/common/crypto"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
-	"github.com/xtls/xray-core/core"
-	"golang.org/x/crypto/hkdf"
 )
 
 const keyShareTestServerName = "localhost"
@@ -33,9 +28,10 @@ const keyShareTestServerName = "localhost"
 // which REALITY cannot mirror, so a handshake completes exactly when REALITY
 // authenticated the client. It returns the site's address and its leaf
 // certificate, which is what a client that was turned away must be shown.
-func startCoverTarget(t *testing.T) (address string, leaf []byte) {
+// options add to the certificate.
+func startCoverTarget(t *testing.T, options ...cert.Option) (address string, leaf []byte) {
 	t.Helper()
-	generated, _ := cert.MustGenerate(nil, cert.CommonName(keyShareTestServerName))
+	generated, _ := cert.MustGenerate(nil, append([]cert.Option{cert.CommonName(keyShareTestServerName)}, options...)...)
 	certificate, err := gotls.X509KeyPair(generated.ToPEM())
 	if err != nil {
 		t.Fatal(err)
@@ -64,8 +60,8 @@ func startCoverTarget(t *testing.T) (address string, leaf []byte) {
 	return listener.Addr().String(), certificate.Certificate[0]
 }
 
-// helloShape rewrites the uTLS Chrome hello before the REALITY session ID is
-// sealed into it.
+// helloShape rewrites the uTLS hello before the REALITY session ID is sealed
+// into it.
 type helloShape func(t *testing.T, uConn *utls.UConn)
 
 func keepHello(*testing.T, *utls.UConn) {}
@@ -138,56 +134,28 @@ func rebuildHello(t *testing.T, uConn *utls.UConn) {
 	}
 }
 
-// dialREALITY performs the client side of UClient with a reshaped hello. It
-// reports whether the server proved it authenticated the client, and the
-// leaf certificate the client was shown, nil if it was shown none.
-func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, shape helloShape) (verified bool, leaf []byte) {
+// dialREALITY performs the client side of UClient with the hello of
+// fingerprint, reshaped before it is sealed. It reports whether the server
+// proved it authenticated the client, and the leaf certificate the client was
+// shown, nil if it was shown none.
+func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, fingerprint utls.ClientHelloID, shape helloShape) (verified bool, leaf []byte) {
 	t.Helper()
-	uConn := &UConn{Config: config, ServerName: config.ServerName}
-	uConn.UConn = utls.UClient(conn, &utls.Config{
-		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			if len(rawCerts) > 0 {
-				leaf = rawCerts[0]
-			}
-			return uConn.VerifyPeerCertificate(rawCerts, verifiedChains)
-		},
-		ServerName:             config.ServerName,
-		InsecureSkipVerify:     true,
-		SessionTicketsDisabled: true,
-	}, utls.HelloChrome_Auto)
-	if err := uConn.BuildHandshakeState(); err != nil {
-		t.Fatal(err)
-	}
-	shape(t, uConn.UConn)
-
-	hello := uConn.HandshakeState.Hello
-	hello.SessionId = make([]byte, 32)
-	copy(hello.Raw[39:], hello.SessionId)
-	hello.SessionId[0] = core.Version_x
-	hello.SessionId[1] = core.Version_y
-	hello.SessionId[2] = core.Version_z
-	binary.BigEndian.PutUint32(hello.SessionId[4:], uint32(time.Now().Unix()))
-	copy(hello.SessionId[8:], config.ShortId)
-	publicKey, err := ecdh.X25519().NewPublicKey(config.PublicKey)
+	uConn, err := newUConn(conn, config, net.Destination{}, fingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ecdhe := uConn.HandshakeState.State13.KeyShareKeys.Ecdhe
-	if ecdhe == nil {
-		ecdhe = uConn.HandshakeState.State13.KeyShareKeys.MlkemEcdhe
-	}
-	if uConn.AuthKey, err = ecdhe.ECDH(publicKey); err != nil {
+	shape(t, uConn.UConn)
+	if err := uConn.seal(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hkdf.New(sha256.New, uConn.AuthKey, hello.Random[:20], []byte("REALITY")).Read(uConn.AuthKey); err != nil {
-		t.Fatal(err)
-	}
-	crypto.NewAesGcm(uConn.AuthKey).Seal(hello.SessionId[:0], hello.Random[20:], hello.SessionId[:16], hello.Raw)
-	copy(hello.Raw[39:], hello.SessionId)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// A rejected hello fails the handshake on the cover's certificate; the
+	// certificates are kept from before that check.
 	_ = uConn.HandshakeContext(ctx)
+	if certificates := uConn.ConnectionState().PeerCertificates; len(certificates) > 0 {
+		leaf = certificates[0].Raw
+	}
 	return uConn.Verified, leaf
 }
 
@@ -233,8 +201,9 @@ type keyShareResult struct {
 }
 
 // runKeyShareHandshake runs one REALITY server handshake against a client
-// whose hello was reshaped. requireMLKEM is the server's "requireMlkem".
-func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) keyShareResult {
+// whose hello of fingerprint was reshaped. requireMLKEM is the server's
+// "requireMlkem".
+func runKeyShareHandshake(t *testing.T, fingerprint utls.ClientHelloID, shape helloShape, requireMLKEM bool) keyShareResult {
 	t.Helper()
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -294,7 +263,7 @@ func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) key
 		t.Fatal(err)
 	}
 	conn := &headConn{Conn: dialed}
-	clientVerified, leaf := dialREALITY(t, conn, clientConfig, shape)
+	clientVerified, leaf := dialREALITY(t, conn, clientConfig, fingerprint, shape)
 	_ = conn.Close()
 	select {
 	case err := <-serverResult:
@@ -355,7 +324,7 @@ func TestREALITYServerKeyShareAcceptance(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := runKeyShareHandshake(t, test.shape, test.requireMLKEM)
+			got := runKeyShareHandshake(t, utls.HelloChrome_Auto, test.shape, test.requireMLKEM)
 			if got.serverAccepted != test.accept || got.clientVerified != test.accept {
 				t.Fatalf("server accepted = %v, client verified = %v, want both %v", got.serverAccepted, got.clientVerified, test.accept)
 			}

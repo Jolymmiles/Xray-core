@@ -64,3 +64,5 @@ require (
 )
 
 replace github.com/xtls/reality => ./third_party/reality
+
+replace github.com/refraction-networking/utls => github.com/Jolymmiles/utls v0.0.0-20261013215225-23f702376002

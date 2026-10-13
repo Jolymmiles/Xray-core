@@ -6,14 +6,12 @@ import (
 	"crypto/tls"
 	"io"
 	"math/big"
-	"slices"
 	"sync/atomic"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
-	"github.com/xtls/xray-core/common/utils"
 )
 
 type Interface interface {
@@ -153,58 +151,25 @@ func (c *UConn) HandshakeContextServerName(ctx context.Context) string {
 	return c.ConnectionState().ServerName
 }
 
-// WebsocketHandshakeContext basically calls UConn.Handshake inside it but it will try
-// to build outer ALPN to `http/1.1` or `h2 http/1.1` (if manually specified for camouflage)
-func (c *UConn) WebsocketHandshakeContext(ctx context.Context) error {
-	config := *utils.AccessField[*utls.Config](c, "config")
-	ALPN := slices.Clone(config.NextProtos)
-	// set other kinds of ALPN to http/1.1
-	if !slices.Equal(ALPN, []string{"h2", "http/1.1"}) {
-		ALPN = []string{"http/1.1"}
-	}
-	// Build the handshake state. This will apply every variable of the TLS of the
-	// fingerprint in the UConn
-	if err := c.BuildHandshakeState(); err != nil {
-		return err
-	}
-	// Do not modify outer ALPN if ECH is used
-	// Outer ALPN will be h2,http/1.1, and real http/1.1 in config will be hidden in ECH
-	if config.EncryptedClientHelloConfigList != nil {
-		config.NextProtos = []string{"http/1.1"}
-		return c.HandshakeContext(ctx)
-	}
-	// Iterate over extensions and check for utls.ALPNExtension
-	hasALPNExtension := false
-	for _, extension := range c.Extensions {
-		if alpn, ok := extension.(*utls.ALPNExtension); ok {
-			hasALPNExtension = true
-			alpn.AlpnProtocols = ALPN
-			break
-		}
-	}
-	if !hasALPNExtension { // Append extension if doesn't exists
-		c.Extensions = append(c.Extensions, &utls.ALPNExtension{AlpnProtocols: ALPN})
-	}
-	// Rebuild the client hello and do the handshake
-	if err := c.BuildHandshakeState(); err != nil {
-		return err
-	}
-	return c.HandshakeContext(ctx)
-}
-
 func (c *UConn) NegotiatedProtocol() string {
 	state := c.ConnectionState()
 	return state.NegotiatedProtocol
 }
 
-func UClient(c net.Conn, config *tls.Config, fingerprint *utls.ClientHelloID) net.Conn {
+// UClient returns a uTLS client for c whose ClientHello is built, see
+// NewUClient. When UClient fails the caller still owns c.
+func UClient(c net.Conn, config *tls.Config, fingerprint *utls.ClientHelloID, options ...UClientOption) (*UConn, error) {
 	uTLSConfig, resumption := copyConfig(config)
-	return &UConn{UConn: resumption.client(c, uTLSConfig, *fingerprint)}
+	uConn, err := newUClient(c, uTLSConfig, *fingerprint, resumption, options)
+	if err != nil {
+		return nil, err
+	}
+	return &UConn{UConn: uConn}, nil
 }
 
-func GeneraticUClient(c net.Conn, config *tls.Config) *utls.UConn {
+func GeneraticUClient(c net.Conn, config *tls.Config) (*utls.UConn, error) {
 	uTLSConfig, resumption := copyConfig(config)
-	return resumption.client(c, uTLSConfig, utls.HelloChrome_Auto)
+	return newUClient(c, uTLSConfig, utls.HelloChrome_Auto, resumption, nil)
 }
 
 func copyConfig(c *tls.Config) (*utls.Config, clientSessionResumption) {
@@ -252,15 +217,12 @@ func init() {
 		}
 		i++
 	}
-	weights := utls.DefaultWeights
-	weights.TLSVersMax_Set_VersionTLS13 = 1
-	weights.FirstKeyShare_Set_CurveP256 = 0
 	randomized := utls.HelloRandomizedALPN
 	randomized.Seed, _ = utls.NewPRNGSeed()
-	randomized.Weights = &weights
+	randomized.Weights = &randomizedWeights
 	randomizednoalpn := utls.HelloRandomizedNoALPN
 	randomizednoalpn.Seed, _ = utls.NewPRNGSeed()
-	randomizednoalpn.Weights = &weights
+	randomizednoalpn.Weights = &randomizedWeights
 	PresetFingerprints["randomized"] = &randomized
 	PresetFingerprints["randomizednoalpn"] = &randomizednoalpn
 }
