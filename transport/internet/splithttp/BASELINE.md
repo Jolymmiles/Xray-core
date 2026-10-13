@@ -333,7 +333,7 @@ stock Go differs from both as the rest of this file says:
 - Passive, on the path, TLS records only. A governed server with more than
   sixteen downloads starting on one connection sends less in the first
   round trip, and with many downloads on a long path less per round trip
-  from then on. Credit records are back where they were before the quanta.
+  from then on. Credit is released as it was before the quanta.
   A capture made in the review of the withdrawal, in a user and network
   namespace with `lo` at MTU 1500, VLESS + XHTTP + REALITY in stream-one,
   30 MB at 12.5 MB/s, five shuffled runs, medians:
@@ -344,14 +344,17 @@ stock Go differs from both as the rest of this file says:
   | Upload: WINDOW_UPDATE frames | 7324 | 7219 | 1808 | 7230 |
   | Download, governed client to server: records | 3663 to 3665 | 3663 to 3665 | 3663 to 3665 | 3663 to 3665 |
 
-  Every credit segment carried one record, of 30 + 13k bytes for k + 1
-  WINDOW_UPDATE frames. On uploads the quanta cut the records to about a
-  third; without them there is about one per 10 KiB. On a governed client's
-  downloads the quanta never changed the count: the connection's update
-  went out with every read and only the stream's waited, so about three
-  quarters of the records were 30-byte single updates where stock Go,
-  `da42e75f` and `e17be671` send 43-byte pairs. The capture has a round
-  trip of microseconds and segment offload.
+  Almost every credit segment carried one record: all but under 0.1%,
+  where a few, more of them on the download side, start 2 to 17 records.
+  A record that carries only WINDOW_UPDATE frames is 30 + 13k bytes for
+  k + 1 of them; some carry a PING or the like beside. On uploads the
+  quanta cut the records to about a third; without them there is about
+  one per 10 KiB, 2831 on `e17be671` against 3271 on `da42e75f`. On a
+  governed client's downloads the quanta never changed the count: the
+  connection's update went out with every read and only the stream's
+  waited, so about three quarters of the records were 30-byte single
+  updates where stock Go, `da42e75f` and `e17be671` send 43-byte pairs.
+  The capture has a round trip of microseconds and segment offload.
 - A TLS terminator in front of the server reads the frames: it sees a
   server that leaves stream window unused.
 - An active prober that cannot authenticate gets no data on a stream, so
@@ -519,17 +522,18 @@ Limits:
   connection after an idle time. Measured with
   `testing/xhttpflow/slowreader/freshstart.py`: each run starts a client
   and a server, sends 30 MB up, then four times waits 3 s and times a
-  download of 3 MB.
+  download of 3 MB. Only the first of the four follows the upload; the
+  other three follow a download of 3 MB on a connection of the same
+  client, and the tables give the two apart.
 
   ```sh
   go build -o origin ./testing/xhttpflow/slowreader/origin
   F="sudo python3 testing/xhttpflow/slowreader/freshstart.py --origin ./origin --client /path/to/xray-v26.10.10"
   B="--server off=xray-e17be671 --h2flow off={\"enabled\":false} --server da42e75f=xray-da42e75f \
      --server 391e5f06=xray-391e5f06 --server 1e42fa62=xray-1e42fa62 --server e17be671=xray-e17be671"
-  $F $B --before upload --connections 1 --runs 6      # and --connections 3
+  $F $B --before upload --connections 1 --runs 8      # 6 with --connections 3
   $F $B --before upload --connections 1 --runs 6 --server-cc bbr
   $F $B --before download --connections 1 --runs 3    # and --before nothing
-  $F $B --before upload --connections 1 --runs 4 --hystart 0
   ```
 
   - Builds: `da42e75f`, before the quanta; `391e5f06`, which holds upload
@@ -543,43 +547,68 @@ Limits:
   - Host: linux/amd64 privileged container under Docker Desktop, kernel
     6.18.40.1-microsoft-standard-WSL2, AMD Ryzen 5 5600; a desktop with
     nothing else started on it.
-  - Runs of all builds shuffled together; 24 starts a build, 12 after a
-    download or nothing, 16 with HyStart off. Seconds: median, least to
-    most, and how many took over 0.7.
+  - Runs of all builds shuffled together. Seconds: median (least-most)
+    and how many of the starts took over 0.7.
+
+  The first start of a run, the one after `--before`:
 
   | | Off | `da42e75f` | `391e5f06` | `1e42fa62` | `e17be671` |
   | --- | --- | --- | --- | --- | --- |
-  | CUBIC, one connection | 0.63, 0.62-0.68, 0 | 0.68, 0.63-0.81, 9 | 0.72, 0.64-1.21, 14 | 0.66, 0.63-0.73, 6 | 0.66, 0.62-0.78, 5 |
-  | CUBIC, three connections | 0.58, 0.53-0.68, 0 | 0.53, 0.53-0.73, 2 | 0.64, 0.53-1.01, 9 | 0.57, 0.53-0.72, 2 | 0.53, 0.53-0.72, 1 |
-  | BBR, one connection | 0.30, 0.30-0.38, 0 | 0.30, 0.30-0.42, 0 | 0.30, 0.30-0.42, 0 | 0.30, 0.30-0.42, 0 | 0.30, 0.30-0.42, 0 |
-  | BBR, three connections | 0.44, 0.30-0.76, 4 | 0.62, 0.30-0.80, 5 | 0.50, 0.30-0.68, 0 | 0.50, 0.30-0.80, 3 | 0.62, 0.30-0.80, 6 |
-  | CUBIC, after a 60 MB download | 0.53, 0.39-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 |
-  | CUBIC, after nothing | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 |
-  | CUBIC, HyStart off, after the upload | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 | 0.53, 0.53-0.53, 0 |
+  | Upload, CUBIC, one connection, 8 | 0.67 (0.67-0.68), 0 | 0.72 (0.69-0.76), 7 | 0.87 (0.83-1.21), 8 | 0.71 (0.71-0.73), 8 | 0.72 (0.69-0.77), 7 |
+  | Upload, BBR, one connection, 6 | 0.38 (0.38-0.38), 0 | 0.42 (0.41-0.42), 0 | 0.42 (0.42-0.42), 0 | 0.41 (0.41-0.42), 0 | 0.41 (0.41-0.42), 0 |
+  | Download, CUBIC, one connection, 3 | 0.39 (0.39-0.39), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 |
+  | Nothing, CUBIC, one connection, 3 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 |
+  | Upload, CUBIC, HyStart off, 4 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 | 0.53 (0.53-0.53), 0 |
 
-  What these runs show: under CUBIC a download after an upload starts
+  The three later starts of each run, after a timed download:
+
+  | | Off | `da42e75f` | `391e5f06` | `1e42fa62` | `e17be671` |
+  | --- | --- | --- | --- | --- | --- |
+  | Upload, CUBIC, one connection, 24 | 0.63 (0.62-0.64), 0 | 0.64 (0.62-0.69), 0 | 0.68 (0.64-0.85), 10 | 0.64 (0.63-0.68), 0 | 0.64 (0.62-0.69), 0 |
+  | Upload, CUBIC, three connections, 18 | 0.53 (0.53-0.68), 0 | 0.53 (0.53-0.73), 2 | 0.62 (0.53-1.01), 9 | 0.53 (0.53-0.72), 2 | 0.53 (0.53-0.72), 1 |
+  | Upload, BBR, one connection, 18 | 0.30 (0.30-0.31), 0 | 0.30 (0.30-0.30), 0 | 0.30 (0.30-0.31), 0 | 0.30 (0.30-0.31), 0 | 0.30 (0.30-0.30), 0 |
+  | Upload, BBR, three connections, 18 | 0.34 (0.30-0.76), 4 | 0.46 (0.30-0.80), 5 | 0.42 (0.30-0.68), 0 | 0.41 (0.30-0.80), 3 | 0.41 (0.30-0.80), 6 |
+
+  With three connections the first start does not land on the connection
+  that carried the upload (0.63 to 0.64 s on every build, CUBIC and BBR),
+  and a later one may: the row pools connections with three histories. The
+  rows with HyStart off were made with `/sys/module/tcp_cubic/parameters/hystart`
+  set to 0 for the run and put back after it; `freshstart.py` does not
+  touch that file, which is the host's.
+  What these runs show. Under CUBIC a download after an upload starts
   slower than one after a download or after nothing, with the governor off
-  as well; with upload credit held it starts slower still, up to 1.21 s
-  for 0.81; with HyStart off the difference is gone for every build; and
-  under BBR on one connection the builds do not differ. With three
-  connections under BBR a start lands on a connection that may have
-  carried nothing, and the spread is as wide with the governor off.
-  What `ss -ti` shows on the server before the starts, in packets: after
-  the upload, CUBIC, one connection, a slow start threshold of 96 to 116
-  with the governor off, 66 to 149 on `da42e75f`, 59 to 129 on `391e5f06`,
-  67 to 163 on `1e42fa62`, 69 to 139 on `e17be671`; after the download 528
-  to 630 on every build; none after nothing, none with HyStart off, none
-  under BBR. So an upload leaves the connection a threshold far under the
-  one a download leaves, and HyStart sets it. The ranges of the builds
-  overlap: the threshold read at that moment does not tell `391e5f06`
-  from the others, though the starts do.
-  The likely mechanism, read from `tcp_cubic.c` and not observed step by
-  step: while an upload runs the server sends the client little but
-  credit, in small segments; in slow start the congestion window grows
-  only while it is under twice the packets in flight; HyStart then sets
-  the threshold to the window without asking whether the sender was
-  limited by it. Fewer credit segments would leave a smaller window to
-  take the threshold from. Which of HyStart's two detectors fired was not
+  as well, 0.67 against 0.53 s. The governor adds to that, 0.72 on
+  `da42e75f`, and with upload credit held it adds more: 0.87, at least
+  0.83, where no other build takes more than 0.77; the downloads after it
+  on the same connection are still slower, ten of 24 over 0.7 s where no
+  other build has one. With HyStart off every start of every build takes
+  0.53 s. Under BBR on one connection the builds with the governor do not
+  differ.
+  What `ss -ti` shows on the server before the first start, in packets,
+  CUBIC, one connection, eight runs:
+
+  | | Off | `da42e75f` | `391e5f06` | `1e42fa62` | `e17be671` |
+  | --- | --- | --- | --- | --- | --- |
+  | Slow start threshold after the upload | 96-204 | 116-161 | 58-125 | 61-169 | 61-151 |
+  | Congestion window after the upload | 259-267 | 202-241 | 64-125 | 213-239 | 199-239 |
+
+  After the download instead the threshold is 528 to 630 on every build;
+  after nothing, with HyStart off and under BBR a connection has none. The
+  thresholds of the builds overlap. The windows do not: `391e5f06` ends
+  the upload with half the window of the others, or a quarter, and its
+  first start follows it run by run, 1.18 and 1.21 s with a window of 64,
+  0.83 to 0.88 with 110 to 125, where the others have 199 to 267 and 0.67
+  to 0.77 s. After the idle time the kernel restarts from the larger of
+  the threshold and three quarters of the window (`tcp_cwnd_restart`,
+  `tcp_current_ssthresh`), which fits: about 150 to 200 packets for the
+  four builds, 58 to 125 for `391e5f06`.
+  An open hypothesis for why the window ends lower, read from
+  `tcp_cubic.c` and `tcp_input.c` and not observed: while an upload runs
+  the server sends the client little but credit, in small segments; the
+  congestion window grows only while it is under twice the packets in
+  flight; HyStart then ends slow start there. Fewer credit segments,
+  about a third as many with the quanta in the capture cited above, would
+  leave a smaller window. Which of HyStart's two detectors fired was not
   looked at.
   What the quanta saved, `stand.py` at 1 Gbit/s with `--server-cc`, the
   same builds, client and host; CPU seconds per gigabyte, median and least
@@ -636,9 +665,11 @@ Limits:
   The send window under BBR, eight downloads, eight runs each, `da42e75f`,
   `e17be671` and `e17be671` with `maxConnectionSendWindow: -1`: server
   23.9 (21.4-25.1), 26.1 (25.4-27.0) and 24.9 (21.0-26.3) s per gigabyte;
-  under CUBIC 23.4 (20.3-24.8), 24.3 (22.5-26.2) and 22.4 (20.8-24.2). The
-  limit costs the server about a tenth more under BBR in these runs and
-  nothing that shows under CUBIC.
+  under CUBIC 23.4 (20.3-24.8), 24.3 (22.5-26.2) and 22.4 (20.8-24.2).
+  Under BBR the limit is 9% over `da42e75f`, which also lacks the rest of
+  the send window's change, with ranges that do not meet; against the same
+  build without the limit it is 5% over, and the ranges overlap. Under
+  CUBIC nothing is outside the ranges.
   Not looked for: the same start on a governed client, whose download
   credit was held. Not removed: what an upload does to the next download
   without the quanta, which `da42e75f` has too.
