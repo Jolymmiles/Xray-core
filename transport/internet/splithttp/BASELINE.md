@@ -719,6 +719,25 @@ Limits:
   taking irregular amounts now stays with `adjust` where it went to the
   model after its first flat round; the runs with slow readers above are
   what was looked at for that.
+  What an observer sees of this change, against `e17be671`; nothing was
+  captured for it, and the capture cited under "Credit quanta" is evidence
+  for the withdrawal of the quanta, not for this:
+  - Passive, on the path, TLS records only. The credit-release policy and
+    the WINDOW_UPDATE frames are untouched; what moves is when a cap leaves
+    `adjust` for the model. In the first round trips of a stream whose
+    first rounds read low, a governed client's cap stays at 256 KiB or
+    above where it fell to little over 64 KiB, so the server may send more
+    DATA in those rounds: the start looks like the other 290 of 300 starts
+    on `e17be671`, and nearer to a client without a governor, whose window
+    never falls at a start. The same holds for an upload on a server whose
+    kernel vouches for the path. A stream whose rounds stay irregular
+    keeps `adjust`'s windows, twice what its reader took, where the model
+    gave it a quarter over its fastest recent round.
+  - A TLS terminator in front of the server sees the same frames with
+    other window sizes at those moments. An active prober that cannot
+    authenticate opens no stream, so it sees none of it.
+  - Not measured: record counts and timing of the first round trips, on
+    this change or against stock.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is

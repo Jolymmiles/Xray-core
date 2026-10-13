@@ -72,9 +72,9 @@ const (
 	// take less than a quarter more than before to be modelled, see
 	// settled.
 	flowSettledRounds = 2
-	flowKernelEvery = 20 * time.Millisecond
-	flowQueueHold   = 15 * time.Millisecond
-	flowQueueShrink = 40 * time.Millisecond
+	flowKernelEvery   = 20 * time.Millisecond
+	flowQueueHold     = 15 * time.Millisecond
+	flowQueueShrink   = 40 * time.Millisecond
 
 	flowUndecided = 0
 	flowH2        = 1
