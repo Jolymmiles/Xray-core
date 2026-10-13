@@ -17,12 +17,17 @@ guard it.
   A server with `"requireMlkem": true` in `realitySettings` rejects such a
   hello as upstream does and forwards it to the target; it is `false` by
   default. With `true`, clients that send no hybrid key share are answered
-  by the target: sing-box, Mihomo unless
-  `reality-opts.support-x25519mlkem768` is set, and Xray fingerprints other
-  than `chrome`, `firefox` and `safari` and their current `hello*` forms,
-  `random` among them on most starts. Field 100 (`require_mlkem`) of the
-  REALITY `Config` message is fork-owned and outside upstream's blocks (1-13
-  server, 21-27 client, 31); if upstream ships the option under another
+  by the target. Seen in the review of the option: sing-box v1.14.3, which
+  strips the hybrid group whatever the fingerprint; Mihomo v1.19.32 with
+  default options, where by its source only `chrome` with
+  `reality-opts.support-x25519mlkem768: true` keeps it (not run); Xray
+  `edge`, `ios`, `qq` and the older `hello*` forms. Xray `chrome`, `firefox`,
+  `safari` and their current `hello*` forms pass. Xray `random`,
+  `randomized` and `randomizednoalpn` depend on what is drawn at process
+  start and pass on some starts only. `android` and `360` have no TLS 1.3
+  and work in neither mode. Field 100 (`require_mlkem`) of the REALITY
+  `Config` message is fork-owned and outside upstream's blocks (1-13 server,
+  21-27 client, 31); if upstream claims it or ships the option under another
   number or type, migrate persisted protobuf configs and API clients rather
   than renumber silently.
   `third_party/reality/FORK.md` lists every fork change and the update

@@ -14,6 +14,7 @@ import (
 	stdnet "net"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,12 +191,50 @@ func dialREALITY(t *testing.T, conn stdnet.Conn, config *Config, shape helloShap
 	return uConn.Verified, leaf
 }
 
+// headConn keeps the first bytes read from a connection: a TLS record
+// header's worth. It embeds the interface, not the *net.TCPConn, so that
+// io.Copy has to read through it.
+type headConn struct {
+	stdnet.Conn
+	mu   sync.Mutex
+	head []byte
+}
+
+const headLen = 5
+
+func (c *headConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.mu.Lock()
+	c.head = append(c.head, b[:min(n, headLen-len(c.head))]...)
+	c.mu.Unlock()
+	return n, err
+}
+
+// CloseWrite is what REALITY's Server asks of the target's connection.
+func (c *headConn) CloseWrite() error {
+	return c.Conn.(*stdnet.TCPConn).CloseWrite()
+}
+
+func (c *headConn) first() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.head)
+}
+
+// keyShareResult is what one handshake showed. fromCover says the client was
+// shown the cover target's certificate: the server forwarded it there, as it
+// must a client it turns away, and did not drop it. clientHead and coverHead
+// are the first bytes the client read and the first the server read from the
+// cover target in that session: equal when the client saw the cover target's
+// reply and nothing of the server's own before it.
+type keyShareResult struct {
+	clientVerified, serverAccepted, fromCover bool
+	clientHead, coverHead                     []byte
+}
+
 // runKeyShareHandshake runs one REALITY server handshake against a client
-// whose hello was reshaped and returns whether both sides authenticated.
-// requireMLKEM is the server's "requireMlkem". fromCover says the client was
-// shown the cover target's certificate: the server forwarded it there, as
-// it must a client it turns away, and did not drop it.
-func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (clientVerified, serverAccepted, fromCover bool) {
+// whose hello was reshaped. requireMLKEM is the server's "requireMlkem".
+func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) keyShareResult {
 	t.Helper()
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -213,6 +252,17 @@ func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (cl
 		RequireMlkem: requireMLKEM,
 	}).GetREALITYConfig()
 	detectCoverRecords(t, serverConfig)
+	// From here on the connection to the cover target is this session's.
+	var coverConn *headConn
+	dialCover := serverConfig.DialContext
+	serverConfig.DialContext = func(ctx context.Context, network, address string) (stdnet.Conn, error) {
+		conn, err := dialCover(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		coverConn = &headConn{Conn: conn}
+		return coverConn, nil
+	}
 	clientConfig := &Config{
 		ServerName: keyShareTestServerName,
 		PublicKey:  privateKey.PublicKey().Bytes(),
@@ -239,18 +289,26 @@ func runKeyShareHandshake(t *testing.T, shape helloShape, requireMLKEM bool) (cl
 		serverResult <- err
 	}()
 
-	conn, err := stdnet.Dial("tcp", listener.Addr().String())
+	dialed, err := stdnet.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
+	conn := &headConn{Conn: dialed}
 	clientVerified, leaf := dialREALITY(t, conn, clientConfig, shape)
 	_ = conn.Close()
 	select {
 	case err := <-serverResult:
-		return clientVerified, err == nil, bytes.Equal(leaf, coverLeaf)
+		// The server has returned, so it dialed the cover target long ago.
+		return keyShareResult{
+			clientVerified: clientVerified,
+			serverAccepted: err == nil,
+			fromCover:      bytes.Equal(leaf, coverLeaf),
+			clientHead:     conn.first(),
+			coverHead:      coverConn.first(),
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal(errors.New("REALITY server handshake did not finish"))
-		return false, false, false
+		return keyShareResult{}
 	}
 }
 
@@ -297,17 +355,26 @@ func TestREALITYServerKeyShareAcceptance(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			clientVerified, serverAccepted, fromCover := runKeyShareHandshake(t, test.shape, test.requireMLKEM)
-			if serverAccepted != test.accept || clientVerified != test.accept {
-				t.Fatalf("server accepted = %v, client verified = %v, want both %v", serverAccepted, clientVerified, test.accept)
+			got := runKeyShareHandshake(t, test.shape, test.requireMLKEM)
+			if got.serverAccepted != test.accept || got.clientVerified != test.accept {
+				t.Fatalf("server accepted = %v, client verified = %v, want both %v", got.serverAccepted, got.clientVerified, test.accept)
 			}
 			// What a prober sees of a rejection is the cover target; a
 			// connection dropped instead would tell it apart.
-			if fromCover == test.accept {
+			if got.fromCover == test.accept {
 				if test.accept {
 					t.Fatal("accepted hello was answered with the cover target's certificate")
 				}
 				t.Fatal("rejected hello was not answered by the cover target's certificate")
+			}
+			if test.accept {
+				return
+			}
+			// And it sees the cover target's reply from its first byte: a
+			// server that put a record of its own before it would be told
+			// apart as well, though the client still gets the certificate.
+			if len(got.coverHead) != headLen || !bytes.Equal(got.clientHead, got.coverHead) {
+				t.Fatalf("rejected hello response starts %x; cover starts %x", got.clientHead, got.coverHead)
 			}
 		})
 	}
