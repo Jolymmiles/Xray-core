@@ -28,8 +28,13 @@ type Router struct {
 	domainRuleIndex     *strmatcher.MphMatcherGroup
 	nonAggregateRules   []indexedRule
 	simpleTargetIPRules bool
-	balancers           atomic.Pointer[map[string]*Balancer]
-	dns                 dns.Client
+	// script is compiled in Init; activeScript holds it once Start has
+	// started its pool. Until then routing takes the JSON rules
+	// (docs/FORK.md).
+	script       *scriptEngine
+	activeScript atomic.Pointer[scriptEngine]
+	balancers    atomic.Pointer[map[string]*Balancer]
+	dns          dns.Client
 
 	ctx                     context.Context
 	ohm                     outbound.Manager
@@ -74,6 +79,15 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 	r.ohm = ohm
 	r.dispatcher = dispatcher
 	r.needsSniffingAttributes.Store(false)
+
+	if config.Script != "" {
+		script, err := newScriptEngine(config.Script)
+		if err != nil {
+			return errors.New("failed to prepare routing script").Base(err)
+		}
+		r.script = script
+	}
+
 	r.rules.Store(new([]*Rule))
 	r.balancers.Store(&map[string]*Balancer{})
 	return r.ReloadRules(config, false)
@@ -81,6 +95,10 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 
 // PickRoute implements routing.Router.
 func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
+	if script := r.activeScript.Load(); script != nil {
+		return script.pickRoute(ctx)
+	}
+
 	originalCtx := ctx
 	rule, ctx, err := r.pickRouteInternal(ctx)
 	if err != nil {
@@ -98,8 +116,17 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 
 // PickRouteTag returns the part of a route decision used by the dispatcher
 // without allocating a Route wrapper. PickRoute remains the stable feature API
-// for callers that need the resolved routing context or group tags.
+// for callers that need the resolved routing context or group tags. A routing
+// script decides here exactly as it does in PickRoute.
 func (r *Router) PickRouteTag(ctx routing.Context) (outboundTag string, ruleTag string, err error) {
+	if script := r.activeScript.Load(); script != nil {
+		route, err := script.pickRoute(ctx)
+		if err != nil {
+			return "", "", err
+		}
+		return route.GetOutboundTag(), route.GetRuleTag(), nil
+	}
+
 	originalCtx := ctx
 	var rule *Rule
 	if r.domainStrategy == Config_IpIfNonMatch {
@@ -272,10 +299,11 @@ func (r *Router) RemoveRule(tag string) error {
 	return nil
 }
 
-// NeedsSniffingAttributes reports whether any active route rule consumes HTTP
-// attributes. The dispatcher uses it to avoid collecting unused headers.
+// NeedsSniffingAttributes reports whether any active route rule, or a routing
+// script, may consume HTTP attributes. The dispatcher uses it to avoid
+// collecting unused headers.
 func (r *Router) NeedsSniffingAttributes() bool {
-	return r.needsSniffingAttributes.Load()
+	return r.activeScript.Load() != nil || r.needsSniffingAttributes.Load()
 }
 
 // ListRule implements routing.Router
@@ -532,6 +560,12 @@ func routingRuleNeedsTargetIPs(rule *RoutingRule) bool {
 
 // Start implements common.Runnable.
 func (r *Router) Start() error {
+	if r.script != nil {
+		if err := r.script.start(r); err != nil {
+			return errors.New("failed to initialize routing script").Base(err)
+		}
+		r.activeScript.Store(r.script)
+	}
 	return nil
 }
 
@@ -546,6 +580,10 @@ func closeWebhooks(rules []*Rule) {
 
 // Close implements common.Closable.
 func (r *Router) Close() error {
+	if r.script != nil {
+		r.activeScript.Store(nil)
+		r.script.close()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	closeWebhooks(r.currentRules())

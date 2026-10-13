@@ -62,7 +62,11 @@ func (c *grpcUtls) ClientHandshake(ctx context.Context, authority string, rawCon
 		}
 		cfg.ServerName = serverName
 	}
-	conn := UClient(rawConn, cfg, c.fingerprint).(*UConn)
+	conn, err := UClient(rawConn, cfg, c.fingerprint)
+	if err != nil {
+		rawConn.Close()
+		return nil, nil, err
+	}
 	errChannel := make(chan error, 1)
 	go func() {
 		errChannel <- conn.HandshakeContext(ctx)

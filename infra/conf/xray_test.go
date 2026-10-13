@@ -267,6 +267,43 @@ func TestMuxConfig_Build(t *testing.T) {
 	}
 }
 
+func TestMuxConfigBuildMaxReuseTimes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		fields string
+		want   int32
+	}{
+		{"omitted", `{"enabled": true}`, 0},
+		{"zero keeps the default", `{"enabled": true, "maxReuseTimes": 0}`, 0},
+		{"one", `{"enabled": true, "maxReuseTimes": 1}`, 1},
+		{"above the default", `{"enabled": true, "maxReuseTimes": 129}`, 129},
+		{"ceiling", `{"enabled": true, "maxReuseTimes": 60000}`, 60000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := &MuxConfig{}
+			common.Must(json.Unmarshal([]byte(test.fields), m))
+			got, err := m.Build()
+			if err != nil {
+				t.Fatalf("MuxConfig.Build() error = %v", err)
+			}
+			if got.MaxReuseTimes != test.want {
+				t.Fatalf("MaxReuseTimes = %d, want %d", got.MaxReuseTimes, test.want)
+			}
+		})
+	}
+	for _, fields := range []string{
+		`{"enabled": true, "maxReuseTimes": -1}`,
+		`{"enabled": true, "maxReuseTimes": 60001}`,
+		`{"enabled": false, "maxReuseTimes": -1}`,
+	} {
+		m := &MuxConfig{}
+		common.Must(json.Unmarshal([]byte(fields), m))
+		if got, err := m.Build(); err == nil {
+			t.Errorf("MuxConfig.Build(%s) = %v, want an error", fields, got)
+		}
+	}
+}
+
 func TestSMuxLogicalHalfCloseConfig(t *testing.T) {
 	var config SMuxConfig
 	if err := json.Unmarshal([]byte("{\"enabled\":true,\"protocol\":\"smux\",\"logicalHalfClose\":\"require\"}"), &config); err != nil {

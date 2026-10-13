@@ -13,6 +13,9 @@ func init() {
 	common.Must(internet.RegisterTransportDialer(protocolName,
 		func(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
 			if streamSettings != nil && streamSettings.FinalMask != nil {
+				if err := streamSettings.FinalMask.CheckRawUDP(); err != nil {
+					return nil, err
+				}
 				return streamSettings.FinalMask.DialUDP(ctx, dest)
 			} else {
 				var sockopt *internet.SocketConfig

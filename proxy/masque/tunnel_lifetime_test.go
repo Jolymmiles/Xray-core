@@ -87,7 +87,7 @@ func TestTunnelBoundsPacketTooBigReplies(t *testing.T) {
 	const packets = 256
 	dev := newStubDevice(packets)
 	before := runtime.NumGoroutine()
-	tunnel := startTunnel(&tooBigConn{closed: make(chan struct{})}, dev, nil)
+	tunnel := startTunnel(&tooBigConn{closed: make(chan struct{})}, dev, nil, nil)
 	t.Cleanup(func() {
 		tunnel.close()
 		close(dev.release)

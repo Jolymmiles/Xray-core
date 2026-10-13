@@ -25,9 +25,6 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
-	"gvisor.dev/gvisor/pkg/buffer"
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 //go:linkname procyield runtime.procyield
@@ -35,7 +32,7 @@ func procyield(cycles uint32)
 
 // WindowsTun is an object that handles tun network interface on Windows
 // current version is heavily stripped to do nothing more,
-// then create a network interface, to be provided as endpoint to gVisor ip stack
+// then create a network interface, whose packets are read and written through a Wintun session
 type WindowsTun struct {
 	sync.RWMutex
 
@@ -46,6 +43,7 @@ type WindowsTun struct {
 	luid     winipcfg.LUID
 	cbr      winipcfg.ChangeCallback
 	cbi      winipcfg.ChangeCallback
+	guard    outboundGuard
 	wfp      windows.Handle
 	resolver *savedResolver
 	skipStop chan struct{}
@@ -55,9 +53,6 @@ type WindowsTun struct {
 
 // WindowsTun implements Tun
 var _ Tun = (*WindowsTun)(nil)
-
-// WindowsTun implements GVisorDevice
-var _ GVisorDevice = (*WindowsTun)(nil)
 
 // NewTun creates a Wintun interface with the given name. Should a Wintun
 // interface with the same name exist, it tried to be reused.
@@ -297,10 +292,21 @@ startOver:
 	}
 
 	if updater != nil {
+		// Xray's own connections have to stay out of the IP versions routed
+		// to the TUN, which needs Windows to honor the binding to updater's
+		// interface.
+		if route4 {
+			t.guard.families = append(t.guard.families, windows.AF_INET)
+		}
+		if route6 {
+			t.guard.families = append(t.guard.families, windows.AF_INET6)
+		}
+		t.guard.check()
 		// Only a registered callback goes into the fields: a nil pointer in
 		// them would not compare equal to nil in Close.
 		cbr, err := winipcfg.RegisterRouteChangeCallback(func(notificationType winipcfg.MibNotificationType, route *winipcfg.MibIPforwardRow2) {
 			updater.Update()
+			t.guard.check()
 		})
 		if err != nil {
 			return err
@@ -308,6 +314,7 @@ startOver:
 		t.cbr = cbr
 		cbi, err := winipcfg.RegisterInterfaceChangeCallback(func(notificationType winipcfg.MibNotificationType, iface *winipcfg.MibIPInterfaceRow) {
 			updater.Update()
+			t.guard.check()
 		})
 		if err != nil {
 			return err
@@ -331,6 +338,7 @@ func (t *WindowsTun) Close() error {
 	if t.cbi != nil {
 		t.cbi.Unregister()
 	}
+	t.guard.restore()
 	if t.luid != 0 {
 		t.luid.FlushRoutes(windows.AF_INET)
 		t.luid.FlushIPAddresses(windows.AF_INET)
@@ -354,6 +362,8 @@ func (t *WindowsTun) Close() error {
 		flushDNSCache()
 	}
 	if t.session != (wintun.Session{}) {
+		// ReadPacket may be waiting for a packet
+		_ = windows.SetEvent(t.readWait)
 		t.session.End()
 	}
 	if t.adapter != nil {
@@ -493,62 +503,46 @@ func (t *WindowsTun) Index() (int, error) {
 	return int(row.InterfaceIndex), nil
 }
 
-// WritePacket implements GVisorDevice method to write one packet to the tun device
-func (t *WindowsTun) WritePacket(packetBuffer *stack.PacketBuffer) tcpip.Error {
+// WritePacket implements Tun: the two parts are copied into the ring of Wintun
+func (t *WindowsTun) WritePacket(header, payload []byte) error {
 	t.RLock()
 	defer t.RUnlock()
 	if t.closed {
-		return &tcpip.ErrClosedForSend{}
+		return windows.ERROR_HANDLE_EOF
 	}
 
-	// request buffer from Wintun
-	packet, err := t.session.AllocateSendPacket(packetBuffer.Size())
+	packet, err := t.session.AllocateSendPacket(len(header) + len(payload))
 	if err != nil {
-		return &tcpip.ErrAborted{}
+		return err
 	}
-
-	// copy the bytes of slices that compose the packet into the allocated buffer
-	var index int
-	for _, packetElement := range packetBuffer.AsSlices() {
-		index += copy(packet[index:], packetElement)
-	}
-
-	// signal Wintun to send that buffer as the packet
+	copy(packet[copy(packet, header):], payload)
 	t.session.SendPacket(packet)
 
 	return nil
 }
 
-// ReadPacket implements GVisorDevice method to read one packet from the tun device
-// It is expected that the method will not block, rather return ErrQueueEmpty when there is nothing on the line,
-// which will make the stack call Wait which should implement desired push-back
-func (t *WindowsTun) ReadPacket() (byte, *stack.PacketBuffer, error) {
-	packet, err := t.session.ReceivePacket()
-	if go_errors.Is(err, windows.ERROR_NO_MORE_ITEMS) {
-		return 0, nil, ErrQueueEmpty
-	}
-	if err != nil {
-		return 0, nil, err
-	}
-
-	version := packet[0] >> 4
-	packetBuffer := buffer.MakeWithView(buffer.NewViewWithData(packet))
-	return version, stack.NewPacketBuffer(stack.PacketBufferOptions{
-		Payload:           packetBuffer,
-		IsForwardedPacket: true,
-		OnRelease: func() {
+// ReadPacket implements Tun: it waits until Wintun has a packet and copies it out of the ring
+func (t *WindowsTun) ReadPacket(b []byte) ([]byte, error) {
+	for {
+		t.RLock()
+		if t.closed {
+			t.RUnlock()
+			return nil, windows.ERROR_HANDLE_EOF
+		}
+		packet, err := t.session.ReceivePacket()
+		if err == nil {
+			n := copy(b, packet)
 			t.session.ReleaseReceivePacket(packet)
-		},
-	}), nil
-}
-
-func (t *WindowsTun) Wait() {
-	procyield(1)
-	_, _ = windows.WaitForSingleObject(t.readWait, windows.INFINITE)
-}
-
-func (t *WindowsTun) newEndpoint() (stack.LinkEndpoint, error) {
-	return &LinkEndpoint{deviceMTU: t.options.MTU, device: t}, nil
+			t.RUnlock()
+			return b[:n], nil
+		}
+		t.RUnlock()
+		if !go_errors.Is(err, windows.ERROR_NO_MORE_ITEMS) {
+			return nil, err
+		}
+		procyield(1)
+		_, _ = windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+	}
 }
 
 const (

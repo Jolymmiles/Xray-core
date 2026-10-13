@@ -76,12 +76,16 @@ func executePing(cmd *base.Command, args []string) {
 		if err != nil {
 			base.Fatalf("Failed to dial tcp: %s", err)
 		}
-		tlsConn := GeneraticUClient(tcpConn, &gotls.Config{
+		tlsConn, err := GeneraticUClient(tcpConn, &gotls.Config{
 			InsecureSkipVerify: true,
 			NextProtos:         []string{"h2", "http/1.1"},
 			MaxVersion:         gotls.VersionTLS13,
 			MinVersion:         gotls.VersionTLS12,
 		})
+		if err != nil {
+			tcpConn.Close()
+			base.Fatalf("Failed to build the ClientHello: %s", err)
+		}
 		err = tlsConn.Handshake()
 		if err != nil {
 			fmt.Println("Handshake failure: ", err)
@@ -101,12 +105,16 @@ func executePing(cmd *base.Command, args []string) {
 		if err != nil {
 			base.Fatalf("Failed to dial tcp: %s", err)
 		}
-		tlsConn := GeneraticUClient(tcpConn, &gotls.Config{
+		tlsConn, err := GeneraticUClient(tcpConn, &gotls.Config{
 			ServerName: domain,
 			NextProtos: []string{"h2", "http/1.1"},
 			MaxVersion: gotls.VersionTLS13,
 			MinVersion: gotls.VersionTLS12,
 		})
+		if err != nil {
+			tcpConn.Close()
+			base.Fatalf("Failed to build the ClientHello: %s", err)
+		}
 		err = tlsConn.Handshake()
 		if err != nil {
 			fmt.Println("Handshake failure: ", err)

@@ -3,6 +3,7 @@ package splithttp
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -137,7 +138,38 @@ func (h *flowHarness) fromClientRaw(b []byte) []byte {
 	if h.toServer != nil {
 		h.toServer.receive(h.t, got)
 	}
+	h.checkHolds()
 	return got
+}
+
+// checkHolds compares the counters behind clientHolds, which are kept as the
+// streams change, with a walk over the streams.
+func (h *flowHarness) checkHolds() {
+	h.t.Helper()
+	if err := downCountersAgree(h.c); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// downCountersAgree walks the streams of c and compares them with the
+// counters the connection keeps of those the server has not finished.
+func downCountersAgree(c *flowConn) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var open, forwarded, sent, returned int64
+	for _, s := range c.streams {
+		if !s.serverDone {
+			open++
+			forwarded += s.downForwarded
+			sent += s.downSent
+			returned += s.down.returned
+		}
+	}
+	if open != c.downOpen || forwarded != c.downOpenForwarded || sent != c.downOpenSent || returned != c.downOpenReturned {
+		return fmt.Errorf("unfinished streams: %d forwarded %d sent %d returned %d, the connection counts %d forwarded %d sent %d returned %d",
+			open, forwarded, sent, returned, c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned)
+	}
+	return nil
 }
 
 func (h *flowHarness) fromClient(f func(fr *http2.Framer)) []byte {
@@ -153,6 +185,7 @@ func (h *flowHarness) fromServerRaw(b []byte) ([]byte, error) {
 	if h.toClient != nil {
 		h.toClient.receive(h.t, got)
 	}
+	h.checkHolds()
 	return got, err
 }
 

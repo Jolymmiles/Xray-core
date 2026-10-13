@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/xtls/xray-core/testing/interop"
 )
 
 const mkcpE2EUUID = "b831381d-6324-4d53-ad4f-8cda48b30811"
@@ -321,7 +323,10 @@ func buildMKCPMihomoE2EBinary(t *testing.T, workDir string) string {
 		return existing
 	}
 
-	repository := filepath.Join(filepath.Dir(mkcpRepositoryRoot(t)), "mihomo")
+	repository, err := interop.SourceDir(mkcpRepositoryRoot(t), interop.Mihomo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	output := filepath.Join(workDir, "mihomo")
 	command := exec.Command("go", "build", "-o", output, ".")
 	command.Dir = repository

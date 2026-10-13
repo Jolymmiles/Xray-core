@@ -6,14 +6,19 @@ import (
 )
 
 const (
-	fragTTL          = 8 * time.Second
-	fragSize         = 4096
-	fragClientIDSize = 16384
-	fragCount        = 4096
+	fragTTL   = 4 * time.Second
+	fragSize  = 4096
+	fragCount = 4096
 )
 
+// FragKey identifies one fragmented packet. The one-byte fragment ID repeats
+// every 256 packets, well within fragTTL on a busy client, so the key also
+// carries the 3-byte nonce the client draws once per packet and repeats in
+// each of its fragments; without it a later packet completes an earlier one
+// that lost a fragment.
 type FragKey struct {
 	clientID ClientID
+	nonce    [3]byte
 	fragID   byte
 }
 
@@ -26,17 +31,15 @@ type FragEntry struct {
 }
 
 type FragManager struct {
-	m     map[FragKey]*FragEntry
-	sizem map[ClientID]int
-	ch    chan struct{}
-	mu    sync.Mutex
+	m  map[FragKey]*FragEntry
+	ch chan struct{}
+	mu sync.Mutex
 }
 
 func NewFragManager() *FragManager {
 	m := &FragManager{
-		m:     make(map[FragKey]*FragEntry),
-		sizem: make(map[ClientID]int),
-		ch:    make(chan struct{}),
+		m:  make(map[FragKey]*FragEntry),
+		ch: make(chan struct{}),
 	}
 	go m.gc()
 	return m
@@ -51,11 +54,8 @@ func (m *FragManager) closed() bool {
 	}
 }
 
-func (m *FragManager) removeEntey(k FragKey, e *FragEntry) {
-	if m.sizem[k.clientID] -= e.size; m.sizem[k.clientID] <= 0 {
-		delete(m.sizem, k.clientID)
-	}
-	delete(m.m, k)
+func (m *FragManager) remove(key FragKey) {
+	delete(m.m, key)
 }
 
 func (m *FragManager) tryRemove() {
@@ -72,7 +72,7 @@ func (m *FragManager) tryRemove() {
 			first = false
 		}
 	}
-	m.removeEntey(key, entry)
+	m.remove(key)
 }
 
 func (m *FragManager) gc() {
@@ -86,7 +86,7 @@ func (m *FragManager) gc() {
 			m.mu.Lock()
 			for k, e := range m.m {
 				if now.After(e.deadline) {
-					m.removeEntey(k, e)
+					m.remove(k)
 				}
 			}
 			m.mu.Unlock()
@@ -111,7 +111,7 @@ func (m *FragManager) Feed(out []byte, key FragKey, fragIdx, fragN byte, data []
 		if entry == nil {
 			m.tryRemove()
 		} else {
-			m.removeEntey(key, entry)
+			m.remove(key)
 		}
 		entry = &FragEntry{
 			data:     make([][]byte, fragN),
@@ -133,11 +133,6 @@ func (m *FragManager) Feed(out []byte, key FragKey, fragIdx, fragN byte, data []
 	if entry.size+len(data) > fragSize {
 		return 0
 	}
-	if entry.len < int(entry.total)-1 {
-		if m.sizem[key.clientID]+len(data) > fragClientIDSize {
-			return 0
-		}
-	}
 
 	cp := make([]byte, len(data))
 	copy(cp, data)
@@ -146,7 +141,6 @@ func (m *FragManager) Feed(out []byte, key FragKey, fragIdx, fragN byte, data []
 	entry.size += len(data)
 	entry.len++
 	entry.deadline = now.Add(fragTTL)
-	m.sizem[key.clientID] += len(data)
 
 	if entry.len < int(entry.total) {
 		return 0
@@ -156,7 +150,7 @@ func (m *FragManager) Feed(out []byte, key FragKey, fragIdx, fragN byte, data []
 	for i := range entry.data {
 		out = append(out, entry.data[i]...)
 	}
-	m.removeEntey(key, entry)
+	m.remove(key)
 	return len(out)
 }
 
@@ -167,6 +161,7 @@ func (m *FragManager) Close() {
 		return
 	}
 	close(m.ch)
-	clear(m.m)
-	clear(m.sizem)
+	for k := range m.m {
+		delete(m.m, k)
+	}
 }

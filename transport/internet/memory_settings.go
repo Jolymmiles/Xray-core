@@ -80,6 +80,9 @@ func ToMemoryStreamConfig(s *StreamConfig) (*MemoryStreamConfig, error) {
 			}
 			udpMasks = append(udpMasks, mask)
 		}
+		if err := finalmask.CheckDatagramIntegrity(s.ProtocolName, udpMasks); err != nil {
+			return nil, err
+		}
 
 		dialTCP := func(ctx context.Context, dest net.Destination) (net.Conn, error) {
 			return DialSystem(ctx, dest, mss.SocketSettings)

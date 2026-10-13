@@ -9,11 +9,11 @@ import (
 
 func TestVersionFollowsYearMonthDayHHMM(t *testing.T) {
 	got := core.Version()
-	want := fmt.Sprintf("%d.%d.%d-2241", core.Version_x, core.Version_y, core.Version_z)
+	want := fmt.Sprintf("%d.%d.%d-2347", core.Version_x, core.Version_y, core.Version_z)
 	if got != want {
 		t.Fatalf("Version() = %q, want %q (year.month.day-HHMM UTC)", got, want)
 	}
-	if core.Version_x != 26 || core.Version_y != 10 || core.Version_z != 6 {
-		t.Fatalf("numeric version = %d.%d.%d, want 26.10.6", core.Version_x, core.Version_y, core.Version_z)
+	if core.Version_x != 26 || core.Version_y != 10 || core.Version_z != 13 {
+		t.Fatalf("numeric version = %d.%d.%d, want 26.10.13", core.Version_x, core.Version_y, core.Version_z)
 	}
 }

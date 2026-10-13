@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -35,6 +36,12 @@ type kernelTun struct {
 	linkAddrs []netlink.Addr
 	routes    []*netlink.Route
 	rules     []*netlink.Rule
+
+	// closeOnce runs the teardown once: wireguard-go closes the device when
+	// it shuts down, after a failed bind for example, while the owner closes
+	// it too, and netlink.Handle.Close is not safe to repeat concurrently.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun.Device, tnet *Net, err error) {
@@ -229,7 +236,12 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 	return t, tnet, nil
 }
 
-func (tun *kernelTun) Close() (err error) {
+func (tun *kernelTun) Close() error {
+	tun.closeOnce.Do(func() { tun.closeErr = tun.teardown() })
+	return tun.closeErr
+}
+
+func (tun *kernelTun) teardown() (err error) {
 	var errs []error
 	for _, rule := range tun.rules {
 		if err = tun.handle.RuleDel(rule); err != nil {

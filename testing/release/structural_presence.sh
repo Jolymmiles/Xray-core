@@ -21,17 +21,17 @@ fi
 go run ./infra/vformat/main.go -mode check -pwd ./
 go vet ./...
 go test -timeout 2h ./...
-go test -race ./...
-go test -gcflags=all=-d=checkptr=2 ./...
-go test -tags 'integration http2legacy' ./common/singmux -run '^TestFreeTCPUDPPort' -count=1
-go test -tags 'integration http2legacy' ./common/singmux \
-	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix/)' -count=3 -v
-go test -tags 'integration http2legacy' ./testing/scenarios \
+go test -timeout 2h -race ./...
+go test -timeout 2h -gcflags=all=-d=checkptr=2 ./...
+go test -timeout 10m -tags 'integration http2legacy' ./common/singmux -run '^TestFreeTCPUDPPort' -count=1
+go test -timeout 10m -tags 'integration http2legacy' ./common/singmux \
+	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix)$' -count=3 -v
+go test -timeout 10m -tags 'integration http2legacy' ./testing/scenarios \
 	-run '^(TestDirectVersionSkew|TestLegacyMuxVersionSkew|TestXUDPVersionSkew|TestReverseVersionSkew|TestWireGuardVersionSkew)$' -count=1 -v
-go test -race ./testing/presence -run '^(TestSevenThousandExactOwnersEndAtZero|TestProductionPresenceOwnershipSourceAudit)$' -count=3
-go test -race ./common/mux \
+go test -timeout 10m -race ./testing/presence -run '^(TestSevenThousandExactOwnersEndAtZero|TestProductionPresenceOwnershipSourceAudit)$' -count=3
+go test -timeout 10m -race ./common/mux \
 	-run '^(TestXUDPRuntimeThousandRebindsEndAtZero|TestRVSClientWorkerThousandSlotsEndAtZero)$' -count=3
-go test -race ./proxy/wireguard -run '^TestWireGuardPresenceThousandHandoffsEndAtZero$' -count=3
+go test -timeout 10m -race ./proxy/wireguard -run '^TestWireGuardPresenceThousandHandoffsEndAtZero$' -count=3
 
 if [[ "$mode" != linux ]]; then
 	exit 0
@@ -63,20 +63,20 @@ XRAY_SMUX_STRESS_CYCLES=50 XRAY_SMUX_STRESS_TCP_STREAMS=16 go test -timeout=45m 
 	-run '^TestSMUXProcessStressAndReconnect$' -count=1 -v
 go test -timeout=45m -tags 'integration stress performance http2legacy' ./common/singmux \
 	-run '^TestCandidatePerformanceAgainstPreviousRelease$' -count=3 -v
-go test -tags 'integration remnanode_release http2legacy' ./common/singmux \
+go test -timeout 10m -tags 'integration remnanode_release http2legacy' ./common/singmux \
 	-run '^(TestRemnaNodeLinuxReleaseEnvironment|TestRemnaNodeProductionConfigContract|TestRemnaNodeConfigRejectsLiteralNoneFlow|TestRemnaNodeConfigProcessE2E)$' -count=1 -v
 
 deadline=$((SECONDS + XRAY_STRUCTURAL_SOAK_SECONDS))
 cycles=0
 while ((SECONDS < deadline)); do
 	echo "mixed-path soak cycle $((cycles + 1))"
-	go test -tags 'integration http2legacy' ./common/singmux \
+	go test -timeout 10m -tags 'integration http2legacy' ./common/singmux \
 		-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix)$' -count=1
-	go test -tags 'integration http2legacy' ./testing/scenarios \
+	go test -timeout 10m -tags 'integration http2legacy' ./testing/scenarios \
 		-run '^(TestDirectVersionSkew|TestLegacyMuxVersionSkew|TestXUDPVersionSkew|TestReverseVersionSkew|TestWireGuardVersionSkew)$' -count=1
-	go test -race ./testing/presence -run '^TestSevenThousandExactOwnersEndAtZero$' -count=1
-	go test -race ./common/mux -run '^(TestXUDPRuntimeThousandRebindsEndAtZero|TestRVSClientWorkerThousandSlotsEndAtZero)$' -count=1
-	go test -race ./proxy/wireguard -run '^TestWireGuardPresenceThousandHandoffsEndAtZero$' -count=1
+	go test -timeout 10m -race ./testing/presence -run '^TestSevenThousandExactOwnersEndAtZero$' -count=1
+	go test -timeout 10m -race ./common/mux -run '^(TestXUDPRuntimeThousandRebindsEndAtZero|TestRVSClientWorkerThousandSlotsEndAtZero)$' -count=1
+	go test -timeout 10m -race ./proxy/wireguard -run '^TestWireGuardPresenceThousandHandoffsEndAtZero$' -count=1
 	cycles=$((cycles + 1))
 done
 if ((cycles == 0)); then

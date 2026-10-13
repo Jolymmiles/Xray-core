@@ -33,6 +33,100 @@ func TestFlowWindowRamp(t *testing.T) {
 	}
 }
 
+// TestFlowWindowSettles is a reader that doubles its rate every round trip,
+// with one round that reads low and the next that makes up for it. The low
+// round ends the ramp, as any round without growth does, but the window has
+// not settled: it does not follow the path model yet, which would have that
+// one small round to go by. Two round trips at the same rate settle it.
+func TestFlowWindowSettles(t *testing.T) {
+	const rtt = 50 * time.Millisecond
+	start := time.Unix(0, 0)
+	w := flowWindow{cap: flowStartWindow}
+	at := time.Duration(0)
+	round := func(credit int64) {
+		w.returned += credit
+		w.adjust(start.Add(at), rtt, h2InitWindow, 1<<30, true, false)
+		at += rtt
+	}
+	round(0)
+	for _, credit := range []int64{16 << 10, 32 << 10, 64 << 10, 56 << 10, 200 << 10, 400 << 10} {
+		round(credit)
+		if w.settled() {
+			t.Fatalf("a round of %d KiB settled a reader that still doubles its rate", credit>>10)
+		}
+	}
+	if !w.ramped {
+		t.Fatal("a round under the one before did not end the ramp")
+	}
+	// Twice the reader's rate still lets the sender double.
+	if want := int32(2 * 400 << 10); w.cap != want {
+		t.Fatalf("the cap is %d after a round of 400 KiB, want twice that, %d", w.cap, want)
+	}
+	for i := 0; i < flowSettledRounds; i++ {
+		if w.settled() {
+			t.Fatalf("settled after %d round trips at the same rate, want %d", i, flowSettledRounds)
+		}
+		round(400 << 10)
+	}
+	if !w.settled() {
+		t.Fatalf("%d round trips at the same rate did not settle the reader", flowSettledRounds)
+	}
+}
+
+// TestFlowWindowGrowingSlowlyIsNotSettled is a reader a tenth faster every
+// round trip. Its rounds are flat, under a quarter more each, but none has
+// ended the ramp: it still speeds up, and stays with adjust, which follows
+// it at twice its rate, as before.
+func TestFlowWindowGrowingSlowlyIsNotSettled(t *testing.T) {
+	const rtt = 50 * time.Millisecond
+	start := time.Unix(0, 0)
+	w := flowWindow{cap: flowStartWindow}
+	credit := int64(400 << 10)
+	for i := 0; i < 6; i++ {
+		w.returned += credit
+		w.adjust(start.Add(time.Duration(i)*rtt), rtt, h2InitWindow, 1<<30, true, false)
+		credit += credit / 10
+	}
+	if w.flat < flowSettledRounds {
+		t.Fatalf("%d flat rounds counted for a reader that grows a tenth a round, want at least %d", w.flat, flowSettledRounds)
+	}
+	if w.ramped || w.settled() {
+		t.Fatalf("a reader that still speeds up counts as ramped %v, settled %v", w.ramped, w.settled())
+	}
+}
+
+// TestFlowWindowSlowGrowthThenLowRoundIsNotSettled is that reader followed
+// by one round that reads low, as a start in congestion avoidance may give.
+// The low round ends the ramp. The flat rounds before it are not rounds at a
+// found rate, and the model would have the low round to go by.
+func TestFlowWindowSlowGrowthThenLowRoundIsNotSettled(t *testing.T) {
+	const rtt = 50 * time.Millisecond
+	start := time.Unix(0, 0)
+	w := flowWindow{cap: flowStartWindow}
+	credit := int64(400 << 10)
+	at := time.Duration(0)
+	round := func(credit int64) {
+		w.returned += credit
+		w.adjust(start.Add(at), rtt, h2InitWindow, 1<<30, true, false)
+		at += rtt
+	}
+	for i := 0; i < 6; i++ {
+		round(credit)
+		credit += credit / 10
+	}
+	round(8 << 10)
+	if !w.ramped {
+		t.Fatal("a round under the one before did not end the ramp")
+	}
+	if w.settled() {
+		t.Fatalf("one low round after slow growth settled the window, with %d to model the path from", w.prev)
+	}
+	round(8 << 10)
+	if !w.settled() {
+		t.Fatalf("%d round trips at the same rate after the ramp did not settle the reader", flowSettledRounds)
+	}
+}
+
 func TestFlowLearnedHalfLife(t *testing.T) {
 	var l flowLearned
 	start := time.Unix(0, 0)

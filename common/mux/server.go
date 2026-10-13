@@ -216,7 +216,10 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 // Root cause (#5110 race + pooled VLESS readers): done used to mean "run
 // exited" while monitor still Interrupted the link afterward. Callers waiting
 // on done (DispatchLink) then Release()'d pooled link.Reader under that
-// Interrupt. Contract now: done/WaitClosed ⇒ link is no longer touched.
+// Interrupt. Now done/WaitClosed follow the Interrupt, but finish does not
+// join run: when Close, not run, calls finish, run can still be returning
+// from a read of the link. A caller must not release what the link reads
+// (VLESS Process leaves its reader to the worker).
 //
 // The KeepAlive loop and the XUDP response sink are told to stop; once they
 // see stop they start no write. finish does not wait for either: a write

@@ -428,8 +428,12 @@ type MultiplexingConfig struct {
 	XudpConcurrency int32 `protobuf:"varint,3,opt,name=xudpConcurrency,proto3" json:"xudpConcurrency,omitempty"`
 	// "reject" (default), "allow" or "skip".
 	XudpProxyUDP443 string `protobuf:"bytes,4,opt,name=xudpProxyUDP443,proto3" json:"xudpProxyUDP443,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Sessions one Mux.Cool connection admits over its lifetime before new ones
+	// open another connection; XUDP keeps 128. 0 means 128, at most 60000.
+	// Field 30 is fork-owned (docs/FORK.md).
+	MaxReuseTimes int32 `protobuf:"varint,30,opt,name=maxReuseTimes,proto3" json:"maxReuseTimes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MultiplexingConfig) Reset() {
@@ -488,6 +492,13 @@ func (x *MultiplexingConfig) GetXudpProxyUDP443() string {
 		return x.XudpProxyUDP443
 	}
 	return ""
+}
+
+func (x *MultiplexingConfig) GetMaxReuseTimes() int32 {
+	if x != nil {
+		return x.MaxReuseTimes
+	}
+	return 0
 }
 
 type SmuxConfig struct {
@@ -701,12 +712,13 @@ const file_app_proxyman_config_proto_rawDesc = "" +
 	"\x12multiplex_settings\x18\x04 \x01(\v2%.xray.app.proxyman.MultiplexingConfigR\x11multiplexSettings\x12\x19\n" +
 	"\bvia_cidr\x18\x05 \x01(\tR\aviaCidr\x12P\n" +
 	"\x0ftarget_strategy\x18\x06 \x01(\x0e2'.xray.transport.internet.DomainStrategyR\x0etargetStrategy\x12B\n" +
-	"\rsmux_settings\x18\a \x01(\v2\x1d.xray.app.proxyman.SmuxConfigR\fsmuxSettingsJ\x04\b\x03\x10\x04\"\xa4\x01\n" +
+	"\rsmux_settings\x18\a \x01(\v2\x1d.xray.app.proxyman.SmuxConfigR\fsmuxSettingsJ\x04\b\x03\x10\x04\"\xca\x01\n" +
 	"\x12MultiplexingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12 \n" +
 	"\vconcurrency\x18\x02 \x01(\x05R\vconcurrency\x12(\n" +
 	"\x0fxudpConcurrency\x18\x03 \x01(\x05R\x0fxudpConcurrency\x12(\n" +
-	"\x0fxudpProxyUDP443\x18\x04 \x01(\tR\x0fxudpProxyUDP443\"\x83\x03\n" +
+	"\x0fxudpProxyUDP443\x18\x04 \x01(\tR\x0fxudpProxyUDP443\x12$\n" +
+	"\rmaxReuseTimes\x18\x1e \x01(\x05R\rmaxReuseTimes\"\x83\x03\n" +
 	"\n" +
 	"SmuxConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1a\n" +

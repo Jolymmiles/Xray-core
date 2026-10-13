@@ -17,6 +17,7 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
+	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"github.com/xtls/xray-core/transport/internet/hysteria/congestion"
@@ -26,8 +27,9 @@ import (
 )
 
 type client struct {
-	sync.Mutex
-
+	lock         chan struct{}
+	instance     *core.Instance
+	forced       bool
 	dest         net.Destination
 	config       *Config
 	tlsConfig    *gotls.Config
@@ -64,11 +66,19 @@ func (c *client) close() {
 }
 
 func (c *client) dial(ctx context.Context) error {
-	status := c.status()
-	if status == StatusActive {
-		return nil
+	// A done context and a free client lock are both ready, so the lock can
+	// be taken for a dial that is already canceled.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if status == StatusInactive {
+	if c.forced {
+		return errors.New("client is closed")
+	}
+
+	switch c.status() {
+	case StatusActive:
+		return nil
+	case StatusInactive:
 		c.close()
 	}
 
@@ -90,7 +100,7 @@ func (c *client) dial(ctx context.Context) error {
 		ChromeParrot:                   !quicParams.DisableChromeParrot,
 		EnableDatagrams:                true,
 		MaxDatagramFrameSize:           MaxDatagramFrameSize,
-		OmitMaxDatagramFrameSize:       time.Now().After(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)),
+		OmitMaxDatagramFrameSize:       true,
 		DisablePathManager:             true,
 	}
 	if quicParams.InitStreamReceiveWindow == 0 {
@@ -166,8 +176,11 @@ func (c *client) dial(ctx context.Context) error {
 			CommonHeaderPadding: []string{AuthRequestPadding.String()},
 		},
 	}
-	resp, err := rt.RoundTrip(req)
+	resp, err := rt.RoundTrip(req.WithContext(ctx))
 	if err != nil {
+		// On cancellation RoundTrip returns while HTTP/3 may still run Dial
+		// on its own goroutine; Close waits for it before conn is read.
+		_ = rt.Close()
 		if conn != nil {
 			_ = conn.CloseWithError(closeErrCodeProtocolError, "")
 		}
@@ -176,7 +189,12 @@ func (c *client) dial(ctx context.Context) error {
 		return err
 	}
 	if resp.StatusCode != StatusAuthOK {
+		// Close the connection first: it then ends with the protocol error
+		// alone, not with code 0 from rt.Close or a stream cancellation from
+		// closing the unread body.
 		_ = conn.CloseWithError(closeErrCodeProtocolError, "")
+		_ = resp.Body.Close()
+		_ = rt.Close()
 		_ = tr.Close()
 		_ = pktConn.Close()
 		return errors.New("auth failed code ", resp.StatusCode)
@@ -216,9 +234,17 @@ func (c *client) dial(ctx context.Context) error {
 	return nil
 }
 
+func (c *client) unlock() {
+	<-c.lock
+}
+
 func (c *client) tcp(ctx context.Context) (stat.Connection, error) {
-	c.Lock()
-	defer c.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case c.lock <- struct{}{}:
+		defer c.unlock()
+	}
 
 	err := c.dial(ctx)
 	if err != nil {
@@ -240,8 +266,12 @@ func (c *client) tcp(ctx context.Context) (stat.Connection, error) {
 }
 
 func (c *client) udp(ctx context.Context) (stat.Connection, error) {
-	c.Lock()
-	defer c.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case c.lock <- struct{}{}:
+		defer c.unlock()
+	}
 
 	err := c.dial(ctx)
 	if err != nil {
@@ -251,12 +281,15 @@ func (c *client) udp(ctx context.Context) (stat.Connection, error) {
 	return c.udpSM.udp()
 }
 
-func (c *client) clean() {
-	c.Lock()
-	if c.status() == StatusInactive {
+func (c *client) clean(force bool) {
+	c.lock <- struct{}{}
+	if force {
+		c.forced = true
+	}
+	if status := c.status(); force && status != StatusNull || status == StatusInactive {
 		c.close()
 	}
-	c.Unlock()
+	c.unlock()
 }
 
 type dialerConf struct {
@@ -267,16 +300,55 @@ type dialerConf struct {
 type clientManager struct {
 	sync.RWMutex
 	m map[dialerConf]*client
+
+	// cleaning, when set by a test, runs for each captured client before its
+	// instance check and cleanup, with no manager or client lock held.
+	// Install it before starting cleaner passes and leave it unchanged until
+	// all passes finish. Overlapping passes may call it concurrently,
+	// including for a client no longer present in the pool.
+	cleaning func(*client)
 }
 
 func (m *clientManager) clean() {
 	ticker := time.NewTicker(idleCleanupInterval)
 	for range ticker.C {
-		m.RLock()
-		for _, c := range m.m {
-			c.clean()
+		m.cleanOnce()
+	}
+}
+
+type pooledClient struct {
+	key    dialerConf
+	client *client
+}
+
+// cleanOnce runs one cleaner pass over a snapshot of the pool. It waits for
+// instance status (Instance.Start and Close hold it while features start or
+// close) and for client locks (a dial holds one during a handshake) without
+// holding the pool lock, so neither wait stalls dials. A forced client is
+// closed before it is removed, and removed only if the pool still holds it:
+// an overlapping pass keeps a replacement that a dial added under the same
+// key.
+func (m *clientManager) cleanOnce() {
+	m.RLock()
+	clients := make([]pooledClient, 0, len(m.m))
+	for k, c := range m.m {
+		clients = append(clients, pooledClient{k, c})
+	}
+	m.RUnlock()
+
+	for _, p := range clients {
+		if m.cleaning != nil {
+			m.cleaning(p.client)
 		}
-		m.RUnlock()
+		force := p.client.instance != nil && !p.client.instance.IsRunning()
+		p.client.clean(force)
+		if force {
+			m.Lock()
+			if m.m[p.key] == p.client {
+				delete(m.m, p.key)
+			}
+			m.Unlock()
+		}
 	}
 }
 
@@ -291,9 +363,6 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		return nil, errors.New("tls config is nil")
 	}
 
-	datagram := DatagramFromContext(ctx)
-	dest.Network = net.Network_UDP
-
 	initmanager.Do(func() {
 		manager = &clientManager{
 			m: make(map[dialerConf]*client),
@@ -301,15 +370,26 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		go manager.clean()
 	})
 
-	manager.RLock()
-	c := manager.m[dialerConf{dest, streamSettings}]
-	manager.RUnlock()
+	return manager.dial(ctx, dest, streamSettings, tlsConfig)
+}
+
+func (m *clientManager) dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig, tlsConfig *tls.Config) (stat.Connection, error) {
+	datagram := DatagramFromContext(ctx)
+	dest.Network = net.Network_UDP
+
+	dialerConfKey := dialerConf{dest, streamSettings}
+
+	m.RLock()
+	c := m.m[dialerConfKey]
+	m.RUnlock()
 
 	if c == nil {
-		manager.Lock()
-		c = manager.m[dialerConf{dest, streamSettings}]
+		m.Lock()
+		c = m.m[dialerConfKey]
 		if c == nil {
 			c = &client{
+				lock:         make(chan struct{}, 1),
+				instance:     core.FromContext(ctx),
 				dest:         dest,
 				config:       streamSettings.ProtocolSettings.(*Config),
 				tlsConfig:    tlsConfig.GetTLSConfig(tls.WithDestination(dest)),
@@ -317,9 +397,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 				finalMask:    streamSettings.FinalMask,
 				quicParams:   streamSettings.QuicParams,
 			}
-			manager.m[dialerConf{dest, streamSettings}] = c
+			m.m[dialerConfKey] = c
 		}
-		manager.Unlock()
+		m.Unlock()
 	}
 
 	if datagram {

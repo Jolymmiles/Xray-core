@@ -50,9 +50,11 @@ type Handler struct {
 	encryption    *encryption.ClientInstance
 	reverse       *Reverse
 
-	testpre  uint32
-	initpre  sync.Once
-	preConns chan *ConnExpire
+	testpre   uint32
+	initpre   sync.Once
+	preConns  chan *ConnExpire
+	preCtx    context.Context
+	preCancel context.CancelFunc
 }
 
 type ConnExpire struct {
@@ -95,6 +97,13 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		}
 	}
 
+	// Before the reverse is scheduled: its delayed start runs Process.
+	handler.testpre = a.Testpre
+	if handler.testpre > 0 {
+		handler.preConns = make(chan *ConnExpire)
+		handler.preCtx, handler.preCancel = context.WithCancel(context.Background())
+	}
+
 	if a.Reverse != nil {
 		rvsCtx := session.ContextWithInbound(ctx, &session.Inbound{
 			Tag:  a.Reverse.Tag,
@@ -110,10 +119,12 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 				SniffingRequest: request,
 			})
 		}
+		rvsCtx, rvsCancel := context.WithCancel(rvsCtx)
 		handler.reverse = &Reverse{
 			tag:        a.Reverse.Tag,
 			dispatcher: v.GetFeature(routing.DispatcherType()).(routing.Dispatcher),
 			ctx:        rvsCtx,
+			cancel:     rvsCancel,
 			handler:    handler,
 		}
 		handler.reverse.monitorTask = &task.Periodic{
@@ -123,20 +134,70 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		handler.reverse.scheduleStart(2 * time.Second)
 	}
 
-	handler.testpre = a.Testpre
-
 	return handler, nil
 }
 
 // Close implements common.Closable.Close().
 func (h *Handler) Close() error {
-	if h.preConns != nil {
-		close(h.preConns)
+	if h.preCancel != nil {
+		h.preCancel()
 	}
 	if h.reverse != nil {
 		return h.reverse.Close()
 	}
 	return nil
+}
+
+// preConnect keeps handing pre-connected connections to Process until Close.
+func (h *Handler) preConnect(dialer internet.Dialer, dest net.Destination) {
+	// Not h.preCtx: transports such as gRPC tie a connection to the context it
+	// was dialed with, and Close must not end connections that requests use.
+	ctx := xctx.ContextWithID(context.Background(), session.NewID())
+	for h.preCtx.Err() == nil {
+		conn, err := dialer.Dial(ctx, dest)
+		if err != nil {
+			if h.preCtx.Err() == nil {
+				errors.LogWarningInner(ctx, err, "pre-connect failed")
+			}
+			continue
+		}
+		select {
+		case h.preConns <- &ConnExpire{Conn: conn, Expire: time.Now().Add(time.Minute * 2)}: // TODO: customize & randomize
+		case <-h.preCtx.Done():
+			conn.Close()
+			return
+		}
+		wait := time.NewTimer(time.Millisecond * 200) // TODO: customize & randomize
+		select {
+		case <-wait.C:
+		case <-h.preCtx.Done():
+			wait.Stop()
+			return
+		}
+	}
+}
+
+// getPreConn waits for an unexpired pre-connected connection.
+func (h *Handler) getPreConn(ctx context.Context) (stat.Connection, error) {
+	for {
+		var connTime *ConnExpire
+		select {
+		case connTime = <-h.preConns:
+		case <-h.preCtx.Done():
+			return nil, errors.New("closed handler")
+		case <-ctx.Done():
+			return nil, errors.New("failed to get a pre-connected connection").Base(ctx.Err())
+		}
+		// Close may have come together with the connection.
+		if h.preCtx.Err() != nil {
+			connTime.Conn.Close()
+			return nil, errors.New("closed handler")
+		}
+		if time.Now().Before(connTime.Expire) {
+			return connTime.Conn, nil
+		}
+		connTime.Conn.Close()
+	}
 }
 
 // Process implements proxy.Outbound.Process().
@@ -152,34 +213,17 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	var conn stat.Connection
 
 	if shouldUseTestpre(proxyman.IsSMUXBrutalCarrier(ctx), h.testpre, h.reverse) {
+		if h.preCtx.Err() != nil {
+			return errors.New("closed handler")
+		}
 		h.initpre.Do(func() {
-			h.preConns = make(chan *ConnExpire)
 			for range h.testpre { // TODO: randomize
-				go func() {
-					defer func() { recover() }()
-					ctx := xctx.ContextWithID(context.Background(), session.NewID())
-					for {
-						conn, err := dialer.Dial(ctx, rec.Destination)
-						if err != nil {
-							errors.LogWarningInner(ctx, err, "pre-connect failed")
-							continue
-						}
-						h.preConns <- &ConnExpire{Conn: conn, Expire: time.Now().Add(time.Minute * 2)} // TODO: customize & randomize
-						time.Sleep(time.Millisecond * 200)                                             // TODO: customize & randomize
-					}
-				}()
+				go h.preConnect(dialer, rec.Destination)
 			}
 		})
-		for {
-			connTime := <-h.preConns
-			if connTime == nil {
-				return errors.New("closed handler")
-			}
-			if time.Now().Before(connTime.Expire) {
-				conn = connTime.Conn
-				break
-			}
-			connTime.Conn.Close()
+		var err error
+		if conn, err = h.getPreConn(ctx); err != nil {
+			return err
 		}
 	}
 
@@ -409,10 +453,13 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 }
 
 type Reverse struct {
-	mu           sync.Mutex
-	tag          string
-	dispatcher   routing.Dispatcher
+	mu         sync.Mutex
+	tag        string
+	dispatcher routing.Dispatcher
+	// ctx is cancelled by Close, which ends dials and transfers of bridges
+	// that are still running.
 	ctx          context.Context
+	cancel       context.CancelFunc
 	handler      *Handler
 	workers      []*reverse.BridgeWorker
 	monitorTask  *task.Periodic
@@ -478,7 +525,9 @@ func (r *Reverse) monitor() error {
 			ctx := session.ContextWithOutbounds(r.ctx, []*session.Outbound{{
 				Target: net.Destination{Address: net.DomainAddress("v1.rvs.cool")},
 			}})
-			r.handler.Process(ctx, link2, session.FullHandlerFromContext(ctx).(*proxyman.Handler))
+			dialer := &reverseCarrierDialer{Dialer: session.FullHandlerFromContext(ctx).(*proxyman.Handler), ctx: r.ctx}
+			r.handler.Process(ctx, link2, dialer)
+			dialer.release()
 			common.Interrupt(reader1)
 			common.Interrupt(reader2)
 		}()
@@ -528,6 +577,9 @@ func (r *Reverse) Close() error {
 		startTimer := r.startTimer
 		r.startTimer = nil
 		r.mu.Unlock()
+		if r.cancel != nil {
+			r.cancel()
+		}
 		if startTimer != nil && startTimer.Stop() {
 			r.delayedStart.Done()
 		}
@@ -540,4 +592,32 @@ func (r *Reverse) Close() error {
 		r.workersDone.Wait()
 	})
 	return result
+}
+
+// reverseCarrierDialer closes the connection it dials once the reverse closes.
+// Cancelling the reverse's context ends dials and transfers, but not the VLESS
+// encryption handshake, which reads its server's reply without one.
+type reverseCarrierDialer struct {
+	internet.Dialer
+	ctx  context.Context
+	stop func() bool
+}
+
+func (d *reverseCarrierDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
+	conn, err := d.Dialer.Dial(ctx, dest)
+	if err != nil {
+		return nil, err
+	}
+	d.release()
+	d.stop = context.AfterFunc(d.ctx, func() { _ = conn.Close() })
+	return conn, nil
+}
+
+// release stops watching the connection once Process, which closes it, has
+// returned.
+func (d *reverseCarrierDialer) release() {
+	if d.stop != nil {
+		d.stop()
+		d.stop = nil
+	}
 }

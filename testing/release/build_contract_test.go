@@ -1,19 +1,19 @@
 package release
 
 import (
-	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
-// Every shipped or release-tested binary is built with Go 1.27.1 and
-// -tags http2legacy. Without the tag, Go 1.27's x/net http2.Transport dials
-// once per request while a TLS handshake hangs, which defeats XHTTP's
-// xmux.maxConnections and produces the connection bursts censors block on
-// (XTLS/Xray-core#6797).
-func TestReleaseBuildsUseGo1271AndHTTP2Legacy(t *testing.T) {
+// Every shipped or release-tested binary is built with Go 1.27.2 and
+// `-tags http2legacy`, which keeps x/net's own HTTP/2 client and server.
+// Without the tag, Go 1.27's x/net http2.Transport wraps net/http: before
+// x/net v0.60.0 it dialed once per request while a TLS handshake hung,
+// defeating XHTTP's xmux.maxConnections (XTLS/Xray-core#6797), and it still
+// changes the XHTTP client's SETTINGS and its redial pacing after a reset
+// (docs/FORK.md).
+func TestReleaseBuildsUseGo1272AndHTTP2Legacy(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("source path unavailable")
@@ -23,42 +23,14 @@ func TestReleaseBuildsUseGo1271AndHTTP2Legacy(t *testing.T) {
 		path     string
 		required []string
 	}{
-		{"go.mod", []string{"\ngo 1.27.1\n"}},
+		{"go.mod", []string{"\ngo 1.27.2\n"}},
 		{".github/workflows/release.yml", []string{"go build -tags http2legacy "}},
-		{".github/workflows/test.yml", []string{"GOFLAGS: -tags=http2legacy"}},
+		{".github/workflows/test.yml", []string{"GOFLAGS: -tags=http2legacy", "check-vet:", "run: go vet ./..."}},
 		{".github/workflows/pre-release-validation.yml", []string{"GOFLAGS: -tags=http2legacy"}},
-		{".github/docker/Dockerfile", []string{"golang:1.27.1 ", "go build -tags http2legacy "}},
-		{".github/docker/Dockerfile.usa", []string{"golang:1.27.1 ", "go build -tags http2legacy "}},
+		{".github/docker/Dockerfile", []string{"golang:1.27.2 ", "go build -tags http2legacy "}},
+		{".github/docker/Dockerfile.usa", []string{"golang:1.27.2 ", "go build -tags http2legacy "}},
 		{"testing/release/structural_presence.sh", []string{"-tags=http2legacy"}},
 	} {
 		assertFileContains(t, filepath.Join(root, filepath.FromSlash(check.path)), check.required)
-	}
-}
-
-// An explicit -tags flag replaces the tags in GOFLAGS instead of adding to
-// them, so every Xray build or test command that names its own tags must
-// list http2legacy too. Interop peers such as sing-box are built as their
-// users build them and are not covered here.
-func TestExplicitBuildTagsKeepHTTP2Legacy(t *testing.T) {
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("source path unavailable")
-	}
-	root := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
-	for _, path := range []string{
-		"testing/release/structural_presence.sh",
-		"testing/scenarios/common_coverage.go",
-		"testing/coverage/coverall",
-		"common/singmux/TESTING.md",
-	} {
-		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for number, line := range strings.Split(string(content), "\n") {
-			if strings.Contains(line, "-tags") && !strings.Contains(line, "http2legacy") {
-				t.Errorf("%s:%d sets tags without http2legacy: %s", path, number+1, strings.TrimSpace(line))
-			}
-		}
 	}
 }

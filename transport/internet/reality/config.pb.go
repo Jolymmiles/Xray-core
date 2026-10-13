@@ -44,8 +44,11 @@ type Config struct {
 	SpiderX               string                 `protobuf:"bytes,26,opt,name=spider_x,json=spiderX,proto3" json:"spider_x,omitempty"`
 	SpiderY               []int64                `protobuf:"varint,27,rep,packed,name=spider_y,json=spiderY,proto3" json:"spider_y,omitempty"`
 	MasterKeyLog          string                 `protobuf:"bytes,31,opt,name=master_key_log,json=masterKeyLog,proto3" json:"master_key_log,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Fork-owned, outside the blocks upstream numbers: 1-13 for the server,
+	// 21-27 for the client, 31.
+	RequireMlkem  bool `protobuf:"varint,100,opt,name=require_mlkem,json=requireMlkem,proto3" json:"require_mlkem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Config) Reset() {
@@ -225,6 +228,13 @@ func (x *Config) GetMasterKeyLog() string {
 	return ""
 }
 
+func (x *Config) GetRequireMlkem() bool {
+	if x != nil {
+		return x.RequireMlkem
+	}
+	return false
+}
+
 type LimitFallback struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	AfterBytes       uint64                 `protobuf:"varint,1,opt,name=after_bytes,json=afterBytes,proto3" json:"after_bytes,omitempty"`
@@ -289,7 +299,7 @@ var File_transport_internet_reality_config_proto protoreflect.FileDescriptor
 
 const file_transport_internet_reality_config_proto_rawDesc = "" +
 	"\n" +
-	"'transport/internet/reality/config.proto\x12\x1fxray.transport.internet.reality\"\x98\x06\n" +
+	"'transport/internet/reality/config.proto\x12\x1fxray.transport.internet.reality\"\xbd\x06\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04show\x18\x01 \x01(\bR\x04show\x12\x12\n" +
 	"\x04dest\x18\x02 \x01(\tR\x04dest\x12\x12\n" +
@@ -315,7 +325,8 @@ const file_transport_internet_reality_config_proto_rawDesc = "" +
 	"\x0emldsa65_verify\x18\x19 \x01(\fR\rmldsa65Verify\x12\x19\n" +
 	"\bspider_x\x18\x1a \x01(\tR\aspiderX\x12\x19\n" +
 	"\bspider_y\x18\x1b \x03(\x03R\aspiderY\x12$\n" +
-	"\x0emaster_key_log\x18\x1f \x01(\tR\fmasterKeyLog\"\x83\x01\n" +
+	"\x0emaster_key_log\x18\x1f \x01(\tR\fmasterKeyLog\x12#\n" +
+	"\rrequire_mlkem\x18d \x01(\bR\frequireMlkem\"\x83\x01\n" +
 	"\rLimitFallback\x12\x1f\n" +
 	"\vafter_bytes\x18\x01 \x01(\x04R\n" +
 	"afterBytes\x12\"\n" +

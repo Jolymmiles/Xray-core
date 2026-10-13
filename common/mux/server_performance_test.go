@@ -2,6 +2,7 @@ package mux_test
 
 import (
 	"context"
+	"io"
 	stdnet "net"
 	"testing"
 
@@ -77,4 +78,53 @@ func BenchmarkServerWorkerCloseIdempotent(b *testing.B) {
 		_ = worker.Close()
 	}
 	pooled.Release()
+}
+
+// repeatedFrames yields the same Mux.Cool frame a fixed number of times, then
+// io.EOF, without materializing the whole stream.
+type repeatedFrames struct {
+	frame  []byte
+	offset int
+	left   int
+}
+
+func (r *repeatedFrames) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) && r.left > 0 {
+		copied := copy(p[n:], r.frame[r.offset:])
+		n += copied
+		r.offset += copied
+		if r.offset == len(r.frame) {
+			r.offset = 0
+			r.left--
+		}
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+	return n, nil
+}
+
+// BenchmarkServerWorkerKeepAliveFrames measures the per-frame cost of a
+// ServerWorker reading KeepAlive frames: one op is one frame.
+func BenchmarkServerWorkerKeepAliveFrames(b *testing.B) {
+	frame := buf.New()
+	defer frame.Release()
+	meta := mux.FrameMetadata{SessionStatus: mux.SessionStatusKeepAlive}
+	if err := meta.WriteTo(frame); err != nil {
+		b.Fatal(err)
+	}
+	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{})
+	link := &transport.Link{
+		Reader: buf.NewReader(&repeatedFrames{frame: frame.Bytes(), left: b.N}),
+		Writer: buf.Discard,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	worker, err := mux.NewServerWorker(ctx, benchDispatcher{}, link)
+	if err != nil {
+		b.Fatal(err)
+	}
+	<-worker.WaitClosed()
 }

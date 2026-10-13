@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -21,6 +22,7 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
+	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
@@ -39,6 +41,8 @@ type Server struct {
 	validator     *Validator
 	fallbacks     map[string]map[string]map[string]*Fallback // or nil
 	cone          bool
+	userMu        sync.Mutex // serializes AddUser and RemoveUser
+	connections   proxy.UserConnections
 }
 
 // NewServer creates a new trojan inbound handler.
@@ -117,12 +121,25 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 
 // AddUser implements proxy.UserManager.AddUser().
 func (s *Server) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
-	return s.validator.Add(u)
+	s.userMu.Lock()
+	defer s.userMu.Unlock()
+	// Store a copy: connections are revoked by user pointer, and the caller
+	// may add again a MemoryUser that an old connection authenticated.
+	user := *u
+	return s.validator.Add(&user)
 }
 
-// RemoveUser implements proxy.UserManager.RemoveUser().
+// RemoveUser implements proxy.UserManager.RemoveUser(). It closes the
+// removed user's connections.
 func (s *Server) RemoveUser(ctx context.Context, e string) error {
-	return s.validator.Del(e)
+	s.userMu.Lock()
+	defer s.userMu.Unlock()
+	u := s.validator.GetByEmail(e)
+	if err := s.validator.Del(e); err != nil {
+		return err
+	}
+	s.connections.Revoke(u)
+	return nil
 }
 
 // GetUser implements proxy.UserManager.GetUser().
@@ -212,6 +229,12 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound.CanSpliceCopy = 3
 	inbound.User = user
 	sessionPolicy = s.policyManager.ForLevel(user.Level)
+
+	ctx, tracked, err := s.connections.Track(ctx, s.validator, user, conn)
+	if err != nil {
+		return err
+	}
+	defer tracked.Release()
 
 	if destination.Network == net.Network_UDP { // handle udp request
 		return s.handleUDPPayload(ctx, sessionPolicy, &PacketReader{Reader: clientReader}, &PacketWriter{Writer: conn}, dispatcher)

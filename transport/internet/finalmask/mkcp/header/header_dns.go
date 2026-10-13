@@ -3,8 +3,12 @@ package header
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/xtls/xray-core/common/dice"
+	"golang.org/x/net/idna"
 )
 
 type dns struct {
@@ -20,7 +24,14 @@ func (h *dns) Serialize(b []byte) {
 	binary.BigEndian.PutUint16(b[0:], dice.RollUint16())
 }
 
+// NewHeaderDNS builds the query that prefixes every packet. The peer strips
+// it by its length without parsing it, so the domain is packed as written: a
+// domain that would not pack into a well-formed question for itself is
+// rejected, because rewriting it would change the length the peer expects.
 func NewHeaderDNS(domain string) (*dns, error) {
+	if err := checkDomainName(domain); err != nil {
+		return nil, fmt.Errorf("invalid domain %q: %w", domain, err)
+	}
 	var header []byte
 	header = binary.BigEndian.AppendUint16(header, 0x0000) // Transaction ID
 	header = binary.BigEndian.AppendUint16(header, 0x0100) // Flags: Standard query
@@ -28,79 +39,64 @@ func NewHeaderDNS(domain string) (*dns, error) {
 	header = binary.BigEndian.AppendUint16(header, 0x0000) // Answer RRs
 	header = binary.BigEndian.AppendUint16(header, 0x0000) // Authority RRs
 	header = binary.BigEndian.AppendUint16(header, 0x0000) // Additional RRs
-	buf := make([]byte, 0x100)
-	off1, err := packDomainName(domain+".", buf)
-	if err != nil {
-		return nil, err
+	for _, label := range strings.Split(domain, ".") {
+		header = append(header, byte(len(label)))
+		header = append(header, label...)
 	}
-	header = append(header, buf[:off1]...)
+	header = append(header, 0)                             // Root label
 	header = binary.BigEndian.AppendUint16(header, 0x0001) // Type: A
 	header = binary.BigEndian.AppendUint16(header, 0x0001) // Class: IN
 	return &dns{header: header}, nil
 }
 
-func packDomainName(s string, msg []byte) (off1 int, err error) {
-	off := 0
-	ls := len(s)
-	// Each dot ends a segment of the name.
-	// We trade each dot byte for a length byte.
-	// Except for escaped dots (\.), which are normal dots.
-	// There is also a trailing zero.
-
-	// Emit sequence of counted strings, chopping at dots.
-	var (
-		begin int
-		bs    []byte
-	)
-	for i := 0; i < ls; i++ {
-		var c byte
-		if bs == nil {
-			c = s[i]
-		} else {
-			c = bs[i]
-		}
-
-		switch c {
-		case '\\':
-			if off+1 > len(msg) {
-				return len(msg), errors.New("buffer size too small")
-			}
-
-			if bs == nil {
-				bs = []byte(s)
-			}
-
-			copy(bs[i:ls-1], bs[i+1:])
-			ls--
-		case '.':
-			labelLen := i - begin
-			if labelLen >= 1<<6 { // top two bits of length must be clear
-				return len(msg), errors.New("bad rdata")
-			}
-
-			// off can already (we're in a loop) be bigger than len(msg)
-			// this happens when a name isn't fully qualified
-			if off+1+labelLen > len(msg) {
-				return len(msg), errors.New("buffer size too small")
-			}
-
-			// The following is covered by the length check above.
-			msg[off] = byte(labelLen)
-
-			if bs == nil {
-				copy(msg[off+1:], s[begin:i])
-			} else {
-				copy(msg[off+1:], bs[begin:i])
-			}
-			off += 1 + labelLen
-			begin = i + 1
-		default:
+// checkDomainName reports why domain would not pack into a question for
+// itself made of ASCII labels of 1 to 63 bytes, at most 255 bytes on the wire.
+func checkDomainName(domain string) error {
+	for i := 0; i < len(domain); i++ {
+		if domain[i] >= utf8.RuneSelf {
+			return nonASCIIError(domain)
 		}
 	}
+	return checkASCIIName(domain)
+}
 
-	if off < len(msg) {
-		msg[off] = 0
+// punycodeProfile maps a name the way IDNA lookups do (case, width, Unicode
+// full stops, normalisation) and, like checkASCIIName, refuses no character
+// or hyphen placement, so "BÜ_CHER．example" becomes "xn--b_cher-3ya.example".
+var punycodeProfile = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.ValidateLabels(false))
+
+// nonASCIIError suggests the punycode form of the name the operator wrote, or
+// says why there is none.
+func nonASCIIError(domain string) error {
+	ascii, err := punycodeProfile.ToASCII(strings.TrimSuffix(domain, "."))
+	if err != nil {
+		return fmt.Errorf("non-ASCII name with no punycode form: %w", err)
 	}
+	if err := checkASCIIName(ascii); err != nil {
+		return fmt.Errorf("non-ASCII name whose punycode form %q is invalid: %w", ascii, err)
+	}
+	return fmt.Errorf("non-ASCII name; write its punycode form %q", ascii)
+}
 
-	return off + 1, nil
+// checkASCIIName is checkDomainName for a name without non-ASCII bytes.
+func checkASCIIName(domain string) error {
+	if strings.Contains(domain, `\`) {
+		return errors.New("backslash escapes are not supported")
+	}
+	name := strings.TrimSuffix(domain, ".")
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 {
+			return errors.New("empty label")
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("label %q is longer than 63 bytes", label)
+		}
+	}
+	if wire := len(name) + 2; wire > 255 {
+		return fmt.Errorf("name of %d bytes on the wire is longer than 255 bytes", wire)
+	}
+	if name != domain {
+		return fmt.Errorf("trailing dot; write %q", name)
+	}
+	return nil
 }

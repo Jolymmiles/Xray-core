@@ -1,0 +1,9696 @@
+{
+  "http11-resumption/360": {
+    "sha256": "77224cec217200b22f055da99fad869c40aa825d521b3f7dae696543e5007db3",
+    "length": 223,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/android": {
+    "sha256": "61a6345874a3f795a1200066c33abfe0945863c228fd956164313de38ba10ba9",
+    "length": 201,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13,
+      16
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/chrome": {
+    "sha256": "31bc4cd9fe90502b5abb4e43ce3d73fe15ef6e69a7375dcca53b73b79f60a3c1",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/edge": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/firefox": {
+    "sha256": "40a9196d825a82c5ef138264114aae71f6b3362916bfbbb7ea6e91ce825ae4e6",
+    "length": 1883,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hello360_11_0": {
+    "sha256": "2b780f387f9e27422c5e2006776bd3a360083415d89587f58c5dae4d3e38f645",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      30032,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hello360_7_5": {
+    "sha256": "77224cec217200b22f055da99fad869c40aa825d521b3f7dae696543e5007db3",
+    "length": 223,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hello360_auto": {
+    "sha256": "77224cec217200b22f055da99fad869c40aa825d521b3f7dae696543e5007db3",
+    "length": 223,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloandroid_11_okhttp": {
+    "sha256": "61a6345874a3f795a1200066c33abfe0945863c228fd956164313de38ba10ba9",
+    "length": 201,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13,
+      16
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_100": {
+    "sha256": "7400156d8e8e51987b81965704e7e5c4a418319116ee411561f4bedd5476016b",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_100_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11-resumption/hellochrome_102": {
+    "sha256": "7400156d8e8e51987b81965704e7e5c4a418319116ee411561f4bedd5476016b",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_106_shuffle": {
+    "sha256": "5ab71f9da3969c69b428c581faa76b8517bb30f0ec0ef4c6e3e09196fddb0a1c",
+    "length": 517,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906,
+      21
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_112_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11-resumption/hellochrome_114_padding_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11-resumption/hellochrome_115_pq": {
+    "sha256": "7cd02e46aa39095f62626da01d909ce383b9dc7ad64cafa7f1e3dc4e8b127546",
+    "length": 1528,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_115_pq_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11-resumption/hellochrome_120": {
+    "sha256": "882ce4856a078efbcd7f80412571984acb8d65666bed5821dda8eb55f27f9e3a",
+    "length": 592,
+    "extensions": [
+      60138,
+      65281,
+      13,
+      10,
+      27,
+      18,
+      0,
+      43,
+      11,
+      16,
+      23,
+      51,
+      5,
+      45,
+      35,
+      17513,
+      65037,
+      14906
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_120_pq": {
+    "sha256": "9d3dd98459a4510bedf406f977d3d4d1e1547f84775fda56403c8429a1721e7c",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_131": {
+    "sha256": "fbc52f27db49ab226cc6207a5ae32123d577b94b4279a75efc269335e42b2879",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_133": {
+    "sha256": "31bc4cd9fe90502b5abb4e43ce3d73fe15ef6e69a7375dcca53b73b79f60a3c1",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_58": {
+    "sha256": "282c4bf096744c875a57d9ca40c7657217adcfa699adabae5586c442eff36512",
+    "length": 228,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_62": {
+    "sha256": "282c4bf096744c875a57d9ca40c7657217adcfa699adabae5586c442eff36512",
+    "length": 228,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_70": {
+    "sha256": "3a3e0fe600e99924087ffa4c5a27a99ddfc2f6806397588cf1344546a5c65f94",
+    "length": 517,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      51,
+      45,
+      43,
+      10,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_72": {
+    "sha256": "8e4e58624ed2573ca521427087701cc482d1301acda5a5227c5b878857c4e0a2",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_83": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_87": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_96": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellochrome_auto": {
+    "sha256": "31bc4cd9fe90502b5abb4e43ce3d73fe15ef6e69a7375dcca53b73b79f60a3c1",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloedge_106": {
+    "sha256": "7400156d8e8e51987b81965704e7e5c4a418319116ee411561f4bedd5476016b",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloedge_85": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloedge_auto": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_102": {
+    "sha256": "b2bae48a093b4d1a289448e0020b4d2b2be0267f133ad49980f8401583e9b1ad",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_105": {
+    "sha256": "b2bae48a093b4d1a289448e0020b4d2b2be0267f133ad49980f8401583e9b1ad",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_120": {
+    "sha256": "cf57de9353e3c93540f5bc577aefb32e87a1b31419d8aa6e6819d23e3c55be51",
+    "length": 656,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      65037
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_148": {
+    "sha256": "40a9196d825a82c5ef138264114aae71f6b3362916bfbbb7ea6e91ce825ae4e6",
+    "length": 1883,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_55": {
+    "sha256": "a6ba355b84822f3beeaeaf25cc005ab54d01bc456f5feb920093ca9f479b58da",
+    "length": 217,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_56": {
+    "sha256": "a6ba355b84822f3beeaeaf25cc005ab54d01bc456f5feb920093ca9f479b58da",
+    "length": 217,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_63": {
+    "sha256": "35182f03082c142158a987244cabcf954169a93789c22a08d9d787af22afd0a4",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_65": {
+    "sha256": "35182f03082c142158a987244cabcf954169a93789c22a08d9d787af22afd0a4",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_99": {
+    "sha256": "877b372ea96fa0e3ca24344a4a47deda3696d2813141fe6d8e386a85d9ad3074",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellofirefox_auto": {
+    "sha256": "40a9196d825a82c5ef138264114aae71f6b3362916bfbbb7ea6e91ce825ae4e6",
+    "length": 1883,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellogolang": {
+    "sha256": "3999770b492f054922ee72bd21f33552a5c7a7940aba413318ae8d4e8b666a3d",
+    "length": 1488,
+    "extensions": [
+      0,
+      11,
+      65281,
+      23,
+      18,
+      5,
+      10,
+      13,
+      16,
+      43,
+      51
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloios_11_1": {
+    "sha256": "60b64f0fd9fbe38a09c04dc20afd3dceba2032a6a4e6fbed11432fa078956552",
+    "length": 227,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloios_12_1": {
+    "sha256": "71d697cfb5bd079e8ad5b58572b66c8ffa54486d9679eaf7c76a6aee43cb5c57",
+    "length": 237,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloios_13": {
+    "sha256": "3dbb930518b679ceade88a803b2a05b8bc45ef94f015e90c130651b153ae4b5f",
+    "length": 517,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      18,
+      16,
+      11,
+      51,
+      45,
+      43,
+      10,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloios_14": {
+    "sha256": "d363dd873612cbc3808968ec1ddce02c622fbf6ff51238496581eee6b3f45c7d",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloios_auto": {
+    "sha256": "d363dd873612cbc3808968ec1ddce02c622fbf6ff51238496581eee6b3f45c7d",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloqq_11_1": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/helloqq_auto": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellorandomized": {
+    "sha256": "5ccfcf1eba2478b26ba000082786a3cf0fd3f5bb469b00db45dd1192433b8924",
+    "length": 517,
+    "extensions": [
+      16,
+      10,
+      45,
+      11,
+      0,
+      21,
+      23,
+      43,
+      35,
+      65281,
+      5,
+      51,
+      13
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellorandomizedalpn": {
+    "sha256": "064a17bfdf1dc0619159fe41601d9290a02ac98e48bad5a5f6ce9fe629ba945f",
+    "length": 1498,
+    "extensions": [
+      18,
+      23,
+      65281,
+      43,
+      45,
+      11,
+      10,
+      13,
+      0,
+      35,
+      16,
+      17513,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellorandomizednoalpn": {
+    "sha256": "cce87462016c3629b22f33d641a35c9be40584bef19e4652a30e6c7ee5c1f881",
+    "length": 1489,
+    "extensions": [
+      18,
+      45,
+      43,
+      13,
+      11,
+      35,
+      65281,
+      0,
+      10,
+      23,
+      51,
+      16
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellosafari_16_0": {
+    "sha256": "36cc471c42356b94e9d906494a186a538654b93a3c338506d53fa095a63f708a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellosafari_26_3": {
+    "sha256": "8d7256d26031c50ccbaa453effbdb45334480cacb3fa08628c977502679ff566",
+    "length": 1531,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/hellosafari_auto": {
+    "sha256": "8d7256d26031c50ccbaa453effbdb45334480cacb3fa08628c977502679ff566",
+    "length": 1531,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/ios": {
+    "sha256": "d363dd873612cbc3808968ec1ddce02c622fbf6ff51238496581eee6b3f45c7d",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/qq": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomized@32b8ac49": {
+    "sha256": "58f8ead062e5aa839b77454395d868d767f84c3329d4f7e394eefdfa771758b1",
+    "length": 1500,
+    "extensions": [
+      11,
+      51,
+      35,
+      16,
+      43,
+      23,
+      10,
+      65281,
+      18,
+      5,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomized@417dcd23": {
+    "sha256": "7f634f0767077a6542ad115a536c02ee33533e0fcb47da9ad1c2cdcbbe456026",
+    "length": 1504,
+    "extensions": [
+      51,
+      11,
+      45,
+      43,
+      65281,
+      5,
+      10,
+      16,
+      0,
+      23,
+      13,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomized@4f4f221b": {
+    "sha256": "addf069a6fb49d0fd6e75bd417eb1aa0643008e67a0a487c71476085ec63c2a5",
+    "length": 1489,
+    "extensions": [
+      0,
+      11,
+      13,
+      65281,
+      35,
+      23,
+      16,
+      43,
+      45,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomized@601028d9": {
+    "sha256": "389114537f6489f6219440dd1d957a863dc49e48e65f4f7350a82b8c2f0b41c9",
+    "length": 1502,
+    "extensions": [
+      45,
+      11,
+      23,
+      10,
+      13,
+      16,
+      35,
+      5,
+      51,
+      65281,
+      43,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomizednoalpn@32b8ac49": {
+    "sha256": "1c953c751859661720770acf9c64d49593858404ba66f6c7edb295d6ee7f390e",
+    "length": 1500,
+    "extensions": [
+      51,
+      35,
+      43,
+      5,
+      10,
+      11,
+      65281,
+      23,
+      18,
+      45,
+      13,
+      0,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomizednoalpn@417dcd23": {
+    "sha256": "27bcec27f5169394f73bf23d15490b4dc4b30e422dc34d1599c4619bbfecbddd",
+    "length": 1504,
+    "extensions": [
+      51,
+      13,
+      45,
+      65281,
+      5,
+      11,
+      10,
+      0,
+      23,
+      43,
+      35,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomizednoalpn@4f4f221b": {
+    "sha256": "9afdf2fd7399d323433750db60e5b9c828e17bca3016f44e68a78288d349ea7d",
+    "length": 1489,
+    "extensions": [
+      23,
+      13,
+      45,
+      0,
+      35,
+      43,
+      11,
+      65281,
+      51,
+      18,
+      10,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/randomizednoalpn@601028d9": {
+    "sha256": "659fa3ad4b06fbf2c028a8cdc550393bbcf21331498bd9e92714db1cdef98ffb",
+    "length": 1502,
+    "extensions": [
+      13,
+      23,
+      11,
+      10,
+      35,
+      45,
+      51,
+      65281,
+      43,
+      5,
+      0,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11-resumption/safari": {
+    "sha256": "8d7256d26031c50ccbaa453effbdb45334480cacb3fa08628c977502679ff566",
+    "length": 1531,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/360": {
+    "sha256": "77224cec217200b22f055da99fad869c40aa825d521b3f7dae696543e5007db3",
+    "length": 223,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/android": {
+    "sha256": "61a6345874a3f795a1200066c33abfe0945863c228fd956164313de38ba10ba9",
+    "length": 201,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13,
+      16
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/chrome": {
+    "sha256": "31bc4cd9fe90502b5abb4e43ce3d73fe15ef6e69a7375dcca53b73b79f60a3c1",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/edge": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/firefox": {
+    "sha256": "40a9196d825a82c5ef138264114aae71f6b3362916bfbbb7ea6e91ce825ae4e6",
+    "length": 1883,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hello360_11_0": {
+    "sha256": "2b780f387f9e27422c5e2006776bd3a360083415d89587f58c5dae4d3e38f645",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      30032,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hello360_7_5": {
+    "sha256": "77224cec217200b22f055da99fad869c40aa825d521b3f7dae696543e5007db3",
+    "length": 223,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hello360_auto": {
+    "sha256": "77224cec217200b22f055da99fad869c40aa825d521b3f7dae696543e5007db3",
+    "length": 223,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloandroid_11_okhttp": {
+    "sha256": "61a6345874a3f795a1200066c33abfe0945863c228fd956164313de38ba10ba9",
+    "length": 201,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13,
+      16
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_100": {
+    "sha256": "7400156d8e8e51987b81965704e7e5c4a418319116ee411561f4bedd5476016b",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_100_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11/hellochrome_102": {
+    "sha256": "7400156d8e8e51987b81965704e7e5c4a418319116ee411561f4bedd5476016b",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_106_shuffle": {
+    "sha256": "5ab71f9da3969c69b428c581faa76b8517bb30f0ec0ef4c6e3e09196fddb0a1c",
+    "length": 517,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906,
+      21
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_112_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11/hellochrome_114_padding_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11/hellochrome_115_pq": {
+    "sha256": "7cd02e46aa39095f62626da01d909ce383b9dc7ad64cafa7f1e3dc4e8b127546",
+    "length": 1528,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_115_pq_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "http11/hellochrome_120": {
+    "sha256": "882ce4856a078efbcd7f80412571984acb8d65666bed5821dda8eb55f27f9e3a",
+    "length": 592,
+    "extensions": [
+      60138,
+      65281,
+      13,
+      10,
+      27,
+      18,
+      0,
+      43,
+      11,
+      16,
+      23,
+      51,
+      5,
+      45,
+      35,
+      17513,
+      65037,
+      14906
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_120_pq": {
+    "sha256": "9d3dd98459a4510bedf406f977d3d4d1e1547f84775fda56403c8429a1721e7c",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_131": {
+    "sha256": "fbc52f27db49ab226cc6207a5ae32123d577b94b4279a75efc269335e42b2879",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_133": {
+    "sha256": "31bc4cd9fe90502b5abb4e43ce3d73fe15ef6e69a7375dcca53b73b79f60a3c1",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_58": {
+    "sha256": "282c4bf096744c875a57d9ca40c7657217adcfa699adabae5586c442eff36512",
+    "length": 228,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_62": {
+    "sha256": "282c4bf096744c875a57d9ca40c7657217adcfa699adabae5586c442eff36512",
+    "length": 228,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_70": {
+    "sha256": "3a3e0fe600e99924087ffa4c5a27a99ddfc2f6806397588cf1344546a5c65f94",
+    "length": 517,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      51,
+      45,
+      43,
+      10,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_72": {
+    "sha256": "8e4e58624ed2573ca521427087701cc482d1301acda5a5227c5b878857c4e0a2",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_83": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_87": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_96": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellochrome_auto": {
+    "sha256": "31bc4cd9fe90502b5abb4e43ce3d73fe15ef6e69a7375dcca53b73b79f60a3c1",
+    "length": 1782,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloedge_106": {
+    "sha256": "7400156d8e8e51987b81965704e7e5c4a418319116ee411561f4bedd5476016b",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloedge_85": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloedge_auto": {
+    "sha256": "bc745444c90a493d51e83e3bcc0990dae899bb6cb8261d872d21ac12f0a21248",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_102": {
+    "sha256": "b2bae48a093b4d1a289448e0020b4d2b2be0267f133ad49980f8401583e9b1ad",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_105": {
+    "sha256": "b2bae48a093b4d1a289448e0020b4d2b2be0267f133ad49980f8401583e9b1ad",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_120": {
+    "sha256": "cf57de9353e3c93540f5bc577aefb32e87a1b31419d8aa6e6819d23e3c55be51",
+    "length": 656,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      65037
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_148": {
+    "sha256": "40a9196d825a82c5ef138264114aae71f6b3362916bfbbb7ea6e91ce825ae4e6",
+    "length": 1883,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_55": {
+    "sha256": "a6ba355b84822f3beeaeaf25cc005ab54d01bc456f5feb920093ca9f479b58da",
+    "length": 217,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_56": {
+    "sha256": "a6ba355b84822f3beeaeaf25cc005ab54d01bc456f5feb920093ca9f479b58da",
+    "length": 217,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_63": {
+    "sha256": "35182f03082c142158a987244cabcf954169a93789c22a08d9d787af22afd0a4",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_65": {
+    "sha256": "35182f03082c142158a987244cabcf954169a93789c22a08d9d787af22afd0a4",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_99": {
+    "sha256": "877b372ea96fa0e3ca24344a4a47deda3696d2813141fe6d8e386a85d9ad3074",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellofirefox_auto": {
+    "sha256": "40a9196d825a82c5ef138264114aae71f6b3362916bfbbb7ea6e91ce825ae4e6",
+    "length": 1883,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellogolang": {
+    "sha256": "3999770b492f054922ee72bd21f33552a5c7a7940aba413318ae8d4e8b666a3d",
+    "length": 1488,
+    "extensions": [
+      0,
+      11,
+      65281,
+      23,
+      18,
+      5,
+      10,
+      13,
+      16,
+      43,
+      51
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloios_11_1": {
+    "sha256": "60b64f0fd9fbe38a09c04dc20afd3dceba2032a6a4e6fbed11432fa078956552",
+    "length": 227,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloios_12_1": {
+    "sha256": "71d697cfb5bd079e8ad5b58572b66c8ffa54486d9679eaf7c76a6aee43cb5c57",
+    "length": 237,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloios_13": {
+    "sha256": "3dbb930518b679ceade88a803b2a05b8bc45ef94f015e90c130651b153ae4b5f",
+    "length": 517,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      18,
+      16,
+      11,
+      51,
+      45,
+      43,
+      10,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloios_14": {
+    "sha256": "d363dd873612cbc3808968ec1ddce02c622fbf6ff51238496581eee6b3f45c7d",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloios_auto": {
+    "sha256": "d363dd873612cbc3808968ec1ddce02c622fbf6ff51238496581eee6b3f45c7d",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloqq_11_1": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/helloqq_auto": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellorandomized": {
+    "sha256": "4c848c8ea339a1cc8e8000f6fea9c68995be52c2db155c8d112c46ad011ee3de",
+    "length": 211,
+    "extensions": [
+      11,
+      16,
+      65281,
+      35,
+      23,
+      5,
+      10,
+      0,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellorandomizedalpn": {
+    "sha256": "064a17bfdf1dc0619159fe41601d9290a02ac98e48bad5a5f6ce9fe629ba945f",
+    "length": 1498,
+    "extensions": [
+      18,
+      23,
+      65281,
+      43,
+      45,
+      11,
+      10,
+      13,
+      0,
+      35,
+      16,
+      17513,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellorandomizednoalpn": {
+    "sha256": "cce87462016c3629b22f33d641a35c9be40584bef19e4652a30e6c7ee5c1f881",
+    "length": 1489,
+    "extensions": [
+      18,
+      45,
+      43,
+      13,
+      11,
+      35,
+      65281,
+      0,
+      10,
+      23,
+      51,
+      16
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellosafari_16_0": {
+    "sha256": "36cc471c42356b94e9d906494a186a538654b93a3c338506d53fa095a63f708a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellosafari_26_3": {
+    "sha256": "8d7256d26031c50ccbaa453effbdb45334480cacb3fa08628c977502679ff566",
+    "length": 1531,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/hellosafari_auto": {
+    "sha256": "8d7256d26031c50ccbaa453effbdb45334480cacb3fa08628c977502679ff566",
+    "length": 1531,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/ios": {
+    "sha256": "d363dd873612cbc3808968ec1ddce02c622fbf6ff51238496581eee6b3f45c7d",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/qq": {
+    "sha256": "76dec16e1d242d4222ff2ab3a19c4884f6987b0a0b1ac8779c42bbc170900162",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomized@32b8ac49": {
+    "sha256": "58f8ead062e5aa839b77454395d868d767f84c3329d4f7e394eefdfa771758b1",
+    "length": 1500,
+    "extensions": [
+      11,
+      51,
+      35,
+      16,
+      43,
+      23,
+      10,
+      65281,
+      18,
+      5,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomized@417dcd23": {
+    "sha256": "7f634f0767077a6542ad115a536c02ee33533e0fcb47da9ad1c2cdcbbe456026",
+    "length": 1504,
+    "extensions": [
+      51,
+      11,
+      45,
+      43,
+      65281,
+      5,
+      10,
+      16,
+      0,
+      23,
+      13,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomized@4f4f221b": {
+    "sha256": "addf069a6fb49d0fd6e75bd417eb1aa0643008e67a0a487c71476085ec63c2a5",
+    "length": 1489,
+    "extensions": [
+      0,
+      11,
+      13,
+      65281,
+      35,
+      23,
+      16,
+      43,
+      45,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomized@601028d9": {
+    "sha256": "389114537f6489f6219440dd1d957a863dc49e48e65f4f7350a82b8c2f0b41c9",
+    "length": 1502,
+    "extensions": [
+      45,
+      11,
+      23,
+      10,
+      13,
+      16,
+      35,
+      5,
+      51,
+      65281,
+      43,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomizednoalpn@32b8ac49": {
+    "sha256": "1c953c751859661720770acf9c64d49593858404ba66f6c7edb295d6ee7f390e",
+    "length": 1500,
+    "extensions": [
+      51,
+      35,
+      43,
+      5,
+      10,
+      11,
+      65281,
+      23,
+      18,
+      45,
+      13,
+      0,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomizednoalpn@417dcd23": {
+    "sha256": "27bcec27f5169394f73bf23d15490b4dc4b30e422dc34d1599c4619bbfecbddd",
+    "length": 1504,
+    "extensions": [
+      51,
+      13,
+      45,
+      65281,
+      5,
+      11,
+      10,
+      0,
+      23,
+      43,
+      35,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomizednoalpn@4f4f221b": {
+    "sha256": "9afdf2fd7399d323433750db60e5b9c828e17bca3016f44e68a78288d349ea7d",
+    "length": 1489,
+    "extensions": [
+      23,
+      13,
+      45,
+      0,
+      35,
+      43,
+      11,
+      65281,
+      51,
+      18,
+      10,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/randomizednoalpn@601028d9": {
+    "sha256": "659fa3ad4b06fbf2c028a8cdc550393bbcf21331498bd9e92714db1cdef98ffb",
+    "length": 1502,
+    "extensions": [
+      13,
+      23,
+      11,
+      10,
+      35,
+      45,
+      51,
+      65281,
+      43,
+      5,
+      0,
+      16
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "http11/safari": {
+    "sha256": "8d7256d26031c50ccbaa453effbdb45334480cacb3fa08628c977502679ff566",
+    "length": 1531,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "http/1.1"
+    ]
+  },
+  "resumption/360": {
+    "sha256": "48178e009ef9b0bac11b1976feb0d60537dbc25ce99be45477dbb6ba3de67276",
+    "length": 246,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "spdy/2",
+      "spdy/3",
+      "spdy/3.1",
+      "http/1.1"
+    ]
+  },
+  "resumption/android": {
+    "sha256": "60053896565153474722cef17839a8e807ef77e4bb1de2ae81fde6b8835576d2",
+    "length": 186,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ]
+  },
+  "resumption/chrome": {
+    "sha256": "8f8db5e661fe4986df4805aa013ed0952ac31540848861f5ae7b03f1fd34ab13",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/edge": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/firefox": {
+    "sha256": "9b56fa0b170588a8ed98bdba22b70e12bc786af484bdd0817baa7add15d946cb",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hello360_11_0": {
+    "sha256": "cc5d5710f565af3dbb0d0c01c633dfce37e7c2bde8f677e25bbd3788d5dd0536",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      30032,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hello360_7_5": {
+    "sha256": "48178e009ef9b0bac11b1976feb0d60537dbc25ce99be45477dbb6ba3de67276",
+    "length": 246,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "spdy/2",
+      "spdy/3",
+      "spdy/3.1",
+      "http/1.1"
+    ]
+  },
+  "resumption/hello360_auto": {
+    "sha256": "48178e009ef9b0bac11b1976feb0d60537dbc25ce99be45477dbb6ba3de67276",
+    "length": 246,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "spdy/2",
+      "spdy/3",
+      "spdy/3.1",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloandroid_11_okhttp": {
+    "sha256": "60053896565153474722cef17839a8e807ef77e4bb1de2ae81fde6b8835576d2",
+    "length": 186,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ]
+  },
+  "resumption/hellochrome_100": {
+    "sha256": "15eb96c93aff014de90c6811dd828c0020d2d64185d52365a64a6f63eaebbf7a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_100_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "resumption/hellochrome_102": {
+    "sha256": "15eb96c93aff014de90c6811dd828c0020d2d64185d52365a64a6f63eaebbf7a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_106_shuffle": {
+    "sha256": "e05ddb35f8d25032f525717b65249a54566984d433b029ca1fba6ed452536d33",
+    "length": 517,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906,
+      21
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_112_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "resumption/hellochrome_114_padding_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "resumption/hellochrome_115_pq": {
+    "sha256": "364856b168e23a96791eaf7e0b2b8722744f748de954c21d7e57c94d419d1e0c",
+    "length": 1531,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_115_pq_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "resumption/hellochrome_120": {
+    "sha256": "0fc1d47b0e3c06495a1fa52402f4157b3e22e6107bfd91b417aac15820096e6e",
+    "length": 595,
+    "extensions": [
+      60138,
+      65281,
+      13,
+      10,
+      27,
+      18,
+      0,
+      43,
+      11,
+      16,
+      23,
+      51,
+      5,
+      45,
+      35,
+      17513,
+      65037,
+      14906
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_120_pq": {
+    "sha256": "aaf4f0f9191f32220758345bbada02b45552963c7d4442d7459c9994677ef822",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_131": {
+    "sha256": "172d44326a0f462505a552aaa2e762a895a1d6d6027c883c1187b504cc6ca008",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_133": {
+    "sha256": "8f8db5e661fe4986df4805aa013ed0952ac31540848861f5ae7b03f1fd34ab13",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_58": {
+    "sha256": "351089e6858175f39415c16f31e547986f0f4cb07b5143df6b0243f292c20b09",
+    "length": 231,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_62": {
+    "sha256": "351089e6858175f39415c16f31e547986f0f4cb07b5143df6b0243f292c20b09",
+    "length": 231,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_70": {
+    "sha256": "5c90d4167c160f1f893dc27247bca01c0608b8948e19175db833667f14846f44",
+    "length": 517,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      51,
+      45,
+      43,
+      10,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_72": {
+    "sha256": "371f01235132ad22af521eda4baea4af4ca31f0631950b802e5ac3b97bac404c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_83": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_87": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_96": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellochrome_auto": {
+    "sha256": "8f8db5e661fe4986df4805aa013ed0952ac31540848861f5ae7b03f1fd34ab13",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloedge_106": {
+    "sha256": "15eb96c93aff014de90c6811dd828c0020d2d64185d52365a64a6f63eaebbf7a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloedge_85": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloedge_auto": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_102": {
+    "sha256": "937f113fa66a77753645c778258364eca00fd3b40b0ca5ac8d5f57841fcdd1d8",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2"
+    ]
+  },
+  "resumption/hellofirefox_105": {
+    "sha256": "b671d4f5b3042ee36d1081bcbe64463dc29df12b601faa42109b3fdc13949211",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_120": {
+    "sha256": "8e5eb0d6c7f087451fa7cb29b7c53673df45e6fddd629ca4d009b36b89c64136",
+    "length": 659,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      65037
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_148": {
+    "sha256": "9b56fa0b170588a8ed98bdba22b70e12bc786af484bdd0817baa7add15d946cb",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_55": {
+    "sha256": "9d1ab7bea023fa82d0461b4f20e81c87a70187b09610cabe4241f65e8856614c",
+    "length": 220,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_56": {
+    "sha256": "9d1ab7bea023fa82d0461b4f20e81c87a70187b09610cabe4241f65e8856614c",
+    "length": 220,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_63": {
+    "sha256": "e1fe0c269a0566411c9cef0764196fd4bc87ab380c00be2c7167c1b608dd5b1d",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_65": {
+    "sha256": "e1fe0c269a0566411c9cef0764196fd4bc87ab380c00be2c7167c1b608dd5b1d",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_99": {
+    "sha256": "6cc584c574761aa1a7e2cc44921fdbc06175c2297e5115ef4ebff2299f97702b",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellofirefox_auto": {
+    "sha256": "9b56fa0b170588a8ed98bdba22b70e12bc786af484bdd0817baa7add15d946cb",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellogolang": {
+    "sha256": "bbd581f6487a516212792b441e061549e7df69c79fb5b700475d2378209c7776",
+    "length": 1491,
+    "extensions": [
+      0,
+      11,
+      65281,
+      23,
+      18,
+      5,
+      10,
+      13,
+      16,
+      43,
+      51
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloios_11_1": {
+    "sha256": "afe6119ae0f453cbff97c65d0a256be21b684c3e341f268b216c89e4969a2b5c",
+    "length": 264,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "h2-16",
+      "h2-15",
+      "h2-14",
+      "spdy/3.1",
+      "spdy/3",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloios_12_1": {
+    "sha256": "64f82809acd2fd5459be5e89c18c5cfec0715e58aba0f10a2b4b0cad860a59d5",
+    "length": 274,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "h2-16",
+      "h2-15",
+      "h2-14",
+      "spdy/3.1",
+      "spdy/3",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloios_13": {
+    "sha256": "aee3e23c0d59962497324a320162f2a399e69f0eca7d22ed986af8eb2be97a93",
+    "length": 517,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      18,
+      16,
+      11,
+      51,
+      45,
+      43,
+      10,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloios_14": {
+    "sha256": "e0383f6edb101f3ab0b0673605e22bc94bffc1c4a07657380c1641a1779c3c7c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloios_auto": {
+    "sha256": "e0383f6edb101f3ab0b0673605e22bc94bffc1c4a07657380c1641a1779c3c7c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloqq_11_1": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/helloqq_auto": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellorandomized": {
+    "sha256": "0fcc97ac0f7e681431f26eae2acc23cd2aa048cf14db2c0284663247b11a5c6a",
+    "length": 517,
+    "extensions": [
+      16,
+      10,
+      45,
+      11,
+      0,
+      21,
+      23,
+      43,
+      35,
+      65281,
+      5,
+      51,
+      13
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellorandomizedalpn": {
+    "sha256": "6c3543b4d557ae211face07736cc1d6a2ec79d67daf3e7901cb5eff4e880cd27",
+    "length": 1501,
+    "extensions": [
+      18,
+      23,
+      65281,
+      43,
+      45,
+      11,
+      10,
+      13,
+      0,
+      35,
+      16,
+      17513,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellorandomizednoalpn": {
+    "sha256": "e83880e8a2ad03be394d7b4a0061e345ffe0b34e826a44034052947d700e92b7",
+    "length": 1474,
+    "extensions": [
+      18,
+      45,
+      43,
+      13,
+      11,
+      35,
+      65281,
+      0,
+      10,
+      23,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "resumption/hellosafari_16_0": {
+    "sha256": "d580d4050a4aa7a0f0df31432fa3ce2b5682c11fd970161e14ff2559e93350a9",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellosafari_26_3": {
+    "sha256": "db084ca4891527047ea70aaf9257d16662f00ae63645951cac94ed29f5982dd0",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/hellosafari_auto": {
+    "sha256": "db084ca4891527047ea70aaf9257d16662f00ae63645951cac94ed29f5982dd0",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/ios": {
+    "sha256": "e0383f6edb101f3ab0b0673605e22bc94bffc1c4a07657380c1641a1779c3c7c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/qq": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/randomized@32b8ac49": {
+    "sha256": "91e0662b9f22a05e830338b9c332feb63f89f4e747b8a0b460b87ea4352b7e6e",
+    "length": 1503,
+    "extensions": [
+      11,
+      51,
+      35,
+      16,
+      43,
+      23,
+      10,
+      65281,
+      18,
+      5,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/randomized@417dcd23": {
+    "sha256": "dae79e7a2ec04d843f0a93ea10e262559667c58da58f7470814a3a54b82208b7",
+    "length": 1507,
+    "extensions": [
+      51,
+      11,
+      45,
+      43,
+      65281,
+      5,
+      10,
+      16,
+      0,
+      23,
+      13,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/randomized@4f4f221b": {
+    "sha256": "39e9882147a68286d1c0a61823352650983c7a9bcd8a602943c3927549e033ac",
+    "length": 1492,
+    "extensions": [
+      0,
+      11,
+      13,
+      65281,
+      35,
+      23,
+      16,
+      43,
+      45,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/randomized@601028d9": {
+    "sha256": "c8e762c316fe0c667e1fe10e2f34568cb651f740b85934ca68246745fc2b4b7f",
+    "length": 1505,
+    "extensions": [
+      45,
+      11,
+      23,
+      10,
+      13,
+      16,
+      35,
+      5,
+      51,
+      65281,
+      43,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "resumption/randomizednoalpn@32b8ac49": {
+    "sha256": "0b155af7a912e5893c11c635e315cfd9b44d55b7f4af7520bc253e6804a22b06",
+    "length": 1485,
+    "extensions": [
+      51,
+      35,
+      43,
+      5,
+      10,
+      11,
+      65281,
+      23,
+      18,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "resumption/randomizednoalpn@417dcd23": {
+    "sha256": "7d3b92202af38630bf403b6d259f669a0ae001be0540fafe200ed3f61c6e8704",
+    "length": 1489,
+    "extensions": [
+      51,
+      13,
+      45,
+      65281,
+      5,
+      11,
+      10,
+      0,
+      23,
+      43,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ]
+  },
+  "resumption/randomizednoalpn@4f4f221b": {
+    "sha256": "c69a9e20682ee563fc9290d7917d79998df9d3f7ab4d971534ca76f16d11d9c2",
+    "length": 1474,
+    "extensions": [
+      23,
+      13,
+      45,
+      0,
+      35,
+      43,
+      11,
+      65281,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "resumption/randomizednoalpn@601028d9": {
+    "sha256": "74a649cff954244b6e389112d9924f8fcaffc39040faadacc96deeaa35423ec3",
+    "length": 1487,
+    "extensions": [
+      13,
+      23,
+      11,
+      10,
+      35,
+      45,
+      51,
+      65281,
+      43,
+      5,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "resumption/safari": {
+    "sha256": "db084ca4891527047ea70aaf9257d16662f00ae63645951cac94ed29f5982dd0",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/360": {
+    "sha256": "48178e009ef9b0bac11b1976feb0d60537dbc25ce99be45477dbb6ba3de67276",
+    "length": 246,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "spdy/2",
+      "spdy/3",
+      "spdy/3.1",
+      "http/1.1"
+    ]
+  },
+  "stock/android": {
+    "sha256": "60053896565153474722cef17839a8e807ef77e4bb1de2ae81fde6b8835576d2",
+    "length": 186,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ]
+  },
+  "stock/chrome": {
+    "sha256": "8f8db5e661fe4986df4805aa013ed0952ac31540848861f5ae7b03f1fd34ab13",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/edge": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/firefox": {
+    "sha256": "9b56fa0b170588a8ed98bdba22b70e12bc786af484bdd0817baa7add15d946cb",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hello360_11_0": {
+    "sha256": "cc5d5710f565af3dbb0d0c01c633dfce37e7c2bde8f677e25bbd3788d5dd0536",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      30032,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hello360_7_5": {
+    "sha256": "48178e009ef9b0bac11b1976feb0d60537dbc25ce99be45477dbb6ba3de67276",
+    "length": 246,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "spdy/2",
+      "spdy/3",
+      "spdy/3.1",
+      "http/1.1"
+    ]
+  },
+  "stock/hello360_auto": {
+    "sha256": "48178e009ef9b0bac11b1976feb0d60537dbc25ce99be45477dbb6ba3de67276",
+    "length": 246,
+    "extensions": [
+      0,
+      65281,
+      10,
+      11,
+      35,
+      13172,
+      16,
+      30031,
+      5,
+      13
+    ],
+    "groups": [
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "spdy/2",
+      "spdy/3",
+      "spdy/3.1",
+      "http/1.1"
+    ]
+  },
+  "stock/helloandroid_11_okhttp": {
+    "sha256": "60053896565153474722cef17839a8e807ef77e4bb1de2ae81fde6b8835576d2",
+    "length": 186,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ]
+  },
+  "stock/hellochrome_100": {
+    "sha256": "15eb96c93aff014de90c6811dd828c0020d2d64185d52365a64a6f63eaebbf7a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_100_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "stock/hellochrome_102": {
+    "sha256": "15eb96c93aff014de90c6811dd828c0020d2d64185d52365a64a6f63eaebbf7a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_106_shuffle": {
+    "sha256": "e05ddb35f8d25032f525717b65249a54566984d433b029ca1fba6ed452536d33",
+    "length": 517,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906,
+      21
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_112_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "stock/hellochrome_114_padding_psk_shuf": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "stock/hellochrome_115_pq": {
+    "sha256": "364856b168e23a96791eaf7e0b2b8722744f748de954c21d7e57c94d419d1e0c",
+    "length": 1531,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      5,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_115_pq_psk": {
+    "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
+  },
+  "stock/hellochrome_120": {
+    "sha256": "0fc1d47b0e3c06495a1fa52402f4157b3e22e6107bfd91b417aac15820096e6e",
+    "length": 595,
+    "extensions": [
+      60138,
+      65281,
+      13,
+      10,
+      27,
+      18,
+      0,
+      43,
+      11,
+      16,
+      23,
+      51,
+      5,
+      45,
+      35,
+      17513,
+      65037,
+      14906
+    ],
+    "groups": [
+      39578,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_120_pq": {
+    "sha256": "aaf4f0f9191f32220758345bbada02b45552963c7d4442d7459c9994677ef822",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      25497,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x6399/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_131": {
+    "sha256": "172d44326a0f462505a552aaa2e762a895a1d6d6027c883c1187b504cc6ca008",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17513,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_133": {
+    "sha256": "8f8db5e661fe4986df4805aa013ed0952ac31540848861f5ae7b03f1fd34ab13",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_58": {
+    "sha256": "351089e6858175f39415c16f31e547986f0f4cb07b5143df6b0243f292c20b09",
+    "length": 231,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_62": {
+    "sha256": "351089e6858175f39415c16f31e547986f0f4cb07b5143df6b0243f292c20b09",
+    "length": 231,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      10,
+      10794
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_70": {
+    "sha256": "5c90d4167c160f1f893dc27247bca01c0608b8948e19175db833667f14846f44",
+    "length": 517,
+    "extensions": [
+      19018,
+      65281,
+      0,
+      23,
+      35,
+      13,
+      5,
+      18,
+      16,
+      30032,
+      11,
+      51,
+      45,
+      43,
+      10,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_72": {
+    "sha256": "371f01235132ad22af521eda4baea4af4ca31f0631950b802e5ac3b97bac404c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_83": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_87": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_96": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellochrome_auto": {
+    "sha256": "8f8db5e661fe4986df4805aa013ed0952ac31540848861f5ae7b03f1fd34ab13",
+    "length": 1785,
+    "extensions": [
+      60138,
+      23,
+      65281,
+      65037,
+      11,
+      13,
+      45,
+      10,
+      43,
+      0,
+      18,
+      16,
+      51,
+      35,
+      27,
+      17613,
+      5,
+      14906
+    ],
+    "groups": [
+      39578,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x9a9a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      60138,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloedge_106": {
+    "sha256": "15eb96c93aff014de90c6811dd828c0020d2d64185d52365a64a6f63eaebbf7a",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloedge_85": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloedge_auto": {
+    "sha256": "e962d977c4991087af2421f7a0b2f0daa94b25edd4f53bce80f46e8cb968880e",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_102": {
+    "sha256": "937f113fa66a77753645c778258364eca00fd3b40b0ca5ac8d5f57841fcdd1d8",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2"
+    ]
+  },
+  "stock/hellofirefox_105": {
+    "sha256": "b671d4f5b3042ee36d1081bcbe64463dc29df12b601faa42109b3fdc13949211",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_120": {
+    "sha256": "8e5eb0d6c7f087451fa7cb29b7c53673df45e6fddd629ca4d009b36b89c64136",
+    "length": 659,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      65037
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_148": {
+    "sha256": "9b56fa0b170588a8ed98bdba22b70e12bc786af484bdd0817baa7add15d946cb",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_55": {
+    "sha256": "9d1ab7bea023fa82d0461b4f20e81c87a70187b09610cabe4241f65e8856614c",
+    "length": 220,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_56": {
+    "sha256": "9d1ab7bea023fa82d0461b4f20e81c87a70187b09610cabe4241f65e8856614c",
+    "length": 220,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_63": {
+    "sha256": "e1fe0c269a0566411c9cef0764196fd4bc87ab380c00be2c7167c1b608dd5b1d",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_65": {
+    "sha256": "e1fe0c269a0566411c9cef0764196fd4bc87ab380c00be2c7167c1b608dd5b1d",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_99": {
+    "sha256": "6cc584c574761aa1a7e2cc44921fdbc06175c2297e5115ef4ebff2299f97702b",
+    "length": 517,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      34,
+      51,
+      43,
+      13,
+      45,
+      28,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellofirefox_auto": {
+    "sha256": "9b56fa0b170588a8ed98bdba22b70e12bc786af484bdd0817baa7add15d946cb",
+    "length": 1886,
+    "extensions": [
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      34,
+      18,
+      51,
+      43,
+      13,
+      28,
+      27,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25,
+      256,
+      257
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32",
+      "0x0017/65"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellogolang": {
+    "sha256": "bbd581f6487a516212792b441e061549e7df69c79fb5b700475d2378209c7776",
+    "length": 1491,
+    "extensions": [
+      0,
+      11,
+      65281,
+      23,
+      18,
+      5,
+      10,
+      13,
+      16,
+      43,
+      51
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloios_11_1": {
+    "sha256": "afe6119ae0f453cbff97c65d0a256be21b684c3e341f268b216c89e4969a2b5c",
+    "length": 264,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "h2-16",
+      "h2-15",
+      "h2-14",
+      "spdy/3.1",
+      "spdy/3",
+      "http/1.1"
+    ]
+  },
+  "stock/helloios_12_1": {
+    "sha256": "64f82809acd2fd5459be5e89c18c5cfec0715e58aba0f10a2b4b0cad860a59d5",
+    "length": 274,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      13172,
+      18,
+      16,
+      11,
+      10
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "alpn": [
+      "h2",
+      "h2-16",
+      "h2-15",
+      "h2-14",
+      "spdy/3.1",
+      "spdy/3",
+      "http/1.1"
+    ]
+  },
+  "stock/helloios_13": {
+    "sha256": "aee3e23c0d59962497324a320162f2a399e69f0eca7d22ed986af8eb2be97a93",
+    "length": 517,
+    "extensions": [
+      65281,
+      0,
+      23,
+      13,
+      5,
+      18,
+      16,
+      11,
+      51,
+      45,
+      43,
+      10,
+      21
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloios_14": {
+    "sha256": "e0383f6edb101f3ab0b0673605e22bc94bffc1c4a07657380c1641a1779c3c7c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloios_auto": {
+    "sha256": "e0383f6edb101f3ab0b0673605e22bc94bffc1c4a07657380c1641a1779c3c7c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloqq_11_1": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/helloqq_auto": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellorandomized": {
+    "sha256": "5d2ef5ff58dc1b5e7477c2c8c047412b426ed0facd527de82574ab7c25931032",
+    "length": 214,
+    "extensions": [
+      11,
+      16,
+      65281,
+      35,
+      23,
+      5,
+      10,
+      0,
+      13
+    ],
+    "groups": [
+      29,
+      23,
+      24
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellorandomizedalpn": {
+    "sha256": "6c3543b4d557ae211face07736cc1d6a2ec79d67daf3e7901cb5eff4e880cd27",
+    "length": 1501,
+    "extensions": [
+      18,
+      23,
+      65281,
+      43,
+      45,
+      11,
+      10,
+      13,
+      0,
+      35,
+      16,
+      17513,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellorandomizednoalpn": {
+    "sha256": "e83880e8a2ad03be394d7b4a0061e345ffe0b34e826a44034052947d700e92b7",
+    "length": 1474,
+    "extensions": [
+      18,
+      45,
+      43,
+      13,
+      11,
+      35,
+      65281,
+      0,
+      10,
+      23,
+      51
+    ],
+    "groups": [
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "stock/hellosafari_16_0": {
+    "sha256": "d580d4050a4aa7a0f0df31432fa3ce2b5682c11fd970161e14ff2559e93350a9",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellosafari_26_3": {
+    "sha256": "db084ca4891527047ea70aaf9257d16662f00ae63645951cac94ed29f5982dd0",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/hellosafari_auto": {
+    "sha256": "db084ca4891527047ea70aaf9257d16662f00ae63645951cac94ed29f5982dd0",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/ios": {
+    "sha256": "e0383f6edb101f3ab0b0673605e22bc94bffc1c4a07657380c1641a1779c3c7c",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/qq": {
+    "sha256": "9ea5440f5d7c1d4c8493a60ec2378dd1cdac3da4e0923c08ada9925a45b11fb6",
+    "length": 517,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      35,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      17513,
+      10794,
+      21
+    ],
+    "groups": [
+      43690,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/randomized@32b8ac49": {
+    "sha256": "91e0662b9f22a05e830338b9c332feb63f89f4e747b8a0b460b87ea4352b7e6e",
+    "length": 1503,
+    "extensions": [
+      11,
+      51,
+      35,
+      16,
+      43,
+      23,
+      10,
+      65281,
+      18,
+      5,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/randomized@417dcd23": {
+    "sha256": "dae79e7a2ec04d843f0a93ea10e262559667c58da58f7470814a3a54b82208b7",
+    "length": 1507,
+    "extensions": [
+      51,
+      11,
+      45,
+      43,
+      65281,
+      5,
+      10,
+      16,
+      0,
+      23,
+      13,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/randomized@4f4f221b": {
+    "sha256": "39e9882147a68286d1c0a61823352650983c7a9bcd8a602943c3927549e033ac",
+    "length": 1492,
+    "extensions": [
+      0,
+      11,
+      13,
+      65281,
+      35,
+      23,
+      16,
+      43,
+      45,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/randomized@601028d9": {
+    "sha256": "c8e762c316fe0c667e1fe10e2f34568cb651f740b85934ca68246745fc2b4b7f",
+    "length": 1505,
+    "extensions": [
+      45,
+      11,
+      23,
+      10,
+      13,
+      16,
+      35,
+      5,
+      51,
+      65281,
+      43,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  },
+  "stock/randomizednoalpn@32b8ac49": {
+    "sha256": "0b155af7a912e5893c11c635e315cfd9b44d55b7f4af7520bc253e6804a22b06",
+    "length": 1485,
+    "extensions": [
+      51,
+      35,
+      43,
+      5,
+      10,
+      11,
+      65281,
+      23,
+      18,
+      45,
+      13,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "stock/randomizednoalpn@417dcd23": {
+    "sha256": "7d3b92202af38630bf403b6d259f669a0ae001be0540fafe200ed3f61c6e8704",
+    "length": 1489,
+    "extensions": [
+      51,
+      13,
+      45,
+      65281,
+      5,
+      11,
+      10,
+      0,
+      23,
+      43,
+      35
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771,
+      770,
+      769
+    ]
+  },
+  "stock/randomizednoalpn@4f4f221b": {
+    "sha256": "c69a9e20682ee563fc9290d7917d79998df9d3f7ab4d971534ca76f16d11d9c2",
+    "length": 1474,
+    "extensions": [
+      23,
+      13,
+      45,
+      0,
+      35,
+      43,
+      11,
+      65281,
+      51,
+      18,
+      10
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "stock/randomizednoalpn@601028d9": {
+    "sha256": "74a649cff954244b6e389112d9924f8fcaffc39040faadacc96deeaa35423ec3",
+    "length": 1487,
+    "extensions": [
+      13,
+      23,
+      11,
+      10,
+      35,
+      45,
+      51,
+      65281,
+      43,
+      5,
+      0
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      772,
+      771
+    ]
+  },
+  "stock/safari": {
+    "sha256": "db084ca4891527047ea70aaf9257d16662f00ae63645951cac94ed29f5982dd0",
+    "length": 1534,
+    "extensions": [
+      19018,
+      0,
+      23,
+      65281,
+      10,
+      11,
+      16,
+      5,
+      13,
+      18,
+      51,
+      45,
+      43,
+      27,
+      10794
+    ],
+    "groups": [
+      43690,
+      4588,
+      29,
+      23,
+      24,
+      25
+    ],
+    "keyShares": [
+      "0xaaaa/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      6682,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ]
+  }
+}

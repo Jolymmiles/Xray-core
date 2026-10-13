@@ -21,6 +21,7 @@ import (
 	feature_inbound "github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
+	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/proxy/vmess"
 	"github.com/xtls/xray-core/proxy/vmess/encoding"
 	"github.com/xtls/xray-core/transport/internet/stat"
@@ -80,7 +81,8 @@ func (v *userByEmail) GetOrGenerate(email string) (*protocol.MemoryUser, bool) {
 	return user, found
 }
 
-func (v *userByEmail) Get(email string) *protocol.MemoryUser {
+// GetByEmail implements proxy.UserLookup.
+func (v *userByEmail) GetByEmail(email string) *protocol.MemoryUser {
 	email = strings.ToLower(email)
 	v.Lock()
 	defer v.Unlock()
@@ -107,6 +109,8 @@ type Handler struct {
 	clients               *vmess.TimedUserValidator
 	usersByEmail          *userByEmail
 	sessionHistory        *encoding.SessionHistory
+	userMu                sync.Mutex // serializes AddUser and RemoveUser
+	connections           proxy.UserConnections
 }
 
 // New creates a new VMess inbound handler.
@@ -156,7 +160,7 @@ func (h *Handler) GetOrGenerateUser(email string) *protocol.MemoryUser {
 }
 
 func (h *Handler) GetUser(ctx context.Context, email string) *protocol.MemoryUser {
-	return h.usersByEmail.Get(email)
+	return h.usersByEmail.GetByEmail(email)
 }
 
 func (h *Handler) GetUsers(ctx context.Context) []*protocol.MemoryUser {
@@ -167,21 +171,32 @@ func (h *Handler) GetUsersCount(context.Context) int64 {
 	return h.clients.GetCount()
 }
 
-func (h *Handler) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
-	if len(user.Email) > 0 && !h.usersByEmail.Add(user) {
+func (h *Handler) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	// Store a copy: connections are revoked by user pointer, and the caller
+	// may add again a MemoryUser that an old connection authenticated.
+	user := *u
+	if len(user.Email) > 0 && !h.usersByEmail.Add(&user) {
 		return errors.New("User ", user.Email, " already exists.")
 	}
-	return h.clients.Add(user)
+	return h.clients.Add(&user)
 }
 
+// RemoveUser implements proxy.UserManager.RemoveUser(). It closes the
+// removed user's connections.
 func (h *Handler) RemoveUser(ctx context.Context, email string) error {
 	if email == "" {
 		return errors.New("Email must not be empty.")
 	}
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	u := h.usersByEmail.GetByEmail(email)
 	if !h.usersByEmail.Remove(email) {
 		return errors.New("User ", email, " not found.")
 	}
 	h.clients.Remove(email)
+	h.connections.Revoke(u)
 	return nil
 }
 
@@ -274,6 +289,12 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	inbound.User = request.User
 
 	sessionPolicy = h.policyManager.ForLevel(request.User.Level)
+
+	ctx, tracked, err := h.connections.Track(ctx, h.usersByEmail, request.User, connection)
+	if err != nil {
+		return err
+	}
+	defer tracked.Release()
 
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)

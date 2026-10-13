@@ -72,11 +72,8 @@ type Handler struct {
 // NewHandler creates a new Handler based on the given configuration.
 func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbound.Handler, error) {
 	v := core.MustFromContext(ctx)
-	uplinkCounter, downlinkCounter := getStatCounter(v, config.Tag)
 	h := &Handler{
-		tag:             config.Tag,
-		uplinkCounter:   uplinkCounter,
-		downlinkCounter: downlinkCounter,
+		tag: config.Tag,
 	}
 
 	if config.SenderSettings != nil {
@@ -96,6 +93,18 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 			return nil, errors.New("settings is not SenderConfig")
 		}
 	}
+
+	// Checked before the counters and the proxy exist: protobuf configs skip
+	// the JSON check, and a rejected handler must not leave counters behind.
+	var muxMaxReuseTimes uint32
+	if h.senderSettings != nil && h.senderSettings.MultiplexSettings != nil {
+		var err error
+		if muxMaxReuseTimes, err = h.senderSettings.MultiplexSettings.ResolveMaxReuseTimes(); err != nil {
+			return nil, err
+		}
+	}
+
+	h.uplinkCounter, h.downlinkCounter = getStatCounter(v, config.Tag)
 
 	proxyConfig, err := config.ProxySettings.GetInstance()
 	if err != nil {
@@ -167,7 +176,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 							Dialer: h,
 							Strategy: mux.ClientStrategy{
 								MaxConcurrency: uint32(config.Concurrency),
-								MaxConnection:  128,
+								MaxConnection:  muxMaxReuseTimes,
 							},
 						},
 					},

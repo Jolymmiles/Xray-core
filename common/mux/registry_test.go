@@ -47,6 +47,23 @@ func TestClientSessionManagerHonorsAdmissionAndLifetimeLimits(t *testing.T) {
 	}
 }
 
+// The largest budget an outbound may configure (mux.maxReuseTimes 60000)
+// allocates every ID once, in order, and never wraps or reuses one.
+func TestClientSessionManagerLargestBudgetNeverWrapsIDs(t *testing.T) {
+	manager := newClientSessionManager()
+	strategy := &ClientStrategy{MaxConnection: 60000}
+	for want := uint16(1); want <= 60000; want++ {
+		admission := manager.allocate(strategy)
+		if admission == nil || admission.id != want {
+			t.Fatalf("admission %d = %+v, want ID %d", want, admission, want)
+		}
+		admission.abort()
+	}
+	if admission := manager.allocate(strategy); admission != nil {
+		t.Fatalf("admission 60001 = %+v, want the budget exhausted", admission)
+	}
+}
+
 func TestClientSessionManagerRejectsExhaustedIDSpace(t *testing.T) {
 	manager := newClientSessionManager()
 	for id := uint32(1); id <= uint32(^uint16(0)); id++ {

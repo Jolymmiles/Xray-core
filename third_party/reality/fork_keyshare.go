@@ -14,9 +14,9 @@ import "slices"
 // well-formed X25519 key share.
 //
 // Xray-core fork change: upstream rejects every hello without an
-// X25519MLKEM768 key share.
-func classicX25519KeyShare(hello *clientHelloMsg) []byte {
-	if slices.Contains(hello.supportedCurves, X25519MLKEM768) {
+// X25519MLKEM768 key share, and so does a config with RequireMLKEM.
+func classicX25519KeyShare(config *Config, hello *clientHelloMsg) []byte {
+	if config.RequireMLKEM || slices.Contains(hello.supportedCurves, X25519MLKEM768) {
 		return nil
 	}
 	var share []byte

@@ -1,13 +1,16 @@
 package masque
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -52,7 +55,7 @@ func newHTTP2Peer(t *testing.T, settings ...http2.Setting) (*http2ClientConn, *h
 	var cc *http2ClientConn
 	go func() {
 		var err error
-		cc, err = newHTTP2ClientConn(client)
+		cc, err = newHTTP2ClientConn(client, http2KeepAlivePeriod)
 		ccErr <- err
 	}()
 	preface := make([]byte, len(http2.ClientPreface))
@@ -192,6 +195,26 @@ func TestHTTP2ClientDefaultUserAgent(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{http2DefaultUserAgent}, userAgents)
+}
+
+func TestHTTP2ClientClassicConnect(t *testing.T) {
+	cc, p := newHTTP2Peer(t)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodConnect, "https://cloudflareaccess.com:443", nil)
+	require.NoError(t, err)
+	req.Header.Set("Cf-Connect-Proto", "cf-connect-ip")
+	req.Header["User-Agent"] = nil
+	go cc.RoundTrip(req)
+	f := p.readFrame()
+	require.IsType(t, &http2.MetaHeadersFrame{}, f)
+	var fields []string
+	for _, hf := range f.(*http2.MetaHeadersFrame).Fields {
+		fields = append(fields, hf.Name+": "+hf.Value)
+	}
+	require.Equal(t, []string{
+		":method: CONNECT",
+		":authority: cloudflareaccess.com:443",
+		"cf-connect-proto: cf-connect-ip",
+	}, fields)
 }
 
 func TestHTTP2ClientNeedsExtendedConnect(t *testing.T) {
@@ -402,4 +425,63 @@ func TestHTTP2ClientAnswersPings(t *testing.T) {
 	require.IsType(t, &http2.PingFrame{}, f)
 	require.True(t, f.(*http2.PingFrame).IsAck())
 	require.Equal(t, data, f.(*http2.PingFrame).Data)
+}
+
+func TestHTTP2ClientKeepAlive(t *testing.T) {
+	for _, answer := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer server.Close()
+			var mu sync.Mutex
+			var pings []time.Duration
+			start := time.Now()
+			go func() {
+				br := bufio.NewReader(server)
+				if _, err := io.ReadFull(br, make([]byte, len(http2.ClientPreface))); err != nil {
+					return
+				}
+				fr := http2.NewFramer(server, br)
+				time.Sleep(2 * time.Second)
+				if fr.WriteSettings() != nil {
+					return
+				}
+				for {
+					f, err := fr.ReadFrame()
+					if err != nil {
+						return
+					}
+					if p, ok := f.(*http2.PingFrame); ok && !p.IsAck() {
+						mu.Lock()
+						pings = append(pings, time.Since(start))
+						mu.Unlock()
+						if answer && fr.WritePing(true, p.Data) != nil {
+							return
+						}
+					}
+				}
+			}()
+			cc, err := newHTTP2ClientConn(client, 60*time.Second)
+			require.NoError(t, err)
+			if answer {
+				time.Sleep(200 * time.Second)
+				select {
+				case <-cc.done:
+					t.Fatal("the connection closed although every PING was answered")
+				default:
+				}
+				cc.conn.Close()
+				<-cc.done
+				mu.Lock()
+				defer mu.Unlock()
+				require.GreaterOrEqual(t, len(pings), 2)
+				return
+			}
+			<-cc.done
+			closed := time.Since(start)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, pings, 1, "the connection must send a PING before closing")
+			require.GreaterOrEqual(t, closed-pings[0], http2PingTimeout)
+		})
+	}
 }

@@ -1,0 +1,699 @@
+#!/usr/bin/env python3
+"""Slow-reader stand for the XHTTP HTTP/2 flow governor.
+
+Twenty uploads run through an Xray client and server into an origin that reads
+100 KB/s from each, while a small request is sent every 0.3 s on the same
+connections. The stand reports how long those requests take and how much
+memory the server holds, for each server build given.
+
+It needs root on Linux (network namespaces, netem), python3, iproute2, and:
+
+  go build -o origin ./testing/xhttpflow/slowreader/origin
+  sudo python3 testing/xhttpflow/slowreader/stand.py \\
+      --origin ./origin --client /path/to/xray-client \\
+      --server before=/path/to/xray-before --server after=/path/to/xray-after \\
+      --runs 36
+
+Every --server build runs --runs times, all runs shuffled together. The server
+has the governor on ("h2Flow": {"enabled": true}) unless --h2flow NAME=JSON
+gives that server another "h2Flow" object; the client is whatever --client is,
+with its own defaults. REALITY keys are made on the spot with
+"<first server> x25519" and live in a temporary directory. What the two Xray
+processes of a run write is kept there too and printed if the run is
+invalid.
+
+With --workload downloads the load is --readers downloads instead, each read
+at --read-rate bytes per second (0 reads as fast as it comes), on a link of
+--mbit and --rtt. The stand then reports the client's anonymous memory
+(RssAnon, sampled every 50 ms) and the megabytes read per second, and with
+--client-limit-mb it kills the client the moment it holds more than that, as
+a process memory limit would. --download-bytes makes each download that
+short, so the server ends it long before a slow reader has taken it, and
+--stagger starts the downloads that many seconds apart instead of at once.
+--app-buffer bounds what the kernel holds between the client and the reader
+(the reader's receive buffer and the send buffers of the client's namespace),
+so that what the reader has not taken stays in the client's own memory, as it
+does where the reader lives in the client's process. --readers and --read-rate also set the number
+of uploads and what the origin reads from each; with --read-rate 0 nothing
+is slowed, and the megabytes moved and the processor time of both Xray
+processes per gigabyte are the result:
+
+  sudo python3 testing/xhttpflow/slowreader/stand.py --workload downloads \\
+      --mbit 1000 --readers 20 --read-rate 100000 --client-limit-mb 40 \\
+      --origin ./origin --client /path/to/xray-client \\
+      --server stock=/path/to/xray --h2flow 'stock={"enabled": false}' \\
+      --server limit=/path/to/xray \\
+      --server nolimit=/path/to/xray --h2flow 'nolimit={"enabled": true, "maxConnectionSendWindow": -1}' \\
+      --runs 5
+
+The server's namespace uses CUBIC whatever the host does; --server-cc bbr
+gives it BBR if the kernel has it loaded. The stand does not load it: where
+net.ipv4.tcp_available_congestion_control does not name it, it does not
+start.
+
+The stand creates two network namespaces and a veth pair with names of its
+own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
+temporary directory and every process it started when it ends, however it
+ends short of SIGKILL; a namespace it cannot remove makes it fail with the
+error. It touches nothing else on the host. The measurement gets RUN_LIMIT
+(98 s) per run, where a run normally takes its 12 s of load and a few seconds
+around them; one still going past that is stuck, and the stand stops it,
+tears down and exits with status 1. Origin's stderr is kept in the temporary
+directory and printed when the stand fails.
+
+A run is valid only if every upload was still sending at the deadline and the
+server's memory could be read. A download run is valid only if every download
+was still reading at the deadline, or the client was killed at its limit, and
+the memory of both could be read; a download read to its end before the
+deadline makes the run invalid, as its reader then stood idle. A small request that fails or does not finish
+within 10 s counts as a 10 s sample, so a stall can only make a run worse.
+Invalid runs are reported and left out of the table, and a single one makes
+the stand exit with status 1: the table and the JSON lines still come out,
+but the comparison is incomplete.
+"""
+import argparse
+import contextlib
+import json
+import os
+import random
+import shutil
+import signal
+import socket
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+UUID = "b831381d-6324-4d53-ad4f-8cda48b30811"
+SOCKS = ("127.0.0.1", 21080)
+TARGET, TARGET_PORT = b"target.test", 18000
+XMUX = {"maxConnections": 3, "maxConcurrency": 0, "cMaxReuseTimes": 0,
+        "hMaxRequestTimes": "600-900", "hMaxReusableSecs": "1800-3000", "hKeepAlivePeriod": 16}
+MBIT, RTT_MS = 100, 50
+UPLOADS, UPLOAD_RATE, DURATION, PING_EVERY = 20, 100_000, 12, 0.3
+DOWNLOAD_BYTES = 100_000_000_000
+PING_TIMEOUT, READY_TIMEOUT = 10.0, 20.0
+ANON_EVERY = 0.05
+# About the most one run's own waits allow: readiness and its last ping, the
+# workload and the uploads' join, both watchers' joins; and half a minute for
+# starting and stopping Xray, which nothing bounds. A budget, not a proven
+# bound; the parent gives the measurement this per run.
+RUN_LIMIT = (READY_TIMEOUT + 2) + (DURATION + PING_TIMEOUT) + 2 * (PING_TIMEOUT + 2) + 30
+
+
+def sh(cmd):
+    subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+def reap(proc, grace=0.0):
+    """Stop a child and wait for it: SIGTERM first if it gets grace seconds
+    to clean up after itself, then SIGKILL."""
+    if proc.poll() is None and grace:
+        proc.terminate()
+        try:
+            proc.wait(grace)
+        except subprocess.TimeoutExpired:
+            pass
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+
+
+def remove_namespace(ns):
+    """Kills whatever still runs in a namespace of this run and deletes it;
+    that removes the veth end inside it, and its peer. If either step fails
+    it raises, after trying both: the ExitStack still runs the rest of the
+    teardown, and the stand ends with the error instead of a success."""
+    errors = []
+    listed = subprocess.run(["ip", "netns", "pids", ns], capture_output=True, text=True)
+    if listed.returncode:
+        errors.append(f"ip netns pids: {listed.stderr.strip()}")
+    for pid in listed.stdout.split():
+        with contextlib.suppress(ProcessLookupError, ValueError):
+            os.kill(int(pid), signal.SIGKILL)
+    deleted = subprocess.run(["ip", "netns", "del", ns], capture_output=True, text=True)
+    if deleted.returncode:
+        errors.append(f"ip netns del: {deleted.stderr.strip()}")
+    if errors:
+        raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
+
+
+def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, server_cc="cubic"):
+    """Two namespaces of this run joined by a veth pair, shaped in both. The
+    server's namespace gets server_cc as its TCP congestion control, or the
+    stand does not start."""
+    existing = subprocess.run(["ip", "netns", "list"], check=True, capture_output=True, text=True).stdout.split()
+    for ns in (srv, cli):
+        if ns in existing:
+            sys.exit(f"network namespace {ns} already exists; not touching it")
+    for ns in (srv, cli):
+        sh(f"ip netns add {ns}")
+        stack.callback(remove_namespace, ns)
+    pid = os.getpid()
+    vsrv, vcli = f"xs{pid}s", f"xs{pid}c"
+    sh(f"ip link add {vsrv} netns {srv} type veth peer name {vcli} netns {cli}")
+    sh(f"ip -n {srv} addr add 10.9.0.1/24 dev {vsrv}")
+    sh(f"ip -n {cli} addr add 10.9.0.2/24 dev {vcli}")
+    # netem drops what exceeds its queue, so the queue holds twice the
+    # bandwidth-delay product: the windows, not the queue, limit the flows.
+    limit = max(1000, int(mbit * 1e6 / 8 * rtt_ms / 1000 / 1500 * 2))
+    for ns, dev in ((srv, vsrv), (cli, vcli)):
+        sh(f"ip -n {ns} link set lo up")
+        sh(f"ip -n {ns} link set {dev} up")
+        # The client sends next to nothing over the link in a download, so
+        # its send buffers can be bounded for the reader's sake.
+        wmem = f"4096 {min(16384, app_buffer)} {app_buffer}" if app_buffer and ns == cli else "4096 16384 33554432"
+        sh(f'ip netns exec {ns} sysctl -qw net.ipv4.tcp_rmem="4096 131072 33554432" '
+           f'net.ipv4.tcp_wmem="{wmem}"')
+        sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {rtt_ms / 2:g}ms rate {mbit}mbit limit {limit}")
+    # Setting one the kernel has not loaded would make it load the module,
+    # for the whole host and for good.
+    available = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_available_congestion_control"],
+                               capture_output=True, text=True).stdout.split()
+    if server_cc not in available:
+        sys.exit(f"the kernel has no {server_cc} loaded (it has {' '.join(available) or 'nothing it names'}); "
+                 "the stand does not load it")
+    subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", f"net.ipv4.tcp_congestion_control={server_cc}"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    got = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_congestion_control"],
+                         capture_output=True, text=True).stdout.strip()
+    if got != server_cc:
+        sys.exit(f"the server's namespace uses {got or 'an unknown congestion control'}, not {server_cc}")
+
+
+def reality_keys(xray):
+    out = subprocess.run([xray, "x25519"], check=True, capture_output=True, text=True).stdout
+    values = [line.split(":", 1)[1].strip() for line in out.splitlines() if ":" in line]
+    if len(values) < 2:
+        sys.exit(f"cannot read REALITY keys from '{xray} x25519'")
+    return values[0], values[1]
+
+
+def server_config(private_key, h2flow=None):
+    return {"log": {"loglevel": "error"}, "dns": {"hosts": {"target.test": "127.0.0.1"}},
+            "inbounds": [{"listen": "10.9.0.1", "port": 443, "protocol": "vless",
+                          "settings": {"clients": [{"id": UUID, "email": "u@x"}], "decryption": "none"},
+                          "streamSettings": {"network": "xhttp", "security": "reality",
+                                             "xhttpSettings": {"extra": {"xmux": XMUX, "h2Flow": {"enabled": True} if h2flow is None else h2flow}},
+                                             "realitySettings": {"target": "127.0.0.1:8444", "shortIds": ["ab12"],
+                                                                 "privateKey": private_key,
+                                                                 "serverNames": ["www.example.com"]}}}],
+            "outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "UseIP",
+                                                               "finalRules": [{"action": "allow", "ip": ["127.0.0.1"]}]}}]}
+
+
+def client_config(public_key, h2flow=None):
+    """The client's config; h2flow is its "h2Flow" object, none by default:
+    the stands measure a server against a client as it comes."""
+    extra = {"xmux": XMUX} if h2flow is None else {"xmux": XMUX, "h2Flow": h2flow}
+    return {"log": {"loglevel": "error"},
+            "inbounds": [{"listen": SOCKS[0], "port": SOCKS[1], "protocol": "socks", "settings": {"udp": False}}],
+            "outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": "10.9.0.1", "port": 443,
+                                                                         "users": [{"id": UUID, "encryption": "none"}]}]},
+                           "streamSettings": {"network": "xhttp", "security": "reality",
+                                              "realitySettings": {"serverName": "www.example.com", "fingerprint": "chrome",
+                                                                  "publicKey": public_key, "shortId": "ab12"},
+                                              "xhttpSettings": {"extra": extra}}}]}
+
+
+def outer(args):
+    """Sets the stand up, runs the measurement inside the client namespace, tears everything down."""
+    if os.geteuid() != 0:
+        sys.exit("needs root: it creates network namespaces")
+    servers = dict(s.split("=", 1) for s in args.server)
+    h2flow = {name: json.loads(value) for name, value in (s.split("=", 1) for s in getattr(args, "h2flow", None) or [])}
+    if set(h2flow) - set(servers):
+        sys.exit(f"--h2flow names no --server: {', '.join(sorted(set(h2flow) - set(servers)))}")
+    srv, cli = f"xslow-{os.getpid()}-srv", f"xslow-{os.getpid()}-cli"
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    code = None
+    with contextlib.ExitStack() as stack:
+        work = tempfile.mkdtemp(prefix="slowreader-")
+        stack.callback(shutil.rmtree, work, ignore_errors=True)
+        # Origin logs its own errors. Unless the stand succeeds, including its
+        # teardown, they are shown after the rest is torn down and before the
+        # directory goes.
+        origin_log = stack.enter_context(open(f"{work}/origin.log", "w+b"))
+
+        def show_origin_log(exc_type, exc, tb):
+            if code != 0 or exc_type is not None:
+                show_log("origin", origin_log)
+
+        stack.push(show_origin_log)
+        setup_network(stack, srv, cli, getattr(args, "mbit", MBIT), getattr(args, "rtt", RTT_MS),
+                      getattr(args, "app_buffer", 0), getattr(args, "server_cc", "cubic"))
+        private_key, public_key = reality_keys(next(iter(servers.values())))
+        for name in servers:
+            with open(f"{work}/server-{name}.json", "w") as f:
+                json.dump(server_config(private_key, h2flow.get(name)), f)
+        with open(f"{work}/client.json", "w") as f:
+            json.dump(client_config(public_key), f)
+        origin = subprocess.Popen(["ip", "netns", "exec", srv, args.origin],
+                                  stdout=subprocess.DEVNULL, stderr=origin_log)
+        stack.callback(reap, origin)
+        inside = subprocess.Popen(["ip", "netns", "exec", cli, sys.executable, os.path.abspath(__file__), "--inside",
+                                   "--work", work, "--srv-ns", srv, "--client", args.client, "--runs", str(args.runs),
+                                   "--out", os.path.abspath(args.out),
+                                   "--workload", getattr(args, "workload", "uploads"),
+                                   "--readers", str(getattr(args, "readers", UPLOADS)),
+                                   "--read-rate", str(getattr(args, "read_rate", UPLOAD_RATE)),
+                                   "--client-limit-mb", str(getattr(args, "client_limit_mb", 0)),
+                                   "--download-bytes", str(getattr(args, "download_bytes", DOWNLOAD_BYTES)),
+                                   "--stagger", str(getattr(args, "stagger", 0.0)),
+                                   "--app-buffer", str(getattr(args, "app_buffer", 0))]
+                                  + [x for s in args.server for x in ("--server", s)])
+        stack.callback(reap, inside, 15.0)  # it stops and reaps its own Xray processes
+        # Past this the child is stuck, not slow; leaving here tears it down.
+        limit = len(servers) * args.runs * RUN_LIMIT + 60
+        try:
+            code = inside.wait(limit)
+        except subprocess.TimeoutExpired:
+            print(f"the measurement did not finish within {limit:.0f} s; stopping it", file=sys.stderr)
+            code = 1
+    return code
+
+
+def show_log(name, f):
+    """Prints what a child wrote to f, if anything."""
+    f.seek(0)
+    text = f.read().decode(errors="replace").rstrip()
+    if text:
+        print(f"{name} output:\n{text}", file=sys.stderr)
+
+
+def time_left(deadline):
+    """Seconds until deadline, for the next socket operation; socket.timeout
+    once it has passed, so no operation starts late."""
+    left = deadline - time.time()
+    if left <= 0:
+        raise socket.timeout("deadline passed")
+    return left
+
+
+def socks(deadline):
+    """A TCP connection to the origin through the client's SOCKS5 inbound."""
+    s = socket.create_connection(SOCKS, timeout=time_left(deadline))
+    try:
+        s.settimeout(time_left(deadline))
+        s.sendall(b"\x05\x01\x00")
+        if recv_exact(s, 2, deadline) != b"\x05\x00":
+            raise OSError("socks: method refused")
+        s.settimeout(time_left(deadline))
+        s.sendall(b"\x05\x01\x00\x03" + bytes([len(TARGET)]) + TARGET + TARGET_PORT.to_bytes(2, "big"))
+        reply = recv_exact(s, 10, deadline)
+        if reply[:2] != b"\x05\x00":
+            raise OSError(f"socks: connect failed with code {reply[1]}")
+        return s
+    except BaseException:
+        s.close()
+        raise
+
+
+def recv_exact(s, n, deadline):
+    buf = b""
+    while len(buf) < n:
+        s.settimeout(time_left(deadline))
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise OSError("closed early")
+        buf += chunk
+    return buf
+
+
+def ping(timeout=PING_TIMEOUT):
+    """Milliseconds for one small request through the tunnel, or None if it
+    failed or did not finish within timeout: session, GET /ping, 200, "pong".
+    One deadline covers the whole request: every send and receive gets only
+    the time left, and an answer complete after it is a failure too."""
+    start = time.time()
+    deadline = start + timeout
+    try:
+        s = socks(deadline)
+        try:
+            s.settimeout(time_left(deadline))
+            s.sendall(b"GET /ping HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n")
+            # The answer is the status line, headers and the four bytes of
+            # "pong". The tunnel passes the origin's close on only after a
+            # while, so the time is taken when the body is in, not at EOF.
+            want = b"\r\n\r\npong"
+            buf = b""
+            while want not in buf and len(buf) < 4096:
+                s.settimeout(time_left(deadline))
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            s.close()
+        end = time.time()
+        head, _, body = buf.partition(b"\r\n\r\n")
+        if end >= deadline or not head.startswith(b"HTTP/1.1 200") or body != b"pong":
+            return None
+        return (end - start) * 1000
+    except OSError:
+        return None
+
+
+def upload(deadline, result, rate=UPLOAD_RATE):
+    """Sends until deadline to an origin that reads rate bytes per second, or
+    all it gets if rate is 0. result gets the bytes sent and how it ended."""
+    sent = 0
+    try:
+        s = socks(time.time() + PING_TIMEOUT)
+    except OSError as e:
+        result.update(sent=0, end=f"no session: {e}")
+        return
+    try:
+        s.settimeout(time_left(deadline))
+        s.sendall(b"POST /up?rate=%d HTTP/1.1\r\nHost: target.test\r\nContent-Length: 100000000000\r\n"
+                  b"Connection: close\r\n\r\n" % rate)
+        block = os.urandom(32768)
+        while time.time() < deadline:
+            # A send may wait for seconds while the origin drains; only the
+            # deadline ends it.
+            s.settimeout(max(0.05, deadline - time.time()))
+            try:
+                s.sendall(block)
+            except socket.timeout:
+                break
+            sent += len(block)
+        result.update(sent=sent, end="deadline")
+    except OSError as e:
+        result.update(sent=sent, end=f"error: {e}")
+    finally:
+        s.close()
+
+
+def download(deadline, rate, result, size=DOWNLOAD_BYTES, delay=0.0, app_buffer=0):
+    """Reads a download of size bytes until deadline, at rate bytes per second
+    if rate is set, starting after delay. result gets the bytes read and how
+    it ended: "deadline" if it was still reading then, "complete" if it had
+    read all of it before, which it then keeps open until the deadline."""
+    got = 0
+    time.sleep(max(0, min(delay, deadline - time.time() - 1)))
+    try:
+        s = socks(time.time() + PING_TIMEOUT)
+    except OSError as e:
+        result.update(got=0, end=f"no session: {e}")
+        return
+    try:
+        if app_buffer:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, app_buffer)
+        s.settimeout(time_left(deadline))
+        s.sendall(b"GET /down?bytes=%d HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n" % size)
+        head = b""
+        while b"\r\n\r\n" not in head:
+            s.settimeout(time_left(deadline))
+            chunk = s.recv(4096)
+            if not chunk:
+                raise OSError("closed before the headers")
+            head += chunk
+        if not head.startswith(b"HTTP/1.1 200"):
+            raise OSError(f"status {head[:12]!r}")
+        got = len(head.partition(b"\r\n\r\n")[2])
+        buf = memoryview(bytearray(4096 if rate else 1 << 20))
+        start = time.time()
+        while time.time() < deadline:
+            if got >= size:
+                time.sleep(min(0.05, max(0, deadline - time.time())))
+                continue
+            s.settimeout(max(0.05, deadline - time.time()))
+            try:
+                n = s.recv_into(buf)
+            except socket.timeout:
+                break
+            if not n:
+                raise OSError("closed early")
+            got += n
+            if rate:
+                ahead = start + got / rate - time.time()
+                if ahead > 0:
+                    time.sleep(min(ahead, max(0, deadline - time.time())))
+        result.update(got=got, end="complete" if got >= size else "deadline")
+    except OSError as e:
+        result.update(got=got, end=f"error: {e}")
+    finally:
+        s.close()
+
+
+def anon_bytes(pid):
+    """Anonymous memory of a process: what a memory limit on it counts."""
+    with open(f"/proc/{pid}/status") as f:
+        for line in f:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) * 1024
+    raise ValueError("no RssAnon")
+
+
+def cpu_seconds(pid):
+    """Processor time a process has used, user and system."""
+    with open(f"/proc/{pid}/stat") as f:
+        fields = f.read().rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
+def rss_bytes(pid):
+    with open(f"/proc/{pid}/statm") as f:
+        return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+
+
+def percentile(values, p):
+    values = sorted(values)
+    return values[min(len(values) - 1, int(p * len(values)))]
+
+
+def start_xray(stack, server_binary, args, name):
+    """Starts the server in its namespace and the client here; the stack
+    stops them. What they write goes to two files in the work directory,
+    started afresh for every run, for show_xray_logs."""
+    logs = [stack.enter_context(open(f"{args.work}/{who}.log", "w+b")) for who in ("server", "client")]
+    server = subprocess.Popen(["ip", "netns", "exec", args.srv_ns, server_binary, "run", "-c",
+                               f"{args.work}/server-{name}.json"], stdout=logs[0], stderr=subprocess.STDOUT)
+    stack.callback(reap, server)  # "ip netns exec" execs Xray in place, so this is Xray
+    client = subprocess.Popen([args.client, "run", "-c", f"{args.work}/client.json"],
+                              stdout=logs[1], stderr=subprocess.STDOUT)
+    stack.callback(reap, client)
+    return server, client
+
+
+def show_xray_logs(work):
+    """Prints what the server and the client of the current run wrote; for a
+    run that is about to be reported invalid."""
+    for who in ("server", "client"):
+        # A run that never started Xray left no log.
+        with contextlib.suppress(OSError), open(f"{work}/{who}.log", "rb") as f:
+            show_log(f"xray {who}", f)
+
+
+def one_run(server_binary, args, name):
+    """One run. Returns its numbers, with "invalid" set to the reason if it must not count."""
+    downloads = args.workload == "downloads"
+    with contextlib.ExitStack() as stack:
+        server, client = start_xray(stack, server_binary, args, name)
+        ready_by = time.time() + READY_TIMEOUT
+        while ping(2) is None:
+            if time.time() > ready_by or server.poll() is not None or client.poll() is not None:
+                return {"invalid": "the tunnel did not come up"}
+            time.sleep(0.2)
+
+        stop = threading.Event()
+        latencies, failures, rss, rss_errors = [], [0], [], [0]
+
+        def prober():
+            while not stop.is_set():
+                ms = ping()
+                if ms is None:
+                    failures[0] += 1
+                    ms = PING_TIMEOUT * 1000
+                latencies.append(ms)
+                stop.wait(PING_EVERY)
+
+        def sampler():
+            while not stop.is_set():
+                try:
+                    rss.append(rss_bytes(server.pid))
+                except (OSError, ValueError, IndexError):
+                    rss_errors[0] += 1
+                stop.wait(0.25)
+
+        anon, anon_errors, killed = [], [0], []
+        started = time.time()
+
+        def client_sampler():
+            """The client's anonymous memory; over the limit, it is killed
+            at once, as the system would."""
+            limit = args.client_limit_mb * 2**20
+            while not stop.is_set():
+                try:
+                    anon.append(anon_bytes(client.pid))
+                except (OSError, ValueError, IndexError):
+                    if not killed:
+                        anon_errors[0] += 1
+                if limit and anon and anon[-1] > limit and not killed:
+                    killed.append(time.time() - started)
+                    client.kill()
+                stop.wait(ANON_EVERY)
+
+        watchers = [threading.Thread(target=f, daemon=True)
+                    for f in ((prober, sampler, client_sampler) if downloads else (prober, sampler))]
+        for t in watchers:
+            t.start()
+        deadline = time.time() + DURATION
+        outcomes = [{} for _ in range(args.readers)]
+        if downloads:
+            uploads = [threading.Thread(target=download, daemon=True,
+                                        args=(deadline, args.read_rate, o, args.download_bytes, i * args.stagger,
+                                              args.app_buffer))
+                       for i, o in enumerate(outcomes)]
+        else:
+            uploads = [threading.Thread(target=upload, args=(deadline, o, args.read_rate), daemon=True) for o in outcomes]
+        try:
+            cpu_before = cpu_seconds(server.pid), cpu_seconds(client.pid)
+        except (OSError, ValueError, IndexError):
+            cpu_before = None
+        for t in uploads:
+            t.start()
+        for t in uploads:
+            t.join(max(0, deadline + PING_TIMEOUT - time.time()))
+        try:
+            cpu = [after - before for after, before in zip((cpu_seconds(server.pid), cpu_seconds(client.pid)), cpu_before)]
+        except (OSError, ValueError, IndexError, TypeError):
+            cpu = [None, None]  # a client killed at its limit has none
+        stop.set()
+        for t in watchers:
+            t.join(PING_TIMEOUT + 2)
+
+        run = {"p50": percentile(latencies, 0.5) if latencies else None,
+               "p95": percentile(latencies, 0.95) if latencies else None,
+               "pings": len(latencies), "pings_failed": failures[0],
+               "rss_mb": max(rss) / 2**20 if rss else None,
+               "upload_mb": sum(o.get("sent", 0) for o in outcomes) / 1e6,
+               "server_cpu_s": cpu[0], "client_cpu_s": cpu[1]}
+        moved = "got" if downloads else "sent"
+        bad = [o.get("end", "still running") for o in outcomes if o.get("end") != "deadline" or not o.get(moved)]
+        if downloads:
+            run.update(download_mb_s=sum(o.get("got", 0) for o in outcomes) / 1e6 / DURATION,
+                       client_anon_mb=max(anon) / 2**20 if anon else None,
+                       client_killed_s=killed[0] if killed else None)
+        if any(t.is_alive() for t in uploads + watchers):
+            run["invalid"] = "a driver did not finish"
+        elif bad and not killed:
+            run["invalid"] = f"{len(bad)} of {len(outcomes)} {args.workload} stopped early or moved nothing ({bad[0]})"
+        elif not latencies:
+            run["invalid"] = "no request was sent"
+        elif not rss or rss_errors[0]:
+            run["invalid"] = "the server's memory could not be read"
+        elif downloads and (not anon or anon_errors[0]):
+            run["invalid"] = "the client's memory could not be read"
+        elif server.poll() is not None or (client.poll() is not None and not killed):
+            run["invalid"] = "Xray exited during the run"
+        return run
+
+
+def inside(args):
+    """The measurement itself; runs in the client namespace."""
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    servers = dict(s.split("=", 1) for s in args.server)
+    downloads = getattr(args, "workload", "uploads") == "downloads"
+    results = {name: [] for name in servers}
+    invalid = {name: 0 for name in servers}
+    jobs = [name for name in servers for _ in range(args.runs)]
+    random.shuffle(jobs)
+    with open(args.out, "a") as out:
+        for i, name in enumerate(jobs, 1):
+            try:
+                r = one_run(servers[name], args, name)
+            except BaseException:
+                # The work directory goes with the stand; what Xray wrote
+                # before the failure is shown first.
+                show_xray_logs(getattr(args, "work", None))
+                raise
+            out.write(json.dumps({"server": name, **r}) + "\n")
+            out.flush()
+            if "invalid" in r:
+                invalid[name] += 1
+                print(f"[{i}/{len(jobs)}] {name}: INVALID, {r['invalid']}", flush=True)
+                show_xray_logs(getattr(args, "work", None))
+                continue
+            results[name].append(r)
+            print(f"[{i}/{len(jobs)}] {name}: ping p50 {r['p50']:.0f} ms, p95 {r['p95']:.0f} ms, "
+                  f"{r['pings_failed']} of {r['pings']} failed, server peak RSS {r['rss_mb']:.1f} MB", end="")
+            if downloads:
+                end = "not killed" if r["client_killed_s"] is None else f"killed after {r['client_killed_s']:.2f} s"
+                print(f", {r['download_mb_s']:.1f} MB/s, client peak RssAnon {r['client_anon_mb']:.1f} MB, {end}", end="")
+            print(flush=True)
+
+    print("\n| | " + " | ".join(results) + " |")
+    print("|---|" + "---|" * len(results))
+    rows = [
+        ("Valid runs", lambda n, rs: f"{len(rs)} of {len(rs) + invalid[n]}"),
+        ("Requests failed or over 10 s", lambda n, rs: f"{sum(r['pings_failed'] for r in rs)} of {sum(r['pings'] for r in rs)}"),
+        ("Runs with ping p95 above 2 s", lambda n, rs: str(sum(r["p95"] > 2000 for r in rs))),
+        ("Worst ping p95", lambda n, rs: f"{max(r['p95'] for r in rs) / 1000:.2f} s"),
+        ("Median ping p50 / p95", lambda n, rs: f"{statistics.median(r['p50'] for r in rs):.0f} / "
+                                                 f"{statistics.median(r['p95'] for r in rs):.0f} ms"),
+        ("Median server peak RSS", lambda n, rs: f"{statistics.median(r['rss_mb'] for r in rs):.1f} MB"),
+    ]
+    def cpu_per_gb(rs, key):
+        moved = "download_mb_s" if downloads else "upload_mb"
+        values = [r[key] / (r[moved] * (DURATION if downloads else 1) / 1000) for r in rs if r.get(key) is not None and r.get(moved)]
+        return f"{statistics.median(values):.1f} ({min(values):.1f}-{max(values):.1f})" if values else "-"
+
+    rows.append(("CPU per GB, server / client, median (least-most)", lambda n, rs: f"{cpu_per_gb(rs, 'server_cpu_s')} / "
+                                                                                  f"{cpu_per_gb(rs, 'client_cpu_s')} s"))
+    if not downloads:
+        rows.append(("Median sent", lambda n, rs: f"{statistics.median(r['upload_mb'] for r in rs) / DURATION:.1f} MB/s"))
+    if downloads:
+        rows += [
+            ("Median read", lambda n, rs: f"{statistics.median(r['download_mb_s'] for r in rs):.1f} MB/s"),
+            ("Client peak RssAnon, median / worst", lambda n, rs: f"{statistics.median(r['client_anon_mb'] for r in rs):.1f} / "
+                                                                   f"{max(r['client_anon_mb'] for r in rs):.1f} MB"),
+            ("Client killed at its limit", lambda n, rs: f"{sum(r['client_killed_s'] is not None for r in rs)} of {len(rs)}"),
+        ]
+    for label, f in rows:
+        print(f"| {label} | " + " | ".join(f(n, rs) if rs else "-" for n, rs in results.items()) + " |")
+    # A run left out of the table could be the one that shows the stall, so
+    # a single invalid run makes the whole comparison fail.
+    failed = sum(invalid.values())
+    if failed:
+        print(f"\n{failed} of {len(jobs)} runs were invalid: the comparison is incomplete", file=sys.stderr)
+    return 1 if failed or not all(results.values()) else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--origin", help="binary built from ./origin")
+    ap.add_argument("--client", required=True, help="Xray binary used as the client")
+    ap.add_argument("--server", action="append", required=True, metavar="NAME=PATH",
+                    help="Xray binary used as the server; repeat for each build to compare")
+    ap.add_argument("--runs", type=int, default=36)
+    ap.add_argument("--h2flow", action="append", metavar="NAME=JSON",
+                    help='"h2Flow" object of that server instead of {"enabled": true}')
+    ap.add_argument("--workload", choices=("uploads", "downloads"), default="uploads")
+    ap.add_argument("--mbit", type=int, default=MBIT, help="link rate")
+    ap.add_argument("--rtt", type=int, default=RTT_MS, help="round trip of the link, ms")
+    ap.add_argument("--server-cc", default="cubic", help="TCP congestion control of the server's namespace")
+    ap.add_argument("--readers", type=int, default=UPLOADS, help="downloads at once")
+    ap.add_argument("--read-rate", type=int, default=UPLOAD_RATE, help="bytes per second each download is read at, 0 for no limit")
+    ap.add_argument("--download-bytes", type=int, default=DOWNLOAD_BYTES, help="size of each download")
+    ap.add_argument("--stagger", type=float, default=0.0, help="seconds between the starts of the downloads")
+    ap.add_argument("--app-buffer", type=int, default=0,
+                    help="bytes the kernel may hold between the client and a download's reader, 0 for its defaults")
+    ap.add_argument("--client-limit-mb", type=int, default=0,
+                    help="kill the client above this much anonymous memory, 0 for never")
+    ap.add_argument("--out", default="slowreader.jsonl", help="one JSON line per run, appended")
+    ap.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--work", help=argparse.SUPPRESS)
+    ap.add_argument("--srv-ns", help=argparse.SUPPRESS)
+    args = ap.parse_args()
+    if args.inside:
+        sys.exit(inside(args))
+    if not args.origin:
+        ap.error("--origin is required")
+    sys.exit(outer(args))
+
+
+if __name__ == "__main__":
+    main()

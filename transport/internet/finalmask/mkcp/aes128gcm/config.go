@@ -14,3 +14,6 @@ func (c *Config) WrapPacketConnClient(conn net.PacketConn, dest *net.Destination
 func (c *Config) WrapPacketConnServer(conn net.PacketConn, addr net.Addr, lc *finalmask.ListenConfig) (net.PacketConn, error) {
 	return NewConnServer(c, conn)
 }
+
+// DatagramIntegrity marks the AEAD mask for finalmask.CheckDatagramIntegrity.
+func (c *Config) DatagramIntegrity() {}

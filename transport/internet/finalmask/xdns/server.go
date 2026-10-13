@@ -239,7 +239,8 @@ func (c *xdnsServer) read(buf []byte, addr net.Addr) {
 	p = p[:0]
 	if decoded[8]&0xC0 == 0xC0 {
 		out := pool4K.Get().([]byte)
-		n := c.fragManager.Feed(out, FragKey{clientID: clientID, fragID: decoded[12]}, decoded[13], decoded[14], decoded[15:n])
+		key := FragKey{clientID: clientID, nonce: [3]byte(decoded[9:12]), fragID: decoded[12]}
+		n := c.fragManager.Feed(out, key, decoded[13], decoded[14], decoded[15:n])
 		pool4K.Put(p[:cap(p)])
 		if n > 0 {
 			p = out[:n]

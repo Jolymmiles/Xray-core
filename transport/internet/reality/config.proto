@@ -31,6 +31,10 @@ message Config {
   repeated int64 spider_y = 27;
 
   string master_key_log = 31;
+
+  // Fork-owned, outside the blocks upstream numbers: 1-13 for the server,
+  // 21-27 for the client, 31.
+  bool require_mlkem = 100;
 }
 
 message LimitFallback {

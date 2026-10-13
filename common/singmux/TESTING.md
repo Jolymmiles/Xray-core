@@ -169,6 +169,21 @@ Mux.Cool; sing-box and Mihomo are covered by the SMUX matrices above.
 go test -tags 'integration http2legacy' ./common/singmux -run '^TestXHTTPMuxCoolProcess$' -count=1 -v
 ```
 
+The Mux.Cool reuse-budget gate runs an Xray client with `mux.maxReuseTimes`
+against an Xray VLESS server, over TLS and REALITY without flow, through a
+relay that counts the TCP connections the client opens. One session stays
+open while two more open and close: within the default budget of 128 they
+reuse its connection, with `maxReuseTimes` 1 each opens its own, and the held
+session echoes again afterwards. The old-server cells build upstream
+v26.10.10 and the fork's v26.8.25-1457 from the local git objects and run a
+budget of 130 against them: sessions 2 to 130 stay on the first connection,
+so the old server serves session IDs above 128, and session 131 opens a
+second one.
+
+```sh
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestMuxCoolMaxReuseTimes(OldServer)?Process$' -count=1 -timeout 20m -v
+```
+
 The matching connection-latency benchmark keeps one Xray client and server
 process alive per mode and opens a new VLESS connection for every operation.
 Use a fixed iteration count on macOS: adaptive multi-second runs can exhaust
@@ -353,6 +368,18 @@ record diagnostics only and cannot satisfy the release gate.
 
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
+
+Without those variables the harness builds the sing-box and Mihomo clients from
+source. `testing/interop` looks for a `sing-box` or `mihomo` directory whose
+`go.mod` declares the client's module: next to the checkout, next to the main
+checkout (found through `git rev-parse --git-common-dir`), and then next to
+the parents of both. A linked worktree anywhere on disk therefore needs no
+variables when the main checkout has the peers beside it. If nothing is found,
+the failure lists every path tried, why it was skipped, and the variables to
+set. Run `testing/setup-worktree.sh` in a fresh worktree to link the
+gitignored `resources/geo{ip,site}.dat` the `infra/conf` tests read, and
+`testing/gates.sh <tier>` to run the tiers in this document and in
+`AGENTS.md` with the release tags, explicit timeouts and one log per tier.
 
 On Linux, the mux interoperability client's shared TCP/UDP listener port is
 selected outside `/proc/sys/net/ipv4/ip_local_port_range`. The temporary port

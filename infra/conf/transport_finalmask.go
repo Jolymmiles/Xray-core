@@ -710,6 +710,9 @@ func (c *MkcpLegacy) Build() (proto.Message, error) {
 		if len(domain) == 0 {
 			domain = "www.baidu.com"
 		}
+		if _, err := header.NewHeaderDNS(domain); err != nil {
+			return nil, err
+		}
 		return &header.Config{ID: 0, Domain: domain}, nil
 	case "dtls":
 		return &header.Config{ID: 1}, nil

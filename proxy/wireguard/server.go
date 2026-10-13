@@ -286,6 +286,9 @@ func (s *Server) Start() error {
 		var pktConn net.PacketConn
 		var err error
 		if s.streamSettings.FinalMask != nil {
+			if err := s.streamSettings.FinalMask.CheckRawUDP(); err != nil {
+				return nil, err
+			}
 			pktConn, err = s.streamSettings.FinalMask.ListenPacket(context.Background(), &net.UDPAddr{IP: s.src.Address.IP(), Port: int(s.src.Port)})
 		} else {
 			pktConn, err = internet.ListenSystemPacket(context.Background(), &net.UDPAddr{IP: s.src.Address.IP(), Port: int(s.src.Port)}, s.streamSettings.SocketSettings)

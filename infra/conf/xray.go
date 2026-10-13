@@ -108,6 +108,7 @@ func (c *SniffingConfig) Build() (*proxyman.SniffingConfig, error) {
 type MuxConfig struct {
 	Enabled         bool   `json:"enabled"`
 	Concurrency     int16  `json:"concurrency"`
+	MaxReuseTimes   int32  `json:"maxReuseTimes"`
 	XudpConcurrency int16  `json:"xudpConcurrency"`
 	XudpProxyUDP443 string `json:"xudpProxyUDP443"`
 }
@@ -300,12 +301,17 @@ func (m *MuxConfig) Build() (*proxyman.MultiplexingConfig, error) {
 	default:
 		return nil, errors.New(`unknown "xudpProxyUDP443": `, m.XudpProxyUDP443)
 	}
-	return &proxyman.MultiplexingConfig{
+	config := &proxyman.MultiplexingConfig{
 		Enabled:         m.Enabled,
 		Concurrency:     int32(m.Concurrency),
+		MaxReuseTimes:   m.MaxReuseTimes,
 		XudpConcurrency: int32(m.XudpConcurrency),
 		XudpProxyUDP443: m.XudpProxyUDP443,
-	}, nil
+	}
+	if _, err := config.ResolveMaxReuseTimes(); err != nil {
+		return nil, err
+	}
+	return config, nil
 }
 
 type InboundDetourConfig struct {
@@ -544,11 +550,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 		return nil, err
 	}
 
-	if _, ok := ts.(*masque.ClientConfig); ok {
-		if ms := senderSettings.MultiplexSettings; ms != nil && ms.Enabled {
-			return nil, errors.New(`masque outbound does not support "mux"`)
-		}
-	} else if senderSettings.StreamSettings != nil && senderSettings.StreamSettings.ProtocolName == "masque" {
+	if _, ok := ts.(*masque.ClientConfig); !ok && senderSettings.StreamSettings != nil && senderSettings.StreamSettings.ProtocolName == "masque" {
 		return nil, errors.New("the masque transport can only be used by the masque outbound")
 	}
 

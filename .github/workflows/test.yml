@@ -69,6 +69,33 @@ jobs:
       - name: Check Format
         run: go run ./infra/vformat/main.go -mode check -pwd ./
 
+  check-vet:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    permissions:
+      contents: read
+    env:
+      # Vet what ships: release builds keep x/net's HTTP/2 pool (XTLS/Xray-core#6797).
+      GOFLAGS: -tags=http2legacy
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+        with:
+          # go vet needs no authenticated git.
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Vet
+        run: go vet ./...
+      - name: Vet integration-tagged tests
+        # The process E2E, stress and performance tests sit behind build tags
+        # and are skipped by the plain run above. Naming tags on the command
+        # line replaces GOFLAGS, so http2legacy is repeated.
+        run: go vet -tags 'integration stress performance remnanode_release http2legacy' ./...
+
   test:
     needs: check-assets
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
