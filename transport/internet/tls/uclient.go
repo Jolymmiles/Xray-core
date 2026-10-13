@@ -100,9 +100,10 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 	}
 	rebuild := false
 	if isRandomizedPreset(fingerprint) {
-		// uTLS keeps the private key of the first classical key share only,
-		// X25519's, so a server that selected P-256 would fail the
-		// handshake. Without the key share it asks for one.
+		// X25519MLKEM768 and X25519 with keys of their own is what Chrome
+		// sends. A third key share with its own key matches no browser:
+		// Firefox sends P-256 as well but reuses the hybrid's X25519 key. A
+		// server that wants P-256 asks for its key share.
 		rebuild = dropKeyShare(uConn, utls.CurveP256)
 	}
 	if settings.http11ALPN {

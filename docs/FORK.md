@@ -47,8 +47,8 @@ guard it.
   hybrid group and its key share independently, so a process could start
   with a hello that REALITY rejects, that a post-quantum-preferring server
   answers with a HelloRetryRequest uTLS cannot follow, or that breaks RFC
-  8446, Section 4.2.8, and draws a P-256 key share whose private key uTLS
-  does not keep. The raw `hellorandomized*` forms keep uTLS's behavior. The
+  8446, Section 4.2.8; the P-256 key share upstream may add is dropped, as
+  Chrome sends none. The raw `hellorandomized*` forms keep uTLS's behavior. The
   REALITY client builds its hello the same way, returns an error instead of
   panicking for a fingerprint whose hello cannot carry the session ID (the
   `*_psk` forms), reads the server's certificates through `VerifyConnection`
@@ -66,6 +66,20 @@ guard it.
   `transport/internet/reality/uclient_test.go`,
   `transport/internet/reality/randomized_test.go` and
   `transport/internet/grpc/dial_test.go`.
+- uTLS comes from the fork `github.com/Jolymmiles/utls`, branch
+  `fix/keep-secondary-key-shares` (a `replace` in `go.mod`; the module path
+  stays `github.com/refraction-networking/utls`): upstream `aa6edf4b11af` plus
+  the changes listed in the fork's `FORK.md`. It keeps the private keys of the
+  classical key shares after the first and uses the one the server selected,
+  so `firefox` and the `hellofirefox_*` forms, which send key shares for
+  X25519 and P-256, complete a handshake with a server that selects P-256;
+  upstream fails it with "tls: invalid server key share"
+  (refraction-networking/utls#402), right after the ServerHello and in
+  cleartext, where Firefox goes on. The ClientHello is unchanged. It is a
+  backport of refraction-networking/utls#416; drop the fork once upstream
+  ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
+  the ClientHello snapshot tests and the fork's
+  `TestSecondaryKeyShareSelectedByServer`.
 - Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
   `-tags http2legacy`, which keeps x/net's own `http2.Transport` and
   `http2.Server` (the XHTTP client, H2MUX and DoH among them; MASQUE uses only

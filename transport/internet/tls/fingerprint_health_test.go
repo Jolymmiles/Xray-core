@@ -27,12 +27,6 @@ var healthServers = map[string][]gotls.CurveID{
 // that fail today and how. A defect that disappears, or a failure that is not
 // listed, fails the test: update the list with the change that explains it.
 var knownFingerprintDefects = map[string]string{
-	// uTLS keeps the private key of the first classical key share only, so a
-	// P-256 key share after X25519's fails against a server that selects
-	// P-256.
-	"firefox/p256":          "invalid server key share",
-	"hellofirefox_120/p256": "invalid server key share",
-	"hellofirefox_148/p256": "invalid server key share",
 	// The preset is 360 Browser 7.5, which offers no X25519.
 	"360/x25519": "handshake failure",
 }

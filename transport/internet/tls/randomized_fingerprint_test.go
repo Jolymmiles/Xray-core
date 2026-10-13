@@ -37,9 +37,10 @@ func buildRandomizedHello(t *testing.T, preset, seed string, nextProtos []string
 // then X25519's, as current browsers do. A key share outside supported_groups
 // breaks RFC 8446, Section 4.2.8, and OpenSSL rejects it; the hybrid group
 // without its key share makes a server that prefers it ask again, which the
-// uTLS client cannot answer, and makes REALITY turn the hello away. uTLS keeps
-// the private key of the first classical key share only, so a P-256 key share
-// after X25519's fails against a server that selects P-256.
+// uTLS client cannot answer, and makes REALITY turn the hello away. There is
+// no P-256 key share: X25519MLKEM768 and X25519 with keys of their own is what
+// Chrome sends, while three key shares with keys of their own match no
+// browser.
 func TestRandomizedFingerprintKeyShares(t *testing.T) {
 	for _, preset := range randomizedPresets {
 		for _, seed := range randomizedSeeds {
