@@ -217,15 +217,12 @@ func init() {
 		}
 		i++
 	}
-	weights := utls.DefaultWeights
-	weights.TLSVersMax_Set_VersionTLS13 = 1
-	weights.FirstKeyShare_Set_CurveP256 = 0
 	randomized := utls.HelloRandomizedALPN
 	randomized.Seed, _ = utls.NewPRNGSeed()
-	randomized.Weights = &weights
+	randomized.Weights = &randomizedWeights
 	randomizednoalpn := utls.HelloRandomizedNoALPN
 	randomizednoalpn.Seed, _ = utls.NewPRNGSeed()
-	randomizednoalpn.Weights = &weights
+	randomizednoalpn.Weights = &randomizedWeights
 	PresetFingerprints["randomized"] = &randomized
 	PresetFingerprints["randomizednoalpn"] = &randomizednoalpn
 }

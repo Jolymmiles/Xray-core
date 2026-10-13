@@ -1809,15 +1809,14 @@
     ]
   },
   "randomized@32b8ac49": {
-    "sha256": "59b81d9b17945725a42c1892a734ac5efb5979f9e2d918cae970df472193bf3e",
-    "length": 517,
+    "sha256": "83cc8107a5362bf25deef5b9a3bf78a636d9b2f3c9b5e401b1808b7659205f53",
+    "length": 1503,
     "extensions": [
       11,
       51,
       35,
       16,
       43,
-      21,
       23,
       10,
       65281,
@@ -1828,13 +1827,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -1846,14 +1846,13 @@
     ]
   },
   "randomized@417dcd23": {
-    "sha256": "0aa1871665cf35503ce669864b8836283f059bba2000c4dd5e01796894b040ac",
-    "length": 517,
+    "sha256": "e0c3e5b0d8c010529cebba028e548c7d7a723f1947daac2382e8ae7eae4e6583",
+    "length": 1507,
     "extensions": [
       51,
       11,
       45,
       43,
-      21,
       65281,
       5,
       10,
@@ -1870,6 +1869,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -1884,8 +1884,8 @@
     ]
   },
   "randomized@4f4f221b": {
-    "sha256": "19083ec2ffbb94a3204cd0f65ed28a971c712c754f56575b2ac0566686255bef",
-    "length": 1490,
+    "sha256": "07761675e55e9631cecc5bc56556b58d44e79bda468d5dcbb4efd2866ca9de56",
+    "length": 1492,
     "extensions": [
       0,
       11,
@@ -1901,6 +1901,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -1919,8 +1920,8 @@
     ]
   },
   "randomized@601028d9": {
-    "sha256": "9e6e4cbfb4657dbfb0c9b5a0290b0b73dc3ee0a7b675915883c96643aa6ce682",
-    "length": 1574,
+    "sha256": "9526927895c9c93c476706e0377a01cdb7981279498de115bf71186e4f0400f3",
+    "length": 1505,
     "extensions": [
       45,
       11,
@@ -1944,8 +1945,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -1957,12 +1957,11 @@
     ]
   },
   "randomizednoalpn@32b8ac49": {
-    "sha256": "fcc762462f7bc9dda0ebe7d38c9a6e1a8f6d8a24060954f6912332490f19b527",
-    "length": 517,
+    "sha256": "0491e1cecd5d7fcf6c96cabd935da3a17986e40e01d5b68507684deebe00c287",
+    "length": 1485,
     "extensions": [
       51,
       35,
-      21,
       43,
       5,
       10,
@@ -1975,13 +1974,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -1989,8 +1989,8 @@
     ]
   },
   "randomizednoalpn@417dcd23": {
-    "sha256": "dd6ca0a803d357177ce4309d80b54fd371be7acfba74057bbbf9b8fb8c86ff49",
-    "length": 517,
+    "sha256": "b65f0d16dccd20693982f521ccb68ad9e94ec7403087211252e88155fc6f7f24",
+    "length": 1489,
     "extensions": [
       51,
       13,
@@ -1999,7 +1999,6 @@
       5,
       11,
       10,
-      21,
       0,
       23,
       43,
@@ -2012,6 +2011,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -2022,8 +2022,8 @@
     ]
   },
   "randomizednoalpn@4f4f221b": {
-    "sha256": "fb8e71191be7cb4ab23c9931e0d3d6bed5dd4c558356a18971f2a88be319df7a",
-    "length": 1472,
+    "sha256": "e02943f8b9c47e1b5550f99dc2d7fd027819f851ae0428aa326535b9dadd85d7",
+    "length": 1474,
     "extensions": [
       23,
       13,
@@ -2038,6 +2038,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -2052,8 +2053,8 @@
     ]
   },
   "randomizednoalpn@601028d9": {
-    "sha256": "9cd1a56fc8a11c051927f6ddab11ecefe0c01f7486692dbd0f24db32cf0a74fd",
-    "length": 1556,
+    "sha256": "a3a1614cf78f14e47685c2663063e61afd06e45624dbaa86d68d4514e3a61665",
+    "length": 1487,
     "extensions": [
       13,
       23,
@@ -2076,8 +2077,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,

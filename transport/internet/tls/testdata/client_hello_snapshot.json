@@ -2078,15 +2078,14 @@
     ]
   },
   "http11-resumption/randomized@32b8ac49": {
-    "sha256": "ef4d26732feae1ee23b9576f6dd81a9532ff60df2c3878cc655a7e6fc2f12313",
-    "length": 517,
+    "sha256": "58f8ead062e5aa839b77454395d868d767f84c3329d4f7e394eefdfa771758b1",
+    "length": 1500,
     "extensions": [
       11,
       51,
       35,
       16,
       43,
-      21,
       23,
       10,
       65281,
@@ -2097,13 +2096,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -2114,14 +2114,13 @@
     ]
   },
   "http11-resumption/randomized@417dcd23": {
-    "sha256": "24887a093d88f07f063c4257a132910d896d36a86d6227fcb69d2a55b074e733",
-    "length": 517,
+    "sha256": "7f634f0767077a6542ad115a536c02ee33533e0fcb47da9ad1c2cdcbbe456026",
+    "length": 1504,
     "extensions": [
       51,
       11,
       45,
       43,
-      21,
       65281,
       5,
       10,
@@ -2138,6 +2137,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -2151,8 +2151,8 @@
     ]
   },
   "http11-resumption/randomized@4f4f221b": {
-    "sha256": "fae707330e575ddbb156dc1ec06fe41b2ccf964379eb5175936c76dff99dbbe4",
-    "length": 1487,
+    "sha256": "addf069a6fb49d0fd6e75bd417eb1aa0643008e67a0a487c71476085ec63c2a5",
+    "length": 1489,
     "extensions": [
       0,
       11,
@@ -2168,6 +2168,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -2185,8 +2186,8 @@
     ]
   },
   "http11-resumption/randomized@601028d9": {
-    "sha256": "67b0435b720916ef923c2cd2e8af62035481e78e38f27f1167817867a0aaf006",
-    "length": 1571,
+    "sha256": "389114537f6489f6219440dd1d957a863dc49e48e65f4f7350a82b8c2f0b41c9",
+    "length": 1502,
     "extensions": [
       45,
       11,
@@ -2210,8 +2211,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -2222,12 +2222,11 @@
     ]
   },
   "http11-resumption/randomizednoalpn@32b8ac49": {
-    "sha256": "f052604ff4062262ff832f97f586b1aa5683ad45e2cb74535a7964c62d0a7c4e",
-    "length": 517,
+    "sha256": "1c953c751859661720770acf9c64d49593858404ba66f6c7edb295d6ee7f390e",
+    "length": 1500,
     "extensions": [
       51,
       35,
-      21,
       43,
       5,
       10,
@@ -2241,13 +2240,14 @@
       16
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -2258,8 +2258,8 @@
     ]
   },
   "http11-resumption/randomizednoalpn@417dcd23": {
-    "sha256": "5cbf18d1a6ff03c1f1055c4650e4b67168977489f0b2a6770ca25c209ecd48f9",
-    "length": 517,
+    "sha256": "27bcec27f5169394f73bf23d15490b4dc4b30e422dc34d1599c4619bbfecbddd",
+    "length": 1504,
     "extensions": [
       51,
       13,
@@ -2268,7 +2268,6 @@
       5,
       11,
       10,
-      21,
       0,
       23,
       43,
@@ -2282,6 +2281,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -2295,8 +2295,8 @@
     ]
   },
   "http11-resumption/randomizednoalpn@4f4f221b": {
-    "sha256": "fd4fc50b5f7d94ef151b35414885ab9e3b3417f840a0d5c1d0452131d0401f8c",
-    "length": 1487,
+    "sha256": "9afdf2fd7399d323433750db60e5b9c828e17bca3016f44e68a78288d349ea7d",
+    "length": 1489,
     "extensions": [
       23,
       13,
@@ -2312,6 +2312,7 @@
       16
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -2329,8 +2330,8 @@
     ]
   },
   "http11-resumption/randomizednoalpn@601028d9": {
-    "sha256": "f6d8cd7d369d55f85bfea61b1f737a584857a88d69d52979bb3dc1dd4f8064c1",
-    "length": 1571,
+    "sha256": "659fa3ad4b06fbf2c028a8cdc550393bbcf21331498bd9e92714db1cdef98ffb",
+    "length": 1502,
     "extensions": [
       13,
       23,
@@ -2354,8 +2355,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -4474,15 +4474,14 @@
     ]
   },
   "http11/randomized@32b8ac49": {
-    "sha256": "ef4d26732feae1ee23b9576f6dd81a9532ff60df2c3878cc655a7e6fc2f12313",
-    "length": 517,
+    "sha256": "58f8ead062e5aa839b77454395d868d767f84c3329d4f7e394eefdfa771758b1",
+    "length": 1500,
     "extensions": [
       11,
       51,
       35,
       16,
       43,
-      21,
       23,
       10,
       65281,
@@ -4493,13 +4492,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -4510,14 +4510,13 @@
     ]
   },
   "http11/randomized@417dcd23": {
-    "sha256": "24887a093d88f07f063c4257a132910d896d36a86d6227fcb69d2a55b074e733",
-    "length": 517,
+    "sha256": "7f634f0767077a6542ad115a536c02ee33533e0fcb47da9ad1c2cdcbbe456026",
+    "length": 1504,
     "extensions": [
       51,
       11,
       45,
       43,
-      21,
       65281,
       5,
       10,
@@ -4534,6 +4533,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -4547,8 +4547,8 @@
     ]
   },
   "http11/randomized@4f4f221b": {
-    "sha256": "fae707330e575ddbb156dc1ec06fe41b2ccf964379eb5175936c76dff99dbbe4",
-    "length": 1487,
+    "sha256": "addf069a6fb49d0fd6e75bd417eb1aa0643008e67a0a487c71476085ec63c2a5",
+    "length": 1489,
     "extensions": [
       0,
       11,
@@ -4564,6 +4564,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -4581,8 +4582,8 @@
     ]
   },
   "http11/randomized@601028d9": {
-    "sha256": "67b0435b720916ef923c2cd2e8af62035481e78e38f27f1167817867a0aaf006",
-    "length": 1571,
+    "sha256": "389114537f6489f6219440dd1d957a863dc49e48e65f4f7350a82b8c2f0b41c9",
+    "length": 1502,
     "extensions": [
       45,
       11,
@@ -4606,8 +4607,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -4618,12 +4618,11 @@
     ]
   },
   "http11/randomizednoalpn@32b8ac49": {
-    "sha256": "f052604ff4062262ff832f97f586b1aa5683ad45e2cb74535a7964c62d0a7c4e",
-    "length": 517,
+    "sha256": "1c953c751859661720770acf9c64d49593858404ba66f6c7edb295d6ee7f390e",
+    "length": 1500,
     "extensions": [
       51,
       35,
-      21,
       43,
       5,
       10,
@@ -4637,13 +4636,14 @@
       16
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -4654,8 +4654,8 @@
     ]
   },
   "http11/randomizednoalpn@417dcd23": {
-    "sha256": "5cbf18d1a6ff03c1f1055c4650e4b67168977489f0b2a6770ca25c209ecd48f9",
-    "length": 517,
+    "sha256": "27bcec27f5169394f73bf23d15490b4dc4b30e422dc34d1599c4619bbfecbddd",
+    "length": 1504,
     "extensions": [
       51,
       13,
@@ -4664,7 +4664,6 @@
       5,
       11,
       10,
-      21,
       0,
       23,
       43,
@@ -4678,6 +4677,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -4691,8 +4691,8 @@
     ]
   },
   "http11/randomizednoalpn@4f4f221b": {
-    "sha256": "fd4fc50b5f7d94ef151b35414885ab9e3b3417f840a0d5c1d0452131d0401f8c",
-    "length": 1487,
+    "sha256": "9afdf2fd7399d323433750db60e5b9c828e17bca3016f44e68a78288d349ea7d",
+    "length": 1489,
     "extensions": [
       23,
       13,
@@ -4708,6 +4708,7 @@
       16
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -4725,8 +4726,8 @@
     ]
   },
   "http11/randomizednoalpn@601028d9": {
-    "sha256": "f6d8cd7d369d55f85bfea61b1f737a584857a88d69d52979bb3dc1dd4f8064c1",
-    "length": 1571,
+    "sha256": "659fa3ad4b06fbf2c028a8cdc550393bbcf21331498bd9e92714db1cdef98ffb",
+    "length": 1502,
     "extensions": [
       13,
       23,
@@ -4750,8 +4751,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -6936,15 +6936,14 @@
     ]
   },
   "resumption/randomized@32b8ac49": {
-    "sha256": "2db404efe44913790eaf4c3e5251bb829659f9b54976aaf514cdadf449bfe57a",
-    "length": 517,
+    "sha256": "91e0662b9f22a05e830338b9c332feb63f89f4e747b8a0b460b87ea4352b7e6e",
+    "length": 1503,
     "extensions": [
       11,
       51,
       35,
       16,
       43,
-      21,
       23,
       10,
       65281,
@@ -6955,13 +6954,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -6973,14 +6973,13 @@
     ]
   },
   "resumption/randomized@417dcd23": {
-    "sha256": "13192d9105b57265c6366e2cbfce94fe45f46119ffd99f00a6ecb2b8b73be624",
-    "length": 517,
+    "sha256": "dae79e7a2ec04d843f0a93ea10e262559667c58da58f7470814a3a54b82208b7",
+    "length": 1507,
     "extensions": [
       51,
       11,
       45,
       43,
-      21,
       65281,
       5,
       10,
@@ -6997,6 +6996,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -7011,8 +7011,8 @@
     ]
   },
   "resumption/randomized@4f4f221b": {
-    "sha256": "64e3a0d2492ab326b87eba87827b4b4fb8443f9753bdb250f840a1fac6f96110",
-    "length": 1490,
+    "sha256": "39e9882147a68286d1c0a61823352650983c7a9bcd8a602943c3927549e033ac",
+    "length": 1492,
     "extensions": [
       0,
       11,
@@ -7028,6 +7028,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -7046,8 +7047,8 @@
     ]
   },
   "resumption/randomized@601028d9": {
-    "sha256": "b81c48595519ab7a5e35f4d08d4173e00540e3feff57c38a59dd79d3ce5b8d30",
-    "length": 1574,
+    "sha256": "c8e762c316fe0c667e1fe10e2f34568cb651f740b85934ca68246745fc2b4b7f",
+    "length": 1505,
     "extensions": [
       45,
       11,
@@ -7071,8 +7072,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -7084,12 +7084,11 @@
     ]
   },
   "resumption/randomizednoalpn@32b8ac49": {
-    "sha256": "b92d6262676ae60f260b553ce5b37c6171e35c4c5e271251dd22dd583d366ca9",
-    "length": 517,
+    "sha256": "0b155af7a912e5893c11c635e315cfd9b44d55b7f4af7520bc253e6804a22b06",
+    "length": 1485,
     "extensions": [
       51,
       35,
-      21,
       43,
       5,
       10,
@@ -7102,13 +7101,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -7116,8 +7116,8 @@
     ]
   },
   "resumption/randomizednoalpn@417dcd23": {
-    "sha256": "a6fd9c2c7e3d9830420f6cd1677181c4a4955b1581fd006ee31f45ca83b6a69a",
-    "length": 517,
+    "sha256": "7d3b92202af38630bf403b6d259f669a0ae001be0540fafe200ed3f61c6e8704",
+    "length": 1489,
     "extensions": [
       51,
       13,
@@ -7126,7 +7126,6 @@
       5,
       11,
       10,
-      21,
       0,
       23,
       43,
@@ -7139,6 +7138,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -7149,8 +7149,8 @@
     ]
   },
   "resumption/randomizednoalpn@4f4f221b": {
-    "sha256": "24e7f8d0a05ac600e22877ec99281438eb164509400f06793d3e3f626ee0dd39",
-    "length": 1472,
+    "sha256": "c69a9e20682ee563fc9290d7917d79998df9d3f7ab4d971534ca76f16d11d9c2",
+    "length": 1474,
     "extensions": [
       23,
       13,
@@ -7165,6 +7165,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -7179,8 +7180,8 @@
     ]
   },
   "resumption/randomizednoalpn@601028d9": {
-    "sha256": "eabff4515435e0d5712335e53f1402aef8b0b237ecee6f9042f7ecb3a768bd5b",
-    "length": 1556,
+    "sha256": "74a649cff954244b6e389112d9924f8fcaffc39040faadacc96deeaa35423ec3",
+    "length": 1487,
     "extensions": [
       13,
       23,
@@ -7203,8 +7204,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -9375,15 +9375,14 @@
     ]
   },
   "stock/randomized@32b8ac49": {
-    "sha256": "2db404efe44913790eaf4c3e5251bb829659f9b54976aaf514cdadf449bfe57a",
-    "length": 517,
+    "sha256": "91e0662b9f22a05e830338b9c332feb63f89f4e747b8a0b460b87ea4352b7e6e",
+    "length": 1503,
     "extensions": [
       11,
       51,
       35,
       16,
       43,
-      21,
       23,
       10,
       65281,
@@ -9394,13 +9393,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -9412,14 +9412,13 @@
     ]
   },
   "stock/randomized@417dcd23": {
-    "sha256": "13192d9105b57265c6366e2cbfce94fe45f46119ffd99f00a6ecb2b8b73be624",
-    "length": 517,
+    "sha256": "dae79e7a2ec04d843f0a93ea10e262559667c58da58f7470814a3a54b82208b7",
+    "length": 1507,
     "extensions": [
       51,
       11,
       45,
       43,
-      21,
       65281,
       5,
       10,
@@ -9436,6 +9435,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -9450,8 +9450,8 @@
     ]
   },
   "stock/randomized@4f4f221b": {
-    "sha256": "64e3a0d2492ab326b87eba87827b4b4fb8443f9753bdb250f840a1fac6f96110",
-    "length": 1490,
+    "sha256": "39e9882147a68286d1c0a61823352650983c7a9bcd8a602943c3927549e033ac",
+    "length": 1492,
     "extensions": [
       0,
       11,
@@ -9467,6 +9467,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -9485,8 +9486,8 @@
     ]
   },
   "stock/randomized@601028d9": {
-    "sha256": "b81c48595519ab7a5e35f4d08d4173e00540e3feff57c38a59dd79d3ce5b8d30",
-    "length": 1574,
+    "sha256": "c8e762c316fe0c667e1fe10e2f34568cb651f740b85934ca68246745fc2b4b7f",
+    "length": 1505,
     "extensions": [
       45,
       11,
@@ -9510,8 +9511,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -9523,12 +9523,11 @@
     ]
   },
   "stock/randomizednoalpn@32b8ac49": {
-    "sha256": "b92d6262676ae60f260b553ce5b37c6171e35c4c5e271251dd22dd583d366ca9",
-    "length": 517,
+    "sha256": "0b155af7a912e5893c11c635e315cfd9b44d55b7f4af7520bc253e6804a22b06",
+    "length": 1485,
     "extensions": [
       51,
       35,
-      21,
       43,
       5,
       10,
@@ -9541,13 +9540,14 @@
       0
     ],
     "groups": [
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x001d/32",
-      "0x0017/65"
+      "0x11ec/1216",
+      "0x001d/32"
     ],
     "versions": [
       772,
@@ -9555,8 +9555,8 @@
     ]
   },
   "stock/randomizednoalpn@417dcd23": {
-    "sha256": "a6fd9c2c7e3d9830420f6cd1677181c4a4955b1581fd006ee31f45ca83b6a69a",
-    "length": 517,
+    "sha256": "7d3b92202af38630bf403b6d259f669a0ae001be0540fafe200ed3f61c6e8704",
+    "length": 1489,
     "extensions": [
       51,
       13,
@@ -9565,7 +9565,6 @@
       5,
       11,
       10,
-      21,
       0,
       23,
       43,
@@ -9578,6 +9577,7 @@
       24
     ],
     "keyShares": [
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
@@ -9588,8 +9588,8 @@
     ]
   },
   "stock/randomizednoalpn@4f4f221b": {
-    "sha256": "24e7f8d0a05ac600e22877ec99281438eb164509400f06793d3e3f626ee0dd39",
-    "length": 1472,
+    "sha256": "c69a9e20682ee563fc9290d7917d79998df9d3f7ab4d971534ca76f16d11d9c2",
+    "length": 1474,
     "extensions": [
       23,
       13,
@@ -9604,6 +9604,7 @@
       10
     ],
     "groups": [
+      4588,
       29,
       23,
       24
@@ -9618,8 +9619,8 @@
     ]
   },
   "stock/randomizednoalpn@601028d9": {
-    "sha256": "eabff4515435e0d5712335e53f1402aef8b0b237ecee6f9042f7ecb3a768bd5b",
-    "length": 1556,
+    "sha256": "74a649cff954244b6e389112d9924f8fcaffc39040faadacc96deeaa35423ec3",
+    "length": 1487,
     "extensions": [
       13,
       23,
@@ -9642,8 +9643,7 @@
     ],
     "keyShares": [
       "0x11ec/1216",
-      "0x001d/32",
-      "0x0017/65"
+      "0x001d/32"
     ],
     "versions": [
       772,
