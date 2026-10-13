@@ -195,6 +195,9 @@ class FakeHost:
     killed; the measuring child exits with inside_exit, or never if None. The
     ip commands listed in failing exit with status 1."""
 
+    # What the kernel keeps for the server's namespace, whatever it is asked.
+    congestion_control = "cubic"
+
     def __init__(self, inside_exit=0, origin_stderr=b"", failing=()):
         self.inside_exit, self.origin_stderr, self.failing = inside_exit, origin_stderr, failing
         self.events = []
@@ -212,6 +215,8 @@ class FakeHost:
         self.events.append(("run", line))
         if line in self.failing:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=f"{line}: Device or resource busy\n")
+        if line.endswith("sysctl -n net.ipv4.tcp_congestion_control"):
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.congestion_control + "\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     def teardown(self):
@@ -234,11 +239,11 @@ class FakeHost:
 class OuterTests(unittest.TestCase):
     RUNS = 36
 
-    def outer(self, host):
+    def outer(self, host, **more):
         """Runs outer() against host; returns its exit code or the exception
         it raised, what it wrote to stderr, and its temporary directory."""
         args = types.SimpleNamespace(server=["before=/before", "after=/after"], runs=self.RUNS,
-                                     origin="/origin", client="/client", out="runs.jsonl")
+                                     origin="/origin", client="/client", out="runs.jsonl", **more)
         real_mkdtemp, real_rmtree = tempfile.mkdtemp, shutil.rmtree
         work = []
 
@@ -262,7 +267,7 @@ class OuterTests(unittest.TestCase):
                 contextlib.redirect_stderr(stderr):
             try:
                 result = stand.outer(args)
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 result = e
         return result, stderr.getvalue(), work[0]
 
@@ -282,6 +287,24 @@ class OuterTests(unittest.TestCase):
         self.assertEqual(host.teardown(), ["inside", "origin", "cli", "srv", "work"])
         self.assertIn(("inside", "terminate"), host.events)
         self.assertFalse(os.path.exists(work))
+
+    def test_a_congestion_control_the_kernel_lacks_stops_the_stand(self):
+        host = FakeHost()
+        result, _, work = self.outer(host, server_cc="bbr")
+        self.assertIsInstance(result, SystemExit, "the stand must not measure under another congestion control")
+        self.assertIn("cubic, not bbr", str(result))
+        self.assertNotIn("origin", [e[0] for e in host.events], "nothing was started")
+        for ns in ("srv", "cli"):
+            self.assertIn(("run", f"ip netns del xslow-{os.getpid()}-{ns}"), host.events)
+        self.assertFalse(os.path.exists(work))
+
+    def test_the_congestion_control_asked_for_is_set_in_the_servers_namespace(self):
+        host = FakeHost()
+        host.congestion_control = "bbr"
+        result, _, _ = self.outer(host, server_cc="bbr")
+        self.assertEqual(result, 0)
+        srv = f"xslow-{os.getpid()}-srv"
+        self.assertIn(("run", f"ip netns exec {srv} sysctl -qw net.ipv4.tcp_congestion_control=bbr"), host.events)
 
     def test_a_namespace_that_cannot_be_removed_is_reported_and_the_rest_removed(self):
         cli = f"xslow-{os.getpid()}-cli"

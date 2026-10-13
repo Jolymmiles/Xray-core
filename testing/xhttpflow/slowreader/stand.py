@@ -44,6 +44,9 @@ processes per gigabyte are the result:
       --server nolimit=/path/to/xray --h2flow 'nolimit={"enabled": true, "maxConnectionSendWindow": -1}' \\
       --runs 5
 
+The server's namespace uses CUBIC whatever the host does; --server-cc bbr
+gives it BBR, if the kernel has it, and the stand does not start otherwise.
+
 The stand creates two network namespaces and a veth pair with names of its
 own (xslow-<pid>-...), refuses to start if they exist, and removes them, the
 temporary directory and every process it started when it ends, however it
@@ -133,8 +136,10 @@ def remove_namespace(ns):
         raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
 
 
-def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0):
-    """Two namespaces of this run joined by a veth pair, shaped in both."""
+def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, server_cc="cubic"):
+    """Two namespaces of this run joined by a veth pair, shaped in both. The
+    server's namespace gets server_cc as its TCP congestion control, or the
+    stand does not start."""
     existing = subprocess.run(["ip", "netns", "list"], check=True, capture_output=True, text=True).stdout.split()
     for ns in (srv, cli):
         if ns in existing:
@@ -159,8 +164,12 @@ def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0):
         sh(f'ip netns exec {ns} sysctl -qw net.ipv4.tcp_rmem="4096 131072 33554432" '
            f'net.ipv4.tcp_wmem="{wmem}"')
         sh(f"ip netns exec {ns} tc qdisc replace dev {dev} root netem delay {rtt_ms / 2:g}ms rate {mbit}mbit limit {limit}")
-    subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", "net.ipv4.tcp_congestion_control=cubic"],
+    subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-qw", f"net.ipv4.tcp_congestion_control={server_cc}"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    got = subprocess.run(["ip", "netns", "exec", srv, "sysctl", "-n", "net.ipv4.tcp_congestion_control"],
+                         capture_output=True, text=True).stdout.strip()
+    if got != server_cc:
+        sys.exit(f"the server's namespace uses {got or 'an unknown congestion control'}, not {server_cc}")
 
 
 def reality_keys(xray):
@@ -220,7 +229,7 @@ def outer(args):
 
         stack.push(show_origin_log)
         setup_network(stack, srv, cli, getattr(args, "mbit", MBIT), getattr(args, "rtt", RTT_MS),
-                      getattr(args, "app_buffer", 0))
+                      getattr(args, "app_buffer", 0), getattr(args, "server_cc", "cubic"))
         private_key, public_key = reality_keys(next(iter(servers.values())))
         for name in servers:
             with open(f"{work}/server-{name}.json", "w") as f:
@@ -593,10 +602,10 @@ def inside(args):
     def cpu_per_gb(rs, key):
         moved = "download_mb_s" if downloads else "upload_mb"
         values = [r[key] / (r[moved] * (DURATION if downloads else 1) / 1000) for r in rs if r.get(key) is not None and r.get(moved)]
-        return f"{statistics.median(values):.1f}" if values else "-"
+        return f"{statistics.median(values):.1f} ({min(values):.1f}-{max(values):.1f})" if values else "-"
 
-    rows.append(("Median CPU per GB, server / client", lambda n, rs: f"{cpu_per_gb(rs, 'server_cpu_s')} / "
-                                                                    f"{cpu_per_gb(rs, 'client_cpu_s')} s"))
+    rows.append(("CPU per GB, server / client, median (least-most)", lambda n, rs: f"{cpu_per_gb(rs, 'server_cpu_s')} / "
+                                                                                  f"{cpu_per_gb(rs, 'client_cpu_s')} s"))
     if not downloads:
         rows.append(("Median sent", lambda n, rs: f"{statistics.median(r['upload_mb'] for r in rs) / DURATION:.1f} MB/s"))
     if downloads:
@@ -628,6 +637,7 @@ def main():
     ap.add_argument("--workload", choices=("uploads", "downloads"), default="uploads")
     ap.add_argument("--mbit", type=int, default=MBIT, help="link rate")
     ap.add_argument("--rtt", type=int, default=RTT_MS, help="round trip of the link, ms")
+    ap.add_argument("--server-cc", default="cubic", help="TCP congestion control of the server's namespace")
     ap.add_argument("--readers", type=int, default=UPLOADS, help="downloads at once")
     ap.add_argument("--read-rate", type=int, default=UPLOAD_RATE, help="bytes per second each download is read at, 0 for no limit")
     ap.add_argument("--download-bytes", type=int, default=DOWNLOAD_BYTES, help="size of each download")
