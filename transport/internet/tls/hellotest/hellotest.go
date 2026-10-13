@@ -11,14 +11,40 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/cryptobyte"
 )
+
+const isolatedTestEnv = "XRAY_HELLOTEST_ISOLATED"
+
+// Isolated runs the calling test again, alone, in a child process with the
+// given extra flags, and reports whether it runs in that child. A test that
+// sets process-wide state, as testing/cryptotest.SetGlobalRandom does for
+// crypto/rand, must not share its process with other tests' goroutines.
+func Isolated(t *testing.T, flags ...string) bool {
+	t.Helper()
+	if os.Getenv(isolatedTestEnv) == t.Name() {
+		return true
+	}
+	arguments := append([]string{"-test.run=^" + t.Name() + "$", "-test.count=1", "-test.timeout=300s", "-test.v"}, flags...)
+	child := exec.Command(os.Args[0], arguments...)
+	child.Env = append(os.Environ(), isolatedTestEnv+"="+t.Name())
+	output, err := child.CombinedOutput()
+	if err != nil {
+		t.Fatalf("isolated test failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "--- PASS: "+t.Name()+" ") {
+		t.Fatalf("isolated child did not run %s:\n%s", t.Name(), output)
+	}
+	return false
+}
 
 // Capture is a connection that records what the client writes and answers
 // every read with EOF, so a handshake sends its first ClientHello and stops.

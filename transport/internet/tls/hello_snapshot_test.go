@@ -19,6 +19,14 @@ var updateHelloSnapshot = flag.Bool("update-hello-snapshot", false, "rewrite tes
 
 const helloSnapshotFile = "testdata/client_hello_snapshot.json"
 
+// snapshotFlags passes -update-hello-snapshot on to the isolated child.
+func snapshotFlags() []string {
+	if *updateHelloSnapshot {
+		return []string{"-update-hello-snapshot"}
+	}
+	return nil
+}
+
 // snapshotSeeds are fixed seeds for the fingerprints Xray draws a seed for at
 // startup. They are the seeds of randomized_seeds_test.go.
 func snapshotSeeds() map[string]*utls.PRNGSeed {
@@ -134,6 +142,9 @@ func snapshotHello(t *testing.T, path helloPath, fingerprint utls.ClientHelloID)
 // built shows as a byte difference. Regenerate with -update-hello-snapshot
 // only for an intended change, and review the summary diff.
 func TestClientHelloSnapshot(t *testing.T) {
+	if !hellotest.Isolated(t, snapshotFlags()...) {
+		return
+	}
 	fingerprints := snapshotFingerprints(t)
 	names := make([]string, 0, len(fingerprints))
 	for name := range fingerprints {

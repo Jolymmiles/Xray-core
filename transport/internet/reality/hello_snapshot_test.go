@@ -53,6 +53,13 @@ func emitREALITYHello(name string, publicKey []byte) (record []byte, err error) 
 // transport/internet/tls/hello_snapshot_test.go does for TLS. Regenerate with
 // -update-hello-snapshot only for an intended change.
 func TestREALITYClientHelloSnapshot(t *testing.T) {
+	var flags []string
+	if *updateHelloSnapshot {
+		flags = append(flags, "-update-hello-snapshot")
+	}
+	if !hellotest.Isolated(t, flags...) {
+		return
+	}
 	privateKey, err := ecdh.X25519().NewPrivateKey(make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)

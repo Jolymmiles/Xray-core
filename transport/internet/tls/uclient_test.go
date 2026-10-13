@@ -121,13 +121,19 @@ func TestUClientECH(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer listener.Close()
+			done := make(chan struct{})
+			// Runs last, after the client has closed its connection.
+			defer func() {
+				_ = listener.Close()
+				<-done
+			}()
 			type serverState struct {
 				state gotls.ConnectionState
 				err   error
 			}
 			states := make(chan serverState, 1)
 			go func() {
+				defer close(done)
 				conn, err := listener.Accept()
 				if err != nil {
 					states <- serverState{err: err}

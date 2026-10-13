@@ -64,8 +64,14 @@ func healthHandshake(t *testing.T, fingerprint *utls.ClientHelloID, groups []got
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	done := make(chan struct{})
+	// Runs last, after the client has closed its connection.
+	defer func() {
+		_ = listener.Close()
+		<-done
+	}()
 	go func() {
+		defer close(done)
 		conn, err := listener.Accept()
 		if err != nil {
 			return

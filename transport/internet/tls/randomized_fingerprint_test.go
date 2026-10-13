@@ -113,9 +113,14 @@ func startGroupServer(t *testing.T, groups []gotls.CurveID) (address string, res
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
 	results := make(chan groupServerResult, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-done
+	})
 	go func() {
+		defer close(done)
 		conn, err := listener.Accept()
 		if err != nil {
 			results <- groupServerResult{err: err}
