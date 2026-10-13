@@ -24,7 +24,7 @@ var (
 )
 
 // versionHHMM is the UTC hour and minute baked into Version().
-const versionHHMM = 1858
+const versionHHMM = 2347
 
 var (
 	build    = "Custom"
