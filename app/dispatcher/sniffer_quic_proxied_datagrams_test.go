@@ -133,13 +133,14 @@ func (c *datagramConn) Write(b []byte) (int, error) {
 
 // receive returns datagram as the UDP hub of a server reads it, into a buffer
 // of buf.Size bytes, which would cut a longer one
-// (transport/internet/udp/hub.go).
+// (transport/internet/udp/hub.go). The buffer is released when the test ends.
 func receive(t *testing.T, datagram []byte) *buf.Buffer {
 	t.Helper()
 	if len(datagram) > buf.Size {
 		t.Fatalf("a datagram of %d bytes, which the server's UDP hub cuts to %d", len(datagram), buf.Size)
 	}
 	b := buf.New()
+	t.Cleanup(b.Release)
 	common.Must2(b.Write(datagram))
 	return b
 }
@@ -154,6 +155,7 @@ func receive(t *testing.T, datagram []byte) *buf.Buffer {
 func vlessRoundTrip(t *testing.T, sent buf.MultiBuffer) [][]byte {
 	request := &protocol.RequestHeader{Command: protocol.RequestCommandUDP, Address: longestTarget.Address, Port: longestTarget.Port}
 	var stream buf.MultiBufferContainer
+	defer stream.Close()
 	size := sent.Len()
 	write(t, vlessencoding.EncodeBody(buf.NewWriter(&stream), request, false, nil, true, context.Background(), nil, nil), sent)
 	return readBuffers(t, vlessencoding.DecodeBody(&stream, request), size)
@@ -189,6 +191,7 @@ func readMuxPackets(t *testing.T, stream io.Reader, size int32) [][]byte {
 // which the inbound's mux server reads.
 func xudpRoundTrip(t *testing.T, sent buf.MultiBuffer) [][]byte {
 	var stream buf.MultiBufferContainer
+	defer stream.Close()
 	size := sent.Len()
 	write(t, xudp.NewPacketWriter(buf.NewWriter(&stream), longestTarget, [8]byte{1}), sent)
 	return readMuxPackets(t, &stream, size)
@@ -197,6 +200,7 @@ func xudpRoundTrip(t *testing.T, sent buf.MultiBuffer) [][]byte {
 // The mux client sends the datagrams of a UDP session as Mux.Cool packets.
 func muxCoolRoundTrip(t *testing.T, sent buf.MultiBuffer) [][]byte {
 	var stream buf.MultiBufferContainer
+	defer stream.Close()
 	size := sent.Len()
 	write(t, mux.NewWriter(1, longestTarget, buf.NewWriter(&stream), protocol.TransferTypePacket, [8]byte{}, nil), sent)
 	return readMuxPackets(t, &stream, size)
@@ -227,6 +231,7 @@ func vmessRoundTrip(security protocol.SecurityType, authenticatedLength bool) fu
 		}
 
 		var stream buf.MultiBufferContainer
+		defer stream.Close()
 		size := sent.Len()
 		client := vmessencoding.NewClientSession(context.Background(), 0)
 		common.Must(client.EncodeRequestHeader(request, &stream))
@@ -251,6 +256,7 @@ func vmessRoundTrip(security protocol.SecurityType, authenticatedLength bool) fu
 // The Trojan outbound frames each datagram with its address and length.
 func trojanRoundTrip(t *testing.T, sent buf.MultiBuffer) [][]byte {
 	var stream buf.MultiBufferContainer
+	defer stream.Close()
 	size := sent.Len()
 	write(t, &trojan.PacketWriter{Writer: &stream, Target: longestTarget}, sent)
 	return readBuffers(t, &trojan.PacketReader{Reader: &stream}, size)
@@ -277,19 +283,21 @@ func shadowsocksRoundTrip(cipher shadowsocks.CipherType) func(*testing.T, buf.Mu
 		common.Must(validator.Add(user))
 		got := make([][]byte, 0, len(conn.datagrams))
 		for _, datagram := range conn.datagrams {
+			// DecodeUDPPacket opens the packet in place and returns it.
 			_, payload, err := shadowsocks.DecodeUDPPacket(validator, receive(t, datagram))
 			if err != nil {
 				t.Fatalf("after datagrams of %v bytes: %v", lengths(got), err)
 			}
 			got = append(got, bytes.Clone(payload.Bytes()))
-			payload.Release()
 		}
 		return got
 	}
 }
 
 // The Shadowsocks 2022 outbound sends each datagram, with its address, in a
-// UDP packet of its own, which the inbound decodes.
+// UDP packet of its own, which the inbound decodes. The client here has one
+// key: each further key of a chain adds 16 bytes to a packet, so a chain of
+// 24 keys or more no longer carries the bound to the longest domain.
 func shadowsocks2022RoundTrip(methodName string) func(*testing.T, buf.MultiBuffer) [][]byte {
 	return func(t *testing.T, sent buf.MultiBuffer) [][]byte {
 		method, err := shadowsocks_2022.GetCipherMethod(methodName)
@@ -313,7 +321,6 @@ func shadowsocks2022RoundTrip(methodName string) func(*testing.T, buf.MultiBuffe
 				t.Fatalf("after datagrams of %v bytes: %v", lengths(got), err)
 			}
 			got = append(got, bytes.Clone(decoded.Payload))
-			packet.Release()
 		}
 		return got
 	}
@@ -333,7 +340,6 @@ func socksRoundTrip(t *testing.T, sent buf.MultiBuffer) [][]byte {
 			t.Fatalf("after datagrams of %v bytes: %v", lengths(got), err)
 		}
 		got = append(got, bytes.Clone(packet.Bytes()))
-		packet.Release()
 	}
 	return got
 }

@@ -182,13 +182,13 @@ func TestPacketsCarryTheLongestSniffedDatagrams(t *testing.T) {
 	reader := &packetReader{stream: &stream}
 	for i, datagram := range datagrams {
 		mb, err := reader.ReadMultiBuffer()
+		t.Cleanup(func() { buf.ReleaseMulti(mb) })
 		if err != nil || len(mb) != 1 || !bytes.Equal(mb[0].Bytes(), datagram) {
 			t.Fatalf("datagram %d of %d bytes came out as %d buffers of %d bytes, %v", i, len(datagram), len(mb), mb.Len(), err)
 		}
 		if mb[0].UDP == nil || mb[0].UDP.String() != destination.String() {
 			t.Fatalf("datagram %d is addressed to %v, want %v", i, mb[0].UDP, destination)
 		}
-		buf.ReleaseMulti(mb)
 	}
 }
 
