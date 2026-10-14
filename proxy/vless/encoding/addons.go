@@ -244,24 +244,27 @@ type LengthPacketReader struct {
 	cache []byte
 }
 
+// ReadMultiBuffer returns the next datagram whole, in a buffer of its own: a
+// peer may send one above buf.Size, which the writer does not, and the
+// outbound sends it as it came.
 func (r *LengthPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	if _, err := io.ReadFull(r.Reader, r.cache); err != nil { // maybe EOF
 		return nil, errors.New("failed to read packet length").Base(err)
 	}
 	length := int32(r.cache[0])<<8 | int32(r.cache[1])
-	// fmt.Println("Read", length)
-	mb := make(buf.MultiBuffer, 0, length/buf.Size+1)
-	for length > 0 {
-		size := length
-		if size > buf.Size {
-			size = buf.Size
-		}
-		length -= size
-		b := buf.New()
-		if _, err := b.ReadFullFrom(r.Reader, size); err != nil {
-			return nil, errors.New("failed to read packet payload").Base(err)
-		}
-		mb = append(mb, b)
+	mb := make(buf.MultiBuffer, 0, 1)
+	if length == 0 {
+		return mb, nil
 	}
-	return mb, nil
+	var b *buf.Buffer
+	if length > buf.Size {
+		b = buf.NewWithSize(length)
+	} else {
+		b = buf.New()
+	}
+	if _, err := b.ReadFullFrom(r.Reader, length); err != nil {
+		b.Release()
+		return nil, errors.New("failed to read packet payload").Base(err)
+	}
+	return append(mb, b), nil
 }

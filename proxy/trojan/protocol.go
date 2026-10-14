@@ -237,7 +237,9 @@ type PacketReader struct {
 	io.Reader
 }
 
-// ReadMultiBuffer implements buf.Reader
+// ReadMultiBuffer implements buf.Reader. It returns the next datagram whole,
+// in a buffer of its own: a peer may send one above maxLength, which the
+// writer does not, and the outbound sends it as it came.
 func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	addr, port, err := addrParser.ReadAddressPort(nil, r)
 	if err != nil {
@@ -249,35 +251,27 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		return nil, errors.New("failed to read payload length").Base(err)
 	}
 
-	remain := int(binary.BigEndian.Uint16(lengthBuf[:]))
-	if remain > maxLength {
-		return nil, errors.New("oversize payload")
-	}
+	length := int32(binary.BigEndian.Uint16(lengthBuf[:]))
 
 	var crlf [2]byte
 	if _, err := io.ReadFull(r, crlf[:]); err != nil {
 		return nil, errors.New("failed to read crlf").Base(err)
 	}
 
-	dest := net.UDPDestination(addr, port)
-	var mb buf.MultiBuffer
-	for remain > 0 {
-		length := buf.Size
-		if remain < length {
-			length = remain
-		}
-
-		b := buf.New()
-		b.UDP = &dest
-		mb = append(mb, b)
-		n, err := b.ReadFullFrom(r, int32(length))
-		if err != nil {
-			buf.ReleaseMulti(mb)
-			return nil, errors.New("failed to read payload").Base(err)
-		}
-
-		remain -= int(n)
+	if length == 0 {
+		return nil, nil
 	}
-
-	return mb, nil
+	var b *buf.Buffer
+	if length > buf.Size {
+		b = buf.NewWithSize(length)
+	} else {
+		b = buf.New()
+	}
+	dest := net.UDPDestination(addr, port)
+	b.UDP = &dest
+	if _, err := b.ReadFullFrom(r, length); err != nil {
+		b.Release()
+		return nil, errors.New("failed to read payload").Base(err)
+	}
+	return buf.MultiBuffer{b}, nil
 }

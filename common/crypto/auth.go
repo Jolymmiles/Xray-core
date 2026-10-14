@@ -135,7 +135,12 @@ func (r *AuthenticationReader) readSize() (uint16, uint16, error) {
 var errSoft = errors.New("waiting for more data")
 
 func (r *AuthenticationReader) readBuffer(size int32, padding int32) (*buf.Buffer, error) {
-	b := buf.New()
+	var b *buf.Buffer
+	if size > buf.Size {
+		b = buf.NewWithSize(size)
+	} else {
+		b = buf.New()
+	}
 	if _, err := b.ReadFullFrom(r.reader, size); err != nil {
 		b.Release()
 		return nil, err
@@ -176,7 +181,10 @@ func (r *AuthenticationReader) readInternal(soft bool, mb *buf.MultiBuffer) erro
 		return errSoft
 	}
 
-	if size <= buf.Size {
+	// A packet chunk is one datagram, which stays whole in a buffer of its
+	// own however large: a peer may send one above buf.Size, which the
+	// writer does not, and the outbound sends it as it came.
+	if size <= buf.Size || r.transferType == protocol.TransferTypePacket {
 		b, err := r.readBuffer(int32(size), int32(padding))
 		if err != nil {
 			return err
