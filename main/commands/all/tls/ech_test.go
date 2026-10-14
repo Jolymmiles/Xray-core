@@ -124,10 +124,11 @@ func parseECHConfigList(t *testing.T, list []byte) []echConfigFields {
 	return fields
 }
 
-// ECH clients ignore a config whose public name is not a DNS name or whose
-// final label reads as a number, in decimal or as 0x and hexadecimal digits
-// (RFC 9849, Section 6.1.7), and fall back to a cleartext SNI, so `xray tls
-// ech` must refuse such names.
+// RFC 9849, Section 6.1.7 recommends that ECH clients ignore a config whose
+// public name is not a DNS name or whose final label reads as a number, in
+// decimal or as 0x and hexadecimal digits. A client that follows it falls back
+// to a cleartext SNI, BoringSSL for both kinds of name, so `xray tls ech` must
+// refuse such names.
 func TestECHRejectsPublicNamesClientsIgnore(t *testing.T) {
 	for _, name := range []string{
 		"192.0.2.1",
