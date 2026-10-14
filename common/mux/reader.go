@@ -5,7 +5,6 @@ import (
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/crypto"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 )
@@ -38,11 +37,14 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		return nil, err
 	}
 
+	// A peer may frame a packet above buf.Size, which the writer does not: it
+	// stays whole, in a buffer of its own, as the outbound sends it.
+	var b *buf.Buffer
 	if size > buf.Size {
-		return nil, errors.New("packet size too large: ", size)
+		b = buf.NewWithSize(int32(size))
+	} else {
+		b = buf.New()
 	}
-
-	b := buf.New()
 	if _, err := b.ReadFullFrom(r.reader, int32(size)); err != nil {
 		b.Release()
 		return nil, err
