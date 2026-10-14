@@ -21,7 +21,12 @@ var (
 )
 
 const (
+	// maxLength is the largest datagram the writer sends: an older Xray
+	// reader ends the session on a larger one.
 	maxLength = 8192
+	// maxPacketHeader is the longest header of a datagram: a domain
+	// address, the port, the length and CRLF.
+	maxPacketHeader = 1 + 1 + 255 + 2 + 2 + 2
 
 	commandTCP byte = 1
 	commandUDP byte = 3
@@ -100,13 +105,19 @@ type PacketWriter struct {
 	Target net.Destination
 }
 
-// WriteMultiBuffer implements buf.Writer
+// WriteMultiBuffer implements buf.Writer. It drops a datagram above
+// maxLength, on which an older Xray reader ends the session, as the VLESS and
+// VMess writers drop theirs.
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	for {
 		mb2, b := buf.SplitFirst(mb)
 		mb = mb2
 		if b == nil {
 			break
+		}
+		if b.Len() > maxLength {
+			b.Release()
+			continue
 		}
 		target := &w.Target
 		if b.UDP != nil {
@@ -122,14 +133,24 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	return nil
 }
 
+// writePacket writes the datagram in one Write, its header and payload in one
+// buffer, which a long payload with its header would overflow if regular.
 func (w *PacketWriter) writePacket(payload []byte, dest net.Destination) (int, error) {
+	if len(payload) > buf.Size-maxPacketHeader {
+		buffer := buf.NewWithSize(int32(maxPacketHeader + len(payload)))
+		defer buffer.Release()
+		return w.writePacketTo(buffer, payload, dest)
+	}
 	buffer := buf.StackNew()
 	defer buffer.Release()
+	return w.writePacketTo(&buffer, payload, dest)
+}
 
+func (w *PacketWriter) writePacketTo(buffer *buf.Buffer, payload []byte, dest net.Destination) (int, error) {
 	length := len(payload)
 	lengthBuf := [2]byte{}
 	binary.BigEndian.PutUint16(lengthBuf[:], uint16(length))
-	if err := addrParser.WriteAddressPort(&buffer, dest.Address, dest.Port); err != nil {
+	if err := addrParser.WriteAddressPort(buffer, dest.Address, dest.Port); err != nil {
 		return 0, err
 	}
 	if _, err := buffer.Write(lengthBuf[:]); err != nil {
