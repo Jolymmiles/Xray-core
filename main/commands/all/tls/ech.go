@@ -170,10 +170,11 @@ const ExtensionEncryptedClientHello = 0xfe0d
 // validateECHPublicName rejects public names ECH clients may ignore. RFC 9849,
 // Section 6.1.7 recommends (SHOULD) that clients ignore a config whose public
 // name is not a DNS name, or whose final label reads as a number: all digits,
-// or 0x and hexadecimal digits. A client that ignores the config sends a
-// cleartext SNI. Clients differ: BoringSSL ignores both, Go's crypto/tls only
-// names that are not DNS names. The rules follow `hysteria ech` (Hysteria
-// 2.12.3), plus the hexadecimal form.
+// or 0x and hexadecimal digits. Clients differ in the names they ignore and in
+// what they do next: BoringSSL ignores both, Go's crypto/tls only names that
+// are not DNS names, and Go skips such a config, failing the handshake before
+// its ClientHello when no config is left. The rules follow `hysteria ech`
+// (Hysteria 2.12.3), plus the hexadecimal form.
 func validateECHPublicName(name string) error {
 	if len(name) == 0 || len(name) > 253 || net.ParseIP(name) != nil || !strings.Contains(name, ".") {
 		return errors.New("serverName must be a DNS name such as public.example.com, without a scheme, port or trailing dot")
