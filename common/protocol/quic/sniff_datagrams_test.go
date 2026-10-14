@@ -19,11 +19,16 @@ import (
 // below 1200 bytes, before or after the connection started.
 const shortDatagram = "Initial packet in a short datagram"
 
+// longDatagram is the outcome of a flow with a datagram longer than
+// quic.MaxProxiedDatagram before the sniffer decides.
+const longDatagram = "datagram a proxy outbound may drop"
+
 // sniffDatagramsOutcome classifies what quic.SniffQUICDatagrams returned.
 func sniffDatagramsOutcome(header *quic.SniffHeader, err error) outcome {
 	if err != nil {
 		for _, c := range []struct{ text, class string }{
 			{"datagram below 1200 bytes", shortDatagram},
+			{"longer than every proxy outbound carries", longDatagram},
 			{"not the first packet of its datagram", notFirstPacket},
 			{"stop reading its datagram", partWays},
 		} {
@@ -236,7 +241,8 @@ func TestSniffQUICDatagramsFollowServerReceiveRules(t *testing.T) {
 
 // Whatever frames a client puts in its Initial packets, each sent in a
 // datagram of its own padded to 1200 bytes, SniffQUICDatagrams must not panic
-// or modify them, and must yield what the model yields.
+// or modify them, and must yield what the model yields from the datagrams
+// before the first one longer than quic.MaxProxiedDatagram, or no server name.
 func FuzzSniffQUICDatagrams(f *testing.F) {
 	hello, _ := referenceTestHellos(f)
 	n := len(hello)
@@ -244,6 +250,11 @@ func FuzzSniffQUICDatagrams(f *testing.F) {
 	f.Add(encodeFuzzedPackets(
 		appendCryptoFrames([]byte{0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}, cryptoFrame{n / 2, hello[n/2:]}),
 		appendCryptoFrames([]byte{0x01, 0x00}, cryptoFrame{0, hello[:n/2+3]}),
+	))
+	// The end of the ClientHello in a datagram a proxy outbound may drop.
+	f.Add(encodeFuzzedPackets(
+		appendCryptoFrames(nil, cryptoFrame{0, hello[:n/2]}),
+		append(appendCryptoFrames(nil, cryptoFrame{n / 2, hello[n/2:]}), make([]byte, quic.MaxProxiedDatagram)...),
 	))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		packets, payloads := decodeFuzzedPackets(input)
@@ -268,7 +279,15 @@ func FuzzSniffQUICDatagrams(f *testing.F) {
 		for i, payload := range payloads {
 			parsed[i] = packetSpec{pn: packets[i].pn, foreign: packets[i].foreign, frames: parseReferenceFrames(payload)}
 		}
-		if want := referenceReassembly(parsed); got != want {
+		want := referenceReassembly(parsed)
+		if k := slices.IndexFunc(datagrams, func(d []byte) bool { return len(d) > quic.MaxProxiedDatagram }); k >= 0 {
+			// The sniffer decides on the datagrams before the first one a proxy
+			// outbound may drop, or names no server at it.
+			if want = referenceReassembly(parsed[:k]); want.class == needMore {
+				want = outcome{class: longDatagram}
+			}
+		}
+		if got != want {
 			t.Fatalf("SniffQUICDatagrams yields %v, the model %v\n%s", got, want, describeFlow(parsed))
 		}
 	})

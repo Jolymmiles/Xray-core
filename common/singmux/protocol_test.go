@@ -5,9 +5,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
+	"github.com/xtls/xray-core/common/buf"
 	X "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/protocol/quic"
 )
 
 func TestCarrierRequestGolden(t *testing.T) {
@@ -156,6 +159,36 @@ func TestPacketGolden(t *testing.T) {
 	}
 	if gotDestination.String() != destination.String() || string(payload) != "abc" {
 		t.Fatalf("decoded packet = %s %q", gotDestination, payload)
+	}
+}
+
+// The QUIC sniffer names a server only from datagrams of up to
+// quic.MaxProxiedDatagram bytes, which every proxy framing must carry whole
+// (TestProxyFramingsCarryTheLongestSniffedDatagramsWhole in app/dispatcher).
+// The packets of an SMUX UDP stream carry such datagrams, to the longest
+// domain, each whole and apart.
+func TestPacketsCarryTheLongestSniffedDatagrams(t *testing.T) {
+	destination := X.UDPDestination(X.DomainAddress(strings.Repeat("d", 255)), 443)
+	datagrams := make([][]byte, 3)
+	sent := make(buf.MultiBuffer, len(datagrams))
+	for i := range datagrams {
+		datagrams[i] = bytes.Repeat([]byte{byte(i + 1)}, quic.MaxProxiedDatagram)
+		sent[i] = buf.FromBytes(bytes.Clone(datagrams[i]))
+	}
+	var stream bytes.Buffer
+	if err := (&packetWriter{stream: &stream, destination: destination}).WriteMultiBuffer(sent); err != nil {
+		t.Fatal(err)
+	}
+	reader := &packetReader{stream: &stream}
+	for i, datagram := range datagrams {
+		mb, err := reader.ReadMultiBuffer()
+		if err != nil || len(mb) != 1 || !bytes.Equal(mb[0].Bytes(), datagram) {
+			t.Fatalf("datagram %d of %d bytes came out as %d buffers of %d bytes, %v", i, len(datagram), len(mb), mb.Len(), err)
+		}
+		if mb[0].UDP == nil || mb[0].UDP.String() != destination.String() {
+			t.Fatalf("datagram %d is addressed to %v, want %v", i, mb[0].UDP, destination)
+		}
+		buf.ReleaseMulti(mb)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/protocol/quic"
 )
 
 // withoutPadding returns a captured datagram without the zero padding that
@@ -84,6 +85,53 @@ func TestSniffQUICEndsOnShortFirstInitialDatagram(t *testing.T) {
 	}
 }
 
+// zeroPadded returns datagram with zeros after its packets up to size bytes,
+// as Firefox pads its datagrams.
+func zeroPadded(datagram []byte, size int) []byte {
+	return append(bytes.Clone(datagram), make([]byte, size-len(datagram))...)
+}
+
+// A proxy outbound may drop a datagram longer than quic.MaxProxiedDatagram:
+// XUDP drops one above 7526 bytes. The destination then starts its connection
+// from a later datagram, which may name another server than the one the
+// sniffer read. Sniffing ends without a server name at the first such
+// datagram, without waiting for more: on the first datagram, or on the one
+// that would complete the ClientHello.
+func TestSniffQUICEndsOnDatagramsProxiesMayDrop(t *testing.T) {
+	ngtcp2 := readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0]
+	aioquic := readQUICCorpus(t, "quic-aioquic1.2", 1)[0]
+	firefox := readQUICCorpus(t, "quic-firefox153esr", 2)
+	limit := quic.MaxProxiedDatagram
+	tests := []struct {
+		name      string
+		datagrams [][]byte
+		domain    string // none if empty
+		reads     int
+	}{
+		{"whole ClientHello in the longest datagram, then another connection", [][]byte{zeroPadded(ngtcp2, limit), aioquic}, "ngtcp2.sniff.test", 1},
+		{"whole ClientHello in one byte more, then another connection", [][]byte{zeroPadded(ngtcp2, limit+1), aioquic}, "", 1},
+		{"start of the ClientHello, then its end in the longest datagram", [][]byte{firefox[0], zeroPadded(firefox[1], limit), aioquic}, "firefox.sniff.test", 2},
+		{"start of the ClientHello, then its end in one byte more", [][]byte{firefox[0], zeroPadded(firefox[1], limit+1), aioquic}, "", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			link := &countingReader{datagramReader: datagramReader{datagrams: tt.datagrams}}
+			reader := newTestCachedReader(t, link)
+			ctx := snifferContext()
+			result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
+			switch {
+			case tt.domain == "" && err == nil:
+				t.Fatalf("sniff() = %s %q, want no server name", result.Protocol(), result.Domain())
+			case tt.domain != "" && (err != nil || result.Protocol() != "quic" || result.Domain() != tt.domain):
+				t.Fatalf("sniff() = (%v, %v), want quic %s", result, err, tt.domain)
+			}
+			if link.reads != tt.reads {
+				t.Fatalf("sniffing read %d times, want it to decide on datagram %d", link.reads, tt.reads)
+			}
+		})
+	}
+}
+
 // bufferReader yields all its buffers in one read, as an inbound whose reader
 // returns several at once does, and times out afterwards.
 type bufferReader struct {
@@ -106,16 +154,18 @@ func (r *bufferReader) ReadMultiBufferTimeout(time.Duration) (buf.MultiBuffer, e
 	return mb, nil
 }
 
-// A UDP link carries one datagram per buffer: the outbound sends each buffer
-// it is handed as a datagram of its own (TestPacketWriterSendsEachBufferAsADatagram
+// A UDP link carries one datagram per buffer: freedom sends each buffer it is
+// handed as a datagram of its own (TestPacketWriterSendsEachBufferAsADatagram
 // in proxy/freedom). The datagrams the sniffer reads are thus the cached
-// buffers, as the destination receives them, even where an inbound merged or
-// split the client's datagrams. VMess merges a datagram of 8177 bytes or more
-// into the free space of the buffer before it (common/crypto/auth.go): a
-// client's datagrams of 527 and 8192 bytes reach the dispatcher as buffers of
-// 8192 and 527 bytes, the first starting with the whole short datagram. The
-// destination receives a datagram of 8192 bytes that starts with that Initial
-// packet, and reads its ClientHello, which the sniffer names too.
+// buffers, as freedom sends them, even where an inbound merged or split the
+// client's datagrams. VMess merges a datagram of 8177 bytes or more into the
+// free space of the buffer before it (common/crypto/auth.go): a client's
+// datagrams of 527 and 8192 bytes reach the dispatcher as buffers of 8192 and
+// 527 bytes, the first starting with the whole short datagram. Freedom sends a
+// datagram of 8192 bytes, but a proxy outbound may drop it, as it may any
+// longer than quic.MaxProxiedDatagram, so the sniffer names no server; a
+// buffer an inbound merged or split holds 8192 bytes. The buffers are lent and
+// forwarded as they are.
 func TestSniffQUICReadsTheDatagramsTheOutboundSends(t *testing.T) {
 	aioquic := withoutPadding(t, readQUICCorpus(t, "quic-aioquic1.2", 1)[0], 673)
 	ngtcp2 := readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0]
@@ -124,8 +174,8 @@ func TestSniffQUICReadsTheDatagramsTheOutboundSends(t *testing.T) {
 	reader := newTestCachedReader(t, &bufferReader{buffers: buffers})
 	ctx := snifferContext()
 	result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
-	if err != nil || result.Protocol() != "quic" || result.Domain() != "aioquic.sniff.test" {
-		t.Fatalf("sniff() = (%v, %v), want quic aioquic.sniff.test", result, err)
+	if err == nil {
+		t.Fatalf("sniff() = %s %q, want no server name", result.Protocol(), result.Domain())
 	}
 	lent := reader.Datagrams()
 	forwarded, err := reader.ReadMultiBuffer()

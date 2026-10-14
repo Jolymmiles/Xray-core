@@ -72,10 +72,13 @@ func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
 
 // Datagrams returns the buffers the payload the last Cache returned
 // concatenates, each on its own, as far as that payload holds them whole: the
-// datagrams of a UDP flow. The outbound sends each buffer of a UDP link as a
-// datagram of its own, so these are the datagrams the destination receives,
-// even where an inbound merged or split the client's datagrams. Like the
-// payload, they are borrowed until the cache is read.
+// datagrams of a UDP flow as the outbound sends them, even where an inbound
+// merged or split the client's datagrams. Freedom sends each buffer of a UDP
+// link as a datagram of its own, and the framings of the proxy outbounds carry
+// each buffer of up to quic.MaxProxiedDatagram bytes whole to their servers.
+// A proxy outbound may drop a longer one, so the QUIC sniffer names no server
+// once it meets one. Like the payload, they are borrowed until the cache is
+// read.
 func (r *cachedReader) Datagrams() [][]byte {
 	r.Lock()
 	defer r.Unlock()

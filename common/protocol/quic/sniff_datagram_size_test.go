@@ -20,7 +20,8 @@ import (
 // nginx the whole datagram. Nor do they count the 1200 bytes alike: nginx
 // drops an Initial packet coalesced after another when fewer than 1200 bytes
 // of the datagram start with it. The sniffer reads each datagram the
-// dispatcher forwards whole, and every coalesced packet in it.
+// dispatcher forwards whole, and every coalesced packet in it, up to
+// quic.MaxProxiedDatagram bytes: a proxy outbound may drop a longer one.
 //
 // quicGoBuffer only models the read path of quic-go, to show where what it
 // reads parts ways with what the sniffer reads. It is no rule of QUIC, and the
@@ -153,7 +154,7 @@ func datagramSizeCases(t *testing.T, allowed, blocked string, destConnID, otherC
 	}
 
 	const valid = "1 valid Initial datagram"
-	for _, size := range []int{1200, 1451, 1452, 1453, 1472, 1473, 1498, 9000} {
+	for _, size := range []int{1200, 1451, 1452, 1453, 1472, 1473, 1498} {
 		add(valid, fmt.Sprintf("%d bytes", size), allowedName, quicGoReads(allowedName, size), ours(0, whole, size))
 	}
 	// The ClientHello crypto/tls sends with X25519MLKEM768 fills more than
@@ -232,17 +233,43 @@ func datagramSizeCases(t *testing.T, allowed, blocked string, destConnID, otherC
 		ours(0, part(0, nameEnd), 1498), ours(1, appendCryptoFrames(nil, cryptoFrame{0, blockedHello}), 1210))
 	add(none, "the rest of the ClientHello in a short datagram once started", outcome{class: shortDatagram}, outcome{class: shortDatagram},
 		ours(0, part(0, nameEnd), 1200), ours(1, part(nameEnd, n), initialOverhead(destConnID)+len(part(nameEnd, n))))
+
+	// A proxy outbound may drop a datagram longer than quic.MaxProxiedDatagram,
+	// and the destination then starts its connection from a later one.
+	const dropped = "8 datagrams a proxy outbound may drop"
+	limit, long := quic.MaxProxiedDatagram, outcome{class: longDatagram}
+	theirs := initialOfSize(t, otherConnID, 0, appendCryptoFrames(nil, cryptoFrame{0, blockedHello}), 1200, false)
+	for _, size := range []int{limit, limit + 1, 9000} {
+		want := allowedName
+		if size > limit {
+			want = long
+		}
+		add(dropped, fmt.Sprintf("whole ClientHello in %d bytes", size), want, cut, ours(0, whole, size))
+		add(dropped, fmt.Sprintf("ClientHello ending in a datagram of %d bytes", size), want, more,
+			ours(0, part(0, nameEnd), 1200), ours(1, part(nameEnd, n), size))
+	}
+	for _, size := range []int{limit, 7600} {
+		want := allowedName
+		if size > limit {
+			want = long
+		}
+		add(dropped, fmt.Sprintf("whole ClientHello in %d bytes, then another connection naming %s", size, blocked), want, cut,
+			ours(0, whole, size), theirs)
+	}
+	add(dropped, fmt.Sprintf("whole ClientHello in 1200 bytes, then a datagram of %d bytes", limit+1), allowedName, allowedName,
+		ours(0, whole, 1200), padTo(theirs, limit+1))
 	return cases
 }
 
-// The sniffer reads a valid Initial datagram of any size whole and names the
-// server of a whole ClientHello in it, whatever padding surrounds it. It names
-// no server before the whole ClientHello has arrived, from a packet cut
-// short, or when the bytes of two ClientHellos meet. Where servers read a
-// flow differently (group 6), it sides with none of their buffer sizes or
-// counts, and names the server a whole reading of the datagrams gives. Each
-// flow is also sniffed as quic-go reads it, which only shows where the two
-// part ways.
+// The sniffer reads a valid Initial datagram of up to quic.MaxProxiedDatagram
+// bytes whole and names the server of a whole ClientHello in it, whatever
+// padding surrounds it. It names no server before the whole ClientHello has
+// arrived, from a packet cut short, when the bytes of two ClientHellos meet,
+// or once it meets a longer datagram before deciding (group 8). Where servers
+// read a flow differently (group 6), it sides with none of their buffer sizes
+// or counts, and names the server a whole reading of the datagrams gives.
+// Each flow is also sniffed as quic-go reads it, which only shows where the
+// two part ways.
 func TestSniffQUICDatagramSizes(t *testing.T) {
 	for _, tt := range datagramSizeCases(t, "allowed.example", "blocked.example", reassemblyDestConnID, foreignDestConnID) {
 		t.Run(tt.group+"/"+tt.name, func(t *testing.T) {

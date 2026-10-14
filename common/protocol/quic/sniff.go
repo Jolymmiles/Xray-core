@@ -45,6 +45,9 @@ var (
 	errReservedBits         = errors.New("an Initial packet with its reserved bits set")
 	errOtherSourceConnID    = errors.New("an Initial packet of the connection with another Source Connection ID")
 	errServersPartWays      = errors.New("an Initial packet of the connection after a packet some servers stop reading its datagram at")
+
+	// A datagram the destination may never receive.
+	errLongDatagram = errors.New("a datagram longer than every proxy outbound carries whole")
 )
 
 const (
@@ -57,6 +60,14 @@ const (
 	// maxConnID is the longest connection ID of a long header packet of the
 	// versions sniffed (RFC 9000, Section 17.2).
 	maxConnID = 20
+
+	// MaxProxiedDatagram is the longest datagram the UDP framings of Xray's
+	// proxy outbounds all carry whole to their servers: XUDP drops a longer
+	// one (common/xudp). TestProxyFramingsCarryTheLongestSniffedDatagramsWhole
+	// in app/dispatcher pins it to each framing. Freedom sends each datagram
+	// as it is. Carriers that bound a datagram lower are not covered:
+	// finalmask, a WireGuard tunnel, Hysteria's fragments.
+	MaxProxiedDatagram = buf.Size - 666
 )
 
 // cryptoStreamCap bounds the CRYPTO stream offsets SniffQUIC keeps. The
@@ -244,6 +255,10 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 //     connection after such a packet ends sniffing. Valid clients coalesce
 //     packets of one connection and version, in the order of their encryption
 //     levels (RFC 9000, Section 12.2), and never repeat a packet number.
+//   - A datagram longer than MaxProxiedDatagram ends sniffing: a proxy
+//     outbound may drop it, and the destination then starts its connection
+//     from a later datagram, which may name another server. Clients send
+//     their Initial datagrams at about 1200 to 1500 bytes.
 //
 // Where servers part ways with no packet to tell by, the sniffer reads the
 // flow whole: a long datagram, of which quic-go reads the first 1452 bytes and
@@ -289,6 +304,9 @@ func sniffQUIC(datagrams [][]byte, separate bool) (*SniffHeader, error) {
 
 	for _, b := range datagrams {
 		datagramLen := len(b)
+		if separate && datagramLen > MaxProxiedDatagram {
+			return nil, errLongDatagram
+		}
 		// The connection and version of the first packet of the datagram.
 		var datagramConnID []byte
 		var datagramSpec *quicVersionSpec

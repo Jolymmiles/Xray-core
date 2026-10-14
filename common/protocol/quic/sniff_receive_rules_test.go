@@ -221,7 +221,7 @@ func TestSniffQUICDatagramsOpenPacketsOfLargerLaterDatagrams(t *testing.T) {
 	hello := smallQUICClientHello(t, name)
 	middle := len(hello) / 2
 	first := initialOfSize(t, reassemblyDestConnID, 0, appendCryptoFrames(nil, cryptoFrame{0, hello[:middle]}), 1200, false)
-	second := initialOfSize(t, reassemblyDestConnID, 1, appendCryptoFrames(nil, cryptoFrame{middle, hello[middle:]}), 9000, false)
+	second := initialOfSize(t, reassemblyDestConnID, 1, appendCryptoFrames(nil, cryptoFrame{middle, hello[middle:]}), quic.MaxProxiedDatagram, false)
 	if got := sniffDatagramsOutcome(quic.SniffQUICDatagrams([][]byte{first, second})); got != (outcome{domain: name}) {
 		t.Fatalf("SniffQUICDatagrams() yields %v, want server name %q", got, name)
 	}
