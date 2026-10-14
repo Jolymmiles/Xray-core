@@ -2,6 +2,7 @@ package quic_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,11 @@ const (
 	notClientHello = "not a ClientHello"
 	noServerName   = "no server name"
 	notInInitial   = "frame not allowed in Initial packets"
+	notQUIC        = "not a QUIC long header packet"
+	// Initial packets servers do not read alike, or not at all.
+	reservedBits      = "Initial packet with its reserved bits set"
+	shortDestConnID   = "first Initial packet with a Destination Connection ID below 8 bytes"
+	otherSourceConnID = "Initial packet with another Source Connection ID"
 )
 
 // sniffOutcome classifies what quic.SniffQUIC returned.
@@ -71,6 +77,10 @@ func sniffOutcome(header *quic.SniffHeader, err error) outcome {
 		{"does not start with a ClientHello", notClientHello},
 		{"no server name", noServerName},
 		{"not initial packet", notInInitial},
+		{"not quic", notQUIC},
+		{"reserved bits", reservedBits},
+		{"Destination Connection ID below 8 bytes", shortDestConnID},
+		{"another Source Connection ID", otherSourceConnID},
 	} {
 		if strings.Contains(err.Error(), c.text) {
 			return outcome{class: c.class}
@@ -890,7 +900,16 @@ func TestSniffQUICDiscardsRepeatedPacketNumbers(t *testing.T) {
 // destConnID: a long header packet that is not an Initial, with junk where
 // its protected payload goes.
 func zeroRTTPacket(destConnID []byte) []byte {
-	packet := []byte{0xd3, 0, 0, 0, 1, byte(len(destConnID))}
+	return longHeaderPacket(0xd3, 1, destConnID)
+}
+
+// longHeaderPacket returns a long header packet other than an Initial, with
+// first byte typeByte, version and destConnID, no Source Connection ID, and
+// junk where its protected payload goes. A QUIC v1 Handshake packet starts
+// with 0xe3, a QUIC v2 one (RFC 9369, Section 3.2) with 0xf3.
+func longHeaderPacket(typeByte byte, version uint32, destConnID []byte) []byte {
+	packet := binary.BigEndian.AppendUint32([]byte{typeByte}, version)
+	packet = append(packet, byte(len(destConnID)))
 	packet = append(packet, destConnID...)
 	packet = append(packet, 0) // no Source Connection ID
 	packet = quicvarint.AppendWithLen(packet, 40, 2)

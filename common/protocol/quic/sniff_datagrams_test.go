@@ -15,14 +15,22 @@ import (
 	"github.com/xtls/xray-core/common/protocol/quic"
 )
 
-// shortDatagram is the outcome of a flow with an Initial packet of the
-// connection in a datagram below 1200 bytes after the connection started.
+// shortDatagram is the outcome of a flow with an Initial packet in a datagram
+// below 1200 bytes, before or after the connection started.
 const shortDatagram = "Initial packet in a short datagram"
 
 // sniffDatagramsOutcome classifies what quic.SniffQUICDatagrams returned.
 func sniffDatagramsOutcome(header *quic.SniffHeader, err error) outcome {
-	if err != nil && strings.Contains(err.Error(), "datagram below 1200 bytes") {
-		return outcome{class: shortDatagram}
+	if err != nil {
+		for _, c := range []struct{ text, class string }{
+			{"datagram below 1200 bytes", shortDatagram},
+			{"not the first packet of its datagram", notFirstPacket},
+			{"stop reading its datagram", partWays},
+		} {
+			if strings.Contains(err.Error(), c.text) {
+				return outcome{class: c.class}
+			}
+		}
 	}
 	return sniffOutcome(header, err)
 }
@@ -68,13 +76,22 @@ func assertSniffSeparateDatagrams(t *testing.T, datagrams [][]byte, domain strin
 
 // With its datagrams kept apart, the sniffer keeps what b13d0be6 brought:
 // the flows of TestSniffQUICFollowsItsConnectionAcrossDatagrams, each datagram
-// padded to 1200 bytes, yield the same server names.
+// padded to 1200 bytes, yield the same server names. One flow coalesces an
+// Initial packet after a 0-RTT packet, which x/net/quic does not read and
+// quic-go does, so its first datagram ends sniffing without a server name.
 func TestSniffQUICDatagramsFollowItsConnection(t *testing.T) {
+	apart := map[string]string{"0-RTT packets coalesced with Initial packets": partWays}
 	for _, flow := range connectionFollowingFlows(t) {
 		t.Run(flow.name, func(t *testing.T) {
 			datagrams := make([][]byte, len(flow.datagrams))
 			for i, datagram := range flow.datagrams {
 				datagrams[i] = padTo1200(datagram)
+			}
+			if class, ok := apart[flow.name]; ok {
+				if got := sniffDatagramsOutcome(quic.SniffQUICDatagrams(datagrams[:1])); got != (outcome{class: class}) {
+					t.Fatalf("after its first datagram: SniffQUICDatagrams() yields %v, want %s", got, class)
+				}
+				return
 			}
 			assertSniffSeparateDatagrams(t, datagrams, flow.want)
 		})
@@ -142,7 +159,9 @@ func TestSniffQUICDatagramsCorpus(t *testing.T) {
 
 // What a QUIC server does with each datagram on its own decides what the
 // sniffer reads; with the datagrams concatenated, it read what servers
-// discard.
+// discard. A first datagram that cannot start the connection, and a packet
+// some servers read and others do not, end sniffing at once without a server
+// name.
 func TestSniffQUICDatagramsFollowServerReceiveRules(t *testing.T) {
 	const name, otherName = "rule.sniff.test", "else.sniff.test"
 	hello := quicTLSClientHello(t, name)
@@ -174,22 +193,22 @@ func TestSniffQUICDatagramsFollowServerReceiveRules(t *testing.T) {
 	}{
 		{"short first datagram with a whole ClientHello, then another connection", [][]byte{
 			whole, padTo1200(theirs),
-		}, outcome{domain: otherName}},
+		}, outcome{class: shortDatagram}},
 		{"first datagram of 1199 bytes", [][]byte{
 			padTo(whole, 1199), padTo1200(theirs),
-		}, outcome{domain: otherName}},
+		}, outcome{class: shortDatagram}},
 		{"first datagram of 1200 bytes", [][]byte{
 			padTo(whole, 1200), padTo1200(theirs),
 		}, outcome{domain: "small.sniff.test"}},
 		{"short first datagram with the start of the ClientHello", [][]byte{
 			ours(0, 0), padTo1200(slices.Concat(ours(1, 1), ours(2, 2))),
-		}, outcome{class: needMore}},
+		}, outcome{class: shortDatagram}},
 		{"packet after junk in a datagram", [][]byte{
 			padTo1200(slices.Concat(ours(0, 0), junk, ours(1, 1))), padTo1200(ours(2, 2)),
 		}, outcome{class: needMore}},
 		{"coalesced packet of another connection before one of ours", [][]byte{
 			padTo1200(slices.Concat(ours(0, 0), theirs, ours(1, 1))), padTo1200(ours(2, 2)),
-		}, outcome{class: needMore}},
+		}, outcome{class: partWays}},
 		{"datagram whose first packet is another connection's", [][]byte{
 			padTo1200(ours(0, 0)), padTo1200(slices.Concat(theirs, ours(1, 1))), padTo1200(ours(2, 2)),
 		}, outcome{class: needMore}},
@@ -204,7 +223,7 @@ func TestSniffQUICDatagramsFollowServerReceiveRules(t *testing.T) {
 		}, outcome{domain: name}},
 		{"0-RTT packet coalesced between Initial packets", [][]byte{
 			padTo1200(slices.Concat(ours(0, 0), zeroRTTPacket(reassemblyDestConnID), ours(1, 1))), padTo1200(ours(2, 2)),
-		}, outcome{domain: name}},
+		}, outcome{class: partWays}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

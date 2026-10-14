@@ -38,12 +38,26 @@ var (
 
 	errConflictingCrypto = errors.New("CRYPTO frames carry different data at the same offset")
 
-	errShortInitialDatagram = errors.New("an Initial packet of the connection in a datagram below 1200 bytes")
+	// The Initial packets servers do not read alike, or not at all.
+	errShortInitialDatagram = errors.New("an Initial packet in a datagram below 1200 bytes")
+	errInitialNotFirst      = errors.New("the first Initial packet of the flow is not the first packet of its datagram")
+	errShortDestConnID      = errors.New("the first Initial packet of the flow has a Destination Connection ID below 8 bytes")
+	errReservedBits         = errors.New("an Initial packet with its reserved bits set")
+	errOtherSourceConnID    = errors.New("an Initial packet of the connection with another Source Connection ID")
+	errServersPartWays      = errors.New("an Initial packet of the connection after a packet some servers stop reading its datagram at")
 )
 
-// minInitialDatagram is the smallest datagram a server takes an Initial packet
-// in (RFC 9000, Section 14.1).
-const minInitialDatagram = 1200
+const (
+	// minInitialDatagram is the smallest datagram a server takes an Initial
+	// packet in (RFC 9000, Section 14.1).
+	minInitialDatagram = 1200
+	// minFirstDestConnID is the shortest Destination Connection ID a client
+	// puts in its first Initial packet (RFC 9000, Section 7.2).
+	minFirstDestConnID = 8
+	// maxConnID is the longest connection ID of a long header packet of the
+	// versions sniffed (RFC 9000, Section 17.2).
+	maxConnID = 20
+)
 
 // cryptoStreamCap bounds the CRYPTO stream offsets SniffQUIC keeps. The
 // stream starts with the ClientHello, which the TLS sniffer bounds the same.
@@ -137,6 +151,7 @@ func (r *receivedBytes) prefix(known, end int32) int32 {
 type quicVersionSpec struct {
 	ver         uint32
 	typeInitial byte
+	typeZeroRTT byte
 	typeRetry   byte
 	initialSalt []byte
 	labelPrefix string
@@ -146,6 +161,7 @@ var (
 	quicDraft29 = quicVersionSpec{
 		ver:         0xff00001d,
 		typeInitial: 0b00,
+		typeZeroRTT: 0b01,
 		typeRetry:   0b11,
 		initialSalt: []byte{0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61, 0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99},
 		labelPrefix: "quic",
@@ -153,6 +169,7 @@ var (
 	quicV1 = quicVersionSpec{
 		ver:         0x1,
 		typeInitial: 0b00,
+		typeZeroRTT: 0b01,
 		typeRetry:   0b11,
 		initialSalt: []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a},
 		labelPrefix: "quic",
@@ -160,6 +177,7 @@ var (
 	quicV2 = quicVersionSpec{
 		ver:         0x6b3343cf,
 		typeInitial: 0b01,
+		typeZeroRTT: 0b10,
 		typeRetry:   0b00,
 		initialSalt: []byte{0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9},
 		labelPrefix: "quicv2",
@@ -179,23 +197,59 @@ var (
 // is borrowed: the dispatcher forwards those datagrams once sniffing ends.
 // SniffQUIC therefore never writes to b and removes the packet protection of
 // each Initial packet in a copy.
+//
+// It reads the header of each Initial packet as servers do, and names no
+// server where none reads the packet or where they part ways:
+//
+//   - A packet with a connection ID longer than 20 bytes does not parse (RFC
+//     9000, Section 17.2).
+//   - An Initial packet with its reserved bits set, once its protection is
+//     removed, closes the connection (RFC 9000, Section 17.2).
+//   - A client sends a Destination Connection ID of at least 8 bytes in its
+//     first Initial packet (RFC 9000, Section 7.2). quic-go drops a first
+//     Initial packet with a shorter one, x/net/quic reads it.
+//   - RFC 9000, Section 7.2 has a server discard a later Initial packet of
+//     the connection with another Source Connection ID: quic-go does,
+//     x/net/quic does not.
 func SniffQUIC(b []byte) (*SniffHeader, error) {
 	return sniffQUIC([][]byte{b}, false)
 }
 
 // SniffQUICDatagrams is SniffQUIC for the first datagrams of a UDP flow kept
-// apart, which it reads as a QUIC server receives them (RFC 9000, Sections
-// 12.2 and 14.1, and quic-go):
+// apart, as the dispatcher forwards them. It reads each datagram as a QUIC
+// server receives one, and names no server where servers part ways:
 //
-//   - A packet never continues into the next datagram, and the rest of a
-//     datagram after a packet that does not parse is ignored.
-//   - A server gives a datagram to the connection of its first packet, and
-//     ignores a coalesced packet of another connection or version with what
-//     follows it.
-//   - An Initial packet in a datagram below 1200 bytes starts no connection.
-//     Once the connection has started, such a packet makes the flow
-//     ambiguous, since quic-go reads it and other servers discard it, so the
-//     flow is not sniffed.
+//   - A packet never continues into the next datagram, and a datagram is read
+//     up to its first packet that does not parse. Before the connection has
+//     started, a datagram whose first packet does not parse, or runs past
+//     the end of the datagram, ends sniffing without a server name, though a
+//     server goes on to later datagrams.
+//   - The first Initial packet of the flow starts the connection only in a
+//     datagram of at least 1200 bytes (RFC 9000, Section 14.1), and only as
+//     the first packet of the datagram, as quic-go and x/net/quic check;
+//     quiche does not check the size. A datagram with an Initial packet that
+//     cannot start the connection ends sniffing at once: no valid client
+//     sends one, and the sniffer neither names the server of a packet that
+//     servers ignore nor holds the flow for a datagram that may never come.
+//   - Once the connection has started, a new Initial packet of it in a
+//     datagram below 1200 bytes ends sniffing: quic-go reads it, x/net/quic
+//     and nginx drop it.
+//   - Servers part ways on the packets of a datagram after a packet of
+//     another connection or version (quic-go stops reading the datagram;
+//     lsquic, picoquic and quicly read on), after a packet of the connection
+//     that does not decrypt (x/net/quic, quiche and ngtcp2 stop; quic-go and
+//     picoquic read on), after a repeated one (quiche, ngtcp2 and picoquic
+//     stop; quic-go and x/net/quic read on), and after a 0-RTT packet
+//     (x/net/quic stops, quic-go reads on). A new Initial packet of the
+//     connection after such a packet ends sniffing. Valid clients coalesce
+//     packets of one connection and version, in the order of their encryption
+//     levels (RFC 9000, Section 12.2), and never repeat a packet number.
+//
+// Where servers part ways with no packet to tell by, the sniffer reads the
+// flow whole: a long datagram, of which quic-go reads the first 1452 bytes and
+// x/net/quic the first 1472, and a connection of QUIC v2 or draft-29, which a
+// server that does not support its version ignores, reading a later
+// connection of the flow instead.
 //
 // The datagrams are borrowed like the payload of SniffQUIC.
 func SniffQUICDatagrams(datagrams [][]byte) (*SniffHeader, error) {
@@ -238,11 +292,15 @@ func sniffQUIC(datagrams [][]byte, separate bool) (*SniffHeader, error) {
 		// The connection and version of the first packet of the datagram.
 		var datagramConnID []byte
 		var datagramSpec *quicVersionSpec
+		// partWays is set once the datagram holds a packet that some servers
+		// stop reading it at and others read past.
+		partWays := false
 	packets:
 		for len(b) > 0 {
+			first := len(b) == datagramLen
 			hdr, err := parseLongHeader(b)
 			if err != nil {
-				if sniffed == nil && (!separate || len(b) == datagramLen) {
+				if sniffed == nil && (!separate || first) {
 					return nil, err
 				}
 				if separate {
@@ -256,40 +314,69 @@ func sniffQUIC(datagrams [][]byte, separate bool) (*SniffHeader, error) {
 				}
 				continue
 			}
-			if separate {
-				if len(b) == datagramLen {
-					datagramConnID, datagramSpec = hdr.destConnID, hdr.spec
-				} else if hdr.spec != datagramSpec || !bytes.Equal(hdr.destConnID, datagramConnID) {
-					break packets
-				}
-			}
 			packet := b[:hdr.pnOffset+hdr.packetLen]
 			b = b[len(packet):]
+			if separate {
+				if sniffed == nil && hdr.initial {
+					// The datagram of the first Initial packet must be able
+					// to start the connection.
+					if datagramLen < minInitialDatagram {
+						return nil, errShortInitialDatagram
+					}
+					if !first {
+						return nil, errInitialNotFirst
+					}
+				}
+				if first {
+					datagramConnID, datagramSpec = hdr.destConnID, hdr.spec
+				} else if hdr.spec != datagramSpec || !bytes.Equal(hdr.destConnID, datagramConnID) {
+					// A server gives a datagram to the connection of its first
+					// packet and drops this one; quic-go drops what follows.
+					partWays = true
+					continue
+				}
+				if hdr.zeroRTT(packet) {
+					// x/net/quic drops what follows a 0-RTT packet.
+					partWays = true
+					continue
+				}
+			}
 			if !hdr.initial || sniffed != nil && !sniffed.protects(hdr) { // Only Initial packets of the connection carry its ClientHello
 				continue
-			}
-			short := separate && datagramLen < minInitialDatagram
-			if short && sniffed == nil {
-				break packets
 			}
 
 			keys := sniffed
 			if keys == nil {
+				if len(hdr.destConnID) < minFirstDestConnID {
+					return nil, errShortDestConnID
+				}
 				keys = newInitialKeys(hdr.spec, hdr.destConnID)
+				keys.srcConnID = hdr.srcConnID(packet)
 			}
 			decrypted, pn, err := keys.open(packet, hdr.pnOffset, packetBuf)
 			if err != nil {
-				if sniffed == nil {
+				if sniffed == nil || err == errReservedBits {
 					return nil, err
 				}
+				// x/net/quic, quiche and ngtcp2 drop what follows.
+				partWays = true
 				continue
 			}
 			if !keys.firstOpen(pn) {
 				// A server discards the copy: only the first one counts.
+				// quiche, ngtcp2 and picoquic drop what follows.
+				partWays = true
 				continue
 			}
-			if short {
-				return nil, errShortInitialDatagram
+			if sniffed != nil {
+				switch {
+				case separate && datagramLen < minInitialDatagram:
+					return nil, errShortInitialDatagram
+				case separate && partWays:
+					return nil, errServersPartWays
+				case !bytes.Equal(hdr.srcConnID(packet), sniffed.srcConnID):
+					return nil, errOtherSourceConnID
+				}
 			}
 			sniffed = keys
 
@@ -411,12 +498,28 @@ func sniffQUIC(datagrams [][]byte, separate bool) (*SniffHeader, error) {
 }
 
 // longHeader is the part of a QUIC long header packet the sniffer reads.
+// parseLongHeader returns it and an error in the 9 registers the Go ABI has
+// for results; one more field would send them through memory for every
+// packet. What the sniffer reads of some packets only, the methods below read
+// from the packet.
 type longHeader struct {
 	spec       *quicVersionSpec
 	initial    bool
 	destConnID []byte
 	pnOffset   int // where the Packet Number field starts
 	packetLen  int // the Packet Number field and the payload
+}
+
+// zeroRTT reports whether packet, whose header is hdr, is a 0-RTT packet.
+func (hdr longHeader) zeroRTT(packet []byte) bool {
+	return (packet[0]&0x30)>>4 == hdr.spec.typeZeroRTT
+}
+
+// srcConnID returns the Source Connection ID of packet, whose header is hdr.
+func (hdr longHeader) srcConnID(packet []byte) []byte {
+	// The type byte, the version, then the length-prefixed connection IDs.
+	at := 1 + 4 + 1 + len(hdr.destConnID)
+	return packet[at+1 : at+1+int(packet[at])]
 }
 
 // parseLongHeader parses the header of the long header packet at the start of
@@ -449,13 +552,13 @@ func parseLongHeader(b []byte) (longHeader, error) {
 	}
 	hdr := longHeader{spec: s, initial: packetType == s.typeInitial}
 
-	if l, err := buffer.ReadByte(); err != nil {
+	if l, err := buffer.ReadByte(); err != nil || l > maxConnID {
 		return longHeader{}, errNotQUIC
 	} else if hdr.destConnID, err = buffer.ReadBytes(int32(l)); err != nil {
 		return longHeader{}, errNotQUIC
 	}
 
-	if l, err := buffer.ReadByte(); err != nil {
+	if l, err := buffer.ReadByte(); err != nil || l > maxConnID {
 		return longHeader{}, errNotQUIC
 	} else if common.Error2(buffer.ReadBytes(int32(l))) != nil {
 		return longHeader{}, errNotQUIC
@@ -494,8 +597,10 @@ func parseLongHeader(b []byte) (longHeader, error) {
 type initialKeys struct {
 	spec       *quicVersionSpec
 	destConnID []byte
-	hp         cipher.Block
-	aead       cipher.AEAD
+	// srcConnID is the Source Connection ID of the first Initial packet.
+	srcConnID []byte
+	hp        cipher.Block
+	aead      cipher.AEAD
 	// largest is the largest packet number opened so far, -1 before any.
 	largest int64
 	// opened records the packet numbers opened so far: below 1024 in
@@ -527,7 +632,8 @@ func (k *initialKeys) protects(hdr longHeader) bool {
 // connection whose Packet Number field starts at pnOffset. The packet number
 // is recovered from the largest one opened so far, as a receiver does (RFC
 // 9000, Appendix A). The packet is borrowed, so its protection is removed in a
-// copy held by packetBuf.
+// copy held by packetBuf. A packet that decrypts with its reserved bits set
+// yields errReservedBits.
 func (k *initialKeys) open(packet []byte, pnOffset int, packetBuf *buf.Buffer) ([]byte, uint64, error) {
 	// The header protection sample starts 4 bytes into the Packet Number field.
 	if len(packet) < pnOffset+4+aes.BlockSize {
@@ -551,6 +657,11 @@ func (k *initialKeys) open(packet []byte, pnOffset int, packetBuf *buf.Buffer) (
 
 	extHdrLen := pnOffset + packetNumberLength
 	payload, err := k.aead.Open(unprotected[extHdrLen:extHdrLen], nonce, unprotected[extHdrLen:], unprotected[:extHdrLen])
+	if err == nil && unprotected[0]&0x0c != 0 {
+		// The reserved bits are checked once both protections are removed
+		// (RFC 9000, Section 17.2).
+		return nil, pn, errReservedBits
+	}
 	return payload, pn, err
 }
 

@@ -33,41 +33,52 @@ func newTestCachedReader(t *testing.T, link buf.TimeoutReader) *cachedReader {
 	return reader
 }
 
-// A QUIC server reads each datagram on its own, and discards an Initial
-// packet in a datagram below 1200 bytes, which thus starts no connection. The
-// dispatcher handed the QUIC sniffer the flow's datagrams as one byte stream,
-// so it followed the connection of the first Initial packet even in such a
-// datagram, and routed by a server name no server reads.
-func TestSniffQUICIgnoresInitialDatagramsBelow1200Bytes(t *testing.T) {
+// countingReader is a datagramReader that counts the reads of its link.
+type countingReader struct {
+	datagramReader
+	reads int
+}
+
+func (r *countingReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.MultiBuffer, error) {
+	r.reads++
+	return r.datagramReader.ReadMultiBufferTimeout(timeout)
+}
+
+// A QUIC server reads each datagram on its own, and starts no connection from
+// an Initial packet in a datagram below 1200 bytes. The dispatcher handed the
+// QUIC sniffer the flow's datagrams as one byte stream, so it followed the
+// connection of the first Initial packet even in such a datagram, and routed
+// by a server name no server reads. The sniffer now ends sniffing the flow on
+// that datagram, without a server name, rather than hold the flow for the
+// datagrams of the sniffing window: deciding on the first datagram is what it
+// did before, when the packet decrypted or not.
+func TestSniffQUICEndsOnShortFirstInitialDatagram(t *testing.T) {
 	// aioquic and Firefox pad their first datagram after its packet, so
 	// taking that padding off leaves whole packets in a short datagram.
-	aioquic := readQUICCorpus(t, "quic-aioquic1.2", 1)[0]
+	aioquic := withoutPadding(t, readQUICCorpus(t, "quic-aioquic1.2", 1)[0], 673)
 	firefox := readQUICCorpus(t, "quic-firefox153esr", 2)
 	ngtcp2 := readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0]
+	corrupted := bytes.Clone(aioquic)
+	corrupted[len(corrupted)-1] ^= 1 // in the AEAD tag
 	tests := []struct {
 		name      string
 		datagrams [][]byte
-		domain    string // empty when a server has no complete ClientHello
 	}{
-		{"short datagram with a whole ClientHello, then another connection", [][]byte{
-			withoutPadding(t, aioquic, 673), ngtcp2,
-		}, "ngtcp2.sniff.test"},
-		{"short datagram with the start of the ClientHello, then its end", [][]byte{
-			withoutPadding(t, firefox[0], 259), firefox[1],
-		}, ""},
+		{"short datagram with a whole ClientHello, then another connection", [][]byte{aioquic, ngtcp2}},
+		{"short datagram with the start of the ClientHello, then its end", [][]byte{withoutPadding(t, firefox[0], 259), firefox[1]}},
+		{"short datagram whose Initial packet does not decrypt, then another connection", [][]byte{corrupted, ngtcp2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := newTestCachedReader(t, &datagramReader{datagrams: tt.datagrams})
+			link := &countingReader{datagramReader: datagramReader{datagrams: tt.datagrams}}
+			reader := newTestCachedReader(t, link)
 			ctx := snifferContext()
 			result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
-			switch {
-			case tt.domain == "" && err == nil:
+			if err == nil {
 				t.Fatalf("sniff() = %s %q, want no server name", result.Protocol(), result.Domain())
-			case tt.domain != "" && err != nil:
-				t.Fatalf("sniff() error = %v, want quic %q", err, tt.domain)
-			case tt.domain != "" && (result.Protocol() != "quic" || result.Domain() != tt.domain):
-				t.Fatalf("sniff() = %s %q, want quic %q", result.Protocol(), result.Domain(), tt.domain)
+			}
+			if link.reads != 1 {
+				t.Fatalf("sniffing read %d times, want it to end on the first datagram", link.reads)
 			}
 		})
 	}
@@ -148,15 +159,13 @@ func TestFakeDNSThenOthersSniffsQUICDatagramsApart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	aioquic := readQUICCorpus(t, "quic-aioquic1.2", 1)[0]
-	datagrams := [][]byte{withoutPadding(t, aioquic, 673), readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0]}
+	// Concatenated, the datagrams name aioquic.sniff.test, whose Initial
+	// packet comes in a short datagram.
+	aioquic := withoutPadding(t, readQUICCorpus(t, "quic-aioquic1.2", 1)[0], 673)
+	datagrams := [][]byte{aioquic, readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0]}
 	result, err := wrapper.datagramSniffer(context.Background(), bytes.Join(datagrams, nil), datagrams)
-	if err != nil || result.Domain() != "ngtcp2.sniff.test" {
-		domain := ""
-		if result != nil {
-			domain = result.Domain()
-		}
-		t.Fatalf("sniffed %q (%v), want ngtcp2.sniff.test", domain, err)
+	if err == nil {
+		t.Fatalf("sniffed %q, want no server name", result.Domain())
 	}
 }
 

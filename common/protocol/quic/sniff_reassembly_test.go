@@ -101,6 +101,24 @@ func sealInitialPayload(t testing.TB, destConnID []byte, pn uint32, payload []by
 // packet number (RFC 9001, Section 5.3).
 func sealInitialPacket(t testing.TB, destConnID []byte, pn uint64, pnLength int, payload []byte) []byte {
 	t.Helper()
+	return initialPacket{destConnID: destConnID, pn: pn, pnLength: pnLength, payload: payload}.seal(t)
+}
+
+// initialPacket is a QUIC v1 client Initial packet to protect.
+type initialPacket struct {
+	destConnID, srcConnID []byte
+	// reserved is the value of the two reserved bits of the first byte,
+	// which a client sends as 0 (RFC 9000, Section 17.2).
+	reserved byte
+	pn       uint64
+	pnLength int
+	payload  []byte
+}
+
+// seal protects the packet as sealInitialPacket does.
+func (p initialPacket) seal(t testing.TB) []byte {
+	t.Helper()
+	destConnID, pn, pnLength, payload := p.destConnID, p.pn, p.pnLength, p.payload
 	salt := []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a}
 	initialSecret, err := hkdf.Extract(sha256.New, destConnID, salt)
 	if err != nil {
@@ -121,9 +139,11 @@ func sealInitialPacket(t testing.TB, destConnID []byte, pn uint64, pnLength int,
 		t.Fatal(err)
 	}
 
-	header := []byte{0xc0 | byte(pnLength-1), 0, 0, 0, 1, byte(len(destConnID))}
+	header := []byte{0xc0 | p.reserved<<2 | byte(pnLength-1), 0, 0, 0, 1, byte(len(destConnID))}
 	header = append(header, destConnID...)
-	header = append(header, 0, 0) // no Source Connection ID, no token
+	header = append(header, byte(len(p.srcConnID)))
+	header = append(header, p.srcConnID...)
+	header = append(header, 0) // no token
 	header = quicvarint.AppendWithLen(header, uint64(pnLength+len(payload)+aead.Overhead()), 2)
 	pnOffset := len(header)
 	for i := pnLength - 1; i >= 0; i-- {
