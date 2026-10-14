@@ -66,7 +66,9 @@ const (
 	// one (common/xudp). TestProxyFramingsCarryTheLongestSniffedDatagramsWhole
 	// in app/dispatcher pins it to each framing. Freedom sends each datagram
 	// as it is. Carriers that bound a datagram lower are not covered:
-	// finalmask, a WireGuard tunnel, Hysteria's fragments.
+	// finalmask, a WireGuard tunnel, Hysteria's fragments, and a Shadowsocks
+	// 2022 key chain, each key of which past the first adds 16 bytes to a
+	// packet.
 	MaxProxiedDatagram = buf.Size - 666
 )
 
