@@ -168,21 +168,27 @@ guard it.
   IPv4 address, and drops a longer datagram; the Shadowsocks 2022 writer drops
   a datagram too large for a packet, where upstream's ends the session;
   freedom drops a datagram longer than an IP packet holds (65507 bytes over
-  IPv4, 65527 over IPv6), where the write failed with "message too long" and
-  ended the session. The VLESS, VMess and XUDP writers already dropped what
-  they cannot frame. Reads from a UDP socket (the UDP hub, freedom's replies)
-  still cut a datagram at 8192 bytes, upstream alike. Covered by
-  `TestLengthPacketReaderKeepsLargeDatagramsWhole` (`proxy/vless/encoding`),
-  `TestAuthenticationReaderKeepsLargeDatagramsWhole` and
-  `TestAuthenticationReaderStreamKeepsLargeChunksInOrder` (`common/crypto`),
-  `TestPacketReaderKeepsLargeDatagramsWhole` and
+  IPv4, 65527 over IPv6), and one its socket refuses as too long (`EMSGSIZE`),
+  where upstream's freedom ends the session on that error: macOS refuses a
+  datagram above `net.inet.udp.maxdgram`, 9216 bytes by default, and a
+  connected socket on Linux reports a router's ICMP "fragmentation needed" for
+  an earlier datagram on its next write or read; freedom's reader of a
+  connected socket skips that error. The VLESS, VMess and XUDP writers already
+  dropped what they cannot frame. Reads from a UDP socket (the UDP hub,
+  freedom's replies) still cut a datagram at 8192 bytes, upstream alike.
+  Covered by `TestLengthPacketReaderKeepsLargeDatagramsWhole`
+  (`proxy/vless/encoding`), `TestAuthenticationReaderKeepsLargeDatagramsWhole`
+  and `TestAuthenticationReaderStreamKeepsLargeChunksInOrder`
+  (`common/crypto`), `TestPacketReaderKeepsLargeDatagramsWhole` and
   `TestPacketWriterSendsWhatReadersTake` (`proxy/trojan`),
   `TestPacketReaderKeepsLargePacketsWhole`,
   `TestServerWorkerKeepsLargePacketsWhole` and
   `TestWriterDropsPacketsOlderReadersRefuse` (`common/mux`),
   `TestPacketReaderKeepsLargePacketsWhole` (`common/xudp`),
-  `TestUDPWriterDropsDatagramsTooLargeForAPacket` (`proxy/shadowsocks_2022`)
-  and `TestPacketWriterDropsDatagramsTooLongForIP` (`proxy/freedom`).
+  `TestUDPWriterDropsDatagramsTooLargeForAPacket` (`proxy/shadowsocks_2022`),
+  and `TestPacketWriterDropsDatagramsTooLongForIP`,
+  `TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong` and
+  `TestPacketReaderSkipsTooLongErrorsOfAConnectedSocket` (`proxy/freedom`).
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2

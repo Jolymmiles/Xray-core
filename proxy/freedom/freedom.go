@@ -3,10 +3,12 @@ package freedom
 import (
 	"context"
 	"crypto/rand"
+	go_errors "errors"
 	"io"
 	stdnet "net"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -497,7 +499,27 @@ func NewPacketReader(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 			InitChangedAddr:   net.DestinationFromAddr(conn.RemoteAddr()).Address,
 		}
 	}
+	if _, ok := conn.RemoteAddr().(*net.UDPAddr); ok {
+		return &connectedPacketReader{PacketReader: &buf.PacketReader{Reader: conn}}
+	}
 	return &buf.PacketReader{Reader: conn}
+}
+
+// connectedPacketReader reads the datagrams of a connected UDP socket. It
+// skips the error with which such a socket reports, on its next read, that a
+// router refused an earlier datagram as too long, as the writers drop the
+// datagram the socket refuses; the error ended the session.
+type connectedPacketReader struct {
+	*buf.PacketReader
+}
+
+func (r *connectedPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	for {
+		mb, err := r.PacketReader.ReadMultiBuffer()
+		if err == nil || !isMessageTooLong(err) {
+			return mb, err
+		}
+	}
 }
 
 type PacketReader struct {
@@ -573,11 +595,10 @@ func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 			OutGateway:        outGateway,
 		}
 	}
-	writer := &buf.SequentialWriter{Writer: conn}
 	if _, ok := conn.RemoteAddr().(*net.UDPAddr); !ok {
-		return writer
+		return &buf.SequentialWriter{Writer: conn}
 	}
-	return &connectedPacketWriter{Writer: writer, longest: maxUDPPayload(conn.RemoteAddr())}
+	return &connectedPacketWriter{conn: conn, longest: maxUDPPayload(conn.RemoteAddr())}
 }
 
 // maxUDPPayload returns the longest UDP payload of an IP packet to addr: an
@@ -592,23 +613,34 @@ func maxUDPPayload(addr net.Addr) int32 {
 	return 65535 - 20 - 8
 }
 
+// isMessageTooLong reports whether err is the error with which a UDP socket
+// refuses a datagram as too long although an IP packet holds it: macOS refuses
+// one above net.inet.udp.maxdgram, 9216 bytes by default, and a connected
+// socket on Linux reports a router's ICMP "fragmentation needed" for an
+// earlier datagram on its next write or read.
+func isMessageTooLong(err error) bool {
+	return go_errors.Is(err, syscall.EMSGSIZE)
+}
+
 // connectedPacketWriter sends each buffer as a datagram on a connected UDP
-// socket, and drops one longer than its destination takes.
+// socket. It drops one longer than its destination takes, and one the socket
+// refuses as too long.
 type connectedPacketWriter struct {
-	buf.Writer
+	conn    net.Conn
 	longest int32
 }
 
 func (w *connectedPacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	kept := mb[:0]
-	for _, b := range mb {
-		if b.Len() > w.longest {
-			b.Release()
-			continue
+	for i, b := range mb {
+		if b.Len() <= w.longest {
+			if _, err := w.conn.Write(b.Bytes()); err != nil && !isMessageTooLong(err) {
+				buf.ReleaseMulti(mb[i:])
+				return err
+			}
 		}
-		kept = append(kept, b)
+		b.Release()
 	}
-	return w.Writer.WriteMultiBuffer(kept)
+	return nil
 }
 
 type PacketWriter struct {
@@ -693,6 +725,9 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		}
 		b.Release()
 		if err != nil {
+			if isMessageTooLong(err) {
+				continue
+			}
 			buf.ReleaseMulti(mb)
 			return err
 		}
