@@ -101,7 +101,33 @@ func sealInitialPayload(t testing.TB, destConnID []byte, pn uint32, payload []by
 // packet number (RFC 9001, Section 5.3).
 func sealInitialPacket(t testing.TB, destConnID []byte, pn uint64, pnLength int, payload []byte) []byte {
 	t.Helper()
+	return initialPacket{destConnID: destConnID, pn: pn, pnLength: pnLength, payload: payload}.seal(t)
+}
+
+// initialPacket is a QUIC v1 client Initial packet to protect, or a draft-29
+// one.
+type initialPacket struct {
+	draft29               bool
+	destConnID, srcConnID []byte
+	// reserved is the value of the two reserved bits of the first byte,
+	// which a client sends as 0 (RFC 9000, Section 17.2).
+	reserved byte
+	pn       uint64
+	pnLength int
+	payload  []byte
+}
+
+// seal protects the packet as sealInitialPacket does.
+func (p initialPacket) seal(t testing.TB) []byte {
+	t.Helper()
+	destConnID, pn, pnLength, payload := p.destConnID, p.pn, p.pnLength, p.payload
+	version := uint32(1)
 	salt := []byte{0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a}
+	if p.draft29 {
+		// draft-ietf-quic-tls-29, Section 5.2; the labels are those of v1.
+		version = 0xff00001d
+		salt = []byte{0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61, 0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99}
+	}
 	initialSecret, err := hkdf.Extract(sha256.New, destConnID, salt)
 	if err != nil {
 		t.Fatal(err)
@@ -121,9 +147,12 @@ func sealInitialPacket(t testing.TB, destConnID []byte, pn uint64, pnLength int,
 		t.Fatal(err)
 	}
 
-	header := []byte{0xc0 | byte(pnLength-1), 0, 0, 0, 1, byte(len(destConnID))}
+	header := binary.BigEndian.AppendUint32([]byte{0xc0 | p.reserved<<2 | byte(pnLength-1)}, version)
+	header = append(header, byte(len(destConnID)))
 	header = append(header, destConnID...)
-	header = append(header, 0, 0) // no Source Connection ID, no token
+	header = append(header, byte(len(p.srcConnID)))
+	header = append(header, p.srcConnID...)
+	header = append(header, 0) // no token
 	header = quicvarint.AppendWithLen(header, uint64(pnLength+len(payload)+aead.Overhead()), 2)
 	pnOffset := len(header)
 	for i := pnLength - 1; i >= 0; i-- {

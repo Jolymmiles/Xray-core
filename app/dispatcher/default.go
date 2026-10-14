@@ -32,6 +32,9 @@ type cachedReader struct {
 	reader  buf.TimeoutReader // *pipe.Reader or *buf.TimeoutWrapperReader
 	cache   buf.MultiBuffer
 	scratch *buf.Buffer
+	// datagrams holds the cached buffers the last payload concatenates, each
+	// on its own: the datagrams of a UDP flow.
+	datagrams [][]byte
 }
 
 func newCachedReader(reader buf.TimeoutReader) *cachedReader {
@@ -67,6 +70,35 @@ func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
 	return r.scratch.Bytes(), nil
 }
 
+// Datagrams returns the buffers the payload the last Cache returned
+// concatenates, each on its own, as far as that payload holds them whole: the
+// datagrams of a UDP flow as the outbound sends them, even where an inbound
+// merged or split the client's datagrams. Freedom sends each buffer of a UDP
+// link as a datagram of its own, and the framings of the proxy outbounds carry
+// each buffer of up to quic.MaxProxiedDatagram bytes whole to their servers.
+// A proxy outbound may drop a longer one, so the QUIC sniffer names no server
+// once it meets one. Like the payload, they are borrowed until the cache is
+// read.
+func (r *cachedReader) Datagrams() [][]byte {
+	r.Lock()
+	defer r.Unlock()
+	if cap(r.datagrams) < len(r.cache) {
+		// Room for the first few datagrams at once, as the cache grows.
+		r.datagrams = make([][]byte, 0, max(len(r.cache), 4))
+	}
+	r.datagrams = r.datagrams[:0]
+	size := int32(0)
+	for _, b := range r.cache {
+		// A payload of several buffers holds as many bytes as the scratch.
+		if len(r.cache) > 1 && size+b.Len() > r.scratch.Len() {
+			break
+		}
+		r.datagrams = append(r.datagrams, b.Bytes())
+		size += b.Len()
+	}
+	return r.datagrams
+}
+
 func (r *cachedReader) readInternal() buf.MultiBuffer {
 	r.Lock()
 	defer r.Unlock()
@@ -74,6 +106,7 @@ func (r *cachedReader) readInternal() buf.MultiBuffer {
 	if r.cache != nil && !r.cache.IsEmpty() {
 		mb := r.cache
 		r.cache = nil
+		r.datagrams = nil
 		if r.scratch != nil {
 			r.scratch.Release()
 			r.scratch = nil
@@ -107,6 +140,7 @@ func (r *cachedReader) Interrupt() {
 	if r.cache != nil {
 		r.cache = buf.ReleaseMulti(r.cache)
 	}
+	r.datagrams = nil
 	if r.scratch != nil {
 		r.scratch.Release()
 		r.scratch = nil
@@ -605,7 +639,11 @@ func sniff(ctx context.Context, cReader *cachedReader, metadataOnly bool, networ
 				}
 
 				if len(payloadBytes) != 0 {
-					result, err := sniffer.Sniff(ctx, payloadBytes, network)
+					var datagrams [][]byte
+					if network == net.Network_UDP {
+						datagrams = cReader.Datagrams()
+					}
+					result, err := sniffer.SniffDatagrams(ctx, payloadBytes, datagrams, network)
 					switch err {
 					case common.ErrNoClue: // No Clue: protocol not matches, and sniffer cannot determine whether there will be a match or not
 						totalAttempt++

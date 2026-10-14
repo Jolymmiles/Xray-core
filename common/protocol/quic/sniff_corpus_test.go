@@ -33,11 +33,21 @@ func readCorpus(t testing.TB, prefix string, n int) [][]byte {
 	return datagrams
 }
 
-// assertSniffDatagrams sniffs the first i datagrams of a flow for every i up
-// to len(datagrams), concatenated as the dispatcher caches them. Sniffing
-// must ask for more data until all of them have arrived, then report domain,
-// and it must never modify the datagrams, which the dispatcher forwards.
+// assertSniffDatagrams checks a flow of datagrams that start a connection as
+// servers receive them: concatenated, as SniffQUIC reads them
+// (assertSniffJoined), and apart, as the dispatcher hands them to
+// SniffQUICDatagrams (assertSniffSeparateDatagrams).
 func assertSniffDatagrams(t *testing.T, datagrams [][]byte, domain string) {
+	t.Helper()
+	assertSniffJoined(t, datagrams, domain)
+	assertSniffSeparateDatagrams(t, datagrams, domain)
+}
+
+// assertSniffJoined sniffs the first i datagrams of a flow for every i up to
+// len(datagrams), concatenated. Sniffing must ask for more data until all of
+// them have arrived, then report domain, and it must never modify the
+// datagrams, which the dispatcher forwards.
+func assertSniffJoined(t *testing.T, datagrams [][]byte, domain string) {
 	t.Helper()
 	for i := 1; i <= len(datagrams); i++ {
 		flow := bytes.Join(datagrams[:i], nil)
@@ -149,7 +159,7 @@ func quicGoFirstFlight(t *testing.T, config *quicgo.Config, serverName string, n
 }
 
 // The first flight of a live quic-go client, with QUIC v1, v2 and Chrome
-// parroting, yields its server name.
+// parroting, yields its server name, concatenated and apart.
 func TestSniffQUICGoFirstFlight(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -175,6 +185,21 @@ func TestSniffQUICFollowsOneConnection(t *testing.T) {
 	firefox := readCorpus(t, "quic-firefox153esr", 2)
 	curl := readCorpus(t, "quic-curl8.14-openssl3.5", 2)
 	assertSniffDatagrams(t, [][]byte{chrome[0], firefox[1], curl[1], chrome[1]}, "chrome.sniff.test")
+}
+
+// A QUIC draft-29 client protects its Initial packets as a v1 one does, with
+// the draft's salt. The sniffer names its server as it names that of a v1 or v2
+// connection, from one datagram or from two.
+func TestSniffQUICDraft29(t *testing.T) {
+	const name = "draft29.sniff.test"
+	hello := smallQUICClientHello(t, name)
+	middle := len(hello) / 2
+	datagram := func(pn uint64, from, to int) []byte {
+		frames := appendCryptoFrames(nil, cryptoFrame{from, hello[from:to]})
+		return padTo1200(initialPacket{draft29: true, destConnID: reassemblyDestConnID, pn: pn, pnLength: 4, payload: frames}.seal(t))
+	}
+	assertSniffDatagrams(t, [][]byte{datagram(0, 0, len(hello))}, name)
+	assertSniffDatagrams(t, [][]byte{datagram(0, 0, middle), datagram(1, middle, len(hello))}, name)
 }
 
 // Receivers ignore what follows the last packet of a datagram. Firefox pads

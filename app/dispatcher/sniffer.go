@@ -20,8 +20,15 @@ type SniffResult interface {
 
 type protocolSniffer func(context.Context, []byte) (SniffResult, error)
 
+// datagramSniffer sniffs a UDP flow from its datagrams kept apart; payload
+// concatenates them, as a protocolSniffer reads them.
+type datagramSniffer func(ctx context.Context, payload []byte, datagrams [][]byte) (SniffResult, error)
+
 type protocolSnifferWithMetadata struct {
 	protocolSniffer protocolSniffer
+	// datagramSniffer, when set, takes the place of protocolSniffer when the
+	// datagrams of a UDP flow can be told apart.
+	datagramSniffer datagramSniffer
 	fastHTTP        bool
 	// A Metadata sniffer will be invoked on connection establishment only, with nil body,
 	// for both TCP and UDP connections
@@ -40,7 +47,13 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, network: net.Network_TCP},
 	{protocolSniffer: func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, c) }, fastHTTP: true, network: net.Network_TCP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, network: net.Network_TCP},
-	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) }, network: net.Network_UDP},
+	{
+		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) },
+		datagramSniffer: func(_ context.Context, _ []byte, datagrams [][]byte) (SniffResult, error) {
+			return quic.SniffQUICDatagrams(datagrams)
+		},
+		network: net.Network_UDP,
+	},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffDHT(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUDPTracker(b) }, network: net.Network_UDP},
@@ -71,6 +84,13 @@ func newSniffer(ctx context.Context) Sniffer {
 var errUnknownContent = errors.New("unknown content")
 
 func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) (SniffResult, error) {
+	return s.SniffDatagrams(c, payload, nil, network)
+}
+
+// SniffDatagrams is Sniff for a payload that concatenates the datagrams of a
+// UDP flow, given apart as well: a sniffer that reads datagrams on their own
+// gets them, the others the payload.
+func (s *Sniffer) SniffDatagrams(c context.Context, payload []byte, datagrams [][]byte, network net.Network) (SniffResult, error) {
 	var pendingSniffer []protocolSnifferWithMetadata
 	var precheckedHTTPResult SniffResult
 	var precheckedHTTPError error
@@ -102,7 +122,11 @@ func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) 
 			continue
 		}
 		result, err := precheckedHTTPResult, precheckedHTTPError
-		if !si.fastHTTP || !httpPrechecked {
+		switch {
+		case si.fastHTTP && httpPrechecked:
+		case si.datagramSniffer != nil && datagrams != nil:
+			result, err = si.datagramSniffer(c, payload, datagrams)
+		default:
 			result, err = protocolSniffer(c, payload)
 		}
 		if err == common.ErrNoClue {
