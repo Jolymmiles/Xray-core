@@ -72,8 +72,10 @@ func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
 
 // Datagrams returns the buffers the payload the last Cache returned
 // concatenates, each on its own, as far as that payload holds them whole: the
-// datagrams of a UDP flow. Like the payload, they are borrowed until the
-// cache is read.
+// datagrams of a UDP flow. The outbound sends each buffer of a UDP link as a
+// datagram of its own, so these are the datagrams the destination receives,
+// even where an inbound merged or split the client's datagrams. Like the
+// payload, they are borrowed until the cache is read.
 func (r *cachedReader) Datagrams() [][]byte {
 	r.Lock()
 	defer r.Unlock()

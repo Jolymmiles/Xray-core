@@ -5,8 +5,10 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
 )
 
@@ -20,6 +22,15 @@ func withoutPadding(t *testing.T, datagram []byte, padding int) []byte {
 		t.Fatalf("the datagram does not end with %d bytes of padding leaving it below 1200 bytes", padding)
 	}
 	return bytes.Clone(short)
+}
+
+// newTestCachedReader returns a cached reader of link that releases what it
+// still caches when the test ends.
+func newTestCachedReader(t *testing.T, link buf.TimeoutReader) *cachedReader {
+	t.Helper()
+	reader := newCachedReader(link)
+	t.Cleanup(func() { buf.ReleaseMulti(reader.readInternal()) })
+	return reader
 }
 
 // A QUIC server reads each datagram on its own, and discards an Initial
@@ -47,7 +58,7 @@ func TestSniffQUICIgnoresInitialDatagramsBelow1200Bytes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := newCachedReader(&datagramReader{datagrams: tt.datagrams})
+			reader := newTestCachedReader(t, &datagramReader{datagrams: tt.datagrams})
 			ctx := snifferContext()
 			result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
 			switch {
@@ -59,6 +70,65 @@ func TestSniffQUICIgnoresInitialDatagramsBelow1200Bytes(t *testing.T) {
 				t.Fatalf("sniff() = %s %q, want quic %q", result.Protocol(), result.Domain(), tt.domain)
 			}
 		})
+	}
+}
+
+// bufferReader yields all its buffers in one read, as an inbound whose reader
+// returns several at once does, and times out afterwards.
+type bufferReader struct {
+	buffers [][]byte
+}
+
+func (r *bufferReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	return r.ReadMultiBufferTimeout(0)
+}
+
+func (r *bufferReader) ReadMultiBufferTimeout(time.Duration) (buf.MultiBuffer, error) {
+	if len(r.buffers) == 0 {
+		return nil, buf.ErrReadTimeout
+	}
+	var mb buf.MultiBuffer
+	for _, b := range r.buffers {
+		mb = append(mb, buf.FromBytes(bytes.Clone(b)))
+	}
+	r.buffers = nil
+	return mb, nil
+}
+
+// A UDP link carries one datagram per buffer: the outbound sends each buffer
+// it is handed as a datagram of its own (TestPacketWriterSendsEachBufferAsADatagram
+// in proxy/freedom). The datagrams the sniffer reads are thus the cached
+// buffers, as the destination receives them, even where an inbound merged or
+// split the client's datagrams. VMess merges a datagram of 8177 bytes or more
+// into the free space of the buffer before it (common/crypto/auth.go): a
+// client's datagrams of 527 and 8192 bytes reach the dispatcher as buffers of
+// 8192 and 527 bytes, the first starting with the whole short datagram. The
+// destination receives a datagram of 8192 bytes that starts with that Initial
+// packet, and reads its ClientHello, which the sniffer names too.
+func TestSniffQUICReadsTheDatagramsTheOutboundSends(t *testing.T) {
+	aioquic := withoutPadding(t, readQUICCorpus(t, "quic-aioquic1.2", 1)[0], 673)
+	ngtcp2 := readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0]
+	merged := slices.Concat(aioquic, ngtcp2, make([]byte, 8192-len(ngtcp2)))
+	buffers := [][]byte{merged[:8192], merged[8192:]}
+	reader := newTestCachedReader(t, &bufferReader{buffers: buffers})
+	ctx := snifferContext()
+	result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
+	if err != nil || result.Protocol() != "quic" || result.Domain() != "aioquic.sniff.test" {
+		t.Fatalf("sniff() = (%v, %v), want quic aioquic.sniff.test", result, err)
+	}
+	lent := reader.Datagrams()
+	forwarded, err := reader.ReadMultiBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buf.ReleaseMulti(forwarded)
+	if len(lent) != len(buffers) || len(forwarded) != len(buffers) {
+		t.Fatalf("lent %d and forwarded %d datagrams, want the %d buffers", len(lent), len(forwarded), len(buffers))
+	}
+	for i := range buffers {
+		if !bytes.Equal(lent[i], buffers[i]) || !bytes.Equal(forwarded[i].Bytes(), buffers[i]) {
+			t.Fatalf("datagram %d is lent or forwarded other than its buffer of %d bytes", i, len(buffers[i]))
+		}
 	}
 }
 
@@ -107,7 +177,7 @@ func TestSniffQUICKeepsLongDatagramsWhole(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := newCachedReader(&datagramReader{datagrams: slices.Clone(tt.datagrams)})
+			reader := newTestCachedReader(t, &datagramReader{datagrams: slices.Clone(tt.datagrams)})
 			ctx := snifferContext()
 			result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
 			if err != nil || result.Protocol() != "quic" || result.Domain() != "chrome.sniff.test" {
@@ -123,5 +193,63 @@ func TestSniffQUICKeepsLongDatagramsWhole(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The datagrams the cached reader lends are its cached buffers, so it must
+// forget them once it hands the buffers on or releases them.
+func TestCachedReaderForgetsLentDatagrams(t *testing.T) {
+	for name, finish := range map[string]func(*testing.T, *cachedReader){
+		"read": func(t *testing.T, r *cachedReader) {
+			forwarded, err := r.ReadMultiBuffer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buf.ReleaseMulti(forwarded)
+		},
+		"interrupted": func(_ *testing.T, r *cachedReader) { r.Interrupt() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			reader := newTestCachedReader(t, &datagramReader{datagrams: [][]byte{[]byte("datagram")}})
+			if _, err := reader.Cache(time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if len(reader.Datagrams()) != 1 {
+				t.Fatal("the cached reader lends no datagram")
+			}
+			finish(t, reader)
+			if reader.datagrams != nil {
+				t.Fatal("the cached reader keeps the datagrams it lent after their buffers left it")
+			}
+		})
+	}
+}
+
+// The cached reader lends the datagrams the payload it returned holds whole:
+// of several buffers, Cache copies no more than its scratch buffer holds.
+func TestCachedReaderLendsTheDatagramsOfThePayload(t *testing.T) {
+	datagrams := make([][]byte, 5)
+	for i := range datagrams {
+		datagrams[i] = bytes.Repeat([]byte{byte(i + 1)}, 8000)
+	}
+	reader := newTestCachedReader(t, &datagramReader{datagrams: slices.Clone(datagrams)})
+	var payload []byte
+	for range datagrams {
+		var err error
+		if payload, err = reader.Cache(time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(payload) < 4*8000 || len(payload) >= 5*8000 {
+		t.Fatalf("the payload holds %d bytes; the test needs four datagrams of 8000 bytes in it whole and the fifth cut", len(payload))
+	}
+	lent := reader.Datagrams()
+	if len(lent) != 4 {
+		t.Fatalf("the cached reader lends %d datagrams, want the 4 the payload holds whole", len(lent))
+	}
+	for i := range lent {
+		if !bytes.Equal(lent[i], datagrams[i]) {
+			t.Fatalf("datagram %d is lent other than it was cached", i)
+		}
 	}
 }
