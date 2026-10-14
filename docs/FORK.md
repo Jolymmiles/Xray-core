@@ -148,6 +148,41 @@ guard it.
   `TestClientSessionManagerLargestBudgetNeverWrapsIDs`,
   `TestMuxCoolMaxReuseTimesProcess` and
   `TestMuxCoolMaxReuseTimesOldServerProcess`.
+- A UDP datagram above `buf.Size` (8 KiB) stays whole when an inbound reads
+  it, up to the 65535 bytes the framing's length allows, and its size never
+  ends a session or a mux connection. sing-box clients send such datagrams
+  whole, and so does Mihomo over VLESS (XUDP) and VMess; Mihomo's Trojan
+  client splits one into packets of 8192 bytes itself. Upstream's VLESS reader
+  splits one into buffers of 8192 bytes, which freedom sends as datagrams of
+  their own; its VMess reader in packet mode splits one likewise, after
+  filling the free space of the buffer before it when it reads both at once;
+  its Trojan reader ends the UDP session on a payload above 8192 bytes; its
+  Mux.Cool packet reader ends the mux connection, with every session on it, on
+  a packet above `buf.Size`, and its XUDP reader fails on one. Here each of
+  these readers returns the datagram in one buffer, taken from `bytespool`
+  once its length has arrived (32 KiB for a datagram of up to 32 KiB, 128 KiB
+  above), as the SMUX reader keeps its datagrams whole. The writers send no
+  more than older readers take: the Mux.Cool writer drops a packet above
+  `buf.Size`, where upstream's frames it; the Trojan writer sends up to 8192
+  bytes, where upstream's fails with `ErrBufferFull` from 8182 bytes to an
+  IPv4 address, and drops a longer datagram; the Shadowsocks 2022 writer drops
+  a datagram too large for a packet, where upstream's ends the session;
+  freedom drops a datagram longer than an IP packet holds (65507 bytes over
+  IPv4, 65527 over IPv6), where the write failed with "message too long" and
+  ended the session. The VLESS, VMess and XUDP writers already dropped what
+  they cannot frame. Reads from a UDP socket (the UDP hub, freedom's replies)
+  still cut a datagram at 8192 bytes, upstream alike. Covered by
+  `TestLengthPacketReaderKeepsLargeDatagramsWhole` (`proxy/vless/encoding`),
+  `TestAuthenticationReaderKeepsLargeDatagramsWhole` and
+  `TestAuthenticationReaderStreamKeepsLargeChunksInOrder` (`common/crypto`),
+  `TestPacketReaderKeepsLargeDatagramsWhole` and
+  `TestPacketWriterSendsWhatReadersTake` (`proxy/trojan`),
+  `TestPacketReaderKeepsLargePacketsWhole`,
+  `TestServerWorkerKeepsLargePacketsWhole` and
+  `TestWriterDropsPacketsOlderReadersRefuse` (`common/mux`),
+  `TestPacketReaderKeepsLargePacketsWhole` (`common/xudp`),
+  `TestUDPWriterDropsDatagramsTooLargeForAPacket` (`proxy/shadowsocks_2022`)
+  and `TestPacketWriterDropsDatagramsTooLongForIP` (`proxy/freedom`).
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
