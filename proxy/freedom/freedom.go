@@ -573,7 +573,42 @@ func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 			OutGateway:        outGateway,
 		}
 	}
-	return &buf.SequentialWriter{Writer: conn}
+	writer := &buf.SequentialWriter{Writer: conn}
+	if _, ok := conn.RemoteAddr().(*net.UDPAddr); !ok {
+		return writer
+	}
+	return &connectedPacketWriter{Writer: writer, longest: maxUDPPayload(conn.RemoteAddr())}
+}
+
+// maxUDPPayload returns the longest UDP payload of an IP packet to addr: an
+// IP packet holds 65535 bytes, of which the UDP header takes 8 and an IPv4
+// header 20, while the IPv6 header is not counted. A socket refuses a longer
+// datagram, failing the write and with it the UDP session, so the writers drop
+// it, as the proxy writers drop a datagram they cannot frame.
+func maxUDPPayload(addr net.Addr) int32 {
+	if udpAddr, ok := addr.(*net.UDPAddr); ok && udpAddr.IP.To4() == nil {
+		return 65535 - 8
+	}
+	return 65535 - 20 - 8
+}
+
+// connectedPacketWriter sends each buffer as a datagram on a connected UDP
+// socket, and drops one longer than its destination takes.
+type connectedPacketWriter struct {
+	buf.Writer
+	longest int32
+}
+
+func (w *connectedPacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	kept := mb[:0]
+	for _, b := range mb {
+		if b.Len() > w.longest {
+			b.Release()
+			continue
+		}
+		kept = append(kept, b)
+	}
+	return w.Writer.WriteMultiBuffer(kept)
 }
 
 type PacketWriter struct {
@@ -644,12 +679,16 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 				continue
 			}
 			destAddr := b.UDP.RawNetAddr()
-			if destAddr == nil {
+			if destAddr == nil || b.Len() > maxUDPPayload(destAddr) {
 				b.Release()
 				continue
 			}
 			n, err = w.PacketConnWrapper.WriteTo(b.Bytes(), destAddr)
 		} else {
+			if b.Len() > maxUDPPayload(w.PacketConnWrapper.Dest) {
+				b.Release()
+				continue
+			}
 			n, err = w.PacketConnWrapper.Write(b.Bytes())
 		}
 		b.Release()
