@@ -952,7 +952,7 @@ func undecryptableInitial(destConnID []byte) []byte {
 func TestSniffQUICFollowsItsConnectionAcrossDatagrams(t *testing.T) {
 	for _, tt := range connectionFollowingFlows(t) {
 		t.Run(tt.name, func(t *testing.T) {
-			assertSniffDatagrams(t, tt.datagrams, tt.want)
+			assertSniffJoined(t, tt.datagrams, tt.want)
 		})
 	}
 }
