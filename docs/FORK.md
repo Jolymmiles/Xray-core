@@ -177,8 +177,8 @@ guard it.
   connected socket on Linux reports a router's ICMP "fragmentation needed" for
   an earlier datagram on its next write or read; freedom's reader of a
   connected socket skips that error. The VLESS, VMess and XUDP writers already
-  dropped what they cannot frame. Reads from a UDP socket (the UDP hub,
-  freedom's replies) still cut a datagram at 8192 bytes, upstream alike.
+  dropped what they cannot frame. Reads from a UDP socket take up to 8192
+  bytes; the next entry covers a longer datagram.
   Covered by `TestReadDatagramTakesMemoryAsTheBytesArrive`,
   `TestReadDatagramLeavesTheStreamAtTheNextDatagram` and
   `TestReadDatagramReportsAStreamThatEndsInside` (`common/buf`),
@@ -200,6 +200,24 @@ guard it.
   and `TestPacketWriterDropsDatagramsTooLongForIP`,
   `TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong` and
   `TestPacketReaderSkipsTooLongErrorsOfAConnectedSocket` (`proxy/freedom`).
+- A read from a UDP socket takes up to `buf.Size` (8192) bytes, and the UDP
+  hub, which serves the UDP side of SOCKS, Shadowsocks, dokodemo-door and
+  other inbounds, and freedom, which reads the replies, drop a datagram that a
+  read cut short instead of passing its start on. Linux, macOS and the BSDs
+  mark such a read with `MSG_TRUNC`, and Windows fails it with `WSAEMSGSIZE`.
+  Where the read only marks it, upstream passes the first 8192 bytes on as a
+  datagram of their own; on Windows the error ends freedom's session, and
+  upstream's hub stops serving, so that one long datagram from anyone ends the
+  UDP side of the inbound until a restart. The hub on macOS and FreeBSD reads without the flags and still
+  passes a cut datagram on. `net.IsMessageTooLong` knows `WSAEMSGSIZE`, so on
+  Windows freedom also drops a datagram that its socket refuses as too long.
+  Covered by `TestIsMessageTooLong`, `TestIsTruncated` and, on Windows,
+  `TestIsMessageTooLongOnWindows` (`common/net`),
+  `TestHubDropsDatagramsLongerThanItsBuffer`,
+  `TestHubServesOnAfterAReadOfATooLongDatagram` and
+  `TestHubStopsServingOnOtherReadErrors` (`transport/internet/udp`),
+  and `TestPacketReaderDropsDatagramsLongerThanItsBuffer` and
+  `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`).
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
