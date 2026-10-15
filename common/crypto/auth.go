@@ -250,15 +250,21 @@ func NewAuthenticationWriter(auth Authenticator, sizeParser ChunkSizeEncoder, wr
 
 func (w *AuthenticationWriter) seal(b []byte) (*buf.Buffer, error) {
 	encryptedSize := int32(len(b) + w.auth.Overhead())
+	sizeBytes := w.sizeParser.SizeBytes()
+	// The padding length comes from a stream that the peer reads once per
+	// chunk it receives, so a chunk that may not fit is refused before its
+	// padding length is taken: taking it and dropping the chunk would leave
+	// the peer reading every later chunk with the wrong padding.
+	var maxPadding int32
+	if w.padding != nil {
+		maxPadding = int32(w.padding.MaxPaddingLen())
+	}
+	if totalSize := sizeBytes + encryptedSize + maxPadding; totalSize > buf.Size {
+		return nil, errors.New("size too large: ", totalSize)
+	}
 	var paddingSize int32
 	if w.padding != nil {
 		paddingSize = int32(w.padding.NextPaddingLen())
-	}
-
-	sizeBytes := w.sizeParser.SizeBytes()
-	totalSize := sizeBytes + encryptedSize + paddingSize
-	if totalSize > buf.Size {
-		return nil, errors.New("size too large: ", totalSize)
 	}
 
 	eb := buf.New()
