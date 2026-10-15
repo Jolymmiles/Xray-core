@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal"
 )
 
@@ -30,7 +31,14 @@ type TempUDPConn struct {
 func (c *TempUDPConn) Read(b []byte) (n int, err error) {
 	var remote net.Addr
 	for {
-		n, remote, err = c.PacketConn.ReadFrom(b)
+		var cut bool
+		n, remote, cut, err = c.readFrom(b)
+		if cut {
+			// a read takes up to len(b) bytes: drop a longer datagram rather
+			// than pass its start on as a datagram of its own
+			xnet.LogDroppedDatagram(context.Background(), -1, "longer than the buffer a read takes")
+			continue
+		}
 		if err != nil {
 			return
 		}
@@ -48,6 +56,21 @@ func (c *TempUDPConn) Read(b []byte) (n int, err error) {
 			}
 		}
 	}
+}
+
+// readFrom reads a datagram into b, and reports whether the read cut it short:
+// Linux, macOS and the BSDs mark such a read, and Windows fails it.
+func (c *TempUDPConn) readFrom(b []byte) (int, net.Addr, bool, error) {
+	socket, ok := c.PacketConn.(*net.UDPConn)
+	if !ok {
+		n, remote, err := c.PacketConn.ReadFrom(b)
+		return n, remote, false, err
+	}
+	n, _, flags, remote, err := socket.ReadMsgUDP(b, nil)
+	if xnet.IsMessageTooLong(err) {
+		return 0, nil, true, nil
+	}
+	return n, remote, xnet.IsTruncated(flags), err
 }
 
 func (c *TempUDPConn) Write(b []byte) (n int, err error) {
