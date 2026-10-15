@@ -388,15 +388,20 @@ func EncodeUDPPacket(request *protocol.RequestHeader, data []byte) (*buf.Buffer,
 
 type UDPReader struct {
 	Reader io.Reader
+	// datagrams reads Reader, a UDP socket, and drops a packet longer than a
+	// read takes, which it would pass on cut as a whole datagram
+	datagrams *buf.DatagramReader
 }
 
 func (r *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	buffer := buf.New()
-	_, err := buffer.ReadFrom(r.Reader)
+	if r.datagrams == nil {
+		r.datagrams = &buf.DatagramReader{Reader: r.Reader}
+	}
+	mb, err := r.datagrams.ReadMultiBuffer()
 	if err != nil {
-		buffer.Release()
 		return nil, err
 	}
+	buffer := mb[0]
 	u, err := DecodeUDPPacket(buffer)
 	if err != nil {
 		buffer.Release()

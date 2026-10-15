@@ -289,15 +289,20 @@ func DecodeUDPPacket(validator *Validator, payload *buf.Buffer) (*protocol.Reque
 type UDPReader struct {
 	Reader io.Reader
 	User   *protocol.MemoryUser
+	// datagrams reads Reader, a UDP socket, and drops a packet longer than a
+	// read takes, which would fail its authentication cut and end the session
+	datagrams *buf.DatagramReader
 }
 
 func (v *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	buffer := buf.New()
-	_, err := buffer.ReadFrom(v.Reader)
+	if v.datagrams == nil {
+		v.datagrams = &buf.DatagramReader{Reader: v.Reader}
+	}
+	mb, err := v.datagrams.ReadMultiBuffer()
 	if err != nil {
-		buffer.Release()
 		return nil, err
 	}
+	buffer := mb[0]
 	validator := new(Validator)
 	validator.Add(v.User)
 

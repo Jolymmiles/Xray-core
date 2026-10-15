@@ -1,11 +1,13 @@
 package buf
 
 import (
+	"context"
 	"io"
 	"sync"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
+	xnet "github.com/xtls/xray-core/common/net"
 )
 
 func readOneUDP(r io.Reader) (*Buffer, error) {
@@ -22,6 +24,40 @@ func readOneUDP(r io.Reader) (*Buffer, error) {
 	}
 
 	b.Release()
+	return nil, errors.New("Reader returns too many empty payloads.")
+}
+
+// DatagramReader reads the datagrams of a UDP socket, or of a reader that,
+// like one, returns a datagram per Read and cuts one longer than the buffer it
+// reads into without a sign. Each read takes one byte more than a Buffer
+// holds, so that a datagram longer than Size shows: it is dropped, rather than
+// passed on cut as a datagram of its own, and the next is read. An empty
+// datagram is skipped, as PacketReader skips it.
+type DatagramReader struct {
+	Reader  io.Reader
+	scratch [Size + 1]byte
+	drops   xnet.DropLog
+}
+
+// ReadMultiBuffer implements Reader.
+func (r *DatagramReader) ReadMultiBuffer() (MultiBuffer, error) {
+	for empty := 0; empty < 64; {
+		n, err := r.Reader.Read(r.scratch[:])
+		switch {
+		case n > Size:
+			if r.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram longer than the ", Size, " bytes a read takes")
+			}
+			continue
+		case n > 0:
+			b := New()
+			common.Must2(b.Write(r.scratch[:n]))
+			return MultiBuffer{b}, nil
+		case err != nil:
+			return nil, err
+		}
+		empty++
+	}
 	return nil, errors.New("Reader returns too many empty payloads.")
 }
 

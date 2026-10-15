@@ -389,27 +389,38 @@ func (h *Handler) resolveLocal(host string) (net.IP, error) {
 
 type UDPConnClient struct {
 	net.PacketConn
-	Dest  *net.UDPAddr
-	drops net.DropLog
+	Dest *net.UDPAddr
+	// scratch takes a read, one byte longer than a Buffer, so that a reply
+	// the read cuts shows
+	scratch [buf.Size + 1]byte
+	drops   net.DropLog
 }
 
+// ReadMultiBuffer returns the next reply of the tunnel. The stack and a
+// kernel socket cut a datagram longer than the buffer of a read without a
+// sign, so a read takes one byte more than a Buffer holds: a reply longer
+// than buf.Size is dropped, rather than passed on cut as a whole datagram.
 func (c *UDPConnClient) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	b := buf.New()
-	b.Resize(0, buf.Size)
-	n, addr, err := c.PacketConn.ReadFrom(b.Bytes())
-	if err != nil {
-		b.Release()
-		return nil, err
+	for {
+		n, addr, err := c.PacketConn.ReadFrom(c.scratch[:])
+		if err != nil {
+			return nil, err
+		}
+		if n > buf.Size {
+			if c.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP reply longer than the ", buf.Size, " bytes a read takes")
+			}
+			continue
+		}
+		b := buf.New()
+		common.Must2(b.Write(c.scratch[:n]))
+		b.UDP = &net.Destination{
+			Address: net.IPAddress(addr.(*net.UDPAddr).IP),
+			Port:    net.Port(addr.(*net.UDPAddr).Port),
+			Network: net.Network_UDP,
+		}
+		return buf.MultiBuffer{b}, nil
 	}
-	b.Resize(0, int32(n))
-
-	b.UDP = &net.Destination{
-		Address: net.IPAddress(addr.(*net.UDPAddr).IP),
-		Port:    net.Port(addr.(*net.UDPAddr).Port),
-		Network: net.Network_UDP,
-	}
-
-	return buf.MultiBuffer{b}, nil
 }
 
 func (c *UDPConnClient) WriteMultiBuffer(mb buf.MultiBuffer) error {

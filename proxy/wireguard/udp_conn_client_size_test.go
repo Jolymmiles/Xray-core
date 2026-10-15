@@ -104,3 +104,43 @@ func TestUDPConnClientDropsDatagramsTooLongForIPBeforeTheWrite(t *testing.T) {
 		}
 	}
 }
+
+// The client reads the replies of the tunnel with ReadFrom into a buffer of
+// 8192 bytes, which cut a longer one without a sign, as the userspace stack
+// and a kernel socket do, and passed its start on as a whole datagram. It
+// drops such a datagram and returns the next.
+func TestUDPConnClientDropsRepliesLongerThanARead(t *testing.T) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.LocalHostIP.IP()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	server, err := net.DialUDP("udp", nil, conn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { server.Close() })
+	sent := [][]byte{[]byte("ping"), bytes.Repeat([]byte{2}, 9000), []byte("pong")}
+	for _, datagram := range sent {
+		if _, err := server.Write(datagram); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	client := &UDPConnClient{PacketConn: conn, Dest: server.LocalAddr().(*net.UDPAddr)}
+	for _, want := range [][]byte{sent[0], sent[2]} {
+		mb, err := client.ReadMultiBuffer()
+		if err != nil {
+			t.Fatalf("reading %q: %v", want, err)
+		}
+		if len(mb) != 1 || !bytes.Equal(mb[0].Bytes(), want) {
+			t.Fatalf("read a datagram of %d bytes, want %q", mb.Len(), want)
+		}
+		if mb[0].UDP == nil || mb[0].UDP.Port != net.Port(server.LocalAddr().(*net.UDPAddr).Port) {
+			t.Fatalf("the datagram comes from %v, want the server", mb[0].UDP)
+		}
+		buf.ReleaseMulti(mb)
+	}
+}
