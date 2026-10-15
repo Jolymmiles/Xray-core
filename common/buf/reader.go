@@ -25,6 +25,41 @@ func readOneUDP(r io.Reader) (*Buffer, error) {
 	return nil, errors.New("Reader returns too many empty payloads.")
 }
 
+// ReadDatagram reads a datagram of size bytes from r into one Buffer, so that
+// it stays whole. It takes memory as the bytes arrive: a datagram above Size
+// is read into regular Buffers and then copied into one of its size, so that
+// a peer that announces a long datagram and stalls holds no more memory than
+// it sent and one regular Buffer. Like io.ReadFull, it returns io.EOF only if
+// no byte of the datagram arrived.
+func ReadDatagram(r io.Reader, size int32) (*Buffer, error) {
+	if size <= Size {
+		b := New()
+		if _, err := b.ReadFullFrom(r, size); err != nil {
+			b.Release()
+			return nil, err
+		}
+		return b, nil
+	}
+	parts := make(MultiBuffer, 0, (size+Size-1)/Size)
+	for arrived := int32(0); arrived < size; arrived += Size {
+		part := New()
+		parts = append(parts, part)
+		if _, err := part.ReadFullFrom(r, min(size-arrived, Size)); err != nil {
+			ReleaseMulti(parts)
+			if err == io.EOF && arrived > 0 {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+	datagram := NewWithSize(size)
+	for _, part := range parts {
+		copy(datagram.Extend(part.Len()), part.Bytes())
+	}
+	ReleaseMulti(parts)
+	return datagram, nil
+}
+
 // ReadBuffer reads a Buffer from the given reader.
 func ReadBuffer(r io.Reader) (*Buffer, error) {
 	b := New()

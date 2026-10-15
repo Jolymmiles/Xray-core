@@ -196,12 +196,15 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 					// A peer may send a packet above buf.Size, which the
 					// writer does not: it stays whole, in a buffer of its
 					// own, as the outbound sends it.
-					large := buf.NewWithSize(length)
+					large, err := buf.ReadDatagram(r.Reader, length)
+					if err != nil {
+						b.Release()
+						return nil, err
+					}
 					large.UDP = b.UDP
 					b.Release()
 					b = large
-				}
-				if _, err := b.ReadFullFrom(r.Reader, length); err != nil {
+				} else if _, err := b.ReadFullFrom(r.Reader, length); err != nil {
 					b.Release()
 					return nil, err
 				}

@@ -135,14 +135,8 @@ func (r *AuthenticationReader) readSize() (uint16, uint16, error) {
 var errSoft = errors.New("waiting for more data")
 
 func (r *AuthenticationReader) readBuffer(size int32, padding int32) (*buf.Buffer, error) {
-	var b *buf.Buffer
-	if size > buf.Size {
-		b = buf.NewWithSize(size)
-	} else {
-		b = buf.New()
-	}
-	if _, err := b.ReadFullFrom(r.reader, size); err != nil {
-		b.Release()
+	b, err := buf.ReadDatagram(r.reader, size)
+	if err != nil {
 		return nil, err
 	}
 	size -= padding

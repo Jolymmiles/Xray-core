@@ -39,14 +39,8 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 
 	// A peer may frame a packet above buf.Size, which the writer does not: it
 	// stays whole, in a buffer of its own, as the outbound sends it.
-	var b *buf.Buffer
-	if size > buf.Size {
-		b = buf.NewWithSize(int32(size))
-	} else {
-		b = buf.New()
-	}
-	if _, err := b.ReadFullFrom(r.reader, int32(size)); err != nil {
-		b.Release()
+	b, err := buf.ReadDatagram(r.reader, int32(size))
+	if err != nil {
 		return nil, err
 	}
 	r.eof = true

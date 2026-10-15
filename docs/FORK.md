@@ -159,14 +159,17 @@ guard it.
   its Trojan reader ends the UDP session on a payload above 8192 bytes; its
   Mux.Cool packet reader ends the mux connection, with every session on it, on
   a packet above `buf.Size`, and its XUDP reader fails on one. Here each of
-  these readers returns the datagram in one buffer, taken from `bytespool`
-  once its length has arrived (32 KiB for a datagram of up to 32 KiB, 128 KiB
-  above), as the SMUX reader keeps its datagrams whole. The writers send no
-  more than older readers take: the Mux.Cool writer drops a packet above
-  `buf.Size`, where upstream's frames it; the Trojan writer sends up to 8192
-  bytes, where upstream's fails with `ErrBufferFull` from 8182 bytes to an
-  IPv4 address, and drops a longer datagram; the Shadowsocks 2022 writer drops
-  a datagram too large for a packet, where upstream's ends the session;
+  these readers returns the datagram in one buffer, as the SMUX reader keeps
+  its datagrams whole. `buf.ReadDatagram` reads its bytes into regular buffers
+  as they arrive and copies them into one buffer of its size from `bytespool`
+  once the last has arrived, so a peer that announces a long datagram and
+  stalls holds no more memory than it sent and one regular buffer, as with
+  upstream's VLESS reader. The writers send no more than older readers take:
+  the Mux.Cool writer drops a packet above `buf.Size`, where upstream's frames
+  it; the Trojan writer sends up to 8192 bytes, where upstream's fails with
+  `ErrBufferFull` from 8182 bytes to an IPv4 address, and drops a longer
+  datagram; the Shadowsocks 2022 writer drops a datagram too large for a
+  packet, where upstream's ends the session;
   freedom drops a datagram longer than an IP packet holds (65507 bytes over
   IPv4, 65527 over IPv6), and one its socket refuses as too long (`EMSGSIZE`),
   where upstream's freedom ends the session on that error: macOS refuses a
@@ -176,15 +179,23 @@ guard it.
   connected socket skips that error. The VLESS, VMess and XUDP writers already
   dropped what they cannot frame. Reads from a UDP socket (the UDP hub,
   freedom's replies) still cut a datagram at 8192 bytes, upstream alike.
-  Covered by `TestLengthPacketReaderKeepsLargeDatagramsWhole`
-  (`proxy/vless/encoding`), `TestAuthenticationReaderKeepsLargeDatagramsWhole`
-  and `TestAuthenticationReaderStreamKeepsLargeChunksInOrder`
-  (`common/crypto`), `TestPacketReaderKeepsLargeDatagramsWhole` and
+  Covered by `TestReadDatagramTakesMemoryAsTheBytesArrive`,
+  `TestReadDatagramLeavesTheStreamAtTheNextDatagram` and
+  `TestReadDatagramReportsAStreamThatEndsInside` (`common/buf`),
+  `TestLengthPacketReaderKeepsLargeDatagramsWhole` and
+  `TestLengthPacketReaderTakesMemoryAsTheDatagramArrives`
+  (`proxy/vless/encoding`), `TestAuthenticationReaderKeepsLargeDatagramsWhole`,
+  `TestAuthenticationReaderTakesMemoryAsTheDatagramArrives` and
+  `TestAuthenticationReaderStreamKeepsLargeChunksInOrder` (`common/crypto`),
+  `TestPacketReaderKeepsLargeDatagramsWhole`,
+  `TestPacketReaderTakesMemoryAsTheDatagramArrives` and
   `TestPacketWriterSendsWhatReadersTake` (`proxy/trojan`),
   `TestPacketReaderKeepsLargePacketsWhole`,
+  `TestPacketReaderTakesMemoryAsThePacketArrives`,
   `TestServerWorkerKeepsLargePacketsWhole` and
   `TestWriterDropsPacketsOlderReadersRefuse` (`common/mux`),
-  `TestPacketReaderKeepsLargePacketsWhole` (`common/xudp`),
+  `TestPacketReaderKeepsLargePacketsWhole` and
+  `TestPacketReaderTakesMemoryAsThePacketArrives` (`common/xudp`),
   `TestUDPWriterDropsDatagramsTooLargeForAPacket` (`proxy/shadowsocks_2022`),
   and `TestPacketWriterDropsDatagramsTooLongForIP`,
   `TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong` and

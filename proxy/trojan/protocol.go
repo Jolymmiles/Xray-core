@@ -261,17 +261,11 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	if length == 0 {
 		return nil, nil
 	}
-	var b *buf.Buffer
-	if length > buf.Size {
-		b = buf.NewWithSize(length)
-	} else {
-		b = buf.New()
+	b, err := buf.ReadDatagram(r, length)
+	if err != nil {
+		return nil, errors.New("failed to read payload").Base(err)
 	}
 	dest := net.UDPDestination(addr, port)
 	b.UDP = &dest
-	if _, err := b.ReadFullFrom(r, length); err != nil {
-		b.Release()
-		return nil, errors.New("failed to read payload").Base(err)
-	}
 	return buf.MultiBuffer{b}, nil
 }

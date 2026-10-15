@@ -123,3 +123,55 @@ func lengths(datagrams [][]byte) []int {
 	}
 	return sizes
 }
+
+// A peer sends the length of a chunk before its bytes and may stall in
+// between. In packet mode the reader took a buffer of the chunk's size, up to
+// 128 KiB, as soon as the length arrived. It must read the bytes into buffers
+// of buf.Size as they arrive, so that a stalled peer holds no more memory than
+// it sent, and still return each datagram whole.
+func TestAuthenticationReaderTakesMemoryAsTheDatagramArrives(t *testing.T) {
+	overhead := crypto.NewAesGcm(make([]byte, 16)).Overhead()
+	var datagrams [][]byte
+	for _, size := range []int{buf.Size - overhead, buf.Size - overhead + 1, 9000, 65535 - overhead} {
+		datagram := make([]byte, size)
+		for i := range datagram {
+			datagram[i] = byte(i % 251)
+		}
+		datagrams = append(datagrams, datagram)
+	}
+	authenticator, stream := peerStream(t, datagrams)
+	largest := 0
+	arriving := &buf.BufferedReader{
+		Reader: buf.NewReader(iotest.OneByteReader(stream)),
+		Splitter: func(mb buf.MultiBuffer, b []byte) (buf.MultiBuffer, int) {
+			largest = max(largest, cap(b))
+			return buf.SplitBytes(mb, b)
+		},
+	}
+	reader := crypto.NewAuthenticationReader(authenticator(), crypto.PlainChunkSizeParser{}, arriving, protocol.TransferTypePacket, nil)
+	var got [][]byte
+	for {
+		mb, err := reader.ReadMultiBuffer()
+		for _, b := range mb {
+			got = append(got, bytes.Clone(b.Bytes()))
+		}
+		buf.ReleaseMulti(mb)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("after %d datagrams: %v", len(got), err)
+		}
+	}
+	if len(got) != len(datagrams) {
+		t.Fatalf("read %d datagrams of %v bytes, want %d of %v", len(got), lengths(got), len(datagrams), lengths(datagrams))
+	}
+	for i := range datagrams {
+		if !bytes.Equal(got[i], datagrams[i]) {
+			t.Fatalf("datagram %d holds %d bytes other than the %d sent", i, len(got[i]), len(datagrams[i]))
+		}
+	}
+	if largest > buf.Size {
+		t.Fatalf("a chunk was read into a buffer of %d bytes before it arrived, want at most %d", largest, buf.Size)
+	}
+}

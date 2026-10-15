@@ -121,3 +121,42 @@ func TestPacketWriterSendsWhatReadersTake(t *testing.T) {
 		t.Fatalf("after the datagrams: %v, want io.EOF", err)
 	}
 }
+
+// arrivingStream hands out its bytes one at a time, as a peer's bytes arrive,
+// and records the largest buffer a reader offered for them.
+type arrivingStream struct {
+	bytes   *bytes.Reader
+	largest int
+}
+
+func (s *arrivingStream) Read(p []byte) (int, error) {
+	s.largest = max(s.largest, cap(p))
+	return s.bytes.Read(p[:min(len(p), 1)])
+}
+
+// A peer sends the length of a datagram before its bytes and may stall in
+// between. The reader took a buffer of the datagram's size, up to 128 KiB,
+// as soon as the length arrived. It must read the bytes into buffers of
+// buf.Size as they arrive, so that a stalled peer holds no more memory than it
+// sent, and still return the datagram whole.
+func TestPacketReaderTakesMemoryAsTheDatagramArrives(t *testing.T) {
+	destination := net.UDPDestination(net.IPAddress([]byte{192, 0, 2, 7}), 5353)
+	for _, size := range []int{buf.Size, buf.Size + 1, 9000, 65535} {
+		datagram := make([]byte, size)
+		for i := range datagram {
+			datagram[i] = byte(i % 251)
+		}
+		stream := &arrivingStream{bytes: bytes.NewReader(trojanPacket(datagram))}
+		mb, err := (&PacketReader{Reader: stream}).ReadMultiBuffer()
+		if err != nil {
+			t.Fatalf("reading a datagram of %d bytes: %v", size, err)
+		}
+		if len(mb) != 1 || !bytes.Equal(mb[0].Bytes(), datagram) || mb[0].UDP.String() != destination.String() {
+			t.Fatalf("read %d buffers of %d bytes, want the datagram of %d bytes to %v whole", len(mb), mb.Len(), size, destination)
+		}
+		buf.ReleaseMulti(mb)
+		if stream.largest > buf.Size {
+			t.Fatalf("a datagram of %d bytes was read into a buffer of %d bytes before it arrived, want at most %d", size, stream.largest, buf.Size)
+		}
+	}
+}
