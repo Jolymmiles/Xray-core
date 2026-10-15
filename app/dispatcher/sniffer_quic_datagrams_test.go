@@ -11,6 +11,7 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/quic"
+	"github.com/xtls/xray-core/transport/pipe"
 )
 
 // withoutPadding returns a captured datagram without the zero padding that
@@ -310,5 +311,48 @@ func TestCachedReaderLendsTheDatagramsOfThePayload(t *testing.T) {
 		if !bytes.Equal(lent[i], datagrams[i]) {
 			t.Fatalf("datagram %d is lent other than it was cached", i)
 		}
+	}
+}
+
+// A payload of several buffers holds no more than the scratch, so a first
+// buffer longer than it was lent with none: the QUIC sniffer then got no
+// datagram and waited out its window, where it would name no server at once
+// for one longer than quic.MaxProxiedDatagram. The cached reader lends the
+// first buffer, however long.
+func TestCachedReaderLendsAFirstDatagramLongerThanThePayload(t *testing.T) {
+	datagrams := [][]byte{bytes.Repeat([]byte{1}, 40000), []byte("next")}
+	reader := newTestCachedReader(t, &datagramReader{datagrams: slices.Clone(datagrams)})
+	var payload []byte
+	for range datagrams {
+		var err error
+		if payload, err = reader.Cache(time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(payload) >= len(datagrams[0]) {
+		t.Fatalf("the payload holds %d bytes; the test needs the first datagram cut", len(payload))
+	}
+	lent := reader.Datagrams()
+	if len(lent) != 1 || !bytes.Equal(lent[0], datagrams[0]) {
+		t.Fatalf("the cached reader lends %d datagrams, want the first whole", len(lent))
+	}
+}
+
+// With the first datagram lent, the sniffers judge such a flow at once: the
+// QUIC sniffer names no server for a datagram longer than
+// quic.MaxProxiedDatagram, and sniff returns the sniffers' verdict instead of
+// waiting out its window on a link that delivers nothing more.
+func TestSniffJudgesAFirstDatagramLongerThanThePayload(t *testing.T) {
+	link, writer := pipe.New(pipe.WithoutSizeLimit())
+	t.Cleanup(func() { writer.Close() })
+	first := buf.NewWithSize(40000)
+	first.Extend(40000)
+	if err := writer.WriteMultiBuffer(buf.MultiBuffer{first, buf.FromBytes([]byte("next"))}); err != nil {
+		t.Fatal(err)
+	}
+	reader := newTestCachedReader(t, link)
+	ctx := snifferContext()
+	if result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx)); err != errUnknownContent {
+		t.Fatalf("sniff() = (%v, %v), want the sniffers' verdict %v", result, err, errUnknownContent)
 	}
 }

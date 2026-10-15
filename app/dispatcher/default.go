@@ -71,14 +71,14 @@ func (r *cachedReader) Cache(deadline time.Duration) ([]byte, error) {
 }
 
 // Datagrams returns the buffers the payload the last Cache returned
-// concatenates, each on its own, as far as that payload holds them whole: the
-// datagrams of a UDP flow as the outbound sends them, even where an inbound
-// merged or split the client's datagrams. Freedom sends each buffer of a UDP
-// link as a datagram of its own, and the framings of the proxy outbounds carry
-// each buffer of up to quic.MaxProxiedDatagram bytes whole to their servers.
-// A proxy outbound may drop a longer one, so the QUIC sniffer names no server
-// once it meets one. Like the payload, they are borrowed until the cache is
-// read.
+// concatenates, each on its own, as far as that payload holds them whole, and
+// the first however long: the datagrams of a UDP flow as the outbound sends
+// them, even where an inbound merged or split the client's datagrams. Freedom
+// sends each buffer of a UDP link as a datagram of its own, and the framings
+// of the proxy outbounds carry each buffer of up to quic.MaxProxiedDatagram
+// bytes whole to their servers. A proxy outbound may drop a longer one, so the
+// QUIC sniffer names no server once it meets one, even the first. Like the
+// payload, they are borrowed until the cache is read.
 func (r *cachedReader) Datagrams() [][]byte {
 	r.Lock()
 	defer r.Unlock()
@@ -89,8 +89,10 @@ func (r *cachedReader) Datagrams() [][]byte {
 	r.datagrams = r.datagrams[:0]
 	size := int32(0)
 	for _, b := range r.cache {
-		// A payload of several buffers holds as many bytes as the scratch.
-		if len(r.cache) > 1 && size+b.Len() > r.scratch.Len() {
+		// A payload of several buffers holds as many bytes as the scratch;
+		// the first buffer is lent however long, so that the sniffers judge
+		// the flow rather than wait for more.
+		if len(r.datagrams) > 0 && size+b.Len() > r.scratch.Len() {
 			break
 		}
 		r.datagrams = append(r.datagrams, b.Bytes())

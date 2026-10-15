@@ -123,6 +123,7 @@ func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest n
 			s.timer.SetTimeout(0)
 		}
 	}()
+	var drops net.DropLog
 	for {
 		resMb, err := link.Reader.ReadMultiBuffer()
 		if err != nil {
@@ -143,20 +144,33 @@ func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest n
 				if err != nil {
 					continue
 				}
-				if err := s.WriteToClient(encPacket); err != nil {
+				if err := s.WriteToClient(encPacket); err != nil && !replyTooLong(err, len(encPacket), &drops) {
 					buf.ReleaseMulti(resMb[i+1:])
 					return
 				}
 			} else {
 				err := s.WriteToClient(b)
 				rb.Release()
-				if err != nil {
+				if err != nil && !replyTooLong(err, len(b), &drops) {
 					buf.ReleaseMulti(resMb[i+1:])
 					return
 				}
 			}
 		}
 	}
+}
+
+// replyTooLong reports whether err is the socket's refusal of a reply of size
+// bytes as too long. The outbounds hand a reply on whole, up to 65535 bytes,
+// so the reply loop drops such a reply and goes on with the session.
+func replyTooLong(err error, size int, drops *net.DropLog) bool {
+	if !net.IsMessageTooLong(err) {
+		return false
+	}
+	if drops.Due() {
+		errors.LogDebug(context.Background(), "dropped a UDP reply of ", size, " bytes that the socket refuses as too long")
+	}
+	return true
 }
 
 const (

@@ -206,11 +206,15 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 			Writer: buf.NewWriter(conn),
 		}
 	} else {
+		// A read of the socket cuts a reply longer than a Buffer without a sign:
+		// drop such a reply rather than pass its start on as a whole one.
 		connReader = &dns_proto.UDPReader{
-			Reader: buf.NewPacketReader(conn),
+			Reader: &buf.DatagramReader{Reader: conn},
 		}
+		// The inbounds hand a query on whole, up to 65535 bytes: drop one the
+		// socket refuses as too long and pass on the next.
 		connWriter = &dns_proto.UDPWriter{
-			Writer: buf.NewWriter(conn),
+			Writer: &buf.DatagramWriter{Writer: conn},
 		}
 	}
 

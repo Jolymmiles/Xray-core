@@ -106,6 +106,8 @@ type udpManager struct {
 	handler func(conn net.Conn, dest net.Destination)
 	m       map[string]*udpConn
 	mutex   sync.RWMutex
+	// drops limits the log of the replies that writeRawUDPPacket drops
+	drops net.DropLog
 }
 
 func (m *udpManager) feed(src net.Destination, dst net.Destination, data []byte) {
@@ -154,6 +156,14 @@ func (m *udpManager) close(uc *udpConn) {
 }
 
 func (m *udpManager) writeRawUDPPacket(payload []byte, src net.Destination, dst net.Destination) error {
+	// The outbounds hand a reply on whole, up to 65535 bytes: drop one whose
+	// length the 16-bit fields cannot state, and go on with the session.
+	if dst.Address.Family().IsIPv4() && len(payload) > net.MaxUDPPayloadIPv4 || len(payload) > net.MaxUDPPayloadIPv6 {
+		if m.drops.Due() {
+			errors.LogDebug(context.Background(), "dropped a UDP reply of ", len(payload), " bytes, longer than an IP packet holds")
+		}
+		return nil
+	}
 	udpLen := header.UDPMinimumSize + len(payload)
 	srcIP := tcpip.AddrFromSlice(src.Address.IP())
 	dstIP := tcpip.AddrFromSlice(dst.Address.IP())

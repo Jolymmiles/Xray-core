@@ -408,7 +408,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 				writer = buf.NewWriter(conn)
 			}
 		} else {
-			writer = NewPacketWriter(conn, h, defaultRule, UDPOverride, destination, outGateway)
+			writer = NewPacketWriter(ctx, conn, h, defaultRule, UDPOverride, destination, outGateway)
 			if h.config.Noises != nil {
 				errors.LogDebug(ctx, "NOISE", h.config.Noises)
 				writer = &NoisePacketWriter{
@@ -443,7 +443,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		if destination.Network == net.Network_TCP {
 			reader = buf.NewReader(conn)
 		} else {
-			reader = NewPacketReader(conn, h, defaultRule, UDPOverride, destination)
+			reader = NewPacketReader(ctx, conn, h, defaultRule, UDPOverride, destination)
 		}
 		if err := buf.Copy(reader, output, buf.UpdateActivity(timer)); err != nil {
 			return errors.New("failed to process response").Base(err)
@@ -471,7 +471,7 @@ func logFreedomConnectionOpened(ctx context.Context, destination net.Destination
 	}
 }
 
-func NewPacketReader(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination) buf.Reader {
+func NewPacketReader(ctx context.Context, conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination) buf.Reader {
 	iConn := conn
 	statConn, ok := iConn.(*stat.CounterConnection)
 	if ok {
@@ -495,9 +495,91 @@ func NewPacketReader(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 			IsOverridden:      isOverridden,
 			InitUnchangedAddr: DialDest.Address,
 			InitChangedAddr:   net.DestinationFromAddr(conn.RemoteAddr()).Address,
+			drops:             udpDrops{ctx: ctx},
 		}
 	}
+	if _, ok := conn.RemoteAddr().(*net.UDPAddr); ok {
+		var socket io.Reader = conn
+		if udpConn, ok := iConn.(*net.UDPConn); ok {
+			socket = &connectedDatagramReader{conn: udpConn, counter: counter}
+		}
+		return &connectedPacketReader{PacketReader: &buf.PacketReader{Reader: socket}, drops: udpDrops{ctx: ctx}}
+	}
 	return &buf.PacketReader{Reader: conn}
+}
+
+// errTruncated fails a read of a UDP socket that cut a datagram short because
+// it was longer than the buffer.
+var errTruncated = errors.New("UDP datagram longer than the buffer")
+
+// udpDrops logs, at debug level and with the context of one UDP session, the
+// datagrams that its reader or writer drops: the first, then one a second, so
+// that a route whose socket refuses every datagram does not pass for a healthy
+// session without replies.
+type udpDrops struct {
+	ctx context.Context
+	log net.DropLog
+}
+
+// skipsRead reports whether a reader of a UDP socket drops what a read failed
+// on and reads the next datagram: a datagram that the read cut short
+// (errTruncated, or "message too long" on Windows), or the "message too long"
+// with which a connected socket reports that a router refused an earlier
+// datagram. The error ended the session, and the start of a cut datagram went
+// on as a datagram of its own.
+func (d *udpDrops) skipsRead(err error) bool {
+	switch {
+	case err == errTruncated:
+		if d.log.Due() {
+			errors.LogDebug(d.ctx, "dropped a UDP reply longer than the ", buf.Size, " bytes a read takes")
+		}
+	case isMessageTooLong(err):
+		if d.log.Due() {
+			errors.LogDebug(d.ctx, "skipped a read of the UDP socket: ", err)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// connectedDatagramReader reads the datagrams of a connected UDP socket with
+// the flags of each read, which mark a datagram that the read cut short, and
+// fails such a read with errTruncated. It counts what it reads in counter, as
+// the statistics wrapper of the socket did.
+type connectedDatagramReader struct {
+	conn    *net.UDPConn
+	counter stats.Counter
+}
+
+func (r *connectedDatagramReader) Read(p []byte) (int, error) {
+	n, _, flags, _, err := r.conn.ReadMsgUDPAddrPort(p, nil)
+	if err != nil {
+		return 0, err
+	}
+	if net.IsTruncated(flags) {
+		return 0, errTruncated
+	}
+	if r.counter != nil {
+		r.counter.Add(int64(n))
+	}
+	return n, nil
+}
+
+// connectedPacketReader reads the datagrams of a connected UDP socket, and
+// reads on past a read that skipsRead drops.
+type connectedPacketReader struct {
+	*buf.PacketReader
+	drops udpDrops
+}
+
+func (r *connectedPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	for {
+		mb, err := r.PacketReader.ReadMultiBuffer()
+		if err == nil || !r.drops.skipsRead(err) {
+			return mb, err
+		}
+	}
 }
 
 type PacketReader struct {
@@ -508,13 +590,17 @@ type PacketReader struct {
 	IsOverridden      bool
 	InitUnchangedAddr net.Address
 	InitChangedAddr   net.Address
+	drops             udpDrops
 }
 
 func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	b := buf.New()
 	b.Resize(0, buf.Size)
 	for {
-		n, d, err := r.PacketConnWrapper.ReadFrom(b.Bytes())
+		n, d, err := r.readFrom(b.Bytes())
+		if r.drops.skipsRead(err) {
+			continue
+		}
 		if err != nil {
 			b.Release()
 			return nil, err
@@ -545,8 +631,25 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	}
 }
 
+// readFrom reads a datagram into p. Where the socket gives the flags of the
+// read, it fails with errTruncated a read that cut the datagram short.
+func (r *PacketReader) readFrom(p []byte) (int, net.Addr, error) {
+	socket, ok := r.PacketConnWrapper.PacketConn.(*net.UDPConn)
+	if !ok {
+		return r.PacketConnWrapper.ReadFrom(p)
+	}
+	n, _, flags, addr, err := socket.ReadMsgUDP(p, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if net.IsTruncated(flags) {
+		return 0, nil, errTruncated
+	}
+	return n, addr, nil
+}
+
 // DialDest means the dial target used in the dialer when creating conn
-func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination, outGateway net.Address) buf.Writer {
+func NewPacketWriter(ctx context.Context, conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination, outGateway net.Address) buf.Writer {
 	iConn := conn
 	statConn, ok := iConn.(*stat.CounterConnection)
 	if ok {
@@ -571,9 +674,70 @@ func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 			UDPOverride:       UDPOverride,
 			ResolvedUDPAddr:   resolvedUDPAddr,
 			OutGateway:        outGateway,
+			drops:             udpDrops{ctx: ctx},
 		}
 	}
-	return &buf.SequentialWriter{Writer: conn}
+	if _, ok := conn.RemoteAddr().(*net.UDPAddr); !ok {
+		return &buf.SequentialWriter{Writer: conn}
+	}
+	return &connectedPacketWriter{conn: conn, longest: net.MaxUDPPayload(conn.RemoteAddr()), drops: udpDrops{ctx: ctx}}
+}
+
+// dropsWrite reports whether a writer drops a datagram of size bytes that the
+// socket refused with err and goes on with the session: the inbounds hand a
+// datagram on whole, up to the 65535 bytes their framings allow, as the proxy
+// writers drop one they cannot frame.
+func (d *udpDrops) dropsWrite(err error, size int32) bool {
+	if !isMessageTooLong(err) {
+		return false
+	}
+	if d.log.Due() {
+		errors.LogDebug(d.ctx, "dropped a UDP datagram of ", size, " bytes that the socket refuses as too long")
+	}
+	return true
+}
+
+// dropLong drops a datagram of size bytes longer than an IP packet to the
+// destination holds, longest, which the socket would refuse.
+func (d *udpDrops) dropLong(size, longest int32) bool {
+	if size <= longest {
+		return false
+	}
+	if d.log.Due() {
+		errors.LogDebug(d.ctx, "dropped a UDP datagram of ", size, " bytes, longer than an IP packet holds")
+	}
+	return true
+}
+
+// isMessageTooLong reports whether err is the error with which a UDP socket
+// refuses a datagram as too long although an IP packet holds it: macOS refuses
+// one above net.inet.udp.maxdgram, 9216 bytes by default, and a connected
+// socket on Linux reports a router's ICMP "fragmentation needed" for an
+// earlier datagram on its next write or read. Windows reports WSAEMSGSIZE.
+func isMessageTooLong(err error) bool {
+	return net.IsMessageTooLong(err)
+}
+
+// connectedPacketWriter sends each buffer as a datagram on a connected UDP
+// socket. It drops one longer than its destination takes, and one the socket
+// refuses as too long.
+type connectedPacketWriter struct {
+	conn    net.Conn
+	longest int32
+	drops   udpDrops
+}
+
+func (w *connectedPacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	for i, b := range mb {
+		if !w.drops.dropLong(b.Len(), w.longest) {
+			if _, err := w.conn.Write(b.Bytes()); err != nil && !w.drops.dropsWrite(err, b.Len()) {
+				buf.ReleaseMulti(mb[i:])
+				return err
+			}
+		}
+		b.Release()
+	}
+	return nil
 }
 
 type PacketWriter struct {
@@ -589,6 +753,7 @@ type PacketWriter struct {
 	// So, cache and keep the resolve result
 	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
 	OutGateway      net.Address
+	drops           udpDrops
 }
 
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -644,16 +809,24 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 				continue
 			}
 			destAddr := b.UDP.RawNetAddr()
-			if destAddr == nil {
+			if destAddr == nil || w.drops.dropLong(b.Len(), net.MaxUDPPayload(destAddr)) {
 				b.Release()
 				continue
 			}
 			n, err = w.PacketConnWrapper.WriteTo(b.Bytes(), destAddr)
 		} else {
+			if w.drops.dropLong(b.Len(), net.MaxUDPPayload(w.PacketConnWrapper.Dest)) {
+				b.Release()
+				continue
+			}
 			n, err = w.PacketConnWrapper.Write(b.Bytes())
 		}
+		size := b.Len()
 		b.Release()
 		if err != nil {
+			if w.drops.dropsWrite(err, size) {
+				continue
+			}
 			buf.ReleaseMulti(mb)
 			return err
 		}

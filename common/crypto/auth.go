@@ -135,9 +135,8 @@ func (r *AuthenticationReader) readSize() (uint16, uint16, error) {
 var errSoft = errors.New("waiting for more data")
 
 func (r *AuthenticationReader) readBuffer(size int32, padding int32) (*buf.Buffer, error) {
-	b := buf.New()
-	if _, err := b.ReadFullFrom(r.reader, size); err != nil {
-		b.Release()
+	b, err := buf.ReadDatagram(r.reader, size)
+	if err != nil {
 		return nil, err
 	}
 	size -= padding
@@ -176,7 +175,10 @@ func (r *AuthenticationReader) readInternal(soft bool, mb *buf.MultiBuffer) erro
 		return errSoft
 	}
 
-	if size <= buf.Size {
+	// A packet chunk is one datagram, which stays whole in a buffer of its
+	// own however large: a peer may send one above buf.Size, which the
+	// writer does not, and the outbound sends it as it came.
+	if size <= buf.Size || r.transferType == protocol.TransferTypePacket {
 		b, err := r.readBuffer(int32(size), int32(padding))
 		if err != nil {
 			return err
@@ -248,15 +250,21 @@ func NewAuthenticationWriter(auth Authenticator, sizeParser ChunkSizeEncoder, wr
 
 func (w *AuthenticationWriter) seal(b []byte) (*buf.Buffer, error) {
 	encryptedSize := int32(len(b) + w.auth.Overhead())
+	sizeBytes := w.sizeParser.SizeBytes()
+	// The padding length comes from a stream that the peer reads once per
+	// chunk it receives, so a chunk that may not fit is refused before its
+	// padding length is taken: taking it and dropping the chunk would leave
+	// the peer reading every later chunk with the wrong padding.
+	var maxPadding int32
+	if w.padding != nil {
+		maxPadding = int32(w.padding.MaxPaddingLen())
+	}
+	if totalSize := sizeBytes + encryptedSize + maxPadding; totalSize > buf.Size {
+		return nil, errors.New("size too large: ", totalSize)
+	}
 	var paddingSize int32
 	if w.padding != nil {
 		paddingSize = int32(w.padding.NextPaddingLen())
-	}
-
-	sizeBytes := w.sizeParser.SizeBytes()
-	totalSize := sizeBytes + encryptedSize + paddingSize
-	if totalSize > buf.Size {
-		return nil, errors.New("size too large: ", totalSize)
 	}
 
 	eb := buf.New()
