@@ -164,7 +164,16 @@ guard it.
   as they arrive and copies them into one buffer of its size from `bytespool`
   once the last has arrived, so a peer that announces a long datagram and
   stalls holds no more memory than it sent and one regular buffer, as with
-  upstream's VLESS reader. The writers send no more than older readers take:
+  upstream's VLESS reader; the XUDP reader keeps its metadata buffer and the
+  VMess reader its input buffer meanwhile, a second regular buffer. A
+  complete datagram holds a buffer of 32 KiB (8193 to 32768 bytes) or of
+  128 KiB (above), while the pipe limit counts bytes: a 512 KiB pipe of
+  8193-byte datagrams holds 2 MiB where upstream's held 1 MiB, less than one
+  of tiny datagrams in regular buffers holds on either. VMess chooses by the
+  encoded chunk, whose tag and padding count, so with AES-GCM and no padding a
+  payload of 8177 to 8192 bytes takes the copy into a 32 KiB buffer as well,
+  where upstream returned a regular one. The writers send no more than older
+  readers take:
   the Mux.Cool writer drops a packet above `buf.Size`, where upstream's frames
   it; the Trojan writer sends up to 8192 bytes, where upstream's fails with
   `ErrBufferFull` from 8182 bytes to an IPv4 address, and drops a longer
@@ -176,9 +185,25 @@ guard it.
   datagram above `net.inet.udp.maxdgram`, 9216 bytes by default, and a
   connected socket on Linux reports a router's ICMP "fragmentation needed" for
   an earlier datagram on its next write or read; freedom's reader of a
-  connected socket skips that error. The VLESS, VMess and XUDP writers already
-  dropped what they cannot frame. Reads from a UDP socket take up to 8192
-  bytes; the next entry covers a longer datagram.
+  connected socket skips that error. The other writers to a UDP socket that a
+  whole datagram now reaches drop one their socket refuses as too long and go
+  on with the session, where upstream's would end it: those of the
+  Shadowsocks, WireGuard and MASQUE outbounds, which also drop one longer than
+  an IP packet holds before the write, of dokodemo-door in both modes
+  (`buf.DatagramWriter` and its TPROXY writer), of the DNS outbound's queries,
+  and the Shadowsocks 2022 server's reply loop. The TUN, WireGuard and MASQUE
+  inbounds drop a reply longer than an IP packet holds, whose 16-bit lengths
+  wrapped. These drops and freedom's are logged at debug level, once a second
+  at most (`net.LogDroppedDatagram`); the drops of the proxy writers are not.
+  The VLESS, VMess and XUDP writers already dropped what they cannot frame,
+  but with global padding the VMess writer took the chunk's padding length
+  from the stream it shares with the size mask before it dropped the
+  datagram, and the peer, which takes one per chunk it receives, lost the
+  session; it now refuses a datagram that does not fit with the largest
+  padding (8110 bytes with AES-GCM) before taking one, where upstream sent
+  8111 to 8174 bytes or lost the session depending on the padding.
+  Reads from a UDP socket take up to 8192 bytes; the next entry covers a
+  longer datagram.
   Covered by `TestReadDatagramTakesMemoryAsTheBytesArrive`,
   `TestReadDatagramLeavesTheStreamAtTheNextDatagram` and
   `TestReadDatagramReportsAStreamThatEndsInside` (`common/buf`),
@@ -187,6 +212,8 @@ guard it.
   (`proxy/vless/encoding`), `TestAuthenticationReaderKeepsLargeDatagramsWhole`,
   `TestAuthenticationReaderTakesMemoryAsTheDatagramArrives` and
   `TestAuthenticationReaderStreamKeepsLargeChunksInOrder` (`common/crypto`),
+  `TestAuthenticationWriterDropsWithoutDesyncingPadding`
+  (`proxy/vmess/encoding`),
   `TestPacketReaderKeepsLargeDatagramsWhole`,
   `TestPacketReaderTakesMemoryAsTheDatagramArrives` and
   `TestPacketWriterSendsWhatReadersTake` (`proxy/trojan`),
@@ -196,14 +223,30 @@ guard it.
   `TestWriterDropsPacketsOlderReadersRefuse` (`common/mux`),
   `TestPacketReaderKeepsLargePacketsWhole` and
   `TestPacketReaderTakesMemoryAsThePacketArrives` (`common/xudp`),
-  `TestUDPWriterDropsDatagramsTooLargeForAPacket` (`proxy/shadowsocks_2022`),
-  and `TestPacketWriterDropsDatagramsTooLongForIP`,
+  `TestUDPWriterDropsDatagramsTooLargeForAPacket` and
+  `TestUDPReplyLoopDropsRepliesTheSocketRefusesAsTooLong`
+  (`proxy/shadowsocks_2022`),
+  `TestUDPWriterDropsDatagramsTheSocketRefusesAsTooLong` (`proxy/shadowsocks`),
+  `TestUDPConnClientDropsDatagramsTooLongForIP`,
+  `TestUDPConnClientDropsDatagramsTooLongForIPBeforeTheWrite` and
+  `TestUDPConnDropsRepliesTooLongForIP` (`proxy/wireguard`),
+  `TestUDPConnDropsRepliesTooLongForIP` (`proxy/tun`),
+  `TestProcessDropsRepliesTheSocketRefusesAsTooLong` and
+  `TestPacketWriterDropsRepliesTheSocketRefusesAsTooLong` (`proxy/dokodemo`),
+  `TestDNSOutboundDropsQueriesTheSocketRefusesAsTooLong` (`proxy/dns`),
+  `TestDatagramWriterDropsDatagramsTheSocketRefusesAsTooLong` (`common/buf`),
+  `TestMaxUDPPayload` and `TestLogDroppedDatagramLogsOnceASecond`
+  (`common/net`), `TestLargeUDPDatagramProcessMatrix` (`common/singmux`,
+  integration: sing-box, Mihomo and Xray clients over VLESS, XUDP, Trojan and
+  VMess with and without global padding), and
+  `TestPacketWriterDropsDatagramsTooLongForIP`,
   `TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong` and
   `TestPacketReaderSkipsTooLongErrorsOfAConnectedSocket` (`proxy/freedom`).
 - A read from a UDP socket takes up to `buf.Size` (8192) bytes, and the UDP
-  hub, which serves the UDP side of SOCKS, Shadowsocks, dokodemo-door and
-  other inbounds, and freedom, which reads the replies, drop a datagram that a
-  read cut short instead of passing its start on. Linux, macOS and the BSDs
+  hub, which serves the UDP side of Shadowsocks, dokodemo-door and other
+  inbounds, the socket of a SOCKS UDP association (`TempUDPConn`), and
+  freedom, which reads the replies, drop a datagram that a read cut short
+  instead of passing its start on. Linux, macOS and the BSDs
   mark such a read with `MSG_TRUNC`, and Windows fails it with `WSAEMSGSIZE`.
   Where the read only marks it, upstream passes the first 8192 bytes on as a
   datagram of their own; on Windows the error ends freedom's session, and
@@ -216,8 +259,12 @@ guard it.
   `TestHubDropsDatagramsLongerThanItsBuffer`,
   `TestHubServesOnAfterAReadOfATooLongDatagram` and
   `TestHubStopsServingOnOtherReadErrors` (`transport/internet/udp`),
-  and `TestPacketReaderDropsDatagramsLongerThanItsBuffer` and
-  `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`).
+  `TestTempUDPConnDropsDatagramsLongerThanTheRead` (`proxy/socks`),
+  `TestPacketReaderDropsDatagramsLongerThanItsBuffer` and
+  `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`), and
+  `TestLargeUDPDatagramProcessMatrix` (an Xray Trojan client, and replies of
+  9000 bytes) and `TestDokodemoTruncatedDatagramProcess` (`common/singmux`,
+  integration).
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
