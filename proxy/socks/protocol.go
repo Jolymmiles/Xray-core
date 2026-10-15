@@ -373,10 +373,14 @@ func EncodeUDPPacket(request *protocol.RequestHeader, data []byte) (*buf.Buffer,
 		b.Release()
 		return nil, err
 	}
-	// if data is too large, return an empty buffer (drop too big data)
+	// The readers hand a datagram on whole, up to 65535 bytes: one that does
+	// not fit a regular buffer with its header takes a buffer of its size,
+	// where an empty packet went out in its place.
 	if b.Available() < int32(len(data)) {
-		b.Clear()
-		return b, nil
+		large := buf.NewWithSize(b.Len() + int32(len(data)))
+		common.Must2(large.Write(b.Bytes()))
+		b.Release()
+		b = large
 	}
 	common.Must2(b.Write(data))
 	return b, nil
@@ -428,8 +432,14 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			buf.ReleaseMulti(mb)
 			return err
 		}
+		size := packet.Len()
 		_, err = w.Writer.Write(packet.Bytes())
 		packet.Release()
+		if net.IsMessageTooLong(err) {
+			// with its header, a whole datagram may not fit an IP packet
+			net.LogDroppedDatagram(context.Background(), int(size), "the socket refuses it as too long")
+			continue
+		}
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err

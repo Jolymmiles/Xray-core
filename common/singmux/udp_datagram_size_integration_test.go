@@ -31,7 +31,7 @@ func datagramSizes(datagrams []recordedDatagram) []int {
 
 // startUDPDestination records each datagram it receives and echoes those of
 // markerSize bytes. To "trigger" it replies with 9000 bytes, more than a
-// socket read of Xray takes, then 7000 bytes and "pong".
+// socket read of Xray takes, then 8190, 7000 bytes and "pong".
 func startUDPDestination(t *testing.T) (*net.UDPAddr, <-chan recordedDatagram) {
 	t.Helper()
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -51,6 +51,7 @@ func startUDPDestination(t *testing.T) (*net.UDPAddr, <-chan recordedDatagram) {
 			switch {
 			case string(packet[:n]) == "trigger":
 				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xB1}, 9000), from)
+				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xB2}, 8190), from)
 				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xC1}, 7000), from)
 				_, _ = conn.WriteToUDP([]byte("pong"), from)
 			case n == markerSize:
@@ -138,18 +139,24 @@ func TestLargeUDPDatagramProcessMatrix(t *testing.T) {
 		// split is the size of the pieces into which the client splits a
 		// large datagram, or 0; -1 if it drops one above 8192 bytes.
 		split int
+		// replies are the replies the client receives before pong: the
+		// server's VMess writer drops one of 8190 bytes, which its chunk
+		// does not hold with the tag, and the others send it.
+		replies []int
 	}{
-		{name: "sing-box/vless", client: "sing-box", carrier: "vless"},
-		{name: "sing-box/vless-xudp", client: "sing-box", carrier: "vless", packetEncoding: "xudp"},
-		{name: "sing-box/trojan", client: "sing-box", carrier: "trojan"},
-		{name: "sing-box/vmess", client: "sing-box", carrier: "vmess"},
-		{name: "sing-box/vmess-padding", client: "sing-box", carrier: "vmess", padding: true},
+		{name: "sing-box/vless", client: "sing-box", carrier: "vless", replies: []int{8190, 7000}},
+		{name: "sing-box/vless-xudp", client: "sing-box", carrier: "vless", packetEncoding: "xudp", replies: []int{8190, 7000}},
+		{name: "sing-box/trojan", client: "sing-box", carrier: "trojan", replies: []int{8190, 7000}},
+		{name: "sing-box/vmess", client: "sing-box", carrier: "vmess", replies: []int{7000}},
+		{name: "sing-box/vmess-padding", client: "sing-box", carrier: "vmess", padding: true, replies: []int{7000}},
 		// Mihomo's VLESS client always sends UDP as XUDP.
-		{name: "mihomo/vless-xudp", client: "mihomo", carrier: "vless", packetEncoding: "xudp"},
-		{name: "mihomo/trojan", client: "mihomo", carrier: "trojan", split: 8192},
-		{name: "mihomo/vmess", client: "mihomo", carrier: "vmess"},
-		{name: "mihomo/vmess-padding", client: "mihomo", carrier: "vmess", padding: true},
-		{name: "xray/trojan", client: "xray", carrier: "trojan", split: -1},
+		{name: "mihomo/vless-xudp", client: "mihomo", carrier: "vless", packetEncoding: "xudp", replies: []int{8190, 7000}},
+		{name: "mihomo/trojan", client: "mihomo", carrier: "trojan", split: 8192, replies: []int{8190, 7000}},
+		{name: "mihomo/vmess", client: "mihomo", carrier: "vmess", replies: []int{7000}},
+		{name: "mihomo/vmess-padding", client: "mihomo", carrier: "vmess", padding: true, replies: []int{7000}},
+		// Xray's SOCKS inbound sends the reply of 8190 bytes behind its
+		// header of 10, 8200 bytes, more than a regular buffer holds.
+		{name: "xray/trojan", client: "xray", carrier: "trojan", split: -1, replies: []int{8190, 7000}},
 	} {
 		t.Run(cell.name, func(t *testing.T) {
 			destination, received := startUDPDestination(t)
@@ -263,11 +270,11 @@ func TestLargeUDPDatagramProcessMatrix(t *testing.T) {
 			}
 
 			// The server reads a reply of 9000 bytes into 8192 and drops it;
-			// the replies after it arrive.
+			// the replies after it arrive whole.
 			send([]byte("trigger"))
 			replies := readUntil(t, udp, 10, isPong)
-			if !slices.Equal(datagramSizes(replies), []int{7000}) || replies[0].fill != 0xC1 {
-				t.Errorf("the client received replies of %v bytes before pong, want [7000]", datagramSizes(replies))
+			if !slices.Equal(datagramSizes(replies), cell.replies) || replies[len(replies)-1].fill != 0xC1 {
+				t.Errorf("the client received replies of %v bytes before pong, want %v", datagramSizes(replies), cell.replies)
 			}
 		})
 	}
@@ -328,8 +335,8 @@ func TestDokodemoTruncatedDatagramProcess(t *testing.T) {
 	if _, err := client.Write([]byte("trigger")); err != nil {
 		t.Fatal(err)
 	}
-	if replies := readUntil(t, client, 0, isPong); !slices.Equal(datagramSizes(replies), []int{7000}) {
-		t.Errorf("the client received replies of %v bytes before pong, want [7000]", datagramSizes(replies))
+	if replies := readUntil(t, client, 0, isPong); !slices.Equal(datagramSizes(replies), []int{8190, 7000}) {
+		t.Errorf("the client received replies of %v bytes before pong, want [8190 7000]", datagramSizes(replies))
 	}
 }
 

@@ -190,9 +190,12 @@ guard it.
   on with the session, where upstream's would end it: those of the
   Shadowsocks, WireGuard and MASQUE outbounds, which also drop one longer than
   an IP packet holds before the write, of dokodemo-door in both modes
-  (`buf.DatagramWriter` and its TPROXY writer), of the DNS outbound's queries,
-  and the Shadowsocks 2022 server's reply loop. The TUN, WireGuard and MASQUE
-  inbounds drop a reply longer than an IP packet holds, whose 16-bit lengths
+  (`buf.DatagramWriter` and its TPROXY writer), of the DNS outbound's queries
+  and of the SOCKS outbound, and the Shadowsocks 2022 server's reply loop.
+  SOCKS encodes a datagram that a regular buffer does not hold with its
+  header in a buffer of its size, inbound and outbound, where upstream sent an
+  empty datagram in its place: from 8183 bytes for an IPv4 address. The TUN,
+  WireGuard and MASQUE inbounds drop a reply longer than an IP packet holds, whose 16-bit lengths
   wrapped. These drops and freedom's are logged at debug level, once a second
   at most (`net.LogDroppedDatagram`); the drops of the proxy writers are not.
   The VLESS, VMess and XUDP writers already dropped what they cannot frame,
@@ -234,6 +237,8 @@ guard it.
   `TestProcessDropsRepliesTheSocketRefusesAsTooLong` and
   `TestPacketWriterDropsRepliesTheSocketRefusesAsTooLong` (`proxy/dokodemo`),
   `TestDNSOutboundDropsQueriesTheSocketRefusesAsTooLong` (`proxy/dns`),
+  `TestEncodeUDPPacketKeepsLargeDatagramsWhole` and
+  `TestUDPWriterSendsLargeDatagramsWhole` (`proxy/socks`),
   `TestDatagramWriterDropsDatagramsTheSocketRefusesAsTooLong` (`common/buf`),
   `TestMaxUDPPayload` and `TestLogDroppedDatagramLogsOnceASecond`
   (`common/net`), `TestLargeUDPDatagramProcessMatrix` (`common/singmux`,
