@@ -6,6 +6,7 @@ import (
 	"io"
 	stdnet "net"
 	"os"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -56,6 +57,11 @@ func TestPacketWriterDropsDatagramsTooLongForIP(t *testing.T) {
 						bytes.Repeat([]byte{1}, family.longest+1),
 						bytes.Repeat([]byte{2}, family.longest),
 						[]byte("ping"),
+					}
+					if runtime.GOOS != "linux" {
+						// macOS refuses a datagram above net.inet.udp.maxdgram,
+						// 9216 bytes by default, so only the drop is portable.
+						sent = [][]byte{sent[0], sent[2]}
 					}
 					mb := make(buf.MultiBuffer, len(sent))
 					for i, payload := range sent {

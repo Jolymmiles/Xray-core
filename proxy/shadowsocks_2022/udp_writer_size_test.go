@@ -3,6 +3,7 @@ package shadowsocks_2022_test
 import (
 	"bytes"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,12 +43,13 @@ func TestUDPWriterDropsDatagramsTooLargeForAPacket(t *testing.T) {
 	var conn packetConn
 	writer := &UDPWriter{Writer: &conn, Destination: destination, Session: session}
 	payloads := [][]byte{bytes.Repeat([]byte{1}, 100), bytes.Repeat([]byte{2}, 9000), bytes.Repeat([]byte{3}, 200)}
-	for _, payload := range payloads {
-		b := buf.NewWithSize(int32(len(payload)))
-		b.Write(payload)
-		if err := writer.WriteMultiBuffer(buf.MultiBuffer{b}); err != nil {
-			t.Fatalf("writing %d bytes: %v", len(payload), err)
-		}
+	mb := make(buf.MultiBuffer, len(payloads))
+	for i, payload := range payloads {
+		mb[i] = buf.NewWithSize(int32(len(payload)))
+		mb[i].Write(payload)
+	}
+	if err := writer.WriteMultiBuffer(mb); err != nil {
+		t.Fatalf("WriteMultiBuffer() = %v, want the datagram that does not fit dropped", err)
 	}
 	if len(conn.packets) != 2 {
 		t.Fatalf("sent %d packets, want 2", len(conn.packets))
@@ -58,5 +60,16 @@ func TestUDPWriterDropsDatagramsTooLargeForAPacket(t *testing.T) {
 		if !bytes.Equal(decoded.Payload, want) {
 			t.Fatalf("packet %d carries %d bytes, want %d", i, len(decoded.Payload), len(want))
 		}
+	}
+
+	// Any other error of the encoder still ends the session: a domain longer
+	// than 255 bytes has no address encoding.
+	unencodable := buf.FromBytes([]byte("ping"))
+	unencodable.UDP = &net.Destination{Network: net.Network_UDP, Address: net.DomainAddress(strings.Repeat("a", 300) + ".example"), Port: 53}
+	if err := writer.WriteMultiBuffer(buf.MultiBuffer{unencodable, buf.FromBytes([]byte("pong"))}); err == nil {
+		t.Fatal("WriteMultiBuffer() = nil, want the error of the destination it cannot encode")
+	}
+	if len(conn.packets) != 2 {
+		t.Fatalf("sent %d packets after the error, want none", len(conn.packets)-2)
 	}
 }

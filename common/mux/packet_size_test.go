@@ -45,8 +45,8 @@ func TestPacketReaderKeepsLargePacketsWhole(t *testing.T) {
 	}
 }
 
-// The server worker must hand a large packet on whole, and serve the frames
-// after it.
+// The server worker must hand a large packet on whole, and keep serving the
+// sessions that were open before it.
 func TestServerWorkerKeepsLargePacketsWhole(t *testing.T) {
 	type delivery struct {
 		destination string
@@ -80,6 +80,19 @@ func TestServerWorkerKeepsLargePacketsWhole(t *testing.T) {
 	common.Must(err)
 	t.Cleanup(func() { common.Close(serverDownlink.Writer) })
 
+	// A session that is already open must outlive the large packet of another.
+	second := net.UDPDestination(net.IPAddress([]byte{192, 0, 2, 2}), 53)
+	secondWriter := mux.NewWriter(2, second, serverDownlink.Writer, protocol.TransferTypePacket, [8]byte{}, nil)
+	common.Must(secondWriter.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("ping"))}))
+	select {
+	case got := <-received:
+		if got.destination != second.NetAddr() || len(got.sizes) != 1 || got.sizes[0] != 4 {
+			t.Fatalf("%s received buffers of %v bytes, want %s one of 4", got.destination, got.sizes, second.NetAddr())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the open session was not served")
+	}
+
 	// Xray's writer drops a packet above buf.Size, so the peer's frame is
 	// built here.
 	first := net.UDPDestination(net.IPAddress([]byte{192, 0, 2, 1}), 53)
@@ -91,21 +104,21 @@ func TestServerWorkerKeepsLargePacketsWhole(t *testing.T) {
 	large := buf.NewWithSize(9000)
 	large.Extend(9000)
 	common.Must(serverDownlink.Writer.WriteMultiBuffer(buf.MultiBuffer{frame, large}))
-	second := net.UDPDestination(net.IPAddress([]byte{192, 0, 2, 2}), 53)
-	common.Must(mux.NewWriter(2, second, serverDownlink.Writer, protocol.TransferTypePacket, [8]byte{}, nil).
-		WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("ping"))}))
+	common.Must(secondWriter.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("pong"))}))
 
-	want := map[string][]int{first.NetAddr(): {9000}, second.NetAddr(): {4}}
-	for range want {
+	want := map[string]int{first.NetAddr(): 9000, second.NetAddr(): 4}
+	for len(want) > 0 {
 		select {
 		case got := <-received:
-			if sizes, ok := want[got.destination]; !ok || len(got.sizes) != 1 || got.sizes[0] != sizes[0] {
-				t.Fatalf("%s received buffers of %v bytes, want %v", got.destination, got.sizes, sizes)
+			size, ok := want[got.destination]
+			if !ok || len(got.sizes) != 1 || got.sizes[0] != size {
+				t.Fatalf("%s received buffers of %v bytes, want what is left of %v", got.destination, got.sizes, want)
 			}
+			delete(want, got.destination)
 		case <-worker.WaitClosed():
 			t.Fatal("the worker ended the mux connection on the large packet")
 		case <-time.After(10 * time.Second):
-			t.Fatal("a session was not served")
+			t.Fatalf("%v were not served", want)
 		}
 	}
 }

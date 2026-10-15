@@ -96,14 +96,16 @@ func TestPacketWriterSendsWhatReadersTake(t *testing.T) {
 	}
 	var stream bytes.Buffer
 	writer := &PacketWriter{Writer: &stream, Target: ip}
-	for _, d := range datagrams {
-		b := buf.NewWithSize(int32(len(d.payload)))
-		b.Write(d.payload)
+	mb := make(buf.MultiBuffer, len(datagrams))
+	for i, d := range datagrams {
+		mb[i] = buf.NewWithSize(int32(len(d.payload)))
+		mb[i].Write(d.payload)
 		destination := d.destination
-		b.UDP = &destination
-		if err := writer.WriteMultiBuffer(buf.MultiBuffer{b}); err != nil {
-			t.Fatalf("writing %d bytes to %v: %v", len(d.payload), d.destination, err)
-		}
+		mb[i].UDP = &destination
+	}
+	// one call, so that the writer must go on after the datagram it drops
+	if err := writer.WriteMultiBuffer(mb); err != nil {
+		t.Fatalf("WriteMultiBuffer() = %v, want the datagram above 8192 bytes dropped", err)
 	}
 
 	reader := &PacketReader{Reader: &stream}
