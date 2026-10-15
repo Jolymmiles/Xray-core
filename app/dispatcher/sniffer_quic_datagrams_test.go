@@ -11,6 +11,7 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/quic"
+	"github.com/xtls/xray-core/transport/pipe"
 )
 
 // withoutPadding returns a captured datagram without the zero padding that
@@ -334,5 +335,24 @@ func TestCachedReaderLendsAFirstDatagramLongerThanThePayload(t *testing.T) {
 	lent := reader.Datagrams()
 	if len(lent) != 1 || !bytes.Equal(lent[0], datagrams[0]) {
 		t.Fatalf("the cached reader lends %d datagrams, want the first whole", len(lent))
+	}
+}
+
+// With the first datagram lent, the sniffers judge such a flow at once: the
+// QUIC sniffer names no server for a datagram longer than
+// quic.MaxProxiedDatagram, and sniff returns the sniffers' verdict instead of
+// waiting out its window on a link that delivers nothing more.
+func TestSniffJudgesAFirstDatagramLongerThanThePayload(t *testing.T) {
+	link, writer := pipe.New(pipe.WithoutSizeLimit())
+	t.Cleanup(func() { writer.Close() })
+	first := buf.NewWithSize(40000)
+	first.Extend(40000)
+	if err := writer.WriteMultiBuffer(buf.MultiBuffer{first, buf.FromBytes([]byte("next"))}); err != nil {
+		t.Fatal(err)
+	}
+	reader := newTestCachedReader(t, link)
+	ctx := snifferContext()
+	if result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx)); err != errUnknownContent {
+		t.Fatalf("sniff() = (%v, %v), want the sniffers' verdict %v", result, err, errUnknownContent)
 	}
 }

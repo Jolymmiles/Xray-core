@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	stdnet "net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -102,6 +104,50 @@ func TestUDPConnClientDropsDatagramsTooLongForIPBeforeTheWrite(t *testing.T) {
 		if len(conn.lengths) != 1 || conn.lengths[0] != family.longest {
 			t.Fatalf("to %v the stack took datagrams of %v bytes, want only the one of %d", family.dest, conn.lengths, family.longest)
 		}
+	}
+}
+
+// refusingPacketConn refuses each datagram whose first byte has an error in
+// refuse, with that error, as a socket may refuse a datagram that an IP packet
+// holds, and records the first byte of the others.
+type refusingPacketConn struct {
+	net.PacketConn
+	refuse map[byte]error
+	sent   []byte
+}
+
+func (c *refusingPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	if err := c.refuse[p[0]]; err != nil {
+		return 0, err
+	}
+	c.sent = append(c.sent, p[0])
+	return len(p), nil
+}
+
+// A socket may refuse a datagram as too long that an IP packet holds: macOS
+// refuses one above net.inet.udp.maxdgram, 9216 bytes by default, and a
+// connected socket on Linux reports a router's "fragmentation needed" on its
+// next write. The client drops the refused datagram and sends the rest of the
+// MultiBuffer; any other error still ends the session.
+func TestUDPConnClientDropsDatagramsTheSocketRefusesAsTooLong(t *testing.T) {
+	tooLong := &stdnet.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendto", syscall.EMSGSIZE)}
+	conn := &refusingPacketConn{refuse: map[byte]error{2: tooLong, 4: stdnet.ErrClosed}}
+	client := &UDPConnClient{PacketConn: conn, Dest: &net.UDPAddr{IP: net.IP{192, 0, 2, 1}, Port: 53}}
+	datagrams := func(ids ...byte) buf.MultiBuffer {
+		mb := make(buf.MultiBuffer, len(ids))
+		for i, id := range ids {
+			mb[i] = buf.FromBytes(append([]byte{id}, bytes.Repeat([]byte{0}, 9999)...))
+		}
+		return mb
+	}
+	if err := client.WriteMultiBuffer(datagrams(1, 2, 3)); err != nil {
+		t.Fatalf("WriteMultiBuffer() = %v, want the refused datagram dropped", err)
+	}
+	if !bytes.Equal(conn.sent, []byte{1, 3}) {
+		t.Fatalf("the socket sent datagrams %v, want 1 and 3", conn.sent)
+	}
+	if err := client.WriteMultiBuffer(datagrams(4, 5)); !errors.Is(err, stdnet.ErrClosed) {
+		t.Fatalf("WriteMultiBuffer() = %v, want the error of the closed socket", err)
 	}
 }
 
