@@ -1,6 +1,7 @@
 package shadowsocks
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -336,8 +337,15 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			buf.ReleaseMulti(mb)
 			return err
 		}
+		size := packet.Len()
 		_, err = w.Writer.Write(packet.Bytes())
 		packet.Release()
+		if net.IsMessageTooLong(err) {
+			// The inbounds hand a datagram on whole, up to 65535 bytes, which
+			// with its framing may not fit in an IP packet: drop it and go on.
+			net.LogDroppedDatagram(context.Background(), int(size), "the socket refuses it as too long")
+			continue
+		}
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err

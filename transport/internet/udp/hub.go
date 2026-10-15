@@ -122,6 +122,7 @@ func (h *Hub) start() {
 		// its start on as a datagram of its own, and serve the next.
 		if net.IsTruncated(flags) || net.IsMessageTooLong(err) {
 			buffer.Release()
+			net.LogDroppedDatagram(context.Background(), -1, "longer than the buffer a read takes")
 			continue
 		}
 

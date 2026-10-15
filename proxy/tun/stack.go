@@ -240,6 +240,12 @@ func (s *stack) writeUDP(payload []byte, src net.Destination, dst net.Destinatio
 	if !srcIP.IsValid() || srcIP.Is4() != dstIP.Is4() {
 		return errors.New("failed to write udp packet from ", src, " to ", dst)
 	}
+	// The outbounds hand a reply on whole, up to 65535 bytes: drop one whose
+	// length the 16-bit fields cannot state, and go on with the session.
+	if srcIP.Is4() && len(payload) > net.MaxUDPPayloadIPv4 || len(payload) > net.MaxUDPPayloadIPv6 {
+		net.LogDroppedDatagram(s.ctx, len(payload), "longer than an IP packet holds")
+		return nil
+	}
 	var b [ipv6HeaderSize + udpHeaderSize]byte
 	n := putIPHeader(b[:], protoUDP, srcIP, dstIP)
 	u := b[n : n+udpHeaderSize]

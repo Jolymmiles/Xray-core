@@ -518,7 +518,15 @@ var errTruncated = errors.New("UDP datagram longer than the buffer")
 // datagram. The error ended the session, and the start of a cut datagram went
 // on as a datagram of its own.
 func skipsRead(err error) bool {
-	return err == errTruncated || isMessageTooLong(err)
+	switch {
+	case err == errTruncated:
+		net.LogDroppedDatagram(context.Background(), -1, "longer than the buffer a read takes")
+	case isMessageTooLong(err):
+		net.LogDroppedDatagram(context.Background(), -1, "the socket reports it too long")
+	default:
+		return false
+	}
+	return true
 }
 
 // connectedDatagramReader reads the datagrams of a connected UDP socket with
@@ -655,19 +663,29 @@ func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 	if _, ok := conn.RemoteAddr().(*net.UDPAddr); !ok {
 		return &buf.SequentialWriter{Writer: conn}
 	}
-	return &connectedPacketWriter{conn: conn, longest: maxUDPPayload(conn.RemoteAddr())}
+	return &connectedPacketWriter{conn: conn, longest: net.MaxUDPPayload(conn.RemoteAddr())}
 }
 
-// maxUDPPayload returns the longest UDP payload of an IP packet to addr: an
-// IP packet holds 65535 bytes, of which the UDP header takes 8 and an IPv4
-// header 20, while the IPv6 header is not counted. A socket refuses a longer
-// datagram, failing the write and with it the UDP session, so the writers drop
-// it, as the proxy writers drop a datagram they cannot frame.
-func maxUDPPayload(addr net.Addr) int32 {
-	if udpAddr, ok := addr.(*net.UDPAddr); ok && udpAddr.IP.To4() == nil {
-		return 65535 - 8
+// dropsWrite reports whether a writer drops a datagram of size bytes that the
+// socket refused with err and goes on with the session: the inbounds hand a
+// datagram on whole, up to the 65535 bytes their framings allow, as the proxy
+// writers drop one they cannot frame.
+func dropsWrite(err error, size int32) bool {
+	if !isMessageTooLong(err) {
+		return false
 	}
-	return 65535 - 20 - 8
+	net.LogDroppedDatagram(context.Background(), int(size), "the socket refuses it as too long")
+	return true
+}
+
+// dropLong drops a datagram of size bytes longer than an IP packet to the
+// destination holds, longest, which the socket would refuse.
+func dropLong(size, longest int32) bool {
+	if size <= longest {
+		return false
+	}
+	net.LogDroppedDatagram(context.Background(), int(size), "longer than an IP packet holds")
+	return true
 }
 
 // isMessageTooLong reports whether err is the error with which a UDP socket
@@ -689,8 +707,8 @@ type connectedPacketWriter struct {
 
 func (w *connectedPacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	for i, b := range mb {
-		if b.Len() <= w.longest {
-			if _, err := w.conn.Write(b.Bytes()); err != nil && !isMessageTooLong(err) {
+		if !dropLong(b.Len(), w.longest) {
+			if _, err := w.conn.Write(b.Bytes()); err != nil && !dropsWrite(err, b.Len()) {
 				buf.ReleaseMulti(mb[i:])
 				return err
 			}
@@ -768,21 +786,22 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 				continue
 			}
 			destAddr := b.UDP.RawNetAddr()
-			if destAddr == nil || b.Len() > maxUDPPayload(destAddr) {
+			if destAddr == nil || dropLong(b.Len(), net.MaxUDPPayload(destAddr)) {
 				b.Release()
 				continue
 			}
 			n, err = w.PacketConnWrapper.WriteTo(b.Bytes(), destAddr)
 		} else {
-			if b.Len() > maxUDPPayload(w.PacketConnWrapper.Dest) {
+			if dropLong(b.Len(), net.MaxUDPPayload(w.PacketConnWrapper.Dest)) {
 				b.Release()
 				continue
 			}
 			n, err = w.PacketConnWrapper.Write(b.Bytes())
 		}
+		size := b.Len()
 		b.Release()
 		if err != nil {
-			if isMessageTooLong(err) {
+			if dropsWrite(err, size) {
 				continue
 			}
 			buf.ReleaseMulti(mb)

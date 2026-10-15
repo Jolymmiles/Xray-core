@@ -423,8 +423,17 @@ func (c *UDPConnClient) WriteMultiBuffer(mb buf.MultiBuffer) error {
 				dst = b.UDP.RawNetAddr().(*net.UDPAddr)
 			}
 		}
+		// The inbounds hand a datagram on whole, up to 65535 bytes: drop one
+		// that no IP packet holds, or that the socket refuses, and go on.
+		if b.Len() > net.MaxUDPPayload(dst) {
+			net.LogDroppedDatagram(context.Background(), int(b.Len()), "longer than an IP packet holds")
+			b.Release()
+			continue
+		}
 		_, err := c.PacketConn.WriteTo(b.Bytes(), dst)
-		if err != nil {
+		if net.IsMessageTooLong(err) {
+			net.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+		} else if err != nil {
 			buf.ReleaseMulti(mb[i:])
 			return err
 		}

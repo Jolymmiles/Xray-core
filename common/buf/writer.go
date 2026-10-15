@@ -1,12 +1,14 @@
 package buf
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
+	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/stats"
 )
 
@@ -395,6 +397,28 @@ func (w *SequentialWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	mb, err := WriteMultiBuffer(w.Writer, mb)
 	ReleaseMulti(mb)
 	return err
+}
+
+// DatagramWriter writes each buffer to a UDP socket as a datagram of its own.
+// It drops a datagram the socket refuses as too long and goes on with the
+// rest, where SequentialWriter ends the write; any other error ends it.
+type DatagramWriter struct {
+	io.Writer
+}
+
+// WriteMultiBuffer implements Writer.
+func (w *DatagramWriter) WriteMultiBuffer(mb MultiBuffer) error {
+	for i, b := range mb {
+		if _, err := w.Writer.Write(b.Bytes()); err != nil {
+			if !xnet.IsMessageTooLong(err) {
+				ReleaseMulti(mb[i:])
+				return err
+			}
+			xnet.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+		}
+		b.Release()
+	}
+	return nil
 }
 
 type noOpWriter byte

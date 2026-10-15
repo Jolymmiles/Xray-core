@@ -209,8 +209,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 		connReader = &dns_proto.UDPReader{
 			Reader: buf.NewPacketReader(conn),
 		}
+		// The inbounds hand a query on whole, up to 65535 bytes: drop one the
+		// socket refuses as too long and pass on the next.
 		connWriter = &dns_proto.UDPWriter{
-			Writer: buf.NewWriter(conn),
+			Writer: &buf.DatagramWriter{Writer: conn},
 		}
 	}
 

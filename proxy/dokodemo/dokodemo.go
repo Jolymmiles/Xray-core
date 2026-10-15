@@ -163,7 +163,7 @@ func (d *DokodemoDoor) Process(ctx context.Context, network net.Network, conn st
 	} else {
 		// if we are in TPROXY mode, use linux's udp forging functionality
 		if !destinationOverridden {
-			writer = &buf.SequentialWriter{Writer: conn}
+			writer = &buf.DatagramWriter{Writer: conn}
 		} else {
 			back := conn.RemoteAddr().(*net.UDPAddr)
 			if !dest.Address.Family().IsIP() {
@@ -245,7 +245,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 				w.conns[*b.UDP] = conn
 			}
 			_, err = conn.WriteTo(b.Bytes(), w.back)
-			if err != nil {
+			if net.IsMessageTooLong(err) {
+				// an outbound hands a reply on whole, up to 65535 bytes
+				net.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+			} else if err != nil {
 				errors.LogInfo(context.Background(), err.Error())
 				w.conns[*b.UDP] = nil
 				conn.Close()
@@ -253,6 +256,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			b.Release()
 		} else {
 			_, err = w.conn.WriteTo(b.Bytes(), w.back)
+			if net.IsMessageTooLong(err) {
+				net.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+				err = nil
+			}
 			b.Release()
 			if err != nil {
 				buf.ReleaseMulti(mb)
