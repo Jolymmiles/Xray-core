@@ -312,3 +312,27 @@ func TestCachedReaderLendsTheDatagramsOfThePayload(t *testing.T) {
 		}
 	}
 }
+
+// A payload of several buffers holds no more than the scratch, so a first
+// buffer longer than it was lent with none: the QUIC sniffer then got no
+// datagram and waited out its window, where it would name no server at once
+// for one longer than quic.MaxProxiedDatagram. The cached reader lends the
+// first buffer, however long.
+func TestCachedReaderLendsAFirstDatagramLongerThanThePayload(t *testing.T) {
+	datagrams := [][]byte{bytes.Repeat([]byte{1}, 40000), []byte("next")}
+	reader := newTestCachedReader(t, &datagramReader{datagrams: slices.Clone(datagrams)})
+	var payload []byte
+	for range datagrams {
+		var err error
+		if payload, err = reader.Cache(time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(payload) >= len(datagrams[0]) {
+		t.Fatalf("the payload holds %d bytes; the test needs the first datagram cut", len(payload))
+	}
+	lent := reader.Datagrams()
+	if len(lent) != 1 || !bytes.Equal(lent[0], datagrams[0]) {
+		t.Fatalf("the cached reader lends %d datagrams, want the first whole", len(lent))
+	}
+}

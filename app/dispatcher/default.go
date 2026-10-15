@@ -90,7 +90,9 @@ func (r *cachedReader) Datagrams() [][]byte {
 	size := int32(0)
 	for _, b := range r.cache {
 		// A payload of several buffers holds as many bytes as the scratch.
-		if len(r.cache) > 1 && size+b.Len() > r.scratch.Len() {
+		// The first buffer is lent however long, so that the QUIC sniffer
+		// meets a datagram it can judge.
+		if len(r.datagrams) > 0 && size+b.Len() > r.scratch.Len() {
 			break
 		}
 		r.datagrams = append(r.datagrams, b.Bytes())
