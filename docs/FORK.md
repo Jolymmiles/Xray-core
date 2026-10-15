@@ -172,14 +172,26 @@ guard it.
   of tiny datagrams in regular buffers holds on either. VMess chooses by the
   encoded chunk, whose tag and padding count, so with AES-GCM and no padding a
   payload of 8177 to 8192 bytes takes the copy into a 32 KiB buffer as well,
-  where upstream returned a regular one. The writers send no more than older
-  readers take:
-  the Mux.Cool writer drops a packet above `buf.Size`, where upstream's frames
-  it; the Trojan writer sends up to 8192 bytes, where upstream's fails with
-  `ErrBufferFull` from 8182 bytes to an IPv4 address, and drops a longer
-  datagram; the Shadowsocks 2022 writer drops a datagram too large for a
-  packet, where upstream's ends the session;
-  freedom drops a datagram longer than an IP packet holds (65507 bytes over
+  where upstream returned a regular one. With sniffing on, the dispatcher
+  lends the QUIC sniffer the first buffer of a UDP flow however long
+  (`cachedReader.Datagrams`), so that a datagram longer than the 32 KiB its
+  payload holds ends sniffing at once, where sniffing waited out its 200 ms
+  window.
+  The writers send no more than older readers take: the Mux.Cool writer drops
+  a packet above `buf.Size`, where upstream's frames it; the Trojan writer
+  sends up to 8192 bytes, where upstream's fails with `ErrBufferFull` from
+  8182 bytes to an IPv4 address, and drops a longer datagram; the Shadowsocks
+  2022 writer drops a datagram too large for a packet, where upstream's ends
+  the session. The VLESS, VMess and XUDP writers already dropped what they
+  cannot frame, but with global padding the VMess writer took the chunk's
+  padding length from the stream it shares with the size mask before it
+  dropped the datagram, and the peer, which takes one per chunk it receives,
+  lost the session. It now refuses a datagram that does not fit with
+  `MaxPaddingLen` (64) bytes of padding before it takes a length: one above
+  8110 bytes with AES-GCM, or 8094 with authenticated length, where upstream
+  sent one of up to 8174 bytes (8158) when its padding fit and otherwise lost
+  the session.
+  Freedom drops a datagram longer than an IP packet holds (65507 bytes over
   IPv4, 65527 over IPv6), and one its socket refuses as too long (`EMSGSIZE`),
   where upstream's freedom ends the session on that error: macOS refuses a
   datagram above `net.inet.udp.maxdgram`, 9216 bytes by default, and a
@@ -188,36 +200,32 @@ guard it.
   connected socket skips that error. The other writers to a UDP socket that a
   whole datagram now reaches drop one their socket refuses as too long and go
   on with the session, where upstream's would end it: those of the
-  Shadowsocks, WireGuard and MASQUE outbounds, which also drop one longer than
-  an IP packet holds before the write, of dokodemo-door in both modes
-  (`buf.DatagramWriter` and its TPROXY writer), of the DNS outbound's queries
-  and of the SOCKS outbound, and the Shadowsocks 2022 server's reply loop.
-  SOCKS encodes a datagram that a regular buffer does not hold with its
-  header in a buffer of its size, inbound and outbound, where upstream sent an
-  empty datagram in its place: from 8183 bytes for an IPv4 address. The TUN,
-  WireGuard and MASQUE inbounds drop a reply longer than an IP packet holds, whose 16-bit lengths
-  wrapped. These drops and freedom's are logged at debug level, once a second
-  at most (`net.LogDroppedDatagram`); the drops of the proxy writers are not.
-  The VLESS, VMess and XUDP writers already dropped what they cannot frame,
-  but with global padding the VMess writer took the chunk's padding length
-  from the stream it shares with the size mask before it dropped the
-  datagram, and the peer, which takes one per chunk it receives, lost the
-  session; it now refuses a datagram that does not fit with the largest
-  padding (8110 bytes with AES-GCM) before taking one, where upstream sent
-  8111 to 8174 bytes or lost the session depending on the padding.
-  Reads from a UDP socket take up to 8192 bytes; the next entry covers a
-  longer datagram.
+  Shadowsocks, SOCKS, WireGuard and MASQUE outbounds, the last two of which
+  also drop one longer than an IP packet holds before the write, of
+  dokodemo-door in both modes (`buf.DatagramWriter` and its TPROXY writer), of
+  the DNS outbound's queries, and the Shadowsocks 2022 server's reply loop.
+  SOCKS encodes a datagram that a regular buffer does not hold with its header
+  in a buffer of its size, inbound and outbound, where upstream sends an empty
+  datagram in its place: from 8183 bytes for an IPv4 address. The TUN,
+  WireGuard and MASQUE inbounds drop a reply longer than an IP packet holds,
+  whose 16-bit lengths wrapped. Hysteria's UDP writer drops a datagram that
+  does not fit its 8192-byte buffer with the header, as upstream's does.
+  Each drop on a UDP socket or a TUN is logged at debug level by the component
+  that drops it, the first of each session or socket at once and then one a
+  second (`net.DropLog`); freedom logs it with the context of its session. The
+  drops of the proxy writers are not logged. Reads from a UDP socket take up
+  to 8192 bytes; the next entry covers a longer datagram.
   Covered by `TestReadDatagramTakesMemoryAsTheBytesArrive`,
-  `TestReadDatagramLeavesTheStreamAtTheNextDatagram` and
-  `TestReadDatagramReportsAStreamThatEndsInside` (`common/buf`),
+  `TestReadDatagramLeavesTheStreamAtTheNextDatagram`,
+  `TestReadDatagramReportsAStreamThatEndsInside` and
+  `TestDatagramWriterDropsDatagramsTheSocketRefusesAsTooLong` (`common/buf`),
   `TestLengthPacketReaderKeepsLargeDatagramsWhole` and
   `TestLengthPacketReaderTakesMemoryAsTheDatagramArrives`
   (`proxy/vless/encoding`), `TestAuthenticationReaderKeepsLargeDatagramsWhole`,
   `TestAuthenticationReaderTakesMemoryAsTheDatagramArrives` and
   `TestAuthenticationReaderStreamKeepsLargeChunksInOrder` (`common/crypto`),
   `TestAuthenticationWriterDropsWithoutDesyncingPadding`
-  (`proxy/vmess/encoding`),
-  `TestPacketReaderKeepsLargeDatagramsWhole`,
+  (`proxy/vmess/encoding`), `TestPacketReaderKeepsLargeDatagramsWhole`,
   `TestPacketReaderTakesMemoryAsTheDatagramArrives` and
   `TestPacketWriterSendsWhatReadersTake` (`proxy/trojan`),
   `TestPacketReaderKeepsLargePacketsWhole`,
@@ -226,45 +234,60 @@ guard it.
   `TestWriterDropsPacketsOlderReadersRefuse` (`common/mux`),
   `TestPacketReaderKeepsLargePacketsWhole` and
   `TestPacketReaderTakesMemoryAsThePacketArrives` (`common/xudp`),
+  `TestCachedReaderLendsAFirstDatagramLongerThanThePayload` and
+  `TestSniffJudgesAFirstDatagramLongerThanThePayload` (`app/dispatcher`),
   `TestUDPWriterDropsDatagramsTooLargeForAPacket` and
   `TestUDPReplyLoopDropsRepliesTheSocketRefusesAsTooLong`
   (`proxy/shadowsocks_2022`),
   `TestUDPWriterDropsDatagramsTheSocketRefusesAsTooLong` (`proxy/shadowsocks`),
+  `TestEncodeUDPPacketKeepsLargeDatagramsWhole` and
+  `TestUDPWriterSendsLargeDatagramsWhole` (`proxy/socks`),
   `TestUDPConnClientDropsDatagramsTooLongForIP`,
-  `TestUDPConnClientDropsDatagramsTooLongForIPBeforeTheWrite` and
+  `TestUDPConnClientDropsDatagramsTooLongForIPBeforeTheWrite`,
+  `TestUDPConnClientDropsDatagramsTheSocketRefusesAsTooLong` and
   `TestUDPConnDropsRepliesTooLongForIP` (`proxy/wireguard`),
   `TestUDPConnDropsRepliesTooLongForIP` (`proxy/tun`),
   `TestProcessDropsRepliesTheSocketRefusesAsTooLong` and
   `TestPacketWriterDropsRepliesTheSocketRefusesAsTooLong` (`proxy/dokodemo`),
   `TestDNSOutboundDropsQueriesTheSocketRefusesAsTooLong` (`proxy/dns`),
-  `TestEncodeUDPPacketKeepsLargeDatagramsWhole` and
-  `TestUDPWriterSendsLargeDatagramsWhole` (`proxy/socks`),
-  `TestDatagramWriterDropsDatagramsTheSocketRefusesAsTooLong` (`common/buf`),
-  `TestMaxUDPPayload` and `TestLogDroppedDatagramLogsOnceASecond`
-  (`common/net`), `TestLargeUDPDatagramProcessMatrix` (`common/singmux`,
-  integration: sing-box, Mihomo and Xray clients over VLESS, XUDP, Trojan and
-  VMess with and without global padding), and
-  `TestPacketWriterDropsDatagramsTooLongForIP`,
-  `TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong` and
-  `TestPacketReaderSkipsTooLongErrorsOfAConnectedSocket` (`proxy/freedom`).
+  `TestMaxUDPPayload` and `TestDropLogLetsTheFirstDropThenOneASecond`
+  (`common/net`), `TestPacketWriterDropsDatagramsTooLongForIP`,
+  `TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong`,
+  `TestPacketReaderSkipsTooLongErrorsOfAConnectedSocket` and
+  `TestPacketWriterLogsTheDropsOfItsSession` (`proxy/freedom`), and
+  `TestLargeUDPDatagramProcessMatrix` (`common/singmux`, integration: sing-box,
+  Mihomo and Xray clients over VLESS, XUDP, Trojan and VMess with and without
+  global padding).
 - A read from a UDP socket takes up to `buf.Size` (8192) bytes, and the UDP
   hub, which serves the UDP side of Shadowsocks, dokodemo-door and other
   inbounds, the socket of a SOCKS UDP association (`TempUDPConn`), and
   freedom, which reads the replies, drop a datagram that a read cut short
-  instead of passing its start on. Linux, macOS and the BSDs
-  mark such a read with `MSG_TRUNC`, and Windows fails it with `WSAEMSGSIZE`.
-  Where the read only marks it, upstream passes the first 8192 bytes on as a
-  datagram of their own; on Windows the error ends freedom's session, and
-  upstream's hub stops serving, so that one long datagram from anyone ends the
-  UDP side of the inbound until a restart. The hub on macOS and FreeBSD reads without the flags and still
-  passes a cut datagram on. `net.IsMessageTooLong` knows `WSAEMSGSIZE`, so on
-  Windows freedom also drops a datagram that its socket refuses as too long.
+  instead of passing its start on. Linux, macOS and the BSDs mark such a read
+  with `MSG_TRUNC`, and Windows fails it with `WSAEMSGSIZE`. Where the read
+  only marks it, upstream passes the first 8192 bytes on as a datagram of
+  their own; on Windows the error ends freedom's session, and upstream's hub
+  stops serving, so that one long datagram from anyone ends the UDP side of
+  the inbound until a restart. The hub on macOS and FreeBSD reads without the
+  flags and still passes a cut datagram on. `net.IsMessageTooLong` knows
+  `WSAEMSGSIZE`, so on Windows freedom also drops a datagram that its socket
+  refuses as too long. The readers of the SOCKS, Shadowsocks, DNS, WireGuard
+  and MASQUE outbounds read a reply without those flags, from a socket or the
+  userspace stack, so a read takes one byte more than a buffer holds
+  (`buf.DatagramReader`, and `wireguard.UDPConnClient`'s own) and a reply that
+  does not fit is dropped, where upstream's readers pass its start on and the
+  Shadowsocks reader fails the cut packet's authentication and ends the
+  session.
   Covered by `TestIsMessageTooLong`, `TestIsTruncated` and, on Windows,
   `TestIsMessageTooLongOnWindows` (`common/net`),
+  `TestDatagramReaderDropsDatagramsLongerThanABuffer` (`common/buf`),
   `TestHubDropsDatagramsLongerThanItsBuffer`,
   `TestHubServesOnAfterAReadOfATooLongDatagram` and
   `TestHubStopsServingOnOtherReadErrors` (`transport/internet/udp`),
-  `TestTempUDPConnDropsDatagramsLongerThanTheRead` (`proxy/socks`),
+  `TestTempUDPConnDropsDatagramsLongerThanTheRead` and
+  `TestUDPReaderDropsPacketsLongerThanARead` (`proxy/socks`),
+  `TestUDPReaderDropsPacketsLongerThanARead` (`proxy/shadowsocks`),
+  `TestDNSOutboundDropsRepliesLongerThanARead` (`proxy/dns`),
+  `TestUDPConnClientDropsRepliesLongerThanARead` (`proxy/wireguard`),
   `TestPacketReaderDropsDatagramsLongerThanItsBuffer` and
   `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`), and
   `TestLargeUDPDatagramProcessMatrix` (an Xray Trojan client, and replies of
