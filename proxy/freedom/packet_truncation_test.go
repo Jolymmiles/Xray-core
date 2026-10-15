@@ -2,6 +2,7 @@ package freedom
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	stdnet "net"
 	"os"
@@ -71,7 +72,7 @@ func TestPacketReaderDropsDatagramsLongerThanItsBuffer(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			reader := NewPacketReader(conn, &Handler{}, nil, net.Destination{}, net.DestinationFromAddr(server.LocalAddr()))
+			reader := NewPacketReader(context.Background(), conn, &Handler{}, nil, net.Destination{}, net.DestinationFromAddr(server.LocalAddr()))
 			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +115,7 @@ func TestPacketReaderSkipsTooLongErrorsOfAPacketConn(t *testing.T) {
 	refused := &stdnet.OpError{Op: "read", Net: "udp", Err: os.NewSyscallError("wsarecvfrom", syscall.ECONNREFUSED)}
 	socket := &refusingSocket{reads: []any{tooLong, []byte("pong"), tooLong, refused}}
 	conn := &net.PacketConnWrapper{PacketConn: refusingPacketConn{socket: socket}, Dest: socket.RemoteAddr()}
-	reader := NewPacketReader(conn, &Handler{}, nil, net.Destination{}, net.DestinationFromAddr(socket.RemoteAddr()))
+	reader := NewPacketReader(context.Background(), conn, &Handler{}, nil, net.Destination{}, net.DestinationFromAddr(socket.RemoteAddr()))
 	mb, err := reader.ReadMultiBuffer()
 	if err != nil {
 		t.Fatalf("ReadMultiBuffer() = %v, want the datagram after the error", err)

@@ -389,7 +389,8 @@ func (h *Handler) resolveLocal(host string) (net.IP, error) {
 
 type UDPConnClient struct {
 	net.PacketConn
-	Dest *net.UDPAddr
+	Dest  *net.UDPAddr
+	drops net.DropLog
 }
 
 func (c *UDPConnClient) ReadMultiBuffer() (buf.MultiBuffer, error) {
@@ -426,13 +427,17 @@ func (c *UDPConnClient) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		// The inbounds hand a datagram on whole, up to 65535 bytes: drop one
 		// that no IP packet holds, or that the socket refuses, and go on.
 		if b.Len() > net.MaxUDPPayload(dst) {
-			net.LogDroppedDatagram(context.Background(), int(b.Len()), "longer than an IP packet holds")
+			if c.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram of ", b.Len(), " bytes, longer than an IP packet holds")
+			}
 			b.Release()
 			continue
 		}
 		_, err := c.PacketConn.WriteTo(b.Bytes(), dst)
 		if net.IsMessageTooLong(err) {
-			net.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+			if c.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram of ", b.Len(), " bytes that the socket refuses as too long")
+			}
 		} else if err != nil {
 			buf.ReleaseMulti(mb[i:])
 			return err

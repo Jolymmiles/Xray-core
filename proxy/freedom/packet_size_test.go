@@ -2,6 +2,7 @@ package freedom
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	stdnet "net"
@@ -70,7 +71,7 @@ func TestPacketWriterDropsDatagramsTooLongForIP(t *testing.T) {
 						udp := destination
 						mb[i].UDP = &udp
 					}
-					writer := NewPacketWriter(conn, &Handler{}, nil, net.Destination{}, destination, nil)
+					writer := NewPacketWriter(context.Background(), conn, &Handler{}, nil, net.Destination{}, destination, nil)
 					if err := writer.WriteMultiBuffer(mb); err != nil {
 						t.Fatalf("WriteMultiBuffer() = %v, want the long datagram dropped", err)
 					}
@@ -171,7 +172,7 @@ func TestPacketWriterDropsDatagramsTheSocketRefusesAsTooLong(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			socket := &refusingSocket{refuse: map[byte]error{2: errTooLong, 4: stdnet.ErrClosed}}
-			writer := NewPacketWriter(open(socket), &Handler{}, nil, net.Destination{}, destination, nil)
+			writer := NewPacketWriter(context.Background(), open(socket), &Handler{}, nil, net.Destination{}, destination, nil)
 			if err := writer.WriteMultiBuffer(datagrams(destination, 1, 2, 3)); err != nil {
 				t.Fatalf("WriteMultiBuffer() = %v, want the refused datagram dropped", err)
 			}
@@ -196,7 +197,7 @@ func TestPacketReaderSkipsTooLongErrorsOfAConnectedSocket(t *testing.T) {
 	tooLong := &stdnet.OpError{Op: "read", Net: "udp", Err: os.NewSyscallError("recvfrom", syscall.EMSGSIZE)}
 	refused := &stdnet.OpError{Op: "read", Net: "udp", Err: os.NewSyscallError("recvfrom", syscall.ECONNREFUSED)}
 	socket := &refusingSocket{reads: []any{tooLong, []byte("pong"), tooLong, tooLong, refused}}
-	reader := NewPacketReader(socket, &Handler{}, nil, net.Destination{}, net.UDPDestination(net.IPAddress([]byte{192, 0, 2, 1}), 53))
+	reader := NewPacketReader(context.Background(), socket, &Handler{}, nil, net.Destination{}, net.UDPDestination(net.IPAddress([]byte{192, 0, 2, 1}), 53))
 	mb, err := reader.ReadMultiBuffer()
 	if err != nil {
 		t.Fatalf("ReadMultiBuffer() = %v, want the datagram after the error", err)

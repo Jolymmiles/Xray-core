@@ -404,6 +404,7 @@ func (w *SequentialWriter) WriteMultiBuffer(mb MultiBuffer) error {
 // rest, where SequentialWriter ends the write; any other error ends it.
 type DatagramWriter struct {
 	io.Writer
+	drops xnet.DropLog
 }
 
 // WriteMultiBuffer implements Writer.
@@ -414,7 +415,9 @@ func (w *DatagramWriter) WriteMultiBuffer(mb MultiBuffer) error {
 				ReleaseMulti(mb[i:])
 				return err
 			}
-			xnet.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+			if w.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram of ", b.Len(), " bytes that the socket refuses as too long")
+			}
 		}
 		b.Release()
 	}

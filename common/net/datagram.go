@@ -1,11 +1,10 @@
 package net
 
 import (
-	"context"
 	"sync/atomic"
 	"time"
 
-	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/log"
 )
 
 // The longest UDP payload an IP packet holds: of its 65535 bytes, the UDP
@@ -25,22 +24,24 @@ func MaxUDPPayload(addr Addr) int32 {
 	return MaxUDPPayloadIPv4
 }
 
-// lastDropLog is when LogDroppedDatagram last logged, in Unix nanoseconds.
-var lastDropLog atomic.Int64
+// DropLog limits the debug log of the datagrams that one session, socket or
+// writer drops: it logs the first, then at most one a second, as a drop is
+// per datagram. The caller writes the log, so that it names the component
+// that dropped the datagram and, with its context, the session.
+type DropLog struct {
+	last atomic.Int64 // when a drop was last logged, in Unix nanoseconds
+}
 
-// LogDroppedDatagram logs at debug level that a datagram of size bytes, or of
-// unknown size if size is negative, was dropped, and why, so that a route
-// whose socket refuses every datagram does not pass for a healthy session
-// without replies. It logs once a second at most, as a drop is per datagram.
-func LogDroppedDatagram(ctx context.Context, size int, reason string) {
+// Due reports whether to log a drop now: debug logging is on, and the drop is
+// the first or the last one logged is a second old.
+func (l *DropLog) Due() bool {
+	if !log.ShouldLog(log.Severity_Debug) {
+		return false
+	}
 	now := time.Now().UnixNano()
-	last := lastDropLog.Load()
-	if now-last < int64(time.Second) || !lastDropLog.CompareAndSwap(last, now) {
-		return
+	last := l.last.Load()
+	if last != 0 && now-last < int64(time.Second) {
+		return false
 	}
-	if size < 0 {
-		errors.LogDebug(ctx, "dropped a UDP datagram: ", reason, " (logged once a second at most)")
-		return
-	}
-	errors.LogDebug(ctx, "dropped a UDP datagram of ", size, " bytes: ", reason, " (logged once a second at most)")
+	return l.last.CompareAndSwap(last, now)
 }

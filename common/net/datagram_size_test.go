@@ -1,9 +1,10 @@
 package net
 
 import (
-	"context"
 	"testing"
 	"time"
+
+	"github.com/xtls/xray-core/common/log"
 )
 
 func TestMaxUDPPayload(t *testing.T) {
@@ -24,21 +25,41 @@ func TestMaxUDPPayload(t *testing.T) {
 	}
 }
 
-// A drop is per datagram, so its log must not flood: it logs once a second.
-func TestLogDroppedDatagramLogsOnceASecond(t *testing.T) {
-	lastDropLog.Store(0)
-	LogDroppedDatagram(context.Background(), 9000, "test")
-	logged := lastDropLog.Load()
-	if logged == 0 {
-		t.Fatal("the first drop was not logged")
+// debugLog accepts every message, so that debug logging is on.
+type debugLog struct{}
+
+func (debugLog) Handle(log.Message) {}
+
+// silentLog accepts no message, as when no log handler is registered.
+type silentLog struct{}
+
+func (silentLog) Handle(log.Message)        {}
+func (silentLog) Enabled(log.Severity) bool { return false }
+
+// A drop is per datagram, so its log must not follow a sender's rate: a
+// DropLog lets the first drop be logged, then one a second, and only while
+// debug logging is on, so that a drop with the log off does not take the turn
+// of the next.
+func TestDropLogLetsTheFirstDropThenOneASecond(t *testing.T) {
+	log.RegisterHandler(silentLog{})
+	t.Cleanup(func() { log.RegisterHandler(silentLog{}) })
+	var drops DropLog
+	if drops.Due() {
+		t.Fatal("a drop is due with debug logging off")
 	}
-	LogDroppedDatagram(context.Background(), 9000, "test")
-	if lastDropLog.Load() != logged {
-		t.Fatal("a second drop within the second was logged")
+	log.RegisterHandler(debugLog{})
+	if !drops.Due() {
+		t.Fatal("the first drop is not due")
 	}
-	lastDropLog.Store(time.Now().Add(-time.Second).UnixNano())
-	LogDroppedDatagram(context.Background(), -1, "test")
-	if lastDropLog.Load() <= logged {
-		t.Fatal("a drop a second later was not logged")
+	if drops.Due() {
+		t.Fatal("a second drop within the second is due")
+	}
+	drops.last.Store(time.Now().Add(-time.Second).UnixNano())
+	if !drops.Due() {
+		t.Fatal("a drop a second later is not due")
+	}
+	var other DropLog
+	if !other.Due() {
+		t.Fatal("the first drop of another DropLog is not due")
 	}
 }

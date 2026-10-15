@@ -32,6 +32,7 @@ type Hub struct {
 	recvOrigDest bool
 	// Only direct kernel UDP reads prove their returned address is physical.
 	trustedReadAddr bool
+	drops           net.DropLog
 }
 
 func ListenUDP(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, options ...HubOption) (*Hub, error) {
@@ -122,7 +123,9 @@ func (h *Hub) start() {
 		// its start on as a datagram of its own, and serve the next.
 		if net.IsTruncated(flags) || net.IsMessageTooLong(err) {
 			buffer.Release()
-			net.LogDroppedDatagram(context.Background(), -1, "longer than the buffer a read takes")
+			if h.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram longer than the ", buf.Size, " bytes a read takes")
+			}
 			continue
 		}
 

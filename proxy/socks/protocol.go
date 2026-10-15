@@ -410,6 +410,7 @@ func (r *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 type UDPWriter struct {
 	Writer  io.Writer
 	Request *protocol.RequestHeader
+	drops   net.DropLog
 }
 
 func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -437,7 +438,9 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		packet.Release()
 		if net.IsMessageTooLong(err) {
 			// with its header, a whole datagram may not fit an IP packet
-			net.LogDroppedDatagram(context.Background(), int(size), "the socket refuses it as too long")
+			if w.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP packet of ", size, " bytes that the socket refuses as too long")
+			}
 			continue
 		}
 		if err != nil {

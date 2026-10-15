@@ -51,6 +51,8 @@ type stack struct {
 	closed bool
 	// opening is how many of conns wait for the answer to their SYN-ACK
 	opening atomic.Int32
+	// drops limits the log of the replies that writeUDP drops
+	drops net.DropLog
 }
 
 // NewStack builds new ip stack
@@ -243,7 +245,9 @@ func (s *stack) writeUDP(payload []byte, src net.Destination, dst net.Destinatio
 	// The outbounds hand a reply on whole, up to 65535 bytes: drop one whose
 	// length the 16-bit fields cannot state, and go on with the session.
 	if srcIP.Is4() && len(payload) > net.MaxUDPPayloadIPv4 || len(payload) > net.MaxUDPPayloadIPv6 {
-		net.LogDroppedDatagram(s.ctx, len(payload), "longer than an IP packet holds")
+		if s.drops.Due() {
+			errors.LogDebug(s.ctx, "dropped a UDP reply of ", len(payload), " bytes, longer than an IP packet holds")
+		}
 		return nil
 	}
 	var b [ipv6HeaderSize + udpHeaderSize]byte

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/common/errors"
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal"
 )
@@ -26,6 +27,7 @@ type TempUDPConn struct {
 	AssociatedTCPConn net.Conn
 	ExpectedRemote    atomic.Pointer[net.UDPAddr]
 	Timer             *signal.ActivityTimer
+	drops             xnet.DropLog
 }
 
 func (c *TempUDPConn) Read(b []byte) (n int, err error) {
@@ -36,7 +38,9 @@ func (c *TempUDPConn) Read(b []byte) (n int, err error) {
 		if cut {
 			// a read takes up to len(b) bytes: drop a longer datagram rather
 			// than pass its start on as a datagram of its own
-			xnet.LogDroppedDatagram(context.Background(), -1, "longer than the buffer a read takes")
+			if c.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram longer than the ", len(b), " bytes a read takes")
+			}
 			continue
 		}
 		if err != nil {

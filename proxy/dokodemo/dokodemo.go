@@ -217,6 +217,7 @@ type PacketWriter struct {
 	conns map[net.Destination]net.PacketConn
 	mark  int
 	back  *net.UDPAddr
+	drops net.DropLog
 }
 
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -247,7 +248,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			_, err = conn.WriteTo(b.Bytes(), w.back)
 			if net.IsMessageTooLong(err) {
 				// an outbound hands a reply on whole, up to 65535 bytes
-				net.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+				w.logDrop(b.Len())
 			} else if err != nil {
 				errors.LogInfo(context.Background(), err.Error())
 				w.conns[*b.UDP] = nil
@@ -257,7 +258,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		} else {
 			_, err = w.conn.WriteTo(b.Bytes(), w.back)
 			if net.IsMessageTooLong(err) {
-				net.LogDroppedDatagram(context.Background(), int(b.Len()), "the socket refuses it as too long")
+				w.logDrop(b.Len())
 				err = nil
 			}
 			b.Release()
@@ -268,6 +269,13 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		}
 	}
 	return nil
+}
+
+// logDrop logs a reply of size bytes that the socket refused as too long.
+func (w *PacketWriter) logDrop(size int32) {
+	if w.drops.Due() {
+		errors.LogDebug(context.Background(), "dropped a UDP reply of ", size, " bytes that the socket refuses as too long")
+	}
 }
 
 func (w *PacketWriter) Close() error {
