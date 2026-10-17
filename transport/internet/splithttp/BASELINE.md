@@ -750,6 +750,64 @@ Limits:
     for the path returns for bytes the prober sends before it is refused.
   - Not measured: record counts and timing of the first round trips, on
     this change or against stock.
+- A server cuts its downloads against a queue only while the queue is its
+  own (`foreignQueue`, `probeQueue`). A queue that other traffic keeps
+  full does not shorten when the server cuts, and until `bd5d1afc` cut after
+  cut handed that traffic the path, down to `init` a round trip. While a
+  queue stands at more than twice pi's setpoint the server now cuts every
+  open download at once to a quarter under what it has in flight; if the
+  kernel's round trip has not come down by an eighth of the queue within
+  four round trips, the queue counts as foreign for sixteen, with no cuts
+  against it and no pi. One probe covers all connections from the
+  client's address (`flowPath`): a client's connections share its
+  bottleneck, and a probe per connection took the other connections' data
+  for foreign. Tests: `TestFlowForeignQueueStopsCuts`,
+  `TestFlowOwnQueueKeepsCuts`, `TestFlowSmallQueueOpensNoProbe`,
+  `TestFlowProbeCutsEveryDownload`, `TestFlowProbeSpansConnections`.
+  The stand for it is not in the repository: Mihomo v1.19.32 as client
+  over TLS, XHTTP stream-up, a 100 Mbit/s link at RTT 150 ms (netem, 75 ms
+  each way); a proxied 10 MB download alone, then four beside one direct
+  TCP download from the server's host, then alone again; three runs each,
+  rates of the first download beside the direct flow:
+
+  | Server | `h2Flow` off | `h2Flow` on |
+  | --- | --- | --- |
+  | `28e1e458` | 5.0, 4.8, 4.8 Mbit/s | 1.1, 1.1, 2.7 Mbit/s |
+  | `bd5d1afc` | 5.3, 5.1, 4.8 Mbit/s | 4.9, 4.7, 5.1 Mbit/s |
+
+  The later downloads beside the flow get 2.4 to 7.5 Mbit/s with the
+  probe, against 3.9 to 5.2 without a governor. Alone, before the flow,
+  every case gets 36.5 Mbit/s, and 28.3 to 36.5 after it.
+  What it cost was looked for with `stand.py` against an official client,
+  `28e1e458` against `bd5d1afc`, six runs each: the request beside eight
+  downloads at 100 Mbit/s 65/352 and 65/394 ms (p50/p95), at 1 Gbit/s
+  67/121 and 67/103, one download at RTT 150 ms 152/231 and 152/159, four
+  uploads 74/156 and 72/98; rates the same in every row. Twenty uploads
+  into a slow origin and twenty slow downloads with `--client-limit-mb
+  40`, twelve runs each: 52/514 and 52/440, 52/175 and 52/149 ms, the
+  client holding the same. A download after an upload starts in 0.76 and
+  0.73 s. The client's xmux opens three connections; with a probe per
+  connection the request beside eight downloads at 100 Mbit/s took
+  155/576 ms, and with one connection 65/191, which is why the probe is
+  shared. A probe per connection that cut the caps rather than what was
+  in flight cut a cap a stream did not fill for nothing, the queue stayed,
+  and the request took 242/529 ms.
+  What an observer sees of this change:
+  - Passive, on the path, TLS records only. Where the server's own data
+    makes the queue nothing changes but a probe's one cut of a quarter,
+    which the cuts that follow would have made anyway. Beside traffic
+    that keeps a queue full, the server's downloads move at about the rate
+    a server without a governor gets, with a dip of up to a quarter every
+    twenty round trips or so while that queue stands: that period is new.
+  - Clients behind one address, such as a carrier NAT, share the probe:
+    one's probe cuts the others' downloads once, and a verdict of foreign
+    lifts the cuts for all of them for sixteen round trips. Either way each
+    gets what `28e1e458` or a server without a governor gives it.
+  - An active prober that cannot authenticate gets no data on a stream,
+    so it starts no download and reaches neither the probe nor the verdict.
+  - Not measured: record counts and timing during a probe, against stock
+    or `28e1e458`; links whose cross traffic is not one bulk TCP flow;
+    BBR on the server.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
