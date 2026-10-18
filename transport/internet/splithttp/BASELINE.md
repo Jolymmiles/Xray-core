@@ -750,6 +750,104 @@ Limits:
     for the path returns for bytes the prober sends before it is refused.
   - Not measured: record counts and timing of the first round trips, on
     this change or against stock.
+- A server scales its cuts against a queue by what they do to it
+  (`flowEffect`, `cutGain`). It cut against any queue the kernel saw, and a
+  queue that other traffic keeps full does not shorten when it does: pi took
+  a download to `init` per round trip, about a megabit per second with a
+  second of other traffic in the queue. Now, while the queue stands over a
+  quarter more than pi's setpoint, each connection notes once per round
+  trip of the empty path how far the queue fell from its peak, and how far
+  a cut brought down three things from theirs: what its kernel has in flight
+  (`tcp_info` unacked times MSS), the caps of its downloads that took data
+  since the last note, and the rate those caps allow over the round trip.
+  Once the least of the three has fallen by a fifth, the queue's fall for
+  that cut is the gain, within 0 and 1; it stays until the next such cut.
+  pi's negative steps and the cut at a long queue are scaled by it; growth
+  is not, and a cap whose reader takes what the cap gives follows the round
+  trip by the rest of the gain, so the download keeps its rate beside a
+  queue it cannot move. Each of the three keeps something else from passing
+  for a cut: in flight alone halves when TCP takes its window back after a
+  loss while other senders back off and the queue with them; caps that
+  include a stream carrying nothing, such as the upload beside a download,
+  move by a fraction of a real cut; a cap that follows the round trip down
+  is no cut, and the rate leaves it out. A small gain is kept as it is: a
+  client's connections share its own queue, and each one's cut moves it by
+  that connection's share.
+  pi's test for a reader that limits itself compares what the reader took
+  in a round with the round's share of the cap, the cap over the round trip
+  times the round: beside a queue of a second, a reader that takes all it
+  is given copies less than a quarter of the cap per round of the empty
+  path, and the cap was cut by a quarter every three rounds for it.
+  `"h2Flow": {"queueCuts": false}` turns the cuts off for an inbound: pi
+  and the cut at a long queue do not run, and the windows follow their
+  readers alone (`H2FlowConfig.noQueueCuts`).
+  The stand is `burst.py`: an official client, 60 Mbit/s at RTT 144 ms, a
+  queue of five bandwidth-delay products, one download, four plain TCP
+  downloads from the server's namespace for 20 s from the 10th second;
+  three runs each, Mbit/s, median (least-most):
+
+  ```sh
+  python3 burst.py --origin ./origin --client ./xray-official \
+      --server main=./xray-main --server stock=./xray-main --h2flow 'stock={"enabled": false}' \
+      --server pr=./xray-pr --server pr-nocuts=./xray-pr --h2flow 'pr-nocuts={"enabled": true, "queueCuts": false}' --runs 3
+  ```
+
+  | | `28e1e458` | no governor | this change | `queueCuts: false` |
+  | --- | --- | --- | --- | --- |
+  | Before the burst | 56.5 | 57.1 | 56.5 | 57.0 |
+  | Mean over the burst | 10.8 (10.7-10.8) | 41.3 (41.2-41.5) | 23.2 (22.7-23.4) | 36.2 (35.5-37.8) |
+  | Mean over its second half | 0.8 (0.8-0.8) | 31.0 (30.6-31.0) | 16.5 (16.3-16.8) | 20.7 (20.4-25.5) |
+  | Back at 4/5 after it | 4.0 (4.0-4.0) s | 2.0 s | 2.0 (1.5-4.0) s | 2.5 (2.0-3.0) s |
+
+  With `--burst 90 --duration 120`, two runs: `28e1e458` 2.6 (2.5-2.7)
+  over the burst and 0.4 over its second half, this change 11.7 (11.3-12.2)
+  and 6.0 (3.4-8.7). Over a long burst the change still loses ground: at a
+  full buffer the queue wanders about its peak by more than the kernel's
+  RTT variance, and now and then a cut reads as answered.
+  What it cost, `stand.py` against an official client, `28e1e458` and this
+  change, p50/p95 of the request beside the load, six runs each unless
+  given: twenty uploads into a slow origin, twelve runs, 52/468 and
+  52/552 ms, the worst run at 0.80 and 0.69 s; eight downloads at 100 Mbit/s 65/312 and 65/260,
+  11.5 MB/s on both, and over 24 runs each p50 at 65-73 ms in 21 and 22
+  runs, the rest at 96-122 on both; at 1 Gbit/s, twelve
+  runs, 69/109 and 69/107, 114.1 MB/s on both; one download at RTT 150 ms
+  190/354 and 191/354; four uploads 52/216 and 52/206; twenty slow
+  downloads with `--client-limit-mb 40` 52/332 and 52/273, the client
+  holding 13.5 and 13.2 MB, killed in none. A download after an upload
+  starts as on `28e1e458`, 0.53 s median after three seconds idle.
+  Tried on the way and dropped, each for a regression of eight downloads at
+  100 Mbit/s, whose request beside them has 65 ms at p50 on `28e1e458`, or
+  for not holding the burst:
+  - A verdict per client address: once what the client's connections have
+    in flight and unacked halved and the queue did not come down by a
+    quarter, the queue counted as foreign and the cuts stopped. It held the
+    burst at 20.7 but split eight downloads into runs at 65 ms and runs at
+    200 to 390.
+  - A server-wide reference: every download's credit moved ±15% by chips
+    of random length, and a queue that followed them counted as the
+    server's own. Against past stretches of the reference as the noise
+    floor, an own queue followed it in 80 to 100% of six-second windows on
+    a clean link and in 3 to 18% on jittery or cellular ones; the
+    modulation alone took eight downloads to 80-101 ms, and at 64
+    connections 20 and 27 of 128 downloads stopped.
+  - A dead zone under a quarter, the RTT variance taken off the queue's
+    fall, and a gain of none held until a test cut: each killed the small
+    gains of connections sharing an own queue (80 to 160 ms).
+  - The queue smoothed again before the comparison: it lags what is in
+    flight by rounds, and a slow reader read gains of a half for cuts that
+    had landed (p95 284 against 187 ms).
+  What an observer sees of this change:
+  - Passive, on the path. Where the server's own data makes the queue,
+    nothing changes. Beside traffic that keeps a queue full the server's
+    downloads hold their rate rather than fall to `init`; the windows grow
+    and shrink with the round trip. Nothing is sent that the reader did not
+    credit, no probe or modulation is added, and the state is per
+    connection.
+  - An active prober that cannot authenticate gets no data on a stream, so
+    it starts no download and reaches no queue.
+  - Not measured: record counts and timing beside a foreign queue, against
+    stock or `28e1e458`; links whose other traffic is not bulk TCP; BBR on
+    the server.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
