@@ -755,24 +755,29 @@ Limits:
   queue that other traffic keeps full does not shorten when it does: pi took
   a download to `init` per round trip, about a megabit per second with a
   second of other traffic in the queue. Now, while the queue stands over a
-  quarter more than pi's setpoint, each connection notes once per round
-  trip of the empty path how far the queue fell from its peak, and how far
-  a cut brought down three things from theirs: what its kernel has in flight
-  (`tcp_info` unacked times MSS), the caps of its downloads that took data
-  since the last note, and the rate those caps allow over the round trip.
-  Once the least of the three has fallen by a fifth, the queue's fall for
-  that cut is the gain, within 0 and 1; it stays until the next such cut.
-  pi's negative steps and the cut at a long queue are scaled by it; growth
-  is not, and a cap whose reader takes what the cap gives follows the round
-  trip by the rest of the gain, so the download keeps its rate beside a
-  queue it cannot move. Each of the three keeps something else from passing
-  for a cut: in flight alone halves when TCP takes its window back after a
-  loss while other senders back off and the queue with them; caps that
-  include a stream carrying nothing, such as the upload beside a download,
-  move by a fraction of a real cut; a cap that follows the round trip down
-  is no cut, and the rate leaves it out. A small gain is kept as it is: a
-  client's connections share its own queue, and each one's cut moves it by
-  that connection's share.
+  quarter more than pi's setpoint, each connection adds up the bytes pi and
+  the cut at a long queue take off its caps, and notes once per round trip
+  of the empty path how far the queue fell from its peak. Once the cuts come
+  to a fifth of the caps of its downloads that took data within the last
+  second, and what its kernel has in flight (`tcp_info` unacked times MSS)
+  has come down as far, the queue's fall for that cut is the gain, within 0
+  and 1; the measurement then starts afresh, and the gain stays until the
+  next such cut, or goes back to 1 once the queue halves. pi's negative
+  steps and the cut at a long queue are scaled by it; growth is not, and a
+  cap whose reader takes what the cap gives follows the round trip by the
+  rest of the gain, so the download keeps its rate beside a queue it cannot
+  move. Only the controller's own cuts count: beside other traffic a loss
+  that drops what is in flight, the caps following the round trip down and
+  a dip of the other traffic's queue move together now and then, and read
+  together as a cut that worked; cut after cut then took a download from
+  10 to under 1 Mbit/s over a long burst. A download stays in the caps for a
+  second after it last returned credit: one that slows returns it less
+  often than once a round, and a round it missed would read as its cap cut.
+  A small gain is kept as it is: a client's connections share its own queue,
+  and each one's cut moves it by that connection's share. The queue halving
+  gives the gain back: with only the controller's cuts to judge by, a small
+  gain cuts little and is judged again late, and the neighbours' cuts that
+  drain the queue are what shows it to be the client's own.
   pi's test for a reader that limits itself compares what the reader took
   in a round with the round's share of the cap, the cap over the round trip
   times the round: beside a queue of a second, a reader that takes all it
@@ -799,12 +804,14 @@ Limits:
   | Mean over its second half | 0.8 (0.8-0.8) | 31.0 (30.6-31.0) | 16.5 (16.3-16.8) | 20.7 (20.4-25.5) |
   | Back at 4/5 after it | 4.0 (4.0-4.0) s | 2.0 s | 2.0 (1.5-4.0) s | 2.5 (2.0-3.0) s |
 
-  With `--burst 90 --duration 120`, two runs each, over the burst and over
-  its second half: `28e1e458` 2.5 (2.4-2.7) and 0.4, no governor 24.5
-  (21.6-27.3) and 18.5 (13.8-23.2), this change 11.9 (11.4-12.3) and 5.5
-  (4.5-6.6). Over a long burst the change keeps a download well above
-  `28e1e458` but well under a server without the governor; why it falls
-  behind there is not established. A client that credits in large steps,
+  With `--burst 90 --duration 120`, over the burst and over its second
+  half: `28e1e458`, two runs, 2.5 (2.4-2.7) and 0.4; eight runs each, no
+  governor 21.1 (18.8-24.9) and 14.1 (8.9-20.9), this change 14.2
+  (7.2-16.4) and 10.6 (3.5-13.3), back at 4/5 of the rate before in 1.8 s
+  against 2.0 without the governor. Judged by every drop rather than the
+  controller's own cuts the same eight runs gave 12.5 and 6.5 (0.6-9.5),
+  back in 3.5 s. The stand's runs vary widely here; eight runs each is the
+  least that told the builds apart. A client that credits in large steps,
   so that pi never governs its downloads, is not behind: Mihomo Meta on a
   similar stand (60 Mbit/s, RTT 144 ms, four flows for 90 s), three runs,
   got 13-16 and 8-14 on the fork's build of this change, 16-17 and 10-13
