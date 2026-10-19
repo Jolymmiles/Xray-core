@@ -557,6 +557,7 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain floa
 		// limit lets it take, a cap that grew would leave a later cut
 		// nothing to land on, and flowEffect nothing to judge it by.
 		follow := (1 - gain) * cap * float64(st.rtt-w.piRTT) / float64(w.piRTT)
+		follow = min(max(follow, -flowPIMaxStep*cap), flowPIMaxStep*cap)
 		if follow < 0 || 4*float64(copied)*float64(st.rtt) >= 3*cap*float64(round) {
 			delta += follow
 		}
@@ -1642,6 +1643,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now))
 		default:
 			s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
+			// A round trip pi saw before the stream left it is no step to
+			// follow when it comes back.
+			s.down.piRTT = 0
 		}
 		switch {
 		case c.client:

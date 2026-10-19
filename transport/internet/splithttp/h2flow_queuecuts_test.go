@@ -73,3 +73,20 @@ func TestFlowNoQueueCutsStopsPI(t *testing.T) {
 		}
 	}
 }
+
+// TestFlowPIForgetsRoundTripOutside is a download pi does not govern for a
+// round, here one whose client credits in large steps: the round trip pi saw
+// last is dropped, so that pi, when the stream comes back to it, does not
+// take the change since then for one round's.
+func TestFlowPIForgetsRoundTripOutside(t *testing.T) {
+	h, s := queuedDownload(t)
+	h.c.mu.Lock()
+	s.down.piRTT = 100 * time.Millisecond
+	h.c.mu.Unlock()
+	credit(h, s)
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if s.down.piRTT != 0 {
+		t.Fatalf("pi's round trip %v kept outside pi", s.down.piRTT)
+	}
+}
