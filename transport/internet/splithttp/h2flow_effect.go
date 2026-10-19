@@ -8,14 +8,13 @@ import "time"
 // winding up against an error nothing it does removes, takes the downloads
 // to init per round trip. So each connection measures what its cuts do:
 // over an episode of standing queue, how far the queue fell from its peak
-// for how far a cut brought down what the kernel has in flight, the caps
-// and the rate the caps allow over the round trip, the least of the three.
-// What is in flight, as a cut lands only once the data in flight comes down
-// to it: where the queue is the server's own, by Little's law it falls with
-// what is in flight, and where it is foreign only the download's share of
-// the rate does. The caps, as a loss beside other traffic drops what is in
-// flight while other senders back off, and the queue with it. The rate, as a
-// cap that follows the round trip down is no cut either.
+// for the share of the caps the controller cut, once the cut has landed in
+// what the kernel has in flight. Where the queue is the server's own, by
+// Little's law it falls with what is in flight; where it is foreign only the
+// download's share of the rate does. Only the controller's own cuts count: a
+// loss that drops what is in flight, the caps following the round trip down
+// and a dip of other traffic's queue move together now and then, and read
+// together as a cut that worked.
 //
 // Cuts are scaled by that gain; growth is not, and where cuts have less
 // gain the caps follow the round trip by as much more, so the download keeps
@@ -23,8 +22,9 @@ import "time"
 // connections share a queue of the server's own, each one's cut moves the
 // queue by its share, and all of them cutting by their shares drain it.
 const (
-	// flowEffectProbe is how far a cut must bring the three down from their
-	// peaks before the queue's answer counts: until then cuts work in full.
+	// flowEffectProbe is the share of the caps a cut must take, and of what
+	// is in flight it must bring down, before the queue's answer counts:
+	// until then cuts work in full.
 	flowEffectProbe = 0.2
 	// An episode is a queue over flowEffectAbove times the setpoint: the PI
 	// controller holds the queue at the setpoint, and an episode that took
@@ -32,6 +32,9 @@ const (
 	// an old peak. flowEffectClear rounds in a row back under it end one.
 	flowEffectAbove = 1.25
 	flowEffectClear = 2
+	// flowEffectRecent is the round trips of the empty path, and at least a
+	// second, within which a download that took data counts as taking it.
+	flowEffectRecent = 8
 )
 
 type flowEffect struct {
@@ -41,17 +44,22 @@ type flowEffect struct {
 	clear     int
 	flightTop float64
 	capsTop   float64
-	rateTop   float64
 	qTop      float64
+	cut       float64
 	gain      float64
+}
+
+// cutBy notes bytes the controller cut from the caps against the queue.
+func (e *flowEffect) cutBy(bytes float64) {
+	e.cut += bytes
 }
 
 // note takes the round trip the kernel reads and that of the empty path, the
 // setpoint, the bytes in flight and the caps of the downloads that took data,
 // once per round. It returns the gain cuts are scaled by: 1 outside an
-// episode and until a cut has brought the three down by flowEffectProbe;
-// then the share by which the queue fell for the share of that cut, as of
-// the last such cut.
+// episode, until the controller has cut flowEffectProbe of the caps and what
+// is in flight has come down as far, and once the queue halves; otherwise
+// the share by which the queue fell for the share of the last such cut.
 func (e *flowEffect) note(now time.Time, rtt, minRTT, set time.Duration, inFlight, caps int64) float64 {
 	e.at = now
 	// The kernel's smoothed round trip, as it is: smoothing it again would
@@ -59,7 +67,6 @@ func (e *flowEffect) note(now time.Time, rtt, minRTT, set time.Duration, inFligh
 	// took effect read as one that did not.
 	e.queue = float64(rtt - minRTT)
 	x, c := float64(inFlight), float64(caps)
-	r := c / float64(max(rtt, time.Millisecond))
 	if e.queue <= flowEffectAbove*float64(set) {
 		if e.clear++; e.clear >= flowEffectClear {
 			e.active = false
@@ -69,17 +76,39 @@ func (e *flowEffect) note(now time.Time, rtt, minRTT, set time.Duration, inFligh
 	e.clear = 0
 	if !e.active {
 		e.active, e.gain = true, 1
-		e.flightTop, e.capsTop, e.rateTop, e.qTop = x, c, r, e.queue
+		e.start(x, c)
 		return 1
 	}
-	e.flightTop, e.capsTop, e.rateTop, e.qTop = max(e.flightTop, x), max(e.capsTop, c), max(e.rateTop, r), max(e.qTop, e.queue)
-	// Without a cut deep enough to judge by, the gain stays what the last one
-	// showed: a cap held where cuts did nothing brings what is in flight back
-	// to its peak, and must not take that for leave to cut again.
-	if cut := min(1-x/e.flightTop, 1-c/e.capsTop, 1-r/e.rateTop); cut >= flowEffectProbe {
+	e.flightTop, e.qTop = max(e.flightTop, x), max(e.qTop, e.queue)
+	// A queue that halved since the last judgement drained by the client's
+	// own cuts, this connection's or its neighbours': cuts have their gain
+	// back. Other traffic's queue at a full buffer wanders by a tenth, and
+	// halves only as that traffic leaves.
+	if e.gain < 1 && e.queue <= e.qTop/2 {
+		e.gain = 1
+		e.start(x, c)
+		return 1
+	}
+	// Only what the controller cut counts, and only once it has landed in
+	// what is in flight. The caps following the round trip down, a loss that
+	// drops what is in flight, and a dip of other traffic's queue each move
+	// with the others now and then, and taken together read as a cut that
+	// worked. Without a cut deep enough to judge by, the gain stays what the
+	// last one showed; without gain the controller does not cut, and the gain
+	// stays none until the queue halves or is gone.
+	if e.capsTop <= 0 {
+		return e.gain
+	}
+	if cut := min(e.cut/e.capsTop, 1-x/e.flightTop); cut >= flowEffectProbe {
 		e.gain = min(max((1-e.queue/e.qTop)/cut, 0), 1)
+		e.start(x, c)
 	}
 	return e.gain
+}
+
+// start begins a measurement from now: the next cut is judged from here.
+func (e *flowEffect) start(x, c float64) {
+	e.flightTop, e.capsTop, e.qTop, e.cut = x, c, e.queue, 0
 }
 
 // due reports whether a round has passed since the last note.

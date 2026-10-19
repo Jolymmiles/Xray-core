@@ -90,3 +90,27 @@ func TestFlowPIForgetsRoundTripOutside(t *testing.T) {
 		t.Fatalf("pi's round trip %v kept outside pi", s.down.piRTT)
 	}
 }
+
+// TestFlowCutsAreCounted is a download against a standing queue, cut by pi
+// and by the cut at a long queue in turn: each cut is noted for flowEffect
+// to judge by.
+func TestFlowCutsAreCounted(t *testing.T) {
+	for _, viaPI := range []bool{false, true} {
+		h, s := queuedDownload(t)
+		h.c.mu.Lock()
+		if viaPI {
+			h.c.incremental = true
+			h.c.kstat.rtt = 110 * time.Millisecond
+			s.down.flat = flowFullRounds
+			s.down.mark = time.Now().Add(-200 * time.Millisecond)
+		}
+		h.c.mu.Unlock()
+		got := credit(h, s)
+		h.c.mu.Lock()
+		cut := h.c.effect.cut
+		h.c.mu.Unlock()
+		if got >= 1<<20 || cut <= 0 {
+			t.Fatalf("pi %v: the cap went to %d and %v bytes of cut were noted", viaPI, got, cut)
+		}
+	}
+}

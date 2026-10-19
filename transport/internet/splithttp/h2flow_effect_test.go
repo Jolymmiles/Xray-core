@@ -7,14 +7,25 @@ import (
 
 // rounds feeds e one round each 100 ms from start: the queue and the bytes
 // in flight of each step, with caps as large as what is in flight unless a
-// third value gives them, against a 20 ms setpoint. It returns the last gain.
+// third value gives them, against a 20 ms setpoint. What the caps fell by
+// since the step before counts as the controller's cut unless a fourth value
+// gives the cut. It returns the last gain.
 func rounds(e *flowEffect, start time.Time, steps [][]int64) float64 {
 	g := e.value()
+	var prev int64
 	for i, s := range steps {
 		caps := s[1]
 		if len(s) > 2 {
 			caps = s[2]
 		}
+		cut := max(0, prev-caps)
+		if len(s) > 3 {
+			cut = s[3]
+		}
+		if i > 0 {
+			e.cutBy(float64(cut))
+		}
+		prev = caps
 		g = e.note(start.Add(time.Duration(i)*100*time.Millisecond), time.Duration(100+s[0])*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond, s[1], caps)
 	}
 	return g
@@ -86,7 +97,7 @@ func TestFlowEffectEpisodeEnds(t *testing.T) {
 // and the gain stays as it was.
 func TestFlowEffectLossIsNoCut(t *testing.T) {
 	var e flowEffect
-	g := rounds(&e, time.Now(), [][]int64{{100, 1000}, {110, 700}, {120, 1000, 1000}, {60, 500, 1000}, {50, 450, 1000}})
+	g := rounds(&e, time.Now(), [][]int64{{100, 1000}, {110, 700}, {120, 1000, 1000}, {85, 500, 1000}, {80, 450, 1000}})
 	if g != 0 {
 		t.Fatalf("gain %v after a loss under a held cap", g)
 	}
@@ -98,7 +109,7 @@ func TestFlowEffectLossIsNoCut(t *testing.T) {
 // stays as it was.
 func TestFlowEffectFollowIsNoCut(t *testing.T) {
 	var e flowEffect
-	g := rounds(&e, time.Now(), [][]int64{{900, 1000}, {950, 700}, {1000, 1100}, {800, 900}, {600, 700}})
+	g := rounds(&e, time.Now(), [][]int64{{900, 1000}, {950, 700}, {1000, 1100, 1100, 0}, {800, 900, 900, 0}, {600, 700, 700, 0}})
 	if g != 0 {
 		t.Fatalf("gain %v for a cap that followed the round trip down", g)
 	}
@@ -181,6 +192,7 @@ func TestFlowEffectCountsDownloadsOnly(t *testing.T) {
 	// The download is cut by a third and takes data; the queue stands.
 	down.down.cap, down.down.returned = 700<<10, 2
 	c.kstat.inFlight = 700 << 10
+	c.effect.cutBy(300 << 10)
 	if g := c.cutGain(now.Add(time.Second)); g != 0 {
 		t.Fatalf("gain %v for a download cut against a queue that did not move", g)
 	}
@@ -196,5 +208,71 @@ func TestFlowPIFollowsOneStep(t *testing.T) {
 	w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 0)
 	if float64(w.cap) > float64(1<<20)*(1+flowPIMaxStep) {
 		t.Fatalf("cap %d from %d in one step", w.cap, 1<<20)
+	}
+}
+
+// TestFlowEffectCountsSlowDownload is a download that returns no credit in a
+// round, as one beside a long queue does: its cap stays in the sum, so that
+// the round reads as no cut.
+func TestFlowEffectCountsSlowDownload(t *testing.T) {
+	down := &flowStream{}
+	down.down.cap = 1 << 20
+	c := &flowConn{streams: map[uint32]*flowStream{1: down}, kOK: true}
+	c.kstat = tcpStats{rtt: 300 * time.Millisecond, minRTT: 100 * time.Millisecond, inFlight: 1 << 20}
+	now := time.Now()
+	down.down.returned = 1
+	c.cutGain(now)
+	// A round with no credit from the download, and what is in flight down
+	// as TCP loses a little; the queue stands.
+	c.kstat.inFlight = 700 << 10
+	if g := c.cutGain(now.Add(200 * time.Millisecond)); g != 1 {
+		t.Fatalf("gain %v after a round the download returned nothing in", g)
+	}
+}
+
+// TestFlowEffectNoiseIsNoCut is a held cap beside other traffic in the
+// minute after cuts lost their gain: a loss halves what is in flight, the
+// caps follow the round trip down a quarter, and the other traffic's queue
+// dips a tenth, all at once. None of it is a cut of the controller's, and the
+// gain stays none.
+func TestFlowEffectNoiseIsNoCut(t *testing.T) {
+	var e flowEffect
+	g := rounds(&e, time.Now(), [][]int64{{1000, 2000}, {1010, 1400}, {1300, 2800, 2800, 0}, {1170, 1400, 2100, 0}, {1150, 1300, 2000, 0}})
+	if g != 0 {
+		t.Fatalf("gain %v from a loss, a follow and a dip together", g)
+	}
+}
+
+// TestFlowEffectHalvedQueueGivesGainBack is a queue cuts did nothing against
+// that then halves, drained by the client's other connections: the cuts have
+// their full gain back.
+func TestFlowEffectHalvedQueueGivesGainBack(t *testing.T) {
+	var e flowEffect
+	if g := rounds(&e, time.Now(), [][]int64{{100, 1000}, {105, 700}, {80, 700, 700, 0}, {50, 700, 700, 0}}); g != 1 {
+		t.Fatalf("gain %v once the queue halved", g)
+	}
+}
+
+// TestFlowEffectCutMustLand is a cut of three tenths of the caps that what
+// is in flight has not come down by yet: the queue cannot have answered it,
+// and the gain stays full.
+func TestFlowEffectCutMustLand(t *testing.T) {
+	var e flowEffect
+	if g := rounds(&e, time.Now(), [][]int64{{100, 1000}, {105, 1000, 700, 300}}); g != 1 {
+		t.Fatalf("gain %v for a cut that has not landed", g)
+	}
+}
+
+// TestFlowPIReturnsCut is pi over a queue far above the setpoint: it returns
+// the bytes it took off the cap, scaled by the gain.
+func TestFlowPIReturnsCut(t *testing.T) {
+	st := tcpStats{rtt: 300 * time.Millisecond, minRTT: 100 * time.Millisecond}
+	for _, gain := range []float64{1, 0.5} {
+		w := flowWindow{cap: 1 << 20, mark: time.Now()}
+		w.returned = 1 << 20
+		cut := w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, gain)
+		if got := float64(1<<20 - w.cap); cut <= 0 || got < cut-1 || got > cut+1 {
+			t.Fatalf("gain %v: pi returned %v, the cap fell by %v", gain, cut, got)
+		}
 	}
 }
