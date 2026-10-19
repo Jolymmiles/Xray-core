@@ -799,11 +799,16 @@ Limits:
   | Mean over its second half | 0.8 (0.8-0.8) | 31.0 (30.6-31.0) | 16.5 (16.3-16.8) | 20.7 (20.4-25.5) |
   | Back at 4/5 after it | 4.0 (4.0-4.0) s | 2.0 s | 2.0 (1.5-4.0) s | 2.5 (2.0-3.0) s |
 
-  With `--burst 90 --duration 120`, two runs: `28e1e458` 2.6 (2.5-2.7)
-  over the burst and 0.4 over its second half, this change 11.7 (11.3-12.2)
-  and 6.0 (3.4-8.7). Over a long burst the change still loses ground: at a
-  full buffer the queue wanders about its peak by more than the kernel's
-  RTT variance, and now and then a cut reads as answered.
+  With `--burst 90 --duration 120`, two runs each, over the burst and over
+  its second half: `28e1e458` 2.5 (2.4-2.7) and 0.4, no governor 24.5
+  (21.6-27.3) and 18.5 (13.8-23.2), this change 11.9 (11.4-12.3) and 5.5
+  (4.5-6.6). Over a long burst the change keeps a download well above
+  `28e1e458` but well under a server without the governor; why it falls
+  behind there is not established. A client that credits in large steps,
+  so that pi never governs its downloads, is not behind: Mihomo Meta on a
+  similar stand (60 Mbit/s, RTT 144 ms, four flows for 90 s), three runs,
+  got 13-16 and 8-14 on the fork's build of this change, 16-17 and 10-13
+  without the governor.
   What it cost, `stand.py` against an official client, `28e1e458` and this
   change, p50/p95 of the request beside the load, six runs each unless
   given: twenty uploads into a slow origin, twelve runs, 52/468 and
