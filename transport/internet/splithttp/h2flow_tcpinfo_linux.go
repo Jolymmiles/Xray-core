@@ -45,6 +45,7 @@ func readTCPStats(rc syscall.RawConn) (s tcpStats, ok bool) {
 		s.rtt = time.Duration(info.Rtt) * time.Microsecond
 		s.minRTT = time.Duration(info.Min_rtt) * time.Microsecond
 		s.rttVar = time.Duration(info.Rttvar) * time.Microsecond
+		s.inFlight = int64(info.Unacked) * int64(info.Snd_mss)
 		ok = s.rtt > 0
 	})
 	return

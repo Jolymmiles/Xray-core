@@ -25,6 +25,9 @@ message H2FlowConfig {
   // data plus unused window, over all its streams. 0 keeps the default,
   // -1 lifts the limit.
   int32 maxConnectionSendWindow = 4;
+  // true leaves the queue on the path to TCP: a governed server does not cut
+  // its downloads against it. Their windows still follow their readers.
+  bool noQueueCuts = 5;
 }
 
 message XmuxConfig {
