@@ -122,7 +122,6 @@ func TestFlowPIGainHolds(t *testing.T) {
 		if !tc.cut && float64(w.cap) < float64(1<<20)*1.15 {
 			t.Fatalf("gain 0: cap %d did not follow the round trip up a fifth", w.cap)
 		}
-
 	}
 }
 
@@ -184,5 +183,18 @@ func TestFlowEffectCountsDownloadsOnly(t *testing.T) {
 	c.kstat.inFlight = 700 << 10
 	if g := c.cutGain(now.Add(time.Second)); g != 0 {
 		t.Fatalf("gain %v for a download cut against a queue that did not move", g)
+	}
+}
+
+// TestFlowPIFollowsOneStep is a round trip that rose tenfold in one round:
+// a cut that does not move the queue has the cap follow it by no more than
+// pi's own largest step.
+func TestFlowPIFollowsOneStep(t *testing.T) {
+	st := tcpStats{rtt: time.Second, minRTT: 100 * time.Millisecond}
+	w := flowWindow{cap: 1 << 20, mark: time.Now(), piRTT: 100 * time.Millisecond}
+	w.returned = 1 << 20
+	w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 0)
+	if float64(w.cap) > float64(1<<20)*(1+flowPIMaxStep) {
+		t.Fatalf("cap %d from %d in one step", w.cap, 1<<20)
 	}
 }
