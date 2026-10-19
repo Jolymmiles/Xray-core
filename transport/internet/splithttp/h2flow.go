@@ -166,6 +166,8 @@ func initialWindow(payload []byte) (real int32, found bool) {
 
 type tcpStats struct {
 	rtt, minRTT, rttVar time.Duration
+	// inFlight is the bytes sent and not yet acknowledged.
+	inFlight int64
 }
 
 type flowListener struct {
@@ -176,6 +178,9 @@ type flowListener struct {
 	// sendWindow is what one connection's client may hold, 0 for no
 	// limit, see flowConn.downRelease.
 	sendWindow int64
+	// noQueueCuts leaves the queue on the path to TCP, see
+	// flowConn.noQueueCuts.
+	noQueueCuts bool
 }
 
 func (l *flowListener) Accept() (net.Conn, error) {
@@ -184,7 +189,7 @@ func (l *flowListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	fc := newFlowConn(c, l.up, l.down)
-	fc.sendWindow = l.sendWindow
+	fc.sendWindow, fc.noQueueCuts = l.sendWindow, l.noQueueCuts
 	if l.connWindow > 0 {
 		fc.upConnGrant, fc.upConnGrantKnown = int64(max(l.connWindow, h2InitWindow)-h2InitWindow), true
 	}
@@ -387,6 +392,9 @@ type flowWindow struct {
 	flat     int
 	steady   int
 	piPrev   float64
+	piRTT    time.Duration
+	// noted is returned as of the connection's last flowEffect note.
+	noted int64
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -519,9 +527,10 @@ const (
 // times the error and Kp times its change. With the queue under a quarter of
 // the setpoint the cap may also grow by a quarter per round trip, so that it
 // catches up with a path that got faster. A reader that takes less than a
-// quarter of the window per round trip limits itself: the cap does not grow
-// then, and shrinks by a quarter after flowShrinkAfter such rounds.
-func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32) {
+// quarter of what the window gives it per round limits itself: the cap does
+// not grow then, and shrinks by a quarter after flowShrinkAfter such rounds.
+// Cuts are scaled by gain, see flowEffect.
+func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain float64) {
 	round := now.Sub(w.mark)
 	if round < max(st.minRTT, flowModelMinRound) {
 		return
@@ -538,7 +547,26 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32) {
 		delta = max(delta, cap/4)
 	}
 	delta = min(max(delta, -flowPIMaxStep*cap), flowPIMaxStep*cap)
-	if 4*copied < int64(w.cap) {
+	if delta < 0 {
+		delta *= gain
+	}
+	if w.piRTT > 0 {
+		// Where cuts do not move the queue, the cap follows the round trip,
+		// so the reader keeps its rate as the queue grows and shrinks. Up
+		// only while the cap is what holds the reader: above what some other
+		// limit lets it take, a cap that grew would leave a later cut
+		// nothing to land on, and flowEffect nothing to judge it by.
+		follow := (1 - gain) * cap * float64(st.rtt-w.piRTT) / float64(w.piRTT)
+		if follow < 0 || 4*float64(copied)*float64(st.rtt) >= 3*cap*float64(round) {
+			delta += follow
+		}
+	}
+	w.piRTT = st.rtt
+	// The cap covers a round trip, the round the empty path's: beside a
+	// queue a reader that takes all it is given still copies only the
+	// round's share of the cap, and must not be taken for one that limits
+	// itself.
+	if 4*copied < int64(w.cap)*int64(round)/int64(max(st.rtt, round)) {
 		delta = min(delta, 0)
 		if w.slow++; w.slow >= flowShrinkAfter {
 			delta = min(delta, -cap/4)
@@ -670,6 +698,15 @@ type flowConn struct {
 	kstat tcpStats
 	kAt   time.Time
 	kOK   bool
+
+	// noQueueCuts leaves the queue on the path to TCP: a server that sets
+	// it neither runs pi nor cuts against a long queue, and its downloads'
+	// windows follow their readers alone, held while a queue stands. Such
+	// a server never takes a download below its share of a link that other
+	// traffic keeps full, and holds its own queue no shorter than TCP does.
+	noQueueCuts bool
+
+	effect flowEffect
 }
 
 // queueing tells how far the kernel RTT of this TCP connection has climbed
@@ -689,6 +726,27 @@ func (c *flowConn) queueing(now time.Time) int {
 		return 1
 	}
 	return 0
+}
+
+// cutGain is how much of a cut against the queue takes effect, see
+// flowEffect: the connection notes its round trip, the bytes its kernel has
+// in flight and the caps of the downloads that took data since the last
+// note, once per round trip of the empty path. A stream that carries no
+// data, as an upload's beside the download, would have its cap stand for
+// a cut that never moved.
+func (c *flowConn) cutGain(now time.Time) float64 {
+	if !c.kOK || !c.effect.due(now, max(c.kstat.minRTT, flowModelMinRound)) {
+		return c.effect.value()
+	}
+	var caps int64
+	for _, s := range c.streams {
+		if !s.serverDone && s.down.returned != s.down.noted {
+			caps += int64(s.down.cap)
+		}
+		s.down.noted = s.down.returned
+	}
+	set := max(c.kstat.minRTT/4, 4*c.kstat.rttVar, flowPIMinSet)
+	return c.effect.note(now, c.kstat.rtt, c.kstat.minRTT, set, c.kstat.inFlight, caps)
 }
 
 // kernelStats refreshes the kernel's view of this TCP connection and reports
@@ -1576,12 +1634,12 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		switch {
 		case c.client && c.modelled(now) && s.down.settled():
 			s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
-		case !c.client && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
+		case !c.client && !c.noQueueCuts && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
 			// Only clients that credit in small steps: one that waits for
 			// half of its own window could be held below that half. Only
 			// where the kernel sees the path: behind a TCP proxy it sees
 			// no queue at all.
-			s.down.pi(now, c.kstat, c.down.init, c.down.max)
+			s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now))
 		default:
 			s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		}
@@ -1593,9 +1651,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			if !c.floorConfirmed(now) {
 				s.down.cap = min(s.down.cap, flowUnconfirmedDown)
 			}
-		case q == 2 && now.Sub(s.down.qAt) >= c.currentRTT():
+		case q == 2 && !c.noQueueCuts && now.Sub(s.down.qAt) >= c.currentRTT():
 			s.down.qAt = now
-			s.down.cap = max(c.down.init, s.down.cap/4*3)
+			s.down.cap = max(c.down.init, s.down.cap-int32(c.cutGain(now)*float64(s.down.cap/4)))
 		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)

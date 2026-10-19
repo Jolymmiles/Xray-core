@@ -10,7 +10,7 @@ func TestFlowWindowPI(t *testing.T) {
 	start := time.Unix(0, 0)
 	step := func(w *flowWindow, st tcpStats, copied int64) {
 		w.returned += copied
-		w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30)
+		w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 1)
 	}
 
 	// No queue: the cap grows, by at most half per round trip.
@@ -78,7 +78,7 @@ func TestFlowWindowPISettles(t *testing.T) {
 			last = w.cap
 			st := tcpStats{rtt: path.minRTT + queue, minRTT: path.minRTT}
 			w.returned += path.rate * int64(st.rtt) / int64(time.Second)
-			w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30)
+			w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, 1)
 			if round >= 150 {
 				tail = append(tail, queue)
 			}

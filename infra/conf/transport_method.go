@@ -303,12 +303,14 @@ type SplitHTTPConfig struct {
 // "enabled" overrides XRAY_XHTTP_FLOW for this inbound or outbound; the
 // receive windows are what this side grants for data it receives.
 // "maxConnectionSendWindow" is what a governed server lets one connection's
-// client hold of its data; -1 lifts that limit.
+// client hold of its data; -1 lifts that limit. "queueCuts": false leaves the
+// queue on the path to TCP, see splithttp.H2FlowConfig.NoQueueCuts.
 type H2FlowConfig struct {
 	Enabled                    *bool `json:"enabled"`
 	MaxStreamReceiveWindow     int32 `json:"maxStreamReceiveWindow"`
 	MaxConnectionReceiveWindow int32 `json:"maxConnectionReceiveWindow"`
 	MaxConnectionSendWindow    int32 `json:"maxConnectionSendWindow"`
+	QueueCuts                  *bool `json:"queueCuts"`
 }
 
 // HTTP/2 windows below the protocol's initial window would stall a stream;
@@ -326,6 +328,7 @@ func (c *H2FlowConfig) Build() (*splithttp.H2FlowConfig, error) {
 		MaxStreamReceiveWindow:     c.MaxStreamReceiveWindow,
 		MaxConnectionReceiveWindow: c.MaxConnectionReceiveWindow,
 		MaxConnectionSendWindow:    c.MaxConnectionSendWindow,
+		NoQueueCuts:                c.QueueCuts != nil && !*c.QueueCuts,
 	}
 	if c.Enabled != nil {
 		config.Mode = 2

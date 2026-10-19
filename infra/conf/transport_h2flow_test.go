@@ -27,6 +27,7 @@ func TestXHTTPH2Flow(t *testing.T) {
 		mode         int32
 		stream, conn int32
 		send         int32
+		noCuts       bool
 		absent       bool
 	}{
 		{json: `{}`, absent: true},
@@ -36,6 +37,8 @@ func TestXHTTPH2Flow(t *testing.T) {
 		{json: `{"extra": {"h2Flow": {"enabled": true, "maxStreamReceiveWindow": 6291456, "maxConnectionReceiveWindow": 16777216}}}`, mode: 1, stream: 6291456, conn: 16777216},
 		{json: `{"h2Flow": {"enabled": true, "maxConnectionSendWindow": 8388608}}`, mode: 1, send: 8388608},
 		{json: `{"h2Flow": {"enabled": true, "maxConnectionSendWindow": -1}}`, mode: 1, send: -1},
+		{json: `{"h2Flow": {"enabled": true, "queueCuts": false}}`, mode: 1, noCuts: true},
+		{json: `{"h2Flow": {"enabled": true, "queueCuts": true}}`, mode: 1},
 	} {
 		c, err := build(tc.json)
 		if err != nil {
@@ -46,7 +49,7 @@ func TestXHTTPH2Flow(t *testing.T) {
 			t.Fatalf("%s: h2Flow present = %v", tc.json, f != nil)
 		}
 		if f.GetMode() != tc.mode || f.GetMaxStreamReceiveWindow() != tc.stream || f.GetMaxConnectionReceiveWindow() != tc.conn ||
-			f.GetMaxConnectionSendWindow() != tc.send {
+			f.GetMaxConnectionSendWindow() != tc.send || f.GetNoQueueCuts() != tc.noCuts {
 			t.Errorf("%s: got %v", tc.json, f)
 		}
 	}

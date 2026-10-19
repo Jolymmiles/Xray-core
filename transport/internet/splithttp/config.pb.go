@@ -87,8 +87,11 @@ type H2FlowConfig struct {
 	// data plus unused window, over all its streams. 0 keeps the default,
 	// -1 lifts the limit.
 	MaxConnectionSendWindow int32 `protobuf:"varint,4,opt,name=maxConnectionSendWindow,proto3" json:"maxConnectionSendWindow,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// true leaves the queue on the path to TCP: a governed server does not cut
+	// its downloads against it. Their windows still follow their readers.
+	NoQueueCuts   bool `protobuf:"varint,5,opt,name=noQueueCuts,proto3" json:"noQueueCuts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *H2FlowConfig) Reset() {
@@ -147,6 +150,13 @@ func (x *H2FlowConfig) GetMaxConnectionSendWindow() int32 {
 		return x.MaxConnectionSendWindow
 	}
 	return 0
+}
+
+func (x *H2FlowConfig) GetNoQueueCuts() bool {
+	if x != nil {
+		return x.NoQueueCuts
+	}
+	return false
 }
 
 type XmuxConfig struct {
@@ -532,12 +542,13 @@ const file_transport_internet_splithttp_config_proto_rawDesc = "" +
 	")transport/internet/splithttp/config.proto\x12!xray.transport.internet.splithttp\x1a\x1ftransport/internet/config.proto\"1\n" +
 	"\vRangeConfig\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\x05R\x04from\x12\x0e\n" +
-	"\x02to\x18\x02 \x01(\x05R\x02to\"\xd4\x01\n" +
+	"\x02to\x18\x02 \x01(\x05R\x02to\"\xf6\x01\n" +
 	"\fH2FlowConfig\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\x05R\x04mode\x126\n" +
 	"\x16maxStreamReceiveWindow\x18\x02 \x01(\x05R\x16maxStreamReceiveWindow\x12>\n" +
 	"\x1amaxConnectionReceiveWindow\x18\x03 \x01(\x05R\x1amaxConnectionReceiveWindow\x128\n" +
-	"\x17maxConnectionSendWindow\x18\x04 \x01(\x05R\x17maxConnectionSendWindow\"\xf8\x03\n" +
+	"\x17maxConnectionSendWindow\x18\x04 \x01(\x05R\x17maxConnectionSendWindow\x12 \n" +
+	"\vnoQueueCuts\x18\x05 \x01(\bR\vnoQueueCuts\"\xf8\x03\n" +
 	"\n" +
 	"XmuxConfig\x12V\n" +
 	"\x0emaxConcurrency\x18\x01 \x01(\v2..xray.transport.internet.splithttp.RangeConfigR\x0emaxConcurrency\x12V\n" +
