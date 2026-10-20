@@ -276,3 +276,14 @@ func TestFlowPIReturnsCut(t *testing.T) {
 		}
 	}
 }
+
+// TestFlowPIReturnsCutThatLanded is pi cutting a cap just over init: it
+// returns what the cap fell by, not the step it could not take.
+func TestFlowPIReturnsCutThatLanded(t *testing.T) {
+	st := tcpStats{rtt: 300 * time.Millisecond, minRTT: 100 * time.Millisecond}
+	w := flowWindow{cap: h2InitWindow + 1000, mark: time.Now()}
+	w.returned = 1 << 20
+	if cut := w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, 1); cut > 1000 {
+		t.Fatalf("pi returned %v for a cap that could fall by 1000", cut)
+	}
+}

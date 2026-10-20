@@ -581,7 +581,9 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain floa
 		w.slow = 0
 	}
 	w.cap = int32(min(max(int64(cap+delta), int64(init)), int64(limit)))
-	return cut
+	// What reached the cap: a cap at init, or a round trip followed up, takes
+	// less off than the step, and bytes that never left the cap are no cut.
+	return min(cut, max(cap-float64(w.cap), 0))
 }
 
 // flowLearned remembers the largest cap a stream on this connection needed
