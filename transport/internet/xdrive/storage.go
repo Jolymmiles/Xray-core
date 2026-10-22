@@ -35,7 +35,7 @@ func newStorage(streamSettings *internet.MemoryStreamConfig) (Storage, error) {
 	switch config.Service {
 	case "local":
 		return newLocalStorage(config.RemoteFolder)
-	case "Google Drive":
+	case "google-drive", "Google Drive":
 		return sharedStorage(streamSettings, config, func() (Storage, error) {
 			return newDriveStorage(streamSettings, config)
 		})
@@ -46,6 +46,19 @@ func newStorage(streamSettings *internet.MemoryStreamConfig) (Storage, error) {
 	default:
 		return nil, errors.New("unsupported service: ", config.Service)
 	}
+}
+
+// sessionStorage returns the storage of one session, which takes connections
+// of XMUX until Close, with the token and cache of storage. Local storage has
+// no connections
+func sessionStorage(storage Storage) Storage {
+	switch s := storage.(type) {
+	case *driveStorage:
+		return s.session()
+	case *templateStorage:
+		return s.session()
+	}
+	return storage
 }
 
 var (

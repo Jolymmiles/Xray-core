@@ -4,10 +4,13 @@ import "testing"
 
 // TestGetREALITYConfigForwardsClientVerBounds guards the wiring between the
 // parsed configuration and the REALITY handshake: the library only enforces a
-// bound when the corresponding field is non-nil.
+// bound when the corresponding field is non-nil. GetREALITYConfig needs a
+// valid X25519 private key, as every configuration built from JSON has.
 func TestGetREALITYConfigForwardsClientVerBounds(t *testing.T) {
+	privateKey := make([]byte, 32)
 	t.Run("configured bounds reach the handshake", func(t *testing.T) {
 		config := &Config{
+			PrivateKey:   privateKey,
 			MinClientVer: []byte{1, 2, 3},
 			MaxClientVer: []byte{4, 5, 6},
 		}
@@ -23,7 +26,7 @@ func TestGetREALITYConfigForwardsClientVerBounds(t *testing.T) {
 	})
 
 	t.Run("unset bounds stay nil so no client is rejected", func(t *testing.T) {
-		built := (&Config{}).GetREALITYConfig()
+		built := (&Config{PrivateKey: privateKey}).GetREALITYConfig()
 
 		if built.MinClientVer != nil {
 			t.Errorf("MinClientVer = %v, want nil", built.MinClientVer)
