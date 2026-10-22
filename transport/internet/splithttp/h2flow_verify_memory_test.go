@@ -187,9 +187,10 @@ func (l *blockingListener) Accept() (net.Conn, error) {
 
 // TestFlowInjectedQueueBounded (added for bdbac60e) stops reading on the
 // client so the server's writes block, then opens and resets streams. Every
-// new stream makes the governor queue a WINDOW_UPDATE for the client in
-// wqueue, outside net/http's own control-frame limit, and nothing drains it
-// while the write is blocked: the queue grows with what the client sends.
+// new stream makes the governor queue upload credit for the client, outside
+// net/http's own control-frame limit, and nothing drains it while the write
+// is blocked. The credit goes with its stream, see creditClient, so the queue
+// must not grow with what the client sends.
 func TestFlowInjectedQueueBounded(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -263,10 +264,10 @@ func TestFlowInjectedQueueBounded(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		n, blocked := queued()
 		sizes = append(sizes, n)
-		t.Logf("after %d client bytes: %d bytes queued in wqueue, server write blocked %v", sent, n, blocked)
+		t.Logf("after %d client bytes: %d bytes of frames queued for the client, server write blocked %v", sent, n, blocked)
 	}
 	if sizes[len(sizes)-1] > 64<<10 {
-		t.Fatalf("wqueue holds %v bytes after the client sent %d bytes and stopped reading; it grows without bound", sizes, sent)
+		t.Fatalf("the governor queues %v bytes of frames for the client after the client sent %d bytes and stopped reading; it grows without bound", sizes, sent)
 	}
 }
 
