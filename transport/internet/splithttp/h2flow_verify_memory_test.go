@@ -115,8 +115,8 @@ func (c *rawH2Client) pump(quiet time.Duration) {
 // the connection. Stock Go holds that to its 1 MiB connection window; the
 // PR states that a governed server reaches its 6 MiB only "while the outbound
 // keeps up" and that behind a proxy or without TCP_INFO windows never exceed
-// Go's 1 MiB. Neither holds for the connection: the governor caps streams,
-// not their sum.
+// Go's 1 MiB. The governor holds the connection to Go's 1 MiB as well, see
+// upConnRelease, and the test fails if it holds more than 64 KiB over that.
 func TestFlowServerUnreadPerConnection(t *testing.T) {
 	results := map[bool]int64{}
 	for _, governed := range []bool{false, true} {
