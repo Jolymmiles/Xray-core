@@ -905,11 +905,12 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		}
 		in := bytespool.Alloc(int32(n))
 		copy(in, b[:n])
+		// What does not fit in b goes to rpending, never past len(b).
 		var out []byte
 		if c.client {
-			out = c.fromServer(in[:n], b[:0])
+			out = c.fromServer(in[:n], b[:0:len(b)])
 		} else {
-			out = c.readFrames(in[:n], b[:0])
+			out = c.readFrames(in[:n], b[:0:len(b)])
 		}
 		bytespool.Free(in)
 		if c.isBroken() {
