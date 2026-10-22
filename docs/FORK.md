@@ -114,7 +114,7 @@ guard it.
   a redirect to another host no longer starts a second HTTP/2 session on it,
   which the site rejected. Covered by
   `transport/internet/reality/spider_test.go` and `spider_lease_test.go`.
-- Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
+- Every shipped and release-tested build uses Go 1.27.3 (`go.mod`) and
   `-tags http2legacy`, which keeps x/net's own `http2.Transport` and
   `http2.Server` (the XHTTP client, H2MUX and DoH among them; MASQUE uses only
   x/net's framer). Without the tag, Go 1.27's x/net wraps net/http. Before
