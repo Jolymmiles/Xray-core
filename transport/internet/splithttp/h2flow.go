@@ -1328,7 +1328,7 @@ func (c *flowConn) pingAck(f h2Frame, payload []byte) bool {
 	return false
 }
 
-// flowGuardMin bounds how long a downlink stream may sit with the server out
+// flowGuardMin is the least time a downlink stream sits with the server out
 // of window and no credit from the client before the guard steps in.
 var flowGuardMin = 200 * time.Millisecond
 
