@@ -129,3 +129,26 @@ func TestFlowReadChunked(t *testing.T) {
 		}
 	}
 }
+
+// TestFlowReadStaysInBuffer reads a client's opening frames into a buffer
+// that is a slice of a larger one: the credit the governor adds for the new
+// stream makes its output longer than the read, and none of it may land past
+// the buffer, in memory the caller still owns.
+func TestFlowReadStaysInBuffer(t *testing.T) {
+	sc := &scriptConn{}
+	c := newFlowConn(sc, flowDefault, flowDefault)
+	in := append([]byte(h2Preface), frames(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x82}, EndHeaders: true})
+	})...)
+	sc.feed(in)
+	buf := bytes.Repeat([]byte{0xee}, 1024)
+	if _, err := c.Read(buf[:len(in)]); err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range buf[len(in):] {
+		if v != 0xee {
+			t.Fatalf("Read wrote past the %d-byte buffer it was given, at %d", len(in), len(in)+i)
+		}
+	}
+}
