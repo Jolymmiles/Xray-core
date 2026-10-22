@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	mrand "math/rand/v2"
@@ -895,4 +896,352 @@ func TestFlowBatchingClientDoesNotStall(t *testing.T) {
 		}
 		t.Logf("window %d MiB: %d MiB in %v", window>>20, size>>20, time.Since(start).Round(time.Millisecond))
 	}
+}
+
+// stallConn is a socket that hands the governor only what the test feeds it:
+// Read waits for the next chunk, and Write, while stalled, waits as a socket
+// whose peer stopped reading does. Both give up once the socket is closed.
+type stallConn struct {
+	net.Conn
+	in      chan []byte
+	pending []byte
+	closed  chan struct{}
+	once    sync.Once
+	stalled atomic.Bool
+	mu      sync.Mutex
+	out     bytes.Buffer
+}
+
+func newStallConn() *stallConn {
+	return &stallConn{in: make(chan []byte, 16), closed: make(chan struct{})}
+}
+
+func (c *stallConn) Read(b []byte) (int, error) {
+	if len(c.pending) == 0 {
+		select {
+		case c.pending = <-c.in:
+		case <-c.closed:
+			return 0, net.ErrClosed
+		}
+	}
+	n := copy(b, c.pending)
+	c.pending = c.pending[n:]
+	return n, nil
+}
+
+func (c *stallConn) Write(b []byte) (int, error) {
+	if c.stalled.Load() {
+		<-c.closed
+	}
+	select {
+	case <-c.closed:
+		return 0, net.ErrClosed
+	default:
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.out.Write(b)
+}
+
+func (c *stallConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+// within fails the test with the stacks of all goroutines unless f returns
+// in d, so that a hang shows where everyone waits, and fails it with what f
+// returns. f does not touch t: it may still run after the test is over.
+func within(t *testing.T, d time.Duration, what string, f func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- f() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("%s: %v", what, err)
+		}
+	case <-time.After(d):
+		t.Fatalf("%s hangs after %v:\n%s", what, d, allStacks())
+	}
+}
+
+func allStacks() string {
+	buf := make([]byte, 1<<22)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return string(buf[:n])
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// goroutines returns the stacks of all goroutines by their IDs, which the
+// runtime never reuses.
+func goroutines() map[string]string {
+	stacks := map[string]string{}
+	for _, g := range strings.Split(allStacks(), "\n\n") {
+		id, _, _ := strings.Cut(strings.TrimPrefix(g, "goroutine "), " ")
+		stacks[id] = g
+	}
+	return stacks
+}
+
+// goroutinesSettle fails the test with their stacks unless the goroutines
+// started since before that run this package's code or HTTP/2 all end. Those
+// of earlier tests that are still winding down, and the runtime's own, are not
+// the test's and do not count.
+func goroutinesSettle(t *testing.T, before map[string]string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var left []string
+		for id, g := range goroutines() {
+			if _, ok := before[id]; !ok && (strings.Contains(g, "/splithttp.") || strings.Contains(g, "http2")) {
+				left = append(left, g)
+			}
+		}
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d goroutines outlive the connection:\n\n%s", len(left), strings.Join(left, "\n\n"))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitWriteStuck returns once a write holds c's write lock, as it does while
+// it waits in the socket.
+func waitWriteStuck(t *testing.T, c *flowConn) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for c.wmu.TryLock() {
+		c.wmu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("no write took the write lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A Read or Write that waits on the socket returns once the connection is
+// closed, on either side and whoever holds the write lock, and a Read never
+// waits for a Write: the read loop of the stack keeps going while its writes
+// are stuck. Nothing the governor started outlives the connection.
+func TestFlowCloseUnblocksReadAndWrite(t *testing.T) {
+	var settings, ping, data bytes.Buffer
+	fr := http2.NewFramer(&settings, nil)
+	fr.WriteSettings()
+	fr = http2.NewFramer(&ping, nil)
+	fr.WritePing(false, [8]byte{1})
+	fr = http2.NewFramer(&data, nil)
+	fr.WriteData(1, false, make([]byte, 1000))
+	read := func(c *flowConn, b []byte) error {
+		_, err := c.Read(b)
+		return err
+	}
+	// server returns a server-side governor past the client preface.
+	server := func(t *testing.T, sc *stallConn) *flowConn {
+		c := newFlowConn(sc, flowDefault, flowDefault)
+		sc.in <- []byte(h2Preface)
+		if err := read(c, make([]byte, 64)); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, sc *stallConn) (*flowConn, []func() error)
+	}{
+		{"server read", func(t *testing.T, sc *stallConn) (*flowConn, []func() error) {
+			c := newFlowConn(sc, flowDefault, flowDefault)
+			return c, []func() error{func() error { return read(c, make([]byte, 64)) }}
+		}},
+		{"client read", func(t *testing.T, sc *stallConn) (*flowConn, []func() error) {
+			c := newFlowClientConn(sc)
+			return c, []func() error{func() error { return read(c, make([]byte, 64)) }}
+		}},
+		{"server write", func(t *testing.T, sc *stallConn) (*flowConn, []func() error) {
+			c := server(t, sc)
+			sc.stalled.Store(true)
+			w := make(chan error, 1)
+			go func() {
+				_, err := c.Write(settings.Bytes())
+				w <- err
+			}()
+			// The write holds wmu inside the socket; the read side and an
+			// injection still go through.
+			waitWriteStuck(t, c)
+			within(t, 5*time.Second, "read beside a stuck write", func() error {
+				sc.in <- settings.Bytes()
+				err := read(c, make([]byte, 64))
+				c.injectToClient(ping.Bytes())
+				return err
+			})
+			return c, []func() error{func() error { return <-w }}
+		}},
+		{"client write", func(t *testing.T, sc *stallConn) (*flowConn, []func() error) {
+			c := newFlowClientConn(sc)
+			sc.stalled.Store(true)
+			w := make(chan error, 1)
+			go func() {
+				_, err := c.Write(append([]byte(h2Preface), settings.Bytes()...))
+				w <- err
+			}()
+			waitWriteStuck(t, c)
+			within(t, 5*time.Second, "read beside a stuck write", func() error {
+				sc.in <- settings.Bytes()
+				return read(c, make([]byte, 64))
+			})
+			return c, []func() error{func() error { return <-w }}
+		}},
+		{"queue flush", func(t *testing.T, sc *stallConn) (*flowConn, []func() error) {
+			c := server(t, sc)
+			if _, err := c.Write(settings.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			sc.stalled.Store(true)
+			// The flush goroutine takes wmu and waits in the socket, then
+			// the stack's own write waits for wmu.
+			c.injectToClient(ping.Bytes())
+			if c.wmu.TryLock() {
+				t.Fatal("no flush in progress")
+			}
+			w := make(chan error, 1)
+			go func() {
+				_, err := c.Write(data.Bytes())
+				w <- err
+			}()
+			return c, []func() error{func() error { return <-w }}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := goroutines()
+			sc := newStallConn()
+			c, waits := tc.run(t, sc)
+			errs := make(chan error, len(waits))
+			for _, wait := range waits {
+				go func() { errs <- wait() }()
+			}
+			time.Sleep(20 * time.Millisecond)
+			within(t, 5*time.Second, "Close", func() error {
+				c.Close()
+				for range waits {
+					if err := <-errs; err == nil {
+						return errors.New("a call on a closed connection succeeded")
+					}
+				}
+				return nil
+			})
+			goroutinesSettle(t, before)
+		})
+	}
+}
+
+// When the client goes away while the server waits for its credit, with or
+// without the guard probing it, the server's write fails at once, the governor
+// drops the connection's state, and no goroutine stays behind.
+func TestFlowPeerGoneWhileWaitingForCredit(t *testing.T) {
+	for _, clientWindow := range []uint32{h2InitWindow, 4 << 20} {
+		t.Run(fmt.Sprint(clientWindow), func(t *testing.T) {
+			wrote := make(chan error, 1)
+			tl, addr := startFlowServer(t, testUp, testDown, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(200)
+				for {
+					if _, err := w.Write(make([]byte, 64<<10)); err != nil {
+						wrote <- err
+						return
+					}
+					w.(http.Flusher).Flush()
+				}
+			}))
+			before := goroutines()
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fr := http2.NewFramer(conn, conn)
+			conn.Write([]byte(h2Preface))
+			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: clientWindow})
+			fr.WriteWindowUpdate(0, 64<<20)
+			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: rawPostHeaders, EndHeaders: true})
+			// Read what the server sends but never return credit, until it
+			// stops for want of it and, with a window the client still owes
+			// credit on, the guard probes it after its stock delay.
+			go io.Copy(io.Discard, conn)
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				var stuck, armed bool
+				tl.each(func(c *flowConn) {
+					if s := c.streams[1]; s != nil {
+						stuck = s.downSent > 0 && int64(c.clientShown)+s.downForwarded-s.downSent <= 0
+					}
+					armed = c.guardProbe
+				})
+				if stuck && (clientWindow == h2InitWindow || armed) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("server never ran out of credit (guard armed %v)", armed)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+			conn.Close()
+			within(t, 5*time.Second, "server write after the client left", func() error {
+				if err := <-wrote; err == nil {
+					return errors.New("write succeeded")
+				}
+				return nil
+			})
+			goroutinesSettle(t, before)
+			tl.each(func(c *flowConn) {
+				if !c.closed || len(c.streams) > 0 || len(c.wqueue) > 0 {
+					t.Errorf("state kept: closed %v, %d streams, %d bytes queued", c.closed, len(c.streams), len(c.wqueue))
+				}
+			})
+		})
+	}
+}
+
+// Connections closed at random points while both directions carry data on
+// many streams neither hang a call nor leave goroutines behind.
+func TestFlowCloseUnderLoad(t *testing.T) {
+	tl, addr := startFlowServer(t, testUp, testDown, true, http.HandlerFunc(echoHandler))
+	before := goroutines()
+	for round := 0; round < 10; round++ {
+		client := newFlowTestClient(addr, true)
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest("POST", "http://x/", io.LimitReader(rand.Reader, 4<<20))
+				resp, err := client.Do(req)
+				if err == nil {
+					io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+				}
+			}()
+		}
+		time.Sleep(time.Duration(mrand.IntN(50)) * time.Millisecond)
+		if round%2 == 0 {
+			// Not tl.each: it holds c.mu, which Close takes too.
+			tl.mu.Lock()
+			conns := append([]*flowConn(nil), tl.conns...)
+			tl.mu.Unlock()
+			for _, c := range conns {
+				c.Close()
+			}
+		} else {
+			client.each(func(c *flowConn) { go c.Close() })
+		}
+		within(t, 10*time.Second, "requests on closed connections", func() error {
+			wg.Wait()
+			return nil
+		})
+		client.CloseIdleConnections()
+	}
+	goroutinesSettle(t, before)
 }
