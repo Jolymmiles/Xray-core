@@ -37,7 +37,8 @@ guard it.
   `ClientHandshake` build the ClientHello when the client is created and
   return the error, where upstream builds it during the handshake.
   `ClientHandshake`, which the TCP, WebSocket, HTTPUpgrade, XHTTP, gRPC,
-  MASQUE and xdrive dialers use, closes the connection on any failure.
+  MASQUE and xdrive dialers and the XDNS DoH resolver use, closes the
+  connection on any failure.
   `WithHTTP11ALPN` replaces upstream's `WebsocketHandshakeContext` without
   reading uTLS's private config; for a fingerprint without ALPN it adds the
   extension before `pre_shared_key`, where upstream appends it after, which
@@ -213,8 +214,10 @@ guard it.
   Mirror any new hook upstream adds to `PickRoute` in `PickRouteTag`. Covered
   by `app/router/script_fastpath_test.go` and upstream's
   `TestRouterScriptDNSDispatcherReentry`.
-  The scripts ship enabled, as upstream does, with two known risks the
-  maintainer accepted on 2026-10-10 (PR #33 review findings R1-1, R1-3).
+  The scripts ship enabled, as upstream does, in upstream's sandbox of
+  whitelisted functions (XTLS/Xray-core#7136, which also refuses inline
+  scripts for now), with two known risks the maintainer accepted on
+  2026-10-10 (PR #33 review findings R1-1, R1-3).
   `Pool` in `common/lua/pool.go` creates one state, about 177 KiB plus the
   script's data, per concurrent call with no bound; a plain bound would
   deadlock a routing script whose DNS lookup re-enters routing, and an
@@ -275,13 +278,13 @@ guard it.
   `TestRawUDPRefusesGeckoWithoutIntegrity`
   (`transport/internet/udp/gecko_integrity_test.go`) and
   `TestRawUDPInboundsRefuseGeckoUnderNominalQUIC`.
-- WireGuard's TUN wrappers close once: wireguard-go closes the device itself
-  when it shuts down after a failed bind, and the owner closes it again.
-  Upstream's netstack TUN (`proxy/wireguard/netstack.go`) panics on the
-  second close and takes down a running instance that added such an inbound;
-  the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
-  closes its netlink handle concurrently. Covered by
-  `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
+- WireGuard's kernel TUN wrapper (`proxy/wireguard/tun_linux.go`) closes
+  once: wireguard-go closes the device itself when it shuts down after a
+  failed bind, and the owner closes it again. Upstream's repeats its teardown
+  and closes its netlink handle concurrently. The netstack TUN
+  (`proxy/wireguard/netstack.go`), which upstream rebuilt on Xray's own
+  TCP/IP stack in XTLS/Xray-core#7156, closes once in upstream too. Covered by
+  `TestKernelTunCloseTearsDownOnce` and `TestNetTUNCloseIsIdempotent`.
 - `outbound.Manager.RemoveHandler`, which HandlerService `RemoveOutbound`
   calls, closes the handler it removes, after unpublishing it and without the
   manager lock: a port of upstream XTLS/Xray-core#7112 at `29885292ca`, open
