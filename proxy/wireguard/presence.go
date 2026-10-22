@@ -45,9 +45,12 @@ func (p *wireGuardPresence) Allow(pub [32]byte) {
 	p.mu.Unlock()
 }
 
+// Observe binds pub to the outer endpoint ip it was last seen at. A loopback
+// endpoint, a relay on this host, binds as well: its flows are admitted, and
+// its scope, like every scope of a loopback source, counts nobody online.
 func (p *wireGuardPresence) Observe(pub [32]byte, observation uint64, ip netip.Addr, scope session.PresenceScope) {
 	ip = ip.Unmap()
-	if !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() {
+	if !ip.IsValid() || ip.IsUnspecified() {
 		return
 	}
 	p.mu.Lock()
