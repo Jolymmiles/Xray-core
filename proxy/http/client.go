@@ -87,13 +87,15 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	user := server.User
 	var conn stat.Connection
 
-	var mbuf buf.MultiBuffer
-	if reader, ok := link.Reader.(buf.TimeoutReader); ok {
-		// Don't wait forever: server-first protocols (SMTP, FTP, MySQL...) send nothing until the server greets.
-		mbuf, _ = reader.ReadMultiBufferTimeout(time.Millisecond * 500)
-	} else {
-		mbuf, _ = link.Reader.ReadMultiBuffer()
+	// Don't wait forever: server-first protocols (SMTP, FTP, MySQL...) send nothing until the server greets.
+	// The dispatcher gives a reader a timeout only where sniffing or user stats
+	// need one, so give it one here otherwise. A read the timeout leaves pending
+	// ends inside the wrapper, so the request is copied through it as well.
+	reader, ok := link.Reader.(buf.TimeoutReader)
+	if !ok {
+		reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
 	}
+	mbuf, _ := reader.ReadMultiBufferTimeout(time.Millisecond * 500)
 	len := mbuf.Len()
 	firstPayload := bytespool.Alloc(len)
 	mbuf, _ = buf.SplitBytes(mbuf, firstPayload)
@@ -150,7 +152,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 
 	requestFunc := func() error {
 		defer timer.SetTimeout(p.Timeouts.DownlinkOnly)
-		return buf.Copy(link.Reader, buf.NewWriter(conn), buf.UpdateActivity(timer))
+		return buf.Copy(reader, buf.NewWriter(conn), buf.UpdateActivity(timer))
 	}
 	responseFunc := func() error {
 		ob.CanSpliceCopy = 1

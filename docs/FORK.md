@@ -207,6 +207,14 @@ guard it.
   `TestCanceledDialGetsNoConnection` and
   `TestRejectedAuthenticationClosesWithProtocolError` in
   `transport/internet/hysteria/dial_cancel_test.go`.
+- The dispatcher gives an outbound link's reader a timeout
+  (`buf.TimeoutWrapperReader`) only where sniffing or user uplink stats need
+  one (`aa7aaf17`); upstream's `WrapLink` always does. Upstream code that
+  asserts `buf.TimeoutReader` on `link.Reader` has to wrap the reader itself
+  when the assertion fails, and read through the wrapper from then on, as the
+  HTTP outbound does to wait at most 500 ms for a first payload that a
+  server-first protocol never sends (XTLS/Xray-core#7193). Covered by
+  `TestHTTPOutboundServerFirst` (`testing/scenarios/http_test.go`).
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
   allocation-free picker, not `PickRoute`. A routing `script` (upstream
   XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports
