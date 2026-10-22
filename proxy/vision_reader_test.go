@@ -65,8 +65,8 @@ func TestVisionReaderSwitchTakesBufferedTLSInput(t *testing.T) {
 		if got := readVisionSwitch(t, input, rawInput); got != "payload input raw" {
 			t.Fatalf("delivered %q, want %q", got, "payload input raw")
 		}
-		if connection.rawInput.Len() != 0 {
-			t.Fatalf("%d raw input bytes were left in the connection", connection.rawInput.Len())
+		if connection.rawInput.Cap() != 0 {
+			t.Fatalf("the connection still holds a raw input buffer of %d bytes", connection.rawInput.Cap())
 		}
 	})
 
@@ -88,8 +88,8 @@ func TestVisionReaderSwitchTakesBufferedTLSInput(t *testing.T) {
 		if connection.rawInput != buffered {
 			t.Fatal("Vision replaced the raw input buffer of the connection")
 		}
-		if buffered.Len() != 0 {
-			t.Fatalf("%d raw input bytes were left in the connection", buffered.Len())
+		if buffered.Cap() != 0 {
+			t.Fatalf("the connection still holds a raw input buffer of %d bytes", buffered.Cap())
 		}
 	})
 

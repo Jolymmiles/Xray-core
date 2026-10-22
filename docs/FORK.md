@@ -80,6 +80,23 @@ guard it.
   ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
   the ClientHello snapshot tests and the fork's
   `TestSecondaryKeyShareSelectedByServer`.
+- Vision takes the TLS input buffers through `proxy.VisionBuffers`
+  (`proxy/vision_buffers.go`), which checks the field types and caches their
+  offsets per connection type and fails closed on any other layout; upstream
+  reads them by reflection on every request (`vless.AccessTLSBuffers`, which
+  the fork does not carry). The raw input buffer may be held by value
+  (crypto/tls up to Go 1.27, uTLS, VLESS encryption) or by pointer (the
+  REALITY server since `83f621788ca8`, crypto/tls after Go 1.27, where the
+  connection swaps pooled buffers). At the switch to direct copy Vision
+  empties that buffer, as upstream did before XTLS/Xray-core#7176, which
+  stopped out of caution about the pool Go added in golang/go `0d1836382f`.
+  That pool takes a buffer back only while the connection reads and then
+  drops the connection's pointer; after the switch nothing reads the TLS
+  connection, so the buffer is in no pool. Without the release every Vision
+  connection in direct copy keeps a record-sized buffer (about 17 KiB) until
+  it closes. Covered by `proxy/vision_buffers_test.go`,
+  `proxy/vision_carrier_test.go` and `TestVisionReaderSwitchTakesBufferedTLSInput`
+  (`proxy/vision_reader_test.go`).
 - The REALITY client's spider, which browses the site over the connection
   when the server shows a real certificate (the server forwarded the hello to
   its target, or a middlebox redirected or intercepted it), works over TCP as

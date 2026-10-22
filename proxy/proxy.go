@@ -270,7 +270,11 @@ func (w *VisionReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 			if rawInputBuffer, err := buf.ReadFrom(raw); err == nil && !rawInputBuffer.IsEmpty() {
 				buffer, _ = buf.MergeMulti(buffer, rawInputBuffer)
 			}
-			// *raw = bytes.Buffer{} // may not be suitable for Go 1.27.3+
+			// Release memory: nothing reads the connection any more. A
+			// connection that holds a pointer (REALITY, crypto/tls after Go
+			// 1.27) returns a buffer to its pool only while reading and then
+			// drops its pointer, so this buffer is in no pool.
+			*raw = bytes.Buffer{}
 		}
 		w.rawInput = nil
 
