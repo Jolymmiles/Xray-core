@@ -410,6 +410,12 @@ func (c *earlyDataConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
+// CloseWrite half-closes the connection under the bytes read ahead, so the
+// client's half-close after its request reaches the proxy here as well.
+func (c *earlyDataConn) CloseWrite() error {
+	return stat.TryCloseWrite(c.Conn)
+}
+
 func init() {
 	common.Must(common.RegisterConfig((*ClientConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		return NewClient(ctx, config.(*ClientConfig))
