@@ -20,11 +20,14 @@ import (
 // flowConn sits between a TLS/REALITY connection and the local HTTP/2 stack.
 // It rewrites HTTP/2 flow control so that nothing buffers more than its reader
 // has recently shown it can consume, the way TCP autotuning does:
-//   - uplink: the client is shown a small initial window and gets credit only
-//     as the handler reads, capped at twice what the handler read per RTT;
+//   - uplink: the client is shown Go's own initial window, see flowShownUp,
+//     and gets more credit only as the handler reads, while the handler's
+//     unread data stays under a cap that follows what it read per RTT;
 //   - downlink: the server is shown a small client window and gets the
 //     client's credit back only while unread data at the client stays under
-//     twice what the client read per RTT.
+//     a cap that follows what the client read per RTT.
+// The cap starts at twice that, see adjust, and may follow a model of the
+// path or the queue instead, see model and pi.
 // On a server both apply; on a client only the downlink does, since that is
 // the only side of the exchange whose buffers are local. Neither peer needs to
 // know: each only ever sees a window no larger than the other side granted.
