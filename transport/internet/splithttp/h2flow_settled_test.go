@@ -50,6 +50,8 @@ func TestFlowUploadFollowsModelOnceSettled(t *testing.T) {
 			t.Cleanup(func() { h.c.Close() })
 			h.track()
 			h.openStream(4 << 20)
+			// Connection credit, so the client may send the upload.
+			h.fromServer(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 8<<20) })
 			h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, id, 200<<10) })
 			vouchedPath(h.c)
 			h.c.mu.Lock()
