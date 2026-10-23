@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -93,8 +94,23 @@ func (l flowLimit) enabled() bool {
 }
 
 // flowEnabled is the default for XHTTP connections whose "h2Flow" does not
-// say: off unless XRAY_XHTTP_FLOW=on.
-var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }) == "on"
+// say: off unless XRAY_XHTTP_FLOW is on, true or 1. It is read again when the
+// config's "env" changes the environment.
+var flowEnabled atomic.Bool
+
+func reloadFlowEnv() error {
+	switch strings.ToLower(strings.TrimSpace(platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }))) {
+	case "on", "true", "1":
+		flowEnabled.Store(true)
+	default:
+		flowEnabled.Store(false)
+	}
+	return nil
+}
+
+func init() {
+	platform.RegisterEnvReload(reloadFlowEnv)
+}
 
 // flowDefault never lets a window shrink below the initial window HTTP/2
 // itself defines, nor grow beyond what the peer really granted.

@@ -21,7 +21,7 @@ func (c *Config) h2FlowOn() bool {
 	case 2:
 		return false
 	}
-	return flowEnabled
+	return flowEnabled.Load()
 }
 
 // flowServerSendWindow is what a governed server lets one connection's client
