@@ -121,9 +121,9 @@ func TestFlowServerUnreadPerConnection(t *testing.T) {
 	results := map[bool]int64{}
 	for _, governed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("governed=%v", governed), func(t *testing.T) {
-			saved := flowEnabled
-			flowEnabled = governed
-			defer func() { flowEnabled = saved }()
+			saved := flowEnabled.Load()
+			flowEnabled.Store(governed)
+			defer flowEnabled.Store(saved)
 			block := make(chan struct{})
 			defer close(block)
 			ln, err := net.Listen("tcp", "127.0.0.1:0")

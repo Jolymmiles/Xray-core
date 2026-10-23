@@ -14,15 +14,16 @@ import (
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/platform"
 	"github.com/xtls/xray-core/testing/servers/tcp"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
 func TestH2FlowMode(t *testing.T) {
-	defer func(v bool) { flowEnabled = v }(flowEnabled)
+	defer flowEnabled.Store(flowEnabled.Load())
 	for _, env := range []bool{false, true} {
-		flowEnabled = env
+		flowEnabled.Store(env)
 		for mode, want := range map[int32]bool{0: env, 1: true, 2: false} {
 			c := &Config{H2Flow: &H2FlowConfig{Mode: mode}}
 			if got := c.h2FlowOn(); got != want {
@@ -35,9 +36,22 @@ func TestH2FlowMode(t *testing.T) {
 	}
 }
 
+// TestH2FlowEnvReload checks that XRAY_XHTTP_FLOW set by the config's "env"
+// takes effect, the way core reloads it before it starts.
+func TestH2FlowEnvReload(t *testing.T) {
+	defer flowEnabled.Store(flowEnabled.Load())
+	for value, want := range map[string]bool{"on": true, "ON": true, "true": true, "1": true, "": false, "off": false, "0": false} {
+		t.Setenv(platform.XHTTPFlow, value)
+		common.Must(platform.ReloadEnvSettings())
+		if got := (&Config{}).h2FlowOn(); got != want {
+			t.Errorf("XRAY_XHTTP_FLOW=%q: got %v, want %v", value, got, want)
+		}
+	}
+}
+
 func TestH2ReceiveConfig(t *testing.T) {
-	defer func(v bool) { flowEnabled = v }(flowEnabled)
-	flowEnabled = false
+	defer flowEnabled.Store(flowEnabled.Load())
+	flowEnabled.Store(false)
 	for _, tc := range []struct {
 		name         string
 		flow         *H2FlowConfig

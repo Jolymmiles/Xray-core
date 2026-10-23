@@ -15,7 +15,7 @@ import (
 // XRAY_XHTTP_FLOW unset and no "h2Flow", ListenXH does not wrap its listener,
 // net/http gets Go's HTTP/2 windows, and the client transport is Go's.
 func TestFlowOffLeavesStockWiring(t *testing.T) {
-	if flowEnabled {
+	if flowEnabled.Load() {
 		t.Skip("XRAY_XHTTP_FLOW=on in the environment")
 	}
 	for _, tc := range []struct {
