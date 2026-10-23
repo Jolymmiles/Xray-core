@@ -41,12 +41,20 @@ func frameStream(clientSide bool) ([]byte, map[uint32][]byte) {
 	fr := http2.NewFramer(&s, nil)
 	fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
 	data := map[uint32][]byte{}
+	// A client may send no more than the windows it starts with: a governed
+	// server ends the connection past them.
+	budget := h2InitWindow
 	for i := 0; i < 400; i++ {
 		id := uint32(1 + 2*(i%7))
 		if clientSide && i < 7 {
 			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true})
 		}
-		p := make([]byte, mrand.IntN(16384))
+		n := mrand.IntN(16384)
+		if clientSide {
+			n = min(mrand.IntN(300), budget)
+			budget -= n
+		}
+		p := make([]byte, n)
 		for j := range p {
 			p[j] = byte(i*31 + j)
 		}

@@ -973,7 +973,8 @@ func (c *flowConn) releaseLocked() {
 
 // giveUp marks the connection for closing at the next read or write and
 // drops its state at once: the peer lowered its window below the credit
-// already handed on, or opened more streams than the governor tracks.
+// already handed on, sent past the window it was shown, or opened more
+// streams than the governor tracks.
 func (c *flowConn) giveUp() {
 	c.broken = true
 	c.releaseLocked()
@@ -1589,8 +1590,20 @@ func (r *flowReader) frame(f h2Frame) {
 		}
 	case h2Data:
 		c.upConnSent += int64(f.length)
+		// The stack is given larger windows than the client is shown, so it
+		// would not stop a client that sends past what it was shown: the
+		// governor does, as the stack would with the windows shown.
+		up := !c.client && c.up.enabled()
+		if up && c.upConnSent > h2InitWindow+c.upConnForwarded {
+			c.giveUp()
+			return
+		}
 		if s := c.stream(f.stream); s != nil {
 			s.upSent += int64(f.length)
+			if up && s.upSent > int64(c.serverShown)+s.upForwarded {
+				c.giveUp()
+				return
+			}
 			if f.flags&h2FlagEndStream != 0 {
 				s.clientDone = true
 				c.finish(f.stream, s)
