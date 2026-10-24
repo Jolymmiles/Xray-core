@@ -54,26 +54,27 @@ type modelStream struct {
 }
 
 type flowModel struct {
-	t        *testing.T
-	rnd      *mrand.Rand
-	c        *flowConn
-	capture  *captureConn
-	streams  map[uint32]*modelStream
-	next     uint32
-	cliInit  int64
-	srvInit  int64
-	srvPeak  int64 // the largest srvInit so far
-	cliSees  int64 // initial window the client believes the server granted
-	srvSees  int64 // initial window the server believes the client granted
-	up, down flowLimit
-	phase    int
-	steps    int
-	cliConn  int64 // connection window the client believes it has
-	srvConn  int64 // connection window the server really has left
-	resize   bool  // the client changes its initial window now and then
-	changes  int   // mid-connection client window changes applied
-	failed   bool  // the governor gave up the connection
-	lenient  bool  // do not require a give-up; let the invariants judge
+	t           *testing.T
+	rnd         *mrand.Rand
+	c           *flowConn
+	capture     *captureConn
+	streams     map[uint32]*modelStream
+	next        uint32
+	cliInit     int64
+	srvInit     int64
+	srvPeak     int64 // the largest srvInit so far
+	cliSees     int64 // initial window the client believes the server granted
+	srvSees     int64 // initial window the server believes the client granted
+	up, down    flowLimit
+	phase       int
+	steps       int
+	cliConn     int64 // connection window the client believes it has
+	srvConn     int64 // connection window the server really has left
+	resize      bool  // the client changes its initial window now and then
+	changes     int   // mid-connection client window changes applied
+	failed      bool  // the governor gave up the connection
+	lenient     bool  // do not require a give-up; let the invariants judge
+	ownSettings int   // SETTINGS the client governor sent itself, whose ACK the client does not see
 
 	// proto adds the protocol scenarios of protoStep and checks that every
 	// frame the governor does not own reaches the other side as it was sent,
@@ -751,14 +752,32 @@ func (m *flowModel) check(q *[]rawFrame, b []byte, to string) {
 			}
 			continue
 		}
+		// A client governor that sees the server govern sends that server
+		// the stack's initial window in a SETTINGS of its own, see
+		// appendRestock.
+		if to == "server" && got.typ == h2Settings && got.flags == 0 && len(got.payload) == 6 &&
+			binary.BigEndian.Uint16(got.payload) == h2SettingInitialWindowSize && (len(*q) == 0 || (*q)[0].typ != h2Settings) {
+			m.ownSettings++
+			continue
+		}
 		if len(*q) == 0 {
 			m.t.Fatalf("to the %s: frame %+v that nobody sent", to, got)
+		}
+		// The ACK of a SETTINGS the governor sent itself does not reach the
+		// client stack.
+		for to == "client" && m.ownSettings > 0 && len(*q) > 1 && isSettingsAck((*q)[0]) && !sameFrame((*q)[0], got) {
+			*q = (*q)[1:]
+			m.ownSettings--
 		}
 		want := (*q)[0]
 		*q = (*q)[1:]
 		if !sameFrame(want, got) {
 			m.t.Fatalf("to the %s: sent %+v, got %+v", to, want, got)
 		}
+	}
+	for to == "client" && m.ownSettings > 0 && len(*q) > 0 && isSettingsAck((*q)[0]) {
+		*q = (*q)[1:]
+		m.ownSettings--
 	}
 	if len(*q) > 0 {
 		m.t.Fatalf("to the %s: %d frames lost, first %+v", to, len(*q), (*q)[0])
@@ -1008,4 +1027,8 @@ func runProtoModel(t *testing.T, seed uint64, up, down flowLimit, client bool, s
 			t.Fatalf("seed %d: governor still tracks finished stream %d", seed, id)
 		}
 	}
+}
+
+func isSettingsAck(f rawFrame) bool {
+	return f.typ == h2Settings && f.flags&h2FlagAck != 0
 }

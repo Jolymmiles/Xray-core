@@ -250,6 +250,9 @@ func TestFlowClientDownloadCreditNotHeld(t *testing.T) {
 				t.Fatalf("the server sent %d, want room for %d pieces of credit", sent, pieces)
 			}
 			ch.cg.mu.Lock()
+			// A client that governs: toward a server that does, it leaves the
+			// window to the server, see peerGoverned.
+			ch.cg.peerGoverned = false
 			ch.cg.streams[id].down.ramped = state.ramped
 			ch.cg.mu.Unlock()
 			for i := 0; i < pieces; i++ {
