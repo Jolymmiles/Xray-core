@@ -685,6 +685,8 @@ type flowConn struct {
 	incremental bool
 	guard       *time.Timer
 	guardProbe  bool
+	// guardArmed says the guard is set to fire for a stream that waits.
+	guardArmed bool
 
 	rp       frameParser
 	rpending []byte
@@ -1063,6 +1065,7 @@ func (c *flowConn) releaseLocked() {
 	if c.guard != nil {
 		c.guard.Stop()
 	}
+	c.guardArmed = false
 }
 
 // giveUp marks the connection for closing at the next read or write and
@@ -1489,17 +1492,23 @@ func (c *flowConn) armGuard(s *flowStream) {
 		return
 	}
 	s.down.waiting = time.Now()
-	if c.guard == nil {
+	// A guard already armed for a stream that waits longer stays as it is:
+	// moved for each stream that gets stuck after it, it would never fire
+	// while they keep coming.
+	switch {
+	case c.guard == nil:
 		c.guard = time.AfterFunc(c.guardDelay(), c.fireGuard)
-	} else {
+	case !c.guardArmed:
 		c.guard.Reset(c.guardDelay())
 	}
+	c.guardArmed = true
 }
 
 // fireGuard asks the client for a PING: its ACK arrives on the read side,
 // where stuck streams can then be given more room in order with other frames.
 func (c *flowConn) fireGuard() {
 	c.mu.Lock()
+	c.guardArmed = false
 	if c.closed || c.incremental || !c.anyWaiting() {
 		c.mu.Unlock()
 		return
@@ -1553,6 +1562,7 @@ func (c *flowConn) unstick(now time.Time, out []byte) []byte {
 	}
 	if again && c.guard != nil {
 		c.guard.Reset(delay)
+		c.guardArmed = true
 	}
 	return out
 }
