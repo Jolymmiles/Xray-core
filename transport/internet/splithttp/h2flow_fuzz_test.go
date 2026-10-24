@@ -2,6 +2,7 @@ package splithttp
 
 import (
 	"bytes"
+	"encoding/binary"
 	mrand "math/rand/v2"
 	"testing"
 
@@ -73,6 +74,14 @@ func FuzzFlowConn(f *testing.F) {
 			if err := downCountersAgree(c); err != nil {
 				t.Fatalf("send window %d: %v", sendWindow, err)
 			}
+			// The governor rewrites credit and SETTINGS, never data: what
+			// the server reads of each stream is what the client sent, as
+			// far as the frames parse and the connection was not given up.
+			if !c.isBroken() {
+				if sent, got := dataFrames(fromClient), dataFrames(out[len(h2Preface):]); !bytes.Equal(sent, got) {
+					t.Fatalf("send window %d: the server read %d bytes of data frames, the client sent %d", sendWindow, len(got), len(sent))
+				}
+			}
 			c.Close()
 		}
 
@@ -106,4 +115,22 @@ func FuzzFlowConn(f *testing.F) {
 			}
 		}
 	})
+}
+
+// dataFrames is the stream id and payload of each DATA frame in b, in order,
+// up to the first frame that does not parse.
+func dataFrames(b []byte) []byte {
+	fr := http2.NewFramer(nil, bytes.NewReader(b))
+	fr.SetMaxReadFrameSize(1 << 24)
+	var out []byte
+	for {
+		f, err := fr.ReadFrame()
+		if err != nil {
+			return out
+		}
+		if d, ok := f.(*http2.DataFrame); ok {
+			out = binary.BigEndian.AppendUint32(out, d.StreamID)
+			out = append(out, d.Data()...)
+		}
+	}
 }
