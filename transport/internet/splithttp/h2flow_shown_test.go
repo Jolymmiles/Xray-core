@@ -2,6 +2,7 @@ package splithttp
 
 import (
 	"testing"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -51,5 +52,32 @@ func TestFlowClientPastShownWindow(t *testing.T) {
 				t.Fatalf("a byte past the %d shown was taken", shown)
 			}
 		})
+	}
+}
+
+// TestFlowWindowHugeCredit hands a window more credit in a round than a
+// reader could take, as a hostile client may: the cap grows to its limit
+// and stays there, where products of such rounds wrapped to a cap at init.
+func TestFlowWindowHugeCredit(t *testing.T) {
+	const limit = 1 << 30
+	start := time.Unix(1, 0)
+	var w flowWindow
+	w.cap = flowStartWindow
+	now := start
+	w.adjust(now, 50*time.Millisecond, h2InitWindow, limit, true, false)
+	w.returned += 1 << 20
+	now = now.Add(60 * time.Millisecond)
+	w.adjust(now, 50*time.Millisecond, h2InitWindow, limit, true, false)
+	w.returned += 1 << 34
+	now = now.Add(60 * time.Millisecond)
+	w.adjust(now, 50*time.Millisecond, h2InitWindow, limit, true, false)
+	if w.cap != limit {
+		t.Fatalf("adjust: cap %d after a round of 2^34, want the limit %d", w.cap, limit)
+	}
+	w.returned += 1 << 40
+	now = now.Add(60 * time.Millisecond)
+	w.model(now, 50*time.Millisecond, h2InitWindow, limit)
+	if w.cap != limit {
+		t.Fatalf("model: cap %d after a round of 2^40, want the limit %d", w.cap, limit)
 	}
 }

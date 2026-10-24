@@ -448,7 +448,9 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 		w.ramped = true
 	}
 	if !w.ramped && w.prev > 0 {
-		grow += 2 * s * (copied - w.prev) / w.prev
+		// In floats: credit a hostile client returns has no bound, and the
+		// product of two such rounds would wrap.
+		grow += int64(min(2*float64(s)*float64(copied-w.prev)/float64(w.prev), float64(limit)))
 	}
 	if hold {
 		grow = min(grow, int64(w.cap))
@@ -510,21 +512,27 @@ func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int3
 	if w.rateAt == 0 && w.prev > 0 {
 		// The ramp's last round seeds the filter, so one slow first round
 		// cannot drop a window the reader just showed it fills.
-		w.rates[0] = w.prev * int64(time.Second) / int64(round)
+		w.rates[0] = flowRate(w.prev, round)
 		w.rateAt = 1
 	}
 	if now.Sub(w.mark) < round {
 		return
 	}
-	w.rates[w.rateAt%flowModelRounds] = (w.returned - w.markBase) * int64(time.Second) / int64(now.Sub(w.mark))
+	w.rates[w.rateAt%flowModelRounds] = flowRate(w.returned-w.markBase, now.Sub(w.mark))
 	w.rateAt++
 	w.mark, w.markBase = now, w.returned
 	var bw int64
 	for _, r := range w.rates {
 		bw = max(bw, r)
 	}
-	target := bw * int64(rtprop) / int64(time.Second) * flowModelGainPercent / 100
+	target := int64(min(float64(bw)*rtprop.Seconds()*flowModelGainPercent/100, float64(limit)))
 	w.cap = int32(min(max(target, int64(init)), int64(limit)))
+}
+
+// flowRate is bytes per second, in floats and held well inside int64: credit
+// a hostile client returns has no bound, and times a second it would wrap.
+func flowRate(bytes int64, d time.Duration) int64 {
+	return int64(min(float64(bytes)/d.Seconds(), 1<<53))
 }
 
 // Once the reader's rate has grown by less than a quarter for flowFullRounds
