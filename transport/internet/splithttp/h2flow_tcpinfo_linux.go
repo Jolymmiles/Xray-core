@@ -4,6 +4,7 @@ package splithttp
 
 import (
 	"net"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -27,10 +28,31 @@ func rawTCP(c net.Conn) syscall.RawConn {
 		case interface{ Raw() net.Conn }:
 			c = v.Raw()
 		default:
-			return nil
+			if c = embeddedConn(c); c == nil {
+				return nil
+			}
 		}
 	}
 	return nil
+}
+
+// embeddedConn is the net.Conn a wrapper embeds, such as finalmask's, which
+// offer no NetConn: the kernel's view of the TCP socket under a mask is still
+// that connection's round trip and what it has in flight.
+func embeddedConn(c net.Conn) net.Conn {
+	v := reflect.ValueOf(c)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	f := v.FieldByName("Conn")
+	if !f.IsValid() || !f.CanInterface() {
+		return nil
+	}
+	inner, _ := f.Interface().(net.Conn)
+	return inner
 }
 
 func readTCPStats(rc syscall.RawConn) (s tcpStats, ok bool) {
