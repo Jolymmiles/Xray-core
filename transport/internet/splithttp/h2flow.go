@@ -674,10 +674,13 @@ type flowConn struct {
 	rttLast     time.Duration
 	rttBase     time.Duration
 	rttSamples  int
-	pingData    uint64
-	pings       []flowPing
-	pingSentAt  time.Time
-	lastPing    time.Time
+	// pingBase is the path's round trip once it has risen over rttBase, see
+	// rebasePing, and pingStep how far it rose.
+	pingBase, pingStep time.Duration
+	pingData           uint64
+	pings              []flowPing
+	pingSentAt         time.Time
+	lastPing           time.Time
 
 	incremental bool
 	guard       *time.Timer
@@ -891,7 +894,7 @@ func (w *flowMinWindow) full(now time.Time) bool {
 // proxy: a min_rtt that far below the PING's means exactly that, and the PING
 // is kept.
 func (c *flowConn) pingFloor(now time.Time) time.Duration {
-	floor := c.rttBase
+	floor := max(c.rttBase, c.pingBase)
 	if c.floorConfirmed(now) && c.kstat.minRTT < floor {
 		floor = c.kstat.minRTT
 	}
@@ -1376,6 +1379,32 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 	}
 	if c.rtt == 0 || sample < c.rtt {
 		c.rtt = sample
+	}
+	c.rebasePing()
+}
+
+// rebasePing moves the floor PINGs are measured against where the path's own
+// round trip has risen: rttBase keeps the least PING for the life of the
+// connection, so a route or network that adds to the round trip reads as a
+// standing queue, and queueShrink holds the windows at init. Where even the
+// least PING over the last one to two flowRTTWindow stands that far above,
+// the queue is not one cuts can drain, as an own queue drains within seconds
+// of a quarter cut a second, and that least PING is the path's. The base only
+// falls after that, with the PINGs, and is dropped once they have come back
+// by half of what the path added.
+func (c *flowConn) rebasePing() {
+	if c.rttPrev == 0 {
+		return
+	}
+	least := min(c.rtt, c.rttPrev)
+	if c.pingBase != 0 {
+		c.pingBase = min(c.pingBase, least)
+		if c.pingBase-c.rttBase <= c.pingStep/2 {
+			c.pingBase, c.pingStep = 0, 0
+		}
+	}
+	if floor := max(c.rttBase, c.pingBase); least-floor > max(floor, flowQueueShrink) {
+		c.pingBase, c.pingStep = least, least-c.rttBase
 	}
 }
 
