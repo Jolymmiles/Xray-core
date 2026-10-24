@@ -100,11 +100,18 @@ func TestFlowClientSlowReaderBounded(t *testing.T) {
 			close(stop)
 			resp.Body.Close()
 			t.Logf("%s, governed client %v: server wrote %d, client read %d, gap %d, unread at client %d", sc.name, governed, written.Load(), consumed.Load(), gap, unread)
-			if governed && unread > int64(h2InitWindow)+64<<10 {
+			// In front of a governed server the client leaves its downloads
+			// to it, see appendRestock, and is held as an official client is:
+			// to the server's send window.
+			serverGoverned := sc.down.enabled()
+			if governed && !serverGoverned && unread > int64(h2InitWindow)+64<<10 {
 				t.Fatalf("%s: unread at the governed client %d", sc.name, unread)
 			}
-			if governed && gap > 512<<10 {
+			if governed && !serverGoverned && gap > 512<<10 {
 				t.Fatalf("%s: gap %d between written and read", sc.name, gap)
+			}
+			if governed && serverGoverned && gap > flowServerSendWindow+512<<10 {
+				t.Fatalf("%s: gap %d between written and read, over the server's send window", sc.name, gap)
 			}
 		}
 	}
@@ -300,9 +307,10 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 
 // TestFlowChainedGovernorsSlowReaders puts a governor at both ends of twelve
 // downloads, as on a bridge in front of a governed server, and reads them in
-// stops and starts, so the caps shrink at both ends while each holds credit
-// back. Every download must still complete: with the client showing more than
-// the lowest cap (see flowShownDown) the two governors wait for each other.
+// stops and starts, so the server's caps shrink. The client sees the server
+// govern and leaves the downloads to it, see appendRestock: every download
+// must still complete, and the client must hold nothing back. Two governors
+// that each held credit once waited for each other, see flowShownDown.
 // It runs without the server's send window and with the default one.
 //
 // The readers pause after every read until a cap has been seen to fall at
@@ -401,7 +409,7 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 			case <-tick.C:
 				lowServer = min(lowServer, lowestDownCap(serverConns()))
 				lowClient = min(lowClient, lowestDownCap(clientConns()))
-				if lowServer < flowStartWindow && lowClient < flowStartWindow {
+				if lowServer < flowStartWindow {
 					fell.Store(true)
 				}
 			}
@@ -462,9 +470,17 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 		logDownState(t, "client", clientConns())
 		t.FailNow()
 	}
-	if lowServer >= flowStartWindow || lowClient >= flowStartWindow {
-		t.Fatalf("lowest cap seen: server %d, client %d; both must fall under the starting %d for the two governors to hold credit at once",
-			lowServer, lowClient, flowStartWindow)
+	if lowServer >= flowStartWindow {
+		t.Fatalf("lowest cap seen: server %d, client %d; the server's must fall under the starting %d", lowServer, lowClient, flowStartWindow)
+	}
+	for _, c := range clientConns() {
+		c.mu.Lock()
+		// A connection the transport dialed and never used saw no reply.
+		deferred := !c.serverReplied || c.peerGoverned && !c.restock
+		c.mu.Unlock()
+		if !deferred {
+			t.Fatal("the client did not leave its downloads to the governed server")
+		}
 	}
 	t.Logf("lowest cap seen: server %d, client %d", lowServer, lowClient)
 }

@@ -3,6 +3,8 @@ package splithttp
 import (
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // TestFlowGuardNotPutOffByNewStreams has a stream run out of window with a
@@ -38,4 +40,41 @@ func TestFlowGuardNotPutOffByNewStreams(t *testing.T) {
 		stuck(id)
 	}
 	t.Fatalf("stream 1 has waited %v with no probe, the guard's delay being %v", 400*time.Millisecond, flowGuardMin)
+}
+
+// TestFlowClientSeesGovernedServer feeds a governed client the server's first
+// frames: a PING ahead of any reply marks the server as one that governs its
+// downloads, a PING after a reply, as a stock server's keepalive, does not.
+func TestFlowClientSeesGovernedServer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		frames   func(fr *http2.Framer)
+		governed bool
+	}{
+		{"PING with the first SETTINGS", func(fr *http2.Framer) {
+			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+			fr.WritePing(false, [8]byte{1})
+		}, true},
+		{"PING after a reply", func(fr *http2.Framer) {
+			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x88}, EndHeaders: true})
+			fr.WritePing(false, [8]byte{1})
+		}, false},
+		{"no PING", func(fr *http2.Framer) {
+			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newFlowClientConn(&scriptConn{})
+			t.Cleanup(func() { c.Close() })
+			c.mode.Store(flowH2)
+			c.fromServer(frames(tc.frames), nil)
+			c.mu.Lock()
+			got := c.peerGoverned
+			c.mu.Unlock()
+			if got != tc.governed {
+				t.Fatalf("server taken as governed: %v, want %v", got, tc.governed)
+			}
+		})
+	}
 }
