@@ -44,6 +44,16 @@ func (c *Config) h2SendWindow() int64 {
 	}
 }
 
+// h2ConnWindow is the connection receive window net/http grants for h2: a
+// value outside [65535, 2^31-1], which a proto config can carry, is its
+// default, as in its setDefault.
+func h2ConnWindow(h2 *http.HTTP2Config) int32 {
+	if h2 != nil && h2.MaxReceiveBufferPerConnection >= h2InitWindow && h2.MaxReceiveBufferPerConnection <= h2MaxWindow {
+		return int32(h2.MaxReceiveBufferPerConnection)
+	}
+	return 1 << 20 // Go's default
+}
+
 // h2ReceiveConfig returns the HTTP/2 receive windows this side grants, or nil
 // to keep Go's defaults.
 func (c *Config) h2ReceiveConfig(server bool) *http.HTTP2Config {

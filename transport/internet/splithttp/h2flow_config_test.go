@@ -155,6 +155,10 @@ func TestH2ServerGrantsWindows(t *testing.T) {
 		// The server grants flowServerReceiveWindow on the connection; the
 		// governor shows Go's default until readers take more.
 		{"governor on, default", &H2FlowConfig{Mode: 1}, flowServerReceiveWindow, flowConnFloor, true},
+		// A connection window under HTTP/2's own, which a proto config can
+		// carry: net/http grants its default instead, and so does the
+		// governor's accounting.
+		{"governor on, connection window under 65535", &H2FlowConfig{Mode: 1, MaxConnectionReceiveWindow: 1000}, flowServerReceiveWindow, flowConnFloor, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port := tcp.PickPort()
@@ -252,5 +256,18 @@ func TestH2WindowsEndToEnd(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestH2ConnWindowFollowsNetHTTP checks the connection window the governor
+// counts as granted against what net/http grants for the same setting.
+func TestH2ConnWindowFollowsNetHTTP(t *testing.T) {
+	for set, want := range map[int]int32{0: 1 << 20, 1000: 1 << 20, 65534: 1 << 20, 65535: 65535, 3 << 20: 3 << 20, 1 << 31: 1 << 20} {
+		if got := h2ConnWindow(&http.HTTP2Config{MaxReceiveBufferPerConnection: set}); got != want {
+			t.Errorf("MaxReceiveBufferPerConnection %d: counted %d, want %d", set, got, want)
+		}
+	}
+	if got := h2ConnWindow(nil); got != 1<<20 {
+		t.Errorf("no HTTP/2 config: counted %d, want %d", got, 1<<20)
 	}
 }
