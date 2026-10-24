@@ -725,6 +725,17 @@ type flowConn struct {
 	kstat tcpStats
 	kAt   time.Time
 	kOK   bool
+	// base is the round trip of the empty path once the path itself has
+	// moved, see kernelStats: zero while the kernel's min_rtt stands for it.
+	base time.Duration
+	// baseStep is what the path added to the kernel's floor when base was
+	// last taken.
+	baseStep time.Duration
+	baseWin  flowMinWindow
+	lowGain  time.Time
+	// pinned says the downloads that took data lately all have caps at
+	// init, see cutGain.
+	pinned bool
 
 	// noQueueCuts leaves the queue on the path to TCP: a server that sets
 	// it neither runs pi nor cuts against a long queue, and its downloads'
@@ -767,15 +778,17 @@ func (c *flowConn) cutGain(now time.Time) float64 {
 	if !c.kOK || !c.effect.due(now, max(c.kstat.minRTT, flowModelMinRound)) {
 		return c.effect.value()
 	}
-	var caps int64
+	var caps, n int64
 	for _, s := range c.streams {
 		if s.down.returned != s.down.noted {
 			s.down.noted, s.down.tookAt = s.down.returned, now
 		}
 		if !s.serverDone && now.Sub(s.down.tookAt) < max(flowEffectRecent*c.kstat.minRTT, time.Second) {
 			caps += int64(s.down.cap)
+			n++
 		}
 	}
+	c.pinned = n > 0 && caps <= 2*n*int64(c.down.init)
 	set := max(c.kstat.minRTT/4, 4*c.kstat.rttVar, flowPIMinSet)
 	return c.effect.note(now, c.kstat.rtt, c.kstat.minRTT, set, c.kstat.inFlight, caps)
 }
@@ -789,8 +802,78 @@ func (c *flowConn) kernelStats(now time.Time) bool {
 	if now.Sub(c.kAt) >= flowKernelEvery {
 		c.kAt = now
 		c.kstat, c.kOK = readTCPStats(c.tcp)
+		if c.kOK && c.kstat.minRTT > 0 {
+			c.rebase(now)
+		}
 	}
 	return c.kOK && c.kstat.minRTT > 0
+}
+
+// flowBaseWindow is how long the round trip must stand over the kernel's
+// min_rtt, with cuts that do not move it, before that is the path's own.
+const flowBaseWindow = 2500 * time.Millisecond
+
+// rebase has the queue counted from the path's round trip where the path
+// itself has moved. The kernel keeps its min_rtt for minutes, so a route or
+// cell that adds to the round trip reads as a standing queue: cuts do not
+// shorten it, the gain comes down, and with an error that never turns the
+// caps never grow back. Once cuts have done nothing for flowBaseWindow, with
+// the downloads' caps at init all that time, and the round trip has not come
+// under the kernel's floor plus twice the setpoint since, its least value
+// over that time is the path's. A queue of the server's own is its downloads'
+// data: their caps are well above init, and the gain of connections that
+// share it reads low now and then, which alone took a queue of the server's
+// own for the path's. The base only falls after that, with the round trip,
+// so a queue of the server's own on top of it never raises it; it is dropped
+// once the round trip has come back by half of what the path added. Half of
+// that, not the setpoint: the setpoint grows with the round trip's variance,
+// and a step of a few setpoints would lose its base to a jittery round.
+func (c *flowConn) rebase(now time.Time) {
+	floor := c.kstat.minRTT
+	least := c.baseWin.note(now, c.kstat.rtt)
+	set := max(floor/4, 4*c.kstat.rttVar, flowPIMinSet)
+	if c.base != 0 {
+		c.base = min(c.base, least)
+		if c.base-floor <= c.baseStep/2 {
+			c.base = 0
+		}
+	}
+	if c.effect.active && c.effect.gain < 0.5 && c.pinned {
+		if c.lowGain.IsZero() {
+			c.lowGain = now
+		}
+	} else {
+		c.lowGain = time.Time{}
+	}
+	if c.base == 0 && !c.lowGain.IsZero() && now.Sub(c.lowGain) >= flowBaseWindow && c.baseWin.full(now) &&
+		least > floor+2*set {
+		c.base, c.baseStep = least, least-floor
+		c.lowGain = time.Time{}
+	}
+	c.kstat.minRTT = max(floor, c.base)
+}
+
+// flowMinWindow is the least of a value over the last one to two
+// flowBaseWindow halves.
+type flowMinWindow struct {
+	start, at time.Time
+	cur, prev time.Duration
+}
+
+func (w *flowMinWindow) note(now time.Time, v time.Duration) time.Duration {
+	if w.start.IsZero() {
+		w.start, w.at, w.cur, w.prev = now, now, v, v
+	}
+	if now.Sub(w.at) >= flowBaseWindow/2 {
+		w.at, w.prev, w.cur = now, w.cur, v
+	}
+	w.cur = min(w.cur, v)
+	return min(w.cur, w.prev)
+}
+
+// full reports whether the window has covered flowBaseWindow.
+func (w *flowMinWindow) full(now time.Time) bool {
+	return !w.start.IsZero() && now.Sub(w.start) >= flowBaseWindow
 }
 
 // pingFloor is the round trip of the empty path for pingQueueing. The first
