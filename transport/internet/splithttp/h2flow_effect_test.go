@@ -287,3 +287,25 @@ func TestFlowPIReturnsCutThatLanded(t *testing.T) {
 		t.Fatalf("pi returned %v for a cap that could fall by 1000", cut)
 	}
 }
+
+// TestFlowEffectDoesNotAttributePreCutFlightDrop (from the review of the
+// change) has what is in flight fall before the controller cuts: the cut is
+// judged from the round before it, and what is in flight has not come down
+// since.
+func TestFlowEffectDoesNotAttributePreCutFlightDrop(t *testing.T) {
+	var e flowEffect
+	start := time.Unix(1, 0)
+	e.note(start, 200*time.Millisecond, 100*time.Millisecond,
+		20*time.Millisecond, 1024, 1024)
+
+	// Flight falls before any controller cut; queue delay rises.
+	e.note(start.Add(time.Second), 300*time.Millisecond,
+		100*time.Millisecond, 20*time.Millisecond, 768, 1024)
+
+	e.cutBy(256)
+	gain := e.note(start.Add(2*time.Second), 275*time.Millisecond,
+		100*time.Millisecond, 20*time.Millisecond, 768, 768)
+	if gain != 1 {
+		t.Fatalf("gain=%g: no flight reduction occurred after the cut", gain)
+	}
+}

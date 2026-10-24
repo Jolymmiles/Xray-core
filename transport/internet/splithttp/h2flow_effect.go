@@ -47,10 +47,21 @@ type flowEffect struct {
 	qTop      float64
 	cut       float64
 	gain      float64
+	// flight and caps are what the last note saw.
+	flight, caps float64
 }
 
-// cutBy notes bytes the controller cut from the caps against the queue.
+// cutBy notes bytes the controller cut from the caps against the queue. The
+// first cut of a measurement is judged from the last note before it: what was
+// in flight and the queue then, not their peaks since the measurement began,
+// which a drop before the cut would otherwise count for it.
 func (e *flowEffect) cutBy(bytes float64) {
+	if bytes <= 0 {
+		return
+	}
+	if e.active && e.cut == 0 {
+		e.flightTop, e.capsTop, e.qTop = e.flight, e.caps, e.queue
+	}
 	e.cut += bytes
 }
 
@@ -67,6 +78,7 @@ func (e *flowEffect) note(now time.Time, rtt, minRTT, set time.Duration, inFligh
 	// took effect read as one that did not.
 	e.queue = float64(rtt - minRTT)
 	x, c := float64(inFlight), float64(caps)
+	e.flight, e.caps = x, c
 	if e.queue <= flowEffectAbove*float64(set) {
 		if e.clear++; e.clear >= flowEffectClear {
 			e.active = false
