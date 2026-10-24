@@ -1710,6 +1710,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
+			init, shown := c.clientInit, c.clientShown
 			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(initialWindow(payload)), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
 				return s.down.returned, s.downForwarded, s.serverDone
 			}) {
@@ -1720,8 +1721,11 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			c.pingReady = c.pingReady || c.client
 			out = append(out, header...)
 			out = append(out, payload...)
-			// A raised window funds credit the receiver no longer owes.
-			if c.down.enabled() {
+			// A raised window funds credit the receiver no longer owes. A
+			// SETTINGS that left the windows as they were funds nothing, and
+			// a walk over every stream for each one would let a client that
+			// floods them cost the server that walk each time.
+			if c.down.enabled() && (c.clientInit != init || c.clientShown != shown) {
 				for id, s := range c.streams {
 					if s.serverDone {
 						continue
