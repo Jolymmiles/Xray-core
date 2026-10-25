@@ -48,6 +48,9 @@ const (
 	h2WindowUpdate = 0x8
 	h2Continuation = 0x9
 
+	// h2ErrFlowControl is FLOW_CONTROL_ERROR.
+	h2ErrFlowControl = 0x3
+
 	h2FlagEndStream  = 0x1
 	h2FlagAck        = 0x1
 	h2FlagEndHeaders = 0x4
@@ -598,7 +601,7 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain floa
 	// queue a reader that takes all it is given still copies only the
 	// round's share of the cap, and must not be taken for one that limits
 	// itself.
-	if 4*copied < int64(w.cap)*int64(round)/int64(max(st.rtt, round)) {
+	if 4*float64(copied) < float64(w.cap)*float64(round)/float64(max(st.rtt, round)) {
 		delta = min(delta, 0)
 		if w.slow++; w.slow >= flowShrinkAfter {
 			delta = min(delta, -cap/4)
@@ -692,6 +695,10 @@ type flowConn struct {
 	// its reader does, and governing them twice takes no rate. serverReplied
 	// notes the server's first HEADERS.
 	peerGoverned, serverReplied bool
+	// pingTagged says a server has sent its tagged first PING, see flowPingTag.
+	pingTagged bool
+	// resets are streams whose client sent past their window, to be reset.
+	resets []uint32
 	// group is what a client shares with its other connections to the server,
 	// see flowGroup; probeSince is when its downloads were last seen to sit
 	// at init under a raised round trip, and wide that a probe widens them.
@@ -1496,8 +1503,18 @@ type flowPing struct {
 // health checks do, and remembers it to recognize the ACK. The last
 // flowPingSlots are remembered, so a guard probe sent while a periodic PING
 // is due back does not make that one's ACK look foreign.
+// flowPingTag marks the first PING a governed server sends, with its first
+// SETTINGS: a governed client takes it, and no other early PING, for a
+// server that governs its downloads, see peerGoverned. The PING's payload is
+// inside TLS, seen by the two ends alone.
+const flowPingTag = 0x6b7a3f91
+
 func (c *flowConn) appendPingFrame(out []byte) []byte {
 	c.pingData = rand.Uint64()
+	if !c.client && !c.pingTagged {
+		c.pingTagged = true
+		c.pingData = flowPingTag<<32 | c.pingData&0xffffffff
+	}
 	c.pings = append(c.pings, flowPing{c.pingData, time.Now()})
 	if len(c.pings) > flowPingSlots {
 		c.pings = c.pings[len(c.pings)-flowPingSlots:]
@@ -1793,8 +1810,12 @@ func (r *flowReader) frame(f h2Frame) {
 		}
 		if s := c.stream(f.stream); s != nil {
 			s.upSent += int64(f.length)
+			// Past a stream's window is the stream's error alone, as with a
+			// stack shown that window: the stream is reset both ways, see
+			// appendResets, and the connection goes on.
 			if up && s.upSent > int64(c.serverShown)+s.upForwarded {
-				c.giveUp()
+				c.resets = append(c.resets, f.stream)
+				c.drop(f.stream)
 				return
 			}
 			if f.flags&h2FlagEndStream != 0 {
@@ -1915,8 +1936,32 @@ func (c *flowConn) appendRestock(out []byte) []byte {
 	return out
 }
 
+// appendResets resets the streams whose client sent past the window it was
+// shown, with FLOW_CONTROL_ERROR, as a stack shown that window would: to the
+// stack, as if from the client, so the handler ends, and to the client.
+func (c *flowConn) appendResets(out []byte) []byte {
+	if len(c.resets) == 0 {
+		return out
+	}
+	for _, id := range c.resets {
+		out = appendRSTStream(out, id, h2ErrFlowControl)
+		c.wqueue = appendRSTStream(c.wqueue, id, h2ErrFlowControl)
+	}
+	c.resets = c.resets[:0]
+	c.wakeQueue()
+	return out
+}
+
+// appendRSTStream adds an RST_STREAM for id with code to out.
+func appendRSTStream(out []byte, id, code uint32) []byte {
+	out = append(out, 0, 0, 4, h2RSTStream, 0)
+	out = binary.BigEndian.AppendUint32(out, id&0x7fffffff)
+	return binary.BigEndian.AppendUint32(out, code)
+}
+
 func (r *flowReader) boundary(out []byte) []byte {
 	c := (*flowConn)(r)
+	out = c.appendResets(out)
 	// Ahead of any credit: the server is to know the window before it is
 	// handed what the window holds.
 	if c.client && c.restock && c.clientInit != 0 {
@@ -1988,7 +2033,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	case h2Settings:
 		// The ACK of a SETTINGS the governor sent, see restock, is not the
 		// stack's to see: ACKs come in the order the SETTINGS went.
-		if c.client && f.flags&h2FlagAck != 0 && len(c.settingsOwn) > 0 {
+		// Only a well-formed one: an ACK with a payload is a FRAME_SIZE_ERROR
+		// the stack has to see to raise, and it takes no SETTINGS off the queue.
+		if c.client && f.flags&h2FlagAck != 0 && f.length == 0 && f.stream == 0 && len(c.settingsOwn) > 0 {
 			own := c.settingsOwn[0]
 			c.settingsOwn = c.settingsOwn[1:]
 			if own {
@@ -2025,8 +2072,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 			return out
 		}
 		// A governed server sends a PING of its own with its first SETTINGS,
-		// before it answers anything; a stock one does not.
-		if c.client && f.flags&h2FlagAck == 0 && !c.serverReplied && !c.peerGoverned {
+		// before it answers anything, tagged: a stock server's health check can
+		// come early too, and is not one.
+		if c.client && f.flags&h2FlagAck == 0 && !c.serverReplied && !c.peerGoverned && len(payload) == 8 && binary.BigEndian.Uint32(payload) == flowPingTag {
 			c.peerGoverned, c.restock = true, true
 		}
 	case h2WindowUpdate:
@@ -2094,7 +2142,11 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 		// half of its own window could be held below that half. Only
 		// where the kernel sees the path: behind a TCP proxy it sees
 		// no queue at all.
-		c.effect.cutBy(s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now)))
+		// A download the server has finished takes no part in the gain, see
+		// cutGain, and neither does what is cut from it.
+		if cut := s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now)); !s.serverDone {
+			c.effect.cutBy(cut)
+		}
 	default:
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		// A round trip pi saw before the stream left it is no step to
@@ -2112,8 +2164,11 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 	case q == 2 && !c.noQueueCuts && now.Sub(s.down.qAt) >= c.currentRTT():
 		s.down.qAt = now
 		before := s.down.cap
-		s.down.cap = max(c.down.init, s.down.cap-int32(c.cutGain(now)*float64(s.down.cap/4)))
-		c.effect.cutBy(float64(before - s.down.cap))
+		// The quarter cut as it always was, before/4*3, scaled by the gain.
+		s.down.cap = max(c.down.init, before-int32(c.cutGain(now)*float64(before-before/4*3)))
+		if !s.serverDone {
+			c.effect.cutBy(float64(before - s.down.cap))
+		}
 	}
 }
 

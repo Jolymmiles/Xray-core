@@ -752,6 +752,15 @@ func (m *flowModel) check(q *[]rawFrame, b []byte, to string) {
 			}
 			continue
 		}
+		// A stream whose client sent past its window is reset by the governor
+		// with FLOW_CONTROL_ERROR, to both ends, see appendResets.
+		if got.typ == h2RSTStream && len(got.payload) == 4 && binary.BigEndian.Uint32(got.payload) == h2ErrFlowControl &&
+			(len(*q) == 0 || !sameFrame((*q)[0], got)) {
+			if to == "server" {
+				m.forget(got.stream)
+			}
+			continue
+		}
 		// A client governor that sees the server govern sends that server
 		// the stack's initial window in a SETTINGS of its own, see
 		// appendRestock.

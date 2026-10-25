@@ -1,6 +1,7 @@
 package splithttp
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -8,19 +9,26 @@ import (
 )
 
 // TestFlowClientPastShownWindow sends upload data up to the windows the
-// client was shown, which the server takes, and then a byte more, which ends
-// the connection as a stack shown those windows would. The server's stack is
-// given larger windows than the client is shown, so without the governor's
-// check a client could leave it several times as much unread.
+// client was shown, which the server takes, and then a byte more, which a
+// stack shown those windows answers as the stock one does: past the stream's
+// window the stream is reset with FLOW_CONTROL_ERROR, to the stack and to the
+// client, and another stream goes on; past the connection's the connection
+// ends. The server's stack is given larger windows than the client is shown,
+// so without the governor's check a client could leave it several times as
+// much unread.
 func TestFlowClientPastShownWindow(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		connCredit uint32
 		streamCred uint32
+		// wideConn shows the client more of the connection than any stream
+		// holds, so that the stream's window is the one it sends past.
+		wideConn bool
 	}{
-		{"no credit", 0, 0},
-		{"connection credit", 8 << 20, 0},
-		{"stream and connection credit", 8 << 20, 4 << 20},
+		{"no credit", 0, 0, false},
+		{"connection credit", 8 << 20, 0, false},
+		{"stream and connection credit", 8 << 20, 4 << 20, false},
+		{"connection window over the stream's", 8 << 20, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newFlowHarness(t)
@@ -42,14 +50,42 @@ func TestFlowClientPastShownWindow(t *testing.T) {
 					conn += int64(wu.Increment)
 				}
 			}
+			if tc.wideConn {
+				h.c.mu.Lock()
+				h.c.upConnForwarded += 8 << 20
+				h.c.mu.Unlock()
+				conn += 8 << 20
+			}
 			shown := min(conn, h.toClient.streams[1])
 			h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, 1, int(shown)) })
 			if h.readErr != nil || h.c.isBroken() {
 				t.Fatalf("data within the %d shown ended the connection: %v", shown, h.readErr)
 			}
-			h.fromClient(func(fr *http2.Framer) { fr.WriteData(1, false, []byte{0}) })
-			if h.readErr == nil || !h.c.isBroken() {
-				t.Fatalf("a byte past the %d shown was taken", shown)
+			h.conn.take()
+			got := h.fromClient(func(fr *http2.Framer) { fr.WriteData(1, false, []byte{0}) })
+			if h.toClient.streams[1] >= conn {
+				if h.readErr == nil || !h.c.isBroken() {
+					t.Fatalf("a byte past the connection's %d shown was taken", shown)
+				}
+				return
+			}
+			if h.readErr != nil || h.c.isBroken() {
+				t.Fatalf("a byte past stream 1's %d shown ended the connection: %v", shown, h.readErr)
+			}
+			if !hasReset(t, got, 1) {
+				t.Fatal("the stack was not told stream 1 was reset")
+			}
+			h.sync()
+			if !hasReset(t, h.conn.take(), 1) {
+				t.Fatal("the client was not told stream 1 was reset")
+			}
+			// Another stream is still usable.
+			got = h.fromClient(func(fr *http2.Framer) {
+				fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: []byte{0x82}, EndHeaders: true})
+				fr.WriteData(3, false, make([]byte, 100))
+			})
+			if h.readErr != nil || h.c.isBroken() || len(dataFrames(got)) != 4+100 {
+				t.Fatalf("stream 3 after the reset: %d bytes of data reached the stack, error %v", len(dataFrames(got)), h.readErr)
 			}
 		})
 	}
@@ -80,4 +116,15 @@ func TestFlowWindowHugeCredit(t *testing.T) {
 	if w.cap != limit {
 		t.Fatalf("model: cap %d after a round of 2^40, want the limit %d", w.cap, limit)
 	}
+}
+
+// hasReset reports whether b carries an RST_STREAM with FLOW_CONTROL_ERROR
+// for id.
+func hasReset(t *testing.T, b []byte, id uint32) bool {
+	for _, f := range rawFrames(t, b) {
+		if f.typ == h2RSTStream && f.stream == id && len(f.payload) == 4 && binary.BigEndian.Uint32(f.payload) == h2ErrFlowControl {
+			return true
+		}
+	}
+	return false
 }
