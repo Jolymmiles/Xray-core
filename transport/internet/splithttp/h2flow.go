@@ -692,6 +692,12 @@ type flowConn struct {
 	// its reader does, and governing them twice takes no rate. serverReplied
 	// notes the server's first HEADERS.
 	peerGoverned, serverReplied bool
+	// group is what a client shares with its other connections to the server,
+	// see flowGroup; probeSince is when its downloads were last seen to sit
+	// at init under a raised round trip, and wide that a probe widens them.
+	group      *flowGroup
+	probeSince time.Time
+	wide       bool
 	// restock says the server has been seen to govern and has yet to be
 	// shown the stack's window, see appendRestock; settingsOwn notes, in
 	// order, which SETTINGS sent to the server were the governor's.
@@ -873,7 +879,41 @@ func (c *flowConn) rebase(now time.Time) {
 		c.base, c.baseStep = least, least-floor
 		c.lowGain = time.Time{}
 	}
+	if c.client && c.group != nil {
+		c.probeClient(now, floor, least, set)
+	}
 	c.kstat.minRTT = max(floor, c.base)
+}
+
+// probeClient is rebase for a client, which has no gain of its cuts to go by
+// and whose connections share the path, see flowGroup: once its downloads
+// have sat at init for flowProbeAfter under a round trip over the kernel's
+// floor it asks its group to probe, and takes the base only if the path
+// answered.
+func (c *flowConn) probeClient(now time.Time, floor, least, set time.Duration) {
+	var caps, n int64
+	for _, s := range c.streams {
+		if !s.serverDone && s.downSent > 0 {
+			caps += int64(s.down.cap)
+			n++
+		}
+	}
+	if n > 0 && caps <= 2*n*int64(c.down.init) && c.kstat.rtt-floor > 2*set && c.base == 0 {
+		if c.probeSince.IsZero() {
+			c.probeSince = now
+		}
+		if now.Sub(c.probeSince) >= flowProbeAfter {
+			c.group.request(now, c.kstat.rtt)
+		}
+	} else {
+		c.probeSince = time.Time{}
+	}
+	var moved time.Time
+	c.wide, moved = c.group.step(now)
+	if c.base == 0 && !moved.IsZero() && now.Sub(moved) < flowBaseWindow && least > floor+2*set {
+		c.base, c.baseStep = least, least-floor
+		c.probeSince = time.Time{}
+	}
 }
 
 // flowMinWindow is the least of a value over the last one to two
@@ -999,6 +1039,12 @@ func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
 func newFlowClientConn(c net.Conn) *flowConn {
 	fc := newFlowConn(c, flowLimit{}, flowDefault)
 	fc.client = true
+	// Only a connection the kernel reports on takes part in a probe.
+	if fc.tcp != nil {
+		if addr := c.RemoteAddr(); addr != nil {
+			fc.group = joinFlowGroup(addr.String())
+		}
+	}
 	return fc
 }
 
@@ -1066,6 +1112,10 @@ func (c *flowConn) release() {
 }
 
 func (c *flowConn) releaseLocked() {
+	if c.group != nil {
+		c.group.leave()
+		c.group = nil
+	}
 	c.streams = map[uint32]*flowStream{}
 	c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned = 0, 0, 0, 0
 	c.opened = nil
@@ -1907,6 +1957,9 @@ func (w *flowWriter) frame(f h2Frame) {
 	s := c.stream(f.stream)
 	switch f.typ {
 	case h2Data:
+		if c.group != nil {
+			c.group.bytes.Add(int64(f.length))
+		}
 		c.downConnWindow -= int64(f.length)
 		if s != nil {
 			s.downSent += int64(f.length)
@@ -2033,6 +2086,9 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 	switch {
 	case c.client && c.modelled(now) && s.down.settled():
 		s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
+		if c.wide {
+			s.down.cap = int32(min(float64(s.down.cap)*flowProbeGain, float64(c.down.max)))
+		}
 	case !c.client && !c.noQueueCuts && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
 		// Only clients that credit in small steps: one that waits for
 		// half of its own window could be held below that half. Only
