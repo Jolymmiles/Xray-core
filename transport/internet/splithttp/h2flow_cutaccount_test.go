@@ -78,3 +78,35 @@ func TestFlowLongQueueCutRounding(t *testing.T) {
 		}
 	}
 }
+
+// TestFlowCoarseClientCutAboveHalfWindow has a client that credits in large
+// steps, one that may wait for half of its 4 MiB window before it credits,
+// beside a long queue: cut after cut takes its cap no lower than half that
+// window and the credit the guard adds, where the download would stop until
+// the guard lifts it. A client that credits in small steps is cut on down.
+func TestFlowCoarseClientCutAboveHalfWindow(t *testing.T) {
+	for _, step := range []uint32{128 << 10, 4 << 10} {
+		h, s := queuedDownload(t)
+		h.c.mu.Lock()
+		s.down.cap = 4 << 20
+		floor := int32(h.c.clientInit/2 + flowSmallCredit)
+		h.c.mu.Unlock()
+		var low int32 = 4 << 20
+		for range 8 {
+			h.c.mu.Lock()
+			s.down.qAt = time.Time{}
+			h.c.mu.Unlock()
+			h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(1, step) })
+			h.c.mu.Lock()
+			low = min(low, s.down.cap)
+			h.c.mu.Unlock()
+		}
+		coarse := step >= flowSmallCredit
+		if coarse && low < floor {
+			t.Fatalf("a client crediting %d at a time was cut to %d, under half its window and the guard's credit, %d", step, low, floor)
+		}
+		if !coarse && low >= floor {
+			t.Fatalf("a client crediting %d at a time was held at %d, not cut under %d", step, low, floor)
+		}
+	}
+}
