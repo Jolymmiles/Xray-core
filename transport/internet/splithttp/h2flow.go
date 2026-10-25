@@ -2165,7 +2165,16 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 		s.down.qAt = now
 		before := s.down.cap
 		// The quarter cut as it always was, before/4*3, scaled by the gain.
-		s.down.cap = max(c.down.init, before-int32(c.cutGain(now)*float64(before-before/4*3)))
+		// A client that has not shown it credits in small steps may wait for
+		// half of its own window before it credits at all: a cap under that
+		// stops the download until the guard lifts it, see unstick, and the
+		// next cut stops it again. Such a client is cut no lower than the
+		// guard would lift it.
+		floor := c.down.init
+		if !c.incremental {
+			floor = int32(min(int64(c.down.max), max(int64(floor), int64(c.clientInit)/2+flowSmallCredit)))
+		}
+		s.down.cap = max(min(floor, before), before-int32(c.cutGain(now)*float64(before-before/4*3)))
 		if !s.serverDone {
 			c.effect.cutBy(float64(before - s.down.cap))
 		}
