@@ -57,7 +57,7 @@ func TestFlowPISlowReaderNoOverflow(t *testing.T) {
 		w := flowWindow{cap: tc.cap, returned: 1, slow: flowShrinkAfter - 1}
 		w.mark = now.Add(-tc.round)
 		st := tcpStats{rtt: 100 * time.Millisecond, minRTT: 100 * time.Millisecond}
-		w.pi(now, st, h2InitWindow, 1<<30, 1)
+		w.pi(now, st, h2InitWindow, 1<<30, 1, 0)
 		if w.cap >= tc.cap {
 			t.Fatalf("cap %d after a byte in %v: did not shrink from %d", w.cap, tc.round, tc.cap)
 		}
