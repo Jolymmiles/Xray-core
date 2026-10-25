@@ -91,7 +91,12 @@ func (e *flowEffect) note(now time.Time, rtt, minRTT, set time.Duration, inFligh
 		e.start(x, c)
 		return 1
 	}
-	e.flightTop, e.qTop = max(e.flightTop, x), max(e.qTop, e.queue)
+	// A cut is judged from the round before it, see cutBy: peaks after it,
+	// a burst of flight it did not cause or a queue that rose on, would
+	// have a fall back from them read as the cut's.
+	if e.cut == 0 {
+		e.flightTop, e.qTop = max(e.flightTop, x), max(e.qTop, e.queue)
+	}
 	// A queue that halved since the last judgement drained by the client's
 	// own cuts, this connection's or its neighbours': cuts have their gain
 	// back. Other traffic's queue at a full buffer wanders by a tenth, and

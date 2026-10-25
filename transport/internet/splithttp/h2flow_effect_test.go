@@ -192,7 +192,9 @@ func TestFlowEffectCountsDownloadsOnly(t *testing.T) {
 	// The download is cut by a third and takes data; the queue stands.
 	down.down.cap, down.down.returned = 700<<10, 2
 	c.kstat.inFlight = 700 << 10
+	t.Logf("before the cut: %+v", c.effect)
 	c.effect.cutBy(300 << 10)
+	t.Logf("after the cut: %+v", c.effect)
 	if g := c.cutGain(now.Add(time.Second)); g != 0 {
 		t.Fatalf("gain %v for a download cut against a queue that did not move", g)
 	}
@@ -211,22 +213,31 @@ func TestFlowPIFollowsOneStep(t *testing.T) {
 	}
 }
 
-// TestFlowEffectCountsSlowDownload is a download that returns no credit in a
-// round, as one beside a long queue does: its cap stays in the sum, so that
-// the round reads as no cut.
+// TestFlowEffectCountsSlowDownload has two downloads beside a queue that does
+// not move, one of which returns no credit in the round before a cut, as one
+// beside a long queue does. Its cap stays in the sum: the cut of 300 KiB is
+// under a fifth of the 2 MiB of caps, not judged yet, and the gain stays 1.
+// Taken out of the sum, the same cut is three tenths of 1 MiB, judged against
+// a queue that stood, and the gain falls to none.
 func TestFlowEffectCountsSlowDownload(t *testing.T) {
-	down := &flowStream{}
-	down.down.cap = 1 << 20
-	c := &flowConn{streams: map[uint32]*flowStream{1: down}, kOK: true}
+	fast, slow := &flowStream{}, &flowStream{}
+	fast.down.cap, slow.down.cap = 1<<20, 1<<20
+	c := &flowConn{streams: map[uint32]*flowStream{1: fast, 3: slow}, kOK: true}
 	c.kstat = tcpStats{rtt: 300 * time.Millisecond, minRTT: 100 * time.Millisecond, inFlight: 1 << 20}
 	now := time.Now()
-	down.down.returned = 1
+	fast.down.returned, slow.down.returned = 1, 1
 	c.cutGain(now)
-	// A round with no credit from the download, and what is in flight down
-	// as TCP loses a little; the queue stands.
+	// The slow download returns nothing in the next round.
+	now = now.Add(200 * time.Millisecond)
+	fast.down.returned = 2
+	c.cutGain(now)
+	c.effect.cutBy(300 << 10)
+	// The cut lands: what is in flight falls three tenths; the queue stands.
+	now = now.Add(200 * time.Millisecond)
+	fast.down.returned = 3
 	c.kstat.inFlight = 700 << 10
-	if g := c.cutGain(now.Add(200 * time.Millisecond)); g != 1 {
-		t.Fatalf("gain %v after a round the download returned nothing in", g)
+	if g := c.cutGain(now); g != 1 {
+		t.Fatalf("gain %v: the slow download's cap left the sum, and a cut under a fifth of the caps was judged", g)
 	}
 }
 

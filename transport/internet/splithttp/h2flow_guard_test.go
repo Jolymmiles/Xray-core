@@ -1,6 +1,12 @@
 package splithttp
 
 import (
+	"context"
+	gotls "crypto/tls"
+	"io"
+	"net"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,14 +57,20 @@ func TestFlowClientSeesGovernedServer(t *testing.T) {
 		frames   func(fr *http2.Framer)
 		governed bool
 	}{
-		{"PING with the first SETTINGS", func(fr *http2.Framer) {
+		{"tagged PING with the first SETTINGS", func(fr *http2.Framer) {
+			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+			fr.WritePing(false, [8]byte{0x6b, 0x7a, 0x3f, 0x91, 1, 2, 3, 4})
+		}, true},
+		// A stock server's health check, as http2.Server with ReadIdleTimeout
+		// sends while a handler holds its first reply.
+		{"untagged early PING", func(fr *http2.Framer) {
 			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
 			fr.WritePing(false, [8]byte{1})
-		}, true},
+		}, false},
 		{"PING after a reply", func(fr *http2.Framer) {
 			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
 			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x88}, EndHeaders: true})
-			fr.WritePing(false, [8]byte{1})
+			fr.WritePing(false, [8]byte{0x6b, 0x7a, 0x3f, 0x91, 1, 2, 3, 4})
 		}, false},
 		{"no PING", func(fr *http2.Framer) {
 			fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
@@ -76,5 +88,104 @@ func TestFlowClientSeesGovernedServer(t *testing.T) {
 				t.Fatalf("server taken as governed: %v, want %v", got, tc.governed)
 			}
 		})
+	}
+}
+
+// TestFlowClientNotFooledByStockHealthCheck puts a governed client in front of
+// an unmodified x/net HTTP/2 server with a 10 ms ReadIdleTimeout whose handler
+// holds its first reply: the server's health-check PINGs come before any
+// reply, and the client must keep governing.
+func TestFlowClientNotFooledByStockHealthCheck(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv := &http2.Server{ReadIdleTimeout: 10 * time.Millisecond, PingTimeout: time.Second}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go srv.ServeConn(c, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(300 * time.Millisecond)
+				w.Write([]byte("ok"))
+			})})
+		}
+	}()
+	var fc *flowConn
+	var mu sync.Mutex
+	client := &http.Client{Transport: &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *gotls.Config) (net.Conn, error) {
+			c, err := (&net.Dialer{}).DialContext(ctx, network, ln.Addr().String())
+			if err != nil {
+				return nil, err
+			}
+			g := newFlowClientConn(c)
+			mu.Lock()
+			fc = g
+			mu.Unlock()
+			return g, nil
+		},
+	}}
+	resp, err := client.Get("http://x/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.peerGoverned {
+		t.Fatal("a stock server's health-check PING was taken for a governed server")
+	}
+}
+
+// TestFlowClientMalformedOwnedAckReachesStack drives a governed client through
+// its SETTINGS, a governed server's tagged PING and the write that carries
+// the client's own SETTINGS, forwards the ACK of the stack's SETTINGS, and
+// then has the server send a SETTINGS ACK with a payload, a FRAME_SIZE_ERROR:
+// it reaches the stack whole, for the stack to raise, and does not stand for
+// the ACK of the governor's SETTINGS.
+func TestFlowClientMalformedOwnedAckReachesStack(t *testing.T) {
+	sc := &scriptConn{}
+	c := newFlowClientConn(sc)
+	t.Cleanup(func() { c.Close() })
+	c.mode.Store(flowH2)
+	if _, err := c.writeToServer(frames(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
+	})); err != nil {
+		t.Fatal(err)
+	}
+	c.fromServer(frames(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
+		fr.WritePing(false, [8]byte{0x6b, 0x7a, 0x3f, 0x91, 1, 2, 3, 4})
+	}), nil)
+	if _, err := c.writeToServer(frames(func(fr *http2.Framer) {
+		fr.WritePing(true, [8]byte{0x6b, 0x7a, 0x3f, 0x91, 1, 2, 3, 4})
+	})); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	owned := len(c.settingsOwn) == 2 && c.settingsOwn[1]
+	c.mu.Unlock()
+	if !owned {
+		t.Fatal("the client sent no SETTINGS of its own")
+	}
+	if out := c.fromServer(frames(func(fr *http2.Framer) { fr.WriteSettingsAck() }), nil); len(out) != h2FrameHeader {
+		t.Fatalf("the ACK of the stack's SETTINGS reached it as %d bytes", len(out))
+	}
+	bad := []byte{0, 0, 6, h2Settings, h2FlagAck, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1}
+	if out := c.fromServer(append([]byte(nil), bad...), nil); len(out) != len(bad) {
+		t.Fatalf("a SETTINGS ACK with a payload reached the stack as %d of its %d bytes", len(out), len(bad))
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.settingsOwn) != 1 || !c.settingsOwn[0] {
+		t.Fatalf("the malformed ACK took the governor's SETTINGS off the queue: %v", c.settingsOwn)
 	}
 }
