@@ -126,7 +126,7 @@ func TestFlowPIGainHolds(t *testing.T) {
 	}{{1, true}, {0, false}} {
 		w := flowWindow{cap: 1 << 20, mark: time.Now(), piRTT: 250 * time.Millisecond}
 		w.returned = 1 << 20
-		w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, tc.gain)
+		w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, tc.gain, 0)
 		if got := w.cap < 1<<20; got != tc.cut {
 			t.Fatalf("gain %v: cap %d from %d", tc.gain, w.cap, 1<<20)
 		}
@@ -143,7 +143,7 @@ func TestFlowPIFollowsOnlyABindingCap(t *testing.T) {
 	st := tcpStats{rtt: 300 * time.Millisecond, minRTT: 100 * time.Millisecond}
 	w := flowWindow{cap: 4 << 20, mark: time.Now(), piRTT: 250 * time.Millisecond}
 	w.returned = 1 << 20
-	w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, 0)
+	w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, 0, 0)
 	if w.cap > 4<<20 {
 		t.Fatalf("cap %d grew over the %d the reader is held under", w.cap, 4<<20)
 	}
@@ -169,7 +169,7 @@ func TestFlowPIReaderBesideQueue(t *testing.T) {
 	w := flowWindow{cap: 4 << 20, mark: time.Now()}
 	for range 2 * flowShrinkAfter {
 		w.returned += int64(w.cap) * int64(st.minRTT) / int64(st.rtt)
-		w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 0)
+		w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 0, 0)
 	}
 	if w.cap < 4<<20 {
 		t.Fatalf("cap %d, from %d, for a reader that takes all it is given", w.cap, 4<<20)
@@ -207,7 +207,7 @@ func TestFlowPIFollowsOneStep(t *testing.T) {
 	st := tcpStats{rtt: time.Second, minRTT: 100 * time.Millisecond}
 	w := flowWindow{cap: 1 << 20, mark: time.Now(), piRTT: 100 * time.Millisecond}
 	w.returned = 1 << 20
-	w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 0)
+	w.pi(w.mark.Add(st.minRTT), st, h2InitWindow, 1<<30, 0, 0)
 	if float64(w.cap) > float64(1<<20)*(1+flowPIMaxStep) {
 		t.Fatalf("cap %d from %d in one step", w.cap, 1<<20)
 	}
@@ -281,7 +281,7 @@ func TestFlowPIReturnsCut(t *testing.T) {
 	for _, gain := range []float64{1, 0.5} {
 		w := flowWindow{cap: 1 << 20, mark: time.Now()}
 		w.returned = 1 << 20
-		cut := w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, gain)
+		cut := w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, gain, 0)
 		if got := float64(1<<20 - w.cap); cut <= 0 || got < cut-1 || got > cut+1 {
 			t.Fatalf("gain %v: pi returned %v, the cap fell by %v", gain, cut, got)
 		}
@@ -294,7 +294,7 @@ func TestFlowPIReturnsCutThatLanded(t *testing.T) {
 	st := tcpStats{rtt: 300 * time.Millisecond, minRTT: 100 * time.Millisecond}
 	w := flowWindow{cap: h2InitWindow + 1000, mark: time.Now()}
 	w.returned = 1 << 20
-	if cut := w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, 1); cut > 1000 {
+	if cut := w.pi(w.mark.Add(st.rtt), st, h2InitWindow, 1<<30, 1, 0); cut > 1000 {
 		t.Fatalf("pi returned %v for a cap that could fall by 1000", cut)
 	}
 }

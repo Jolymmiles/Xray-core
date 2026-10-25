@@ -418,6 +418,10 @@ type flowWindow struct {
 	steady   int
 	piPrev   float64
 	piRTT    time.Duration
+	// rate is what the reader took per second over pi's last round, and
+	// capped whether the cap held it then: it took a quarter of the cap.
+	rate   float64
+	capped bool
 	// noted is returned as of the connection's last flowEffect note, and
 	// tookAt when it last grew.
 	noted  int64
@@ -566,17 +570,29 @@ const (
 // not grow then, and shrinks by a quarter after flowShrinkAfter such rounds.
 // Cuts are scaled by gain, see flowEffect, and pi returns the bytes it cut
 // against the queue.
-func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain float64) (cut float64) {
+//
+// A step up is taken at share, the mean rate of the connection's downloads
+// that their caps hold, where there are several: steps down in proportion
+// to each one's rate and steps up in proportion to each one's own would keep
+// whatever split the downloads started with, and a download that starts
+// beside another would keep the share it found. The steps add up to what
+// they did, so the queue sees the same loop.
+func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain, share float64) (cut float64) {
 	round := now.Sub(w.mark)
 	if round < max(st.minRTT, flowModelMinRound) {
 		return 0
 	}
 	copied := w.returned - w.markBase
 	w.mark, w.markBase = now, w.returned
+	w.rate = float64(copied) / round.Seconds()
 	set := max(st.minRTT/4, 4*st.rttVar, flowPIMinSet)
 	e := min(max(float64(set-(st.rtt-st.minRTT))/float64(set), -2), 1)
+	step := flowPIKi*e + flowPIKp*(e-w.piPrev)
 	held := float64(copied) * float64(set) / float64(round)
-	delta := held * (flowPIKi*e + flowPIKp*(e-w.piPrev))
+	if step > 0 && share > 0 {
+		held = share * set.Seconds()
+	}
+	delta := held * step
 	w.piPrev = e
 	cap := float64(w.cap)
 	if e > 0.75 {
@@ -604,7 +620,8 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain floa
 	// queue a reader that takes all it is given still copies only the
 	// round's share of the cap, and must not be taken for one that limits
 	// itself.
-	if 4*float64(copied) < float64(w.cap)*float64(round)/float64(max(st.rtt, round)) {
+	w.capped = 4*float64(copied) >= float64(w.cap)*float64(round)/float64(max(st.rtt, round))
+	if !w.capped {
 		delta = min(delta, 0)
 		if w.slow++; w.slow >= flowShrinkAfter {
 			delta = min(delta, -cap/4)
@@ -783,6 +800,10 @@ type flowConn struct {
 	// traffic keeps full, and holds its own queue no shorter than TCP does.
 	noQueueCuts bool
 
+	// downShare is the mean rate of the downloads their caps hold, as of
+	// the last flowEffect note, see pi; 0 with fewer than two.
+	downShare float64
+
 	effect flowEffect
 }
 
@@ -818,6 +839,8 @@ func (c *flowConn) cutGain(now time.Time) float64 {
 		return c.effect.value()
 	}
 	var caps, n int64
+	var rates float64
+	var held int
 	for _, s := range c.streams {
 		if s.down.returned != s.down.noted {
 			s.down.noted, s.down.tookAt = s.down.returned, now
@@ -825,7 +848,16 @@ func (c *flowConn) cutGain(now time.Time) float64 {
 		if !s.serverDone && now.Sub(s.down.tookAt) < max(flowEffectRecent*c.kstat.minRTT, time.Second) {
 			caps += int64(s.down.cap)
 			n++
+			if s.down.capped && s.down.rate > 0 {
+				rates += s.down.rate
+				held++
+			}
 		}
+	}
+	// One download has no share but its own.
+	c.downShare = 0
+	if held > 1 {
+		c.downShare = rates / float64(held)
 	}
 	c.pinned = n > 0 && caps <= 2*n*int64(c.down.init)
 	set := max(c.kstat.minRTT/4, 4*c.kstat.rttVar, flowPIMinSet)
@@ -2156,7 +2188,8 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 		// no queue at all.
 		// A download the server has finished takes no part in the gain, see
 		// cutGain, and neither does what is cut from it.
-		if cut := s.down.pi(now, c.kstat, c.down.init, c.down.max, c.cutGain(now)); !s.serverDone {
+		gain := c.cutGain(now)
+		if cut := s.down.pi(now, c.kstat, c.down.init, c.down.max, gain, c.downShare); !s.serverDone {
 			c.effect.cutBy(cut)
 		}
 	default:
