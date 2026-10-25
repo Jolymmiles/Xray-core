@@ -45,6 +45,7 @@ const (
 	h2Settings     = 0x4
 	h2PushPromise  = 0x5
 	h2Ping         = 0x6
+	h2GoAway       = 0x7
 	h2WindowUpdate = 0x8
 	h2Continuation = 0x9
 
@@ -290,6 +291,8 @@ func (f h2Frame) control() bool {
 		return f.stream == 0 && f.length%6 == 0 && f.length <= h2MinMaxFrameSize
 	case h2Ping:
 		return f.stream == 0 && f.length == 8
+	case h2GoAway:
+		return f.stream == 0 && f.length >= 8 && f.length <= h2MinMaxFrameSize
 	case h2WindowUpdate:
 		return f.length == 4
 	}
@@ -2076,6 +2079,15 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		// come early too, and is not one.
 		if c.client && f.flags&h2FlagAck == 0 && !c.serverReplied && !c.peerGoverned && len(payload) == 8 && binary.BigEndian.Uint32(payload) == flowPingTag {
 			c.peerGoverned, c.restock = true, true
+		}
+	case h2GoAway:
+		// The server will not take up the client's streams past the last it
+		// names: the stacks forget them, so does the governor.
+		last := binary.BigEndian.Uint32(payload) & 0x7fffffff
+		for id := range c.streams {
+			if id > last && id%2 == 1 {
+				c.drop(id)
+			}
 		}
 	case h2WindowUpdate:
 		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
