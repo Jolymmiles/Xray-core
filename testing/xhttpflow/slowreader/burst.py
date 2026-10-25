@@ -75,30 +75,57 @@ while True:
 """
 
 
-def outside(n, seconds, connected):
+def outside(n, seconds, connected, addr=("10.9.0.1", OUTSIDE_PORT)):
     """Reads n plain TCP downloads from the outside sender for seconds, and
-    adds to connected each that connected."""
+    adds to connected, for each, the bytes it read, how long it read and how
+    it ended: None when it read to its deadline, otherwise the error. A run
+    counts only with every flow read to its deadline."""
     def read():
+        start, got = time.time(), 0
         try:
-            s = socket.create_connection(("10.9.0.1", OUTSIDE_PORT), timeout=5)
-        except OSError:
+            s = socket.create_connection(addr, timeout=5)
+        except OSError as e:
+            connected.append((0, 0.0, f"connect: {e}"))
             return
-        connected.append(1)
         end = time.time() + seconds
+        err = None
         try:
             while time.time() < end:
                 s.settimeout(max(0.05, end - time.time()))
-                if not s.recv(1 << 16):
+                try:
+                    n = len(s.recv(1 << 16))
+                except socket.timeout:
+                    continue
+                if not n:
+                    err = "closed before its deadline"
                     break
-        except OSError:
-            pass
+                got += n
+        except OSError as e:
+            err = str(e)
         finally:
             s.close()
+        connected.append((got, time.time() - start, err))
     threads = [threading.Thread(target=read) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+
+
+def take_header(head, chunk):
+    """Adds chunk to the response header read so far. The header may come in
+    pieces, and only what follows its end is body: it returns the header so
+    far and no body until the end has come, then None and the body bytes of
+    chunk. A status other than 200, or no end in 64 KiB, is an OSError."""
+    head += chunk
+    cut = head.find(b"\r\n\r\n")
+    if cut < 0:
+        if len(head) > 1 << 16:
+            raise OSError("no end of the header")
+        return head, 0
+    if not head.startswith(b"HTTP/1.1 200"):
+        raise OSError(f"status {head[:12]!r}")
+    return None, len(head) - cut - 4
 
 
 def one_run(server_binary, args, name):
@@ -130,7 +157,7 @@ def one_run(server_binary, args, name):
                 s.sendall(b"GET /down?bytes=%d HTTP/1.1\r\nHost: target.test\r\nConnection: close\r\n\r\n"
                           % stand.DOWNLOAD_BYTES)
                 buf = memoryview(bytearray(1 << 20))
-                head = True
+                head = b""
                 while time.time() < end:
                     s.settimeout(max(0.05, end - time.time()))
                     try:
@@ -139,12 +166,8 @@ def one_run(server_binary, args, name):
                         break
                     if not n:
                         raise OSError("closed early")
-                    if head:
-                        data = bytes(buf[:n])
-                        if not data.startswith(b"HTTP/1.1 200"):
-                            raise OSError(f"status {data[:12]!r}")
-                        n -= data.find(b"\r\n\r\n") + 4
-                        head = False
+                    if head is not None:
+                        head, n = take_header(head, bytes(buf[:n]))
                     with lock:
                         got[0] += n
             except OSError as e:
@@ -169,9 +192,11 @@ def one_run(server_binary, args, name):
         flows.join()
         if "error" in result:
             return {"invalid": f"the download failed: {result['error']}", "samples": samples}
-        if len(connected) != args.flows:
-            return {"invalid": f"{len(connected)} of {args.flows} outside flows connected", "samples": samples}
-        return {"samples": samples}
+        bad = [c for c in connected if c[2] is not None]
+        if len(connected) != args.flows or bad:
+            return {"invalid": f"{len(connected) - len(bad)} of {args.flows} outside flows read to their deadline ({bad[0][2] if bad else 'missing'})",
+                    "samples": samples, "flows": connected}
+        return {"samples": samples, "flows": connected}
 
 
 def summary(samples, args):
