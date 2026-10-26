@@ -3,6 +3,8 @@ package splithttp
 import (
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // TestFlowGroupProbe runs a probe of a group whose connections carry a
@@ -111,5 +113,83 @@ func TestFlowGroupNoProbeAtSteadyRate(t *testing.T) {
 	g.request(now, 100*time.Millisecond)
 	if g.phase == flowProbeIdle {
 		t.Fatal("no probe once the rate fell to a quarter")
+	}
+}
+
+// TestFlowClientProbeWidensOnce is a client whose group probes while a
+// settled download credits forty times within one model round: the probe
+// widens the round's target once, not the cap with every credit.
+func TestFlowClientProbeWidensOnce(t *testing.T) {
+	h, s := queuedDownload(t)
+	now := time.Now()
+	h.c.mu.Lock()
+	h.c.client = true
+	h.c.group = joinFlowGroup("probe-once")
+	h.c.group.phase, h.c.group.at, h.c.group.span = flowProbeWide, now, time.Second
+	h.c.rebase(now)
+	s.down.cap = h2InitWindow
+	s.down.steady = flowSettledRounds
+	s.down.mark = now
+	h.c.kAt = now.Add(time.Hour)
+	h.c.mu.Unlock()
+	if _, err := h.c.Write(frames(func(fr *http2.Framer) {
+		for range 40 {
+			fr.WriteWindowUpdate(1, 4096)
+		}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	h.c.mu.Lock()
+	if s.down.cap > h2InitWindow*5/4+1 {
+		h.c.mu.Unlock()
+		t.Fatalf("cap=%d after one model round", s.down.cap)
+	}
+	// The round is over: the next credit sets the cap to the widened target
+	// of a reader that took 10 MB/s.
+	s.down.mark = s.down.mark.Add(-time.Second)
+	s.down.rates[0], s.down.rateAt = 10e6, 1
+	plain := s.down
+	plain.returned += 4096
+	plain.model(time.Now(), h.c.currentRTT(), h.c.down.init, h.c.down.max, 1)
+	h.c.mu.Unlock()
+	if plain.cap <= h2InitWindow*2 {
+		t.Fatalf("cap=%d without the probe, too low to tell a widening", plain.cap)
+	}
+	if _, err := h.c.Write(frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(1, 4096) })); err != nil {
+		t.Fatal(err)
+	}
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if float64(s.down.cap) < float64(plain.cap)*(1+flowProbeGain)/2 {
+		t.Fatalf("cap=%d in a new round of a probe, %d without it", s.down.cap, plain.cap)
+	}
+}
+
+// TestFlowClientProbeWidensFromInit is a probe of a client whose download's
+// model sits under init, as it does where the kernel's floor stayed at the
+// path's old round trip: the new round widens the cap from init, or the
+// probe would see no answer for a path that moved.
+func TestFlowClientProbeWidensFromInit(t *testing.T) {
+	h, s := queuedDownload(t)
+	now := time.Now()
+	h.c.mu.Lock()
+	h.c.client = true
+	h.c.group = joinFlowGroup("probe-init")
+	h.c.group.phase, h.c.group.at, h.c.group.span = flowProbeWide, now, time.Second
+	h.c.rebase(now)
+	s.down.cap = h2InitWindow
+	s.down.steady = flowSettledRounds
+	s.down.rates, s.down.rateAt = [flowModelRounds]int64{}, 1
+	s.down.mark, s.down.markBase = now.Add(-time.Second), s.down.returned
+	h.c.kAt = now.Add(time.Hour)
+	h.c.mu.Unlock()
+	if _, err := h.c.Write(frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(1, 4096) })); err != nil {
+		t.Fatal(err)
+	}
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	gain := flowProbeGain
+	if want := int32(h2InitWindow * gain); s.down.cap != want {
+		t.Fatalf("cap=%d in a new round of a probe from init, want %d", s.down.cap, want)
 	}
 }

@@ -517,8 +517,10 @@ func (w *flowWindow) settled() bool {
 }
 
 // model sets the cap from the path model; rtprop is the empty path's round
-// trip.
-func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int32) {
+// trip. gain scales the cap a new round sets, as a probe widens it, from init
+// too: a probe is asked for where the caps sit at init; within a round the cap
+// stays where that round set it.
+func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int32, gain float64) {
 	round := max(rtprop, flowModelMinRound)
 	if w.rateAt == 0 && w.prev > 0 {
 		// The ramp's last round seeds the filter, so one slow first round
@@ -536,8 +538,8 @@ func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int3
 	for _, r := range w.rates {
 		bw = max(bw, r)
 	}
-	target := int64(min(float64(bw)*rtprop.Seconds()*flowModelGainPercent/100, float64(limit)))
-	w.cap = int32(min(max(target, int64(init)), int64(limit)))
+	target := min(float64(bw)*rtprop.Seconds()*flowModelGainPercent/100, float64(limit))
+	w.cap = int32(min(max(target, float64(init))*gain, float64(limit)))
 }
 
 // flowRate is bytes per second, in floats and held well inside int64: credit
@@ -2197,7 +2199,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		var q int
 		switch {
 		case c.modelled(now) && s.up.settled():
-			s.up.model(now, c.currentRTT(), c.up.init, c.up.max)
+			s.up.model(now, c.currentRTT(), c.up.init, c.up.max, 1)
 		case c.modelled(now):
 			s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, false)
 		default:
@@ -2235,10 +2237,11 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 	}
 	switch {
 	case c.client && c.modelled(now) && s.down.settled():
-		s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
+		gain := 1.0
 		if c.wide {
-			s.down.cap = int32(min(float64(s.down.cap)*flowProbeGain, float64(c.down.max)))
+			gain = flowProbeGain
 		}
+		s.down.model(now, c.currentRTT(), c.down.init, c.down.max, gain)
 	case !c.client && !c.noQueueCuts && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
 		// Only clients that credit in small steps: one that waits for
 		// half of its own window could be held below that half. Only
