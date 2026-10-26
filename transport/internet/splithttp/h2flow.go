@@ -168,7 +168,14 @@ const flowShownFull = max(h2InitWindow, flowShownDown)
 // found says the frame carries an initial window at all. One that does not
 // changes nothing here: what the stack was shown stands, and shownLimited
 // with it.
+//
+// A client whose server governs, once restock has shown it the stack's own
+// window, shows a later one as it is, less what changeInitialWindow takes
+// off for credit already forwarded.
 func (c *flowConn) shownDown(real int32, found bool) int32 {
+	if c.client && c.peerGoverned && !c.restock {
+		return h2MaxWindow
+	}
 	if found {
 		c.shownLimited = !c.client && c.sendWindow != 0 && real > h2InitWindow
 	}
