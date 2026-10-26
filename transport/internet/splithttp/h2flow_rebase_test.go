@@ -88,3 +88,76 @@ func TestFlowRebaseKeepsBaseThroughJitter(t *testing.T) {
 		t.Fatalf("the path came back and the base stayed at %v", c.base)
 	}
 }
+
+// TestFlowRebaseWhereGainFroze has the empty path's round trip step from 20
+// to 120 ms under a download whose cap is above twice init, from the start
+// window and from 512 KiB, while the kernel keeps its min_rtt at 20 ms. The
+// first cut lands in flight and the queue, the path's own, does not move:
+// the gain goes to none, the cuts stop and the cap stays above twice init.
+// rebase waited for caps at init and never ran; the gain of none is now
+// enough for it. Where the queue then keeps moving by two fifths, as a queue
+// of the server's own does while the connections that share it cut and
+// grow, with the cap still over twice init, it is not the path's, and
+// rebase does not run.
+func TestFlowRebaseWhereGainFroze(t *testing.T) {
+	const oldMinRTT = 20 * time.Millisecond
+	const newPathRTT = 120 * time.Millisecond
+	for _, tc := range []struct {
+		name   string
+		rtt    func(since time.Duration) time.Duration
+		caps   []int32
+		rebase bool
+	}{
+		{"path moved", func(time.Duration) time.Duration { return newPathRTT }, []int32{flowStartWindow, 512 << 10}, true},
+		// From 512 KiB the cap stays over twice init as it follows the round
+		// trip: it is the queue that does not stand that tells this from a
+		// path.
+		{"queue moves", func(since time.Duration) time.Duration {
+			if since < time.Second || since/(400*time.Millisecond)%2 == 0 {
+				return newPathRTT
+			}
+			return 80 * time.Millisecond
+		}, []int32{512 << 10}, false},
+	} {
+		for _, startCap := range tc.caps {
+			h, s := queuedDownload(t)
+			now := time.Unix(1000, 0)
+			h.c.mu.Lock()
+			h.c.incremental = true
+			h.c.rttBase = oldMinRTT
+			s.down.cap = startCap
+			s.down.flat = flowFullRounds
+			s.down.mark, s.down.markBase = now, s.down.returned
+			s.down.qAt = now
+			h.c.mu.Unlock()
+			// A second at the old path's setpoint seeds the base window.
+			for end := now.Add(time.Second); now.Before(end); now = now.Add(oldMinRTT) {
+				h.c.mu.Lock()
+				h.c.kstat = tcpStats{rtt: oldMinRTT + flowPIMinSet, minRTT: oldMinRTT, rttVar: time.Millisecond, inFlight: int64(s.down.cap)}
+				h.c.rebase(now)
+				s.down.returned += int64(s.down.cap)
+				h.c.governDown(now, s)
+				h.c.mu.Unlock()
+			}
+			// The round trip rises; the kernel's min_rtt stays. The download
+			// is held by its cap, and the reader returns a cap per round trip.
+			step := now
+			for end := now.Add(3 * flowBaseWindow); now.Before(end); now = now.Add(oldMinRTT) {
+				rtt := tc.rtt(now.Sub(step))
+				h.c.mu.Lock()
+				h.c.kstat = tcpStats{rtt: rtt, minRTT: oldMinRTT, rttVar: time.Millisecond, inFlight: int64(s.down.cap)}
+				h.c.rebase(now)
+				s.down.returned += int64(s.down.cap) * int64(oldMinRTT) / int64(rtt)
+				h.c.governDown(now, s)
+				h.c.mu.Unlock()
+			}
+			h.c.mu.Lock()
+			base, cap, pinned, gain := h.c.base, s.down.cap, h.c.pinned, h.c.effect.gain
+			h.c.mu.Unlock()
+			if (base != 0) != tc.rebase {
+				t.Fatalf("%s, cap %d: base %v (cap %d, pinned %v, gain %v), want a rebase: %v",
+					tc.name, startCap, base, cap, pinned, gain, tc.rebase)
+			}
+		}
+	}
+}

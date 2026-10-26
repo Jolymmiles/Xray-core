@@ -819,6 +819,8 @@ type flowConn struct {
 	baseStep time.Duration
 	baseWin  flowMinWindow
 	lowGain  time.Time
+	// lowQueue is the most the queue stood at since lowGain began.
+	lowQueue time.Duration
 	// pinned says the downloads that took data lately all have caps at
 	// init, see cutGain.
 	pinned bool
@@ -939,17 +941,33 @@ func (c *flowConn) rebase(now time.Time) {
 			c.base = 0
 		}
 	}
-	if c.effect.active && c.effect.gain < 0.5 && c.pinned {
+	// A gain of none, a cut that landed in flight and moved the queue not at
+	// all, turns the cuts off: the caps stay where the cuts before it left
+	// them, and on a path whose window was over twice init before it moved
+	// they never come down to init. A gain of none counts as well where the
+	// queue stood through the window, its least at nine tenths of its most
+	// or more: a path that moved holds it whatever the connections do, while
+	// a queue of the server's own that many connections share moves as the
+	// others cut and grow, and so does one that other traffic keeps, which
+	// taken for the path would have its gain learnt again and cut anew.
+	if c.effect.active && (c.effect.gain < 0.5 && c.pinned || c.effect.gain == 0) {
 		if c.lowGain.IsZero() {
-			c.lowGain = now
+			c.lowGain, c.lowQueue = now, 0
 		}
+		c.lowQueue = max(c.lowQueue, c.kstat.rtt-floor)
 	} else {
 		c.lowGain = time.Time{}
 	}
 	if c.base == 0 && !c.lowGain.IsZero() && now.Sub(c.lowGain) >= flowBaseWindow && c.baseWin.full(now) &&
 		least > floor+2*set {
-		c.base, c.baseStep = least, least-floor
-		c.lowGain = time.Time{}
+		if c.pinned || 10*(least-floor) >= 9*c.lowQueue {
+			c.base, c.baseStep = least, least-floor
+			c.lowGain = time.Time{}
+		} else {
+			// The queue moved: the server's own, or its own on top of a path
+			// that moved and has drained since. The next window looks again.
+			c.lowGain, c.lowQueue = now, c.kstat.rtt-floor
+		}
 	}
 	if c.client && c.group != nil {
 		c.probeClient(now, floor, least, set)
