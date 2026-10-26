@@ -771,6 +771,10 @@ type flowConn struct {
 	pingReady    bool
 	closed       bool
 	broken       bool
+	// goneAway says the server sent GOAWAY, and goAwayLast is the last
+	// client stream it named: it takes up none past that.
+	goneAway   bool
+	goAwayLast uint32
 
 	// Connection-level window of the upload: DATA the client sent, credit
 	// the server returned on stream 0, and credit handed on to the client.
@@ -1899,7 +1903,10 @@ func (r *flowReader) frame(f h2Frame) (drop bool) {
 	switch f.typ {
 	case h2Headers:
 		s := c.stream(f.stream)
-		if s == nil && f.stream%2 == 1 && !c.closed {
+		// A stream the client opened before it saw the server's GOAWAY is
+		// one the server will not take up: the stack drops it, and so does
+		// the governor.
+		if s == nil && f.stream%2 == 1 && !c.closed && !(c.goneAway && f.stream > c.goAwayLast) {
 			if len(c.streams) >= flowMaxStreams {
 				c.giveUp()
 				return false
@@ -2213,6 +2220,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		// The server will not take up the client's streams past the last it
 		// names: the stacks forget them, so does the governor.
 		last := binary.BigEndian.Uint32(payload) & 0x7fffffff
+		if !c.goneAway || last < c.goAwayLast {
+			c.goneAway, c.goAwayLast = true, last
+		}
 		for id := range c.streams {
 			if id > last && id%2 == 1 {
 				c.drop(id)
