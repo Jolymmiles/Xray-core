@@ -63,7 +63,7 @@ func TestFlowPingQueueing(t *testing.T) {
 
 func TestFlowFirstPingBeforeStreams(t *testing.T) {
 	c := &flowConn{pingReady: true}
-	if out := c.appendPing(nil); len(out) != 17 {
+	if out := c.appendPing(time.Now(), nil); len(out) != 17 {
 		t.Fatal("no PING on a fresh connection without streams")
 	}
 	c.pingAck(h2Frame{typ: h2Ping, flags: h2FlagAck}, binary.BigEndian.AppendUint64(nil, c.pingData))
@@ -71,7 +71,7 @@ func TestFlowFirstPingBeforeStreams(t *testing.T) {
 		t.Fatal("the first ACK did not set the floor")
 	}
 	c.lastPing = time.Time{}
-	if out := c.appendPing(nil); len(out) != 0 {
+	if out := c.appendPing(time.Now(), nil); len(out) != 0 {
 		t.Fatal("idle connection keeps pinging once its floor is known")
 	}
 }
