@@ -1599,7 +1599,9 @@ type flowPing struct {
 // flowPingTag marks the first PING a governed server sends, with its first
 // SETTINGS: a governed client takes it, and no other early PING, for a
 // server that governs its downloads, see peerGoverned. The PING's payload is
-// inside TLS, seen by the two ends alone.
+// inside TLS, but on plain TLS any client that connects sees it before its
+// first request; under REALITY a client that cannot authenticate never
+// reaches the governor.
 const flowPingTag = 0x6b7a3f91
 
 func (c *flowConn) appendPingFrame(out []byte) []byte {

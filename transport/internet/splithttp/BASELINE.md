@@ -860,6 +860,19 @@ Limits:
   - Not measured: record counts and timing beside a foreign queue, against
     stock or `28e1e458`; links whose other traffic is not bulk TCP; BBR on
     the server.
+- A governed server's first PING, sent with its first SETTINGS, carries
+  `flowPingTag` (`0x6b7a3f91`) in its upper half; its lower half and every
+  later PING are random. A governed client takes that PING, and no other
+  early one, for a server that governs its downloads (`peerGoverned`).
+  Under REALITY a prober that cannot authenticate goes to the target and
+  never sees it. On plain TLS any HTTP/2 client sees it before its first
+  request: three probe connections got `6b7a3f91b3770d97`,
+  `6b7a3f91060ebdff` and `6b7a3f9180f4a67c`, where `28e1e458` sends random
+  data. The early PING alone already tells a governed server from stock
+  there; the tag makes it a mark of this governor. Any rule the client
+  could tell the tag by without a secret the two ends share, a prober
+  could tell it by as well, so the tag stays, and h2Flow on plain TLS
+  exposes it.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is
