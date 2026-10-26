@@ -320,3 +320,54 @@ func TestFlowEffectDoesNotAttributePreCutFlightDrop(t *testing.T) {
 		t.Fatalf("gain=%g: no flight reduction occurred after the cut", gain)
 	}
 }
+
+// TestFlowEffectZeroFlightFirstCut takes the first cut of an episode in a
+// round with nothing in flight, as a peer that has acknowledged all it was
+// sent before it credits does, and then a second cut that halves what is in
+// flight while the queue stays: the gain goes to none. Judged against no
+// flight, 1 - x/0, the cut was never judged and the gain stayed 1.
+func TestFlowEffectZeroFlightFirstCut(t *testing.T) {
+	for _, first := range []int64{1 << 20, 0} {
+		t.Run(map[bool]string{true: "positive-first-flight", false: "zero-first-flight"}[first > 0], func(t *testing.T) {
+			var e flowEffect
+			now := time.Unix(100, 0)
+			note := func(flight, caps int64) float64 {
+				now = now.Add(time.Second)
+				return e.note(now, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond, flight, caps)
+			}
+			note(first, 1<<20)
+			e.cutBy(256 << 10)
+			note(1<<20, 768<<10)
+			e.cutBy(256 << 10)
+			gain := note(512<<10, 512<<10)
+			t.Logf("first-flight=%d flightTop=%g flight=%g capsTop=%g cut=%g gain=%g", first, e.flightTop, e.flight, e.capsTop, e.cut, gain)
+			if gain != 0 {
+				t.Fatalf("gain=%g after a later 50%% flight reduction with a standing queue; flight reference remains %g", gain, e.flightTop)
+			}
+		})
+	}
+}
+
+// TestFlowEffectZeroFlightThroughCredit is the same through WINDOW_UPDATE
+// frames on a server: the first credit comes with nothing in flight, and the
+// cut that later lands in flight is judged.
+func TestFlowEffectZeroFlightThroughCredit(t *testing.T) {
+	h, s := queuedDownload(t)
+	for i, flight := range []int64{0, 128 << 10, 64 << 10} {
+		h.c.mu.Lock()
+		h.c.kstat.inFlight = flight
+		h.c.effect.at = time.Now().Add(-time.Second)
+		s.down.qAt = time.Time{}
+		s.down.mark = time.Now()
+		h.c.mu.Unlock()
+		cap := credit(h, s)
+		h.c.mu.Lock()
+		t.Logf("credit %d: flight=%d cap=%d reference=%g cut=%g gain=%g", i+1, flight, cap, h.c.effect.flightTop, h.c.effect.cut, h.c.effect.gain)
+		h.c.mu.Unlock()
+	}
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if h.c.effect.gain != 0 {
+		t.Fatalf("real WINDOW_UPDATE path never judges the later landed cut: %+v", h.c.effect)
+	}
+}

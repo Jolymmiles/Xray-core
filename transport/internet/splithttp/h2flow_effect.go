@@ -116,6 +116,14 @@ func (e *flowEffect) note(now time.Time, rtt, minRTT, set time.Duration, inFligh
 	if e.capsTop <= 0 {
 		return e.gain
 	}
+	// A cut taken in a round with nothing in flight has no flight to fall
+	// from: the first round after it with some is its reference, and until
+	// then it is not judged. Judged against none, it never would be, and
+	// the gain would stay where it was for the rest of the episode.
+	if e.flightTop <= 0 {
+		e.flightTop = x
+		return e.gain
+	}
 	if cut := min(e.cut/e.capsTop, 1-x/e.flightTop); cut >= flowEffectProbe {
 		e.gain = min(max((1-e.queue/e.qTop)/cut, 0), 1)
 		e.start(x, c)
