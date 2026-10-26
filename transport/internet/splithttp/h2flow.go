@@ -1782,6 +1782,16 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 		ahead := max(int64(s.down.cap)-flowShownFull, flowShownFull-flowShownLimited)
 		rel = min(rel, s.downSent+ahead-s.downForwarded)
 	}
+	if c.client && (c.restock || !c.peerGoverned && !c.serverReplied) {
+		// Until the server's first reply shows whether it governs, and until
+		// restock has shown a server that does the stack's window, a client
+		// forwards credit only as its stack returns it. The server adds the
+		// raise restock shows to every open stream, and credit forwarded
+		// ahead of the stack before it would stand above the stack's window:
+		// a reader that paused would be sent past it, and the stack would
+		// close the connection.
+		rel = min(rel, s.down.returned-s.downForwarded)
+	}
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
 	}
@@ -2012,7 +2022,9 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 // and hands on all the credit it held back. The server then governs these
 // downloads, the client's memory with them, as it does an official
 // client's; two governors that each held back credit took rate and memory
-// a server-side governor alone keeps.
+// a server-side governor alone keeps. No stream has been forwarded more than
+// its stack returned by then, see downRelease: the server adds the raise of
+// the initial window to every open stream, on top of what it was forwarded.
 func (c *flowConn) appendRestock(out []byte) []byte {
 	c.restock = false
 	out = append(out, 0, 0, 6, h2Settings, 0, 0, 0, 0, 0)
