@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xtls/xray-core/common/bytespool"
 	"github.com/xtls/xray-core/common/platform"
 	"golang.org/x/net/http2"
 )
@@ -116,8 +115,10 @@ func init() {
 	platform.RegisterEnvReload(reloadFlowEnv)
 }
 
-// flowDefault never lets a window shrink below the initial window HTTP/2
-// itself defines, nor grow beyond what the peer really granted.
+// flowDefault never lets a cap shrink below the initial window HTTP/2 itself
+// defines, and lets it grow to 1 GiB. A cap only bounds what is shown: what
+// the sender is handed never goes past what the peer really granted, see the
+// bank in downRelease and upRelease.
 var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
 
 // The initial window each side is shown, where the receiver grants that
@@ -505,12 +506,12 @@ const (
 // quarter faster than the round before for flowSettledRounds rounds in a
 // row, counted from the round that ended its ramp. Flat rounds before that
 // do not count: a reader that grew slowly would otherwise be settled by the
-// first low round after them. Only then does a window follow the path model. One round without
-// growth is not enough for that: the end of a round may fall between the
-// reader getting data and returning its credit, so that it reads low and the
-// next makes up for it. A window that took such a round at the start of a
-// stream for its rate had that one small round to model the path from, fell
-// to it, and grew back a quarter at a time.
+// first low round after them. Only then does a window follow the path model.
+// One round without growth is not enough for that: the end of a round may
+// fall between the reader getting data and returning its credit, so that it
+// reads low and the next makes up for it. A window that took such a round at
+// the start of a stream for its rate had that one small round to model the
+// path from, fell to it, and grew back a quarter at a time.
 func (w *flowWindow) settled() bool {
 	return w.steady >= flowSettledRounds
 }
@@ -562,12 +563,13 @@ const (
 // pi moves the cap once per round trip so that the queue settles at a quarter
 // of the empty path's round trip, or at four times the RTT variance where the
 // path jitters more: the floor is the lowest sample ever, deep in the jitter's
-// tail, while the smoothed RTT sits at its middle, and that gap is no queue. In velocity form it adds Ki
-// times the error and Kp times its change. With the queue under a quarter of
-// the setpoint the cap may also grow by a quarter per round trip, so that it
-// catches up with a path that got faster. A reader that takes less than a
-// quarter of what the window gives it per round limits itself: the cap does
-// not grow then, and shrinks by a quarter after flowShrinkAfter such rounds.
+// tail, while the smoothed RTT sits at its middle, and that gap is no queue.
+// In velocity form it adds Ki times the error and Kp times its change. With
+// the queue under a quarter of the setpoint the cap may also grow by a
+// quarter per round trip, so that it catches up with a path that got faster.
+// A reader that takes less than a quarter of what the window gives it per
+// round limits itself: the cap does not grow then, and shrinks by a quarter
+// after flowShrinkAfter such rounds.
 // Cuts are scaled by gain, see flowEffect, and pi returns the bytes it cut
 // against the queue.
 //
@@ -683,8 +685,14 @@ type flowConn struct {
 	alpnH2   atomic.Bool
 	alpnDone atomic.Bool
 
-	mu          sync.Mutex
-	streams     map[uint32]*flowStream
+	// mu guards every field below that is not atomic, the write side's
+	// included; wmu only keeps the writes to Conn whole and in order, and
+	// whoever calls send holds it.
+	// rpending and prefix belong to the one reader.
+	mu      sync.Mutex
+	streams map[uint32]*flowStream
+	// fedAt is when the bytes being parsed came, see fedNow.
+	fedAt       time.Time
 	upLearned   flowLearned
 	downLearned flowLearned
 	clientInit  int32
@@ -700,10 +708,11 @@ type flowConn struct {
 	// pingBase is the path's round trip once it has risen over rttBase, see
 	// rebasePing, and pingStep how far it rose.
 	pingBase, pingStep time.Duration
-	pingData           uint64
-	pings              []flowPing
-	pingSentAt         time.Time
-	lastPing           time.Time
+	// pingData is the payload of the last PING sent, kept for the tests.
+	pingData   uint64
+	pings      []flowPing
+	pingSentAt time.Time
+	lastPing   time.Time
 
 	incremental bool
 	guard       *time.Timer
@@ -736,6 +745,7 @@ type flowConn struct {
 	prefix   int
 	opened   []uint32
 
+	// wmu is held across each write to Conn; what follows it is still mu's.
 	wmu          sync.Mutex
 	wp           frameParser
 	wqueue       []byte
@@ -1005,7 +1015,21 @@ func (c *flowConn) modelled(now time.Time) bool {
 // empty path: it has a min_rtt for this socket that is not far below what the
 // PINGs show, so no TCP proxy sits in front.
 func (c *flowConn) floorConfirmed(now time.Time) bool {
-	return c.kernelStats(now) && (c.rttBase == 0 || 4*c.kstat.minRTT >= c.rttBase)
+	return c.kernelStats(now) && c.floorVouched()
+}
+
+// fedNow is the time the bytes being parsed came: read once per Read or
+// Write, the first time a frame needs it.
+func (c *flowConn) fedNow() time.Time {
+	if c.fedAt.IsZero() {
+		c.fedAt = time.Now()
+	}
+	return c.fedAt
+}
+
+// floorVouched is floorConfirmed on the kernel's stats as last read.
+func (c *flowConn) floorVouched() bool {
+	return c.kOK && c.kstat.minRTT > 0 && (c.rttBase == 0 || 4*c.kstat.minRTT >= c.rttBase)
 }
 
 // Without a confirmed floor the PING-seen queue cannot be told from the round
@@ -1090,6 +1114,34 @@ func newFlowClientConn(c net.Conn) *flowConn {
 	return fc
 }
 
+// flowBufs holds the scratch buffers of Read and Write. It holds pointers: a
+// slice put in a sync.Pool as it is costs an allocation each time.
+var flowBufs = sync.Pool{New: func() any { return new([]byte) }}
+
+// flowBufKeep is the largest scratch buffer kept for reuse.
+const flowBufKeep = 256 << 10
+
+// getFlowBuf returns a scratch buffer of n bytes.
+func getFlowBuf(n int) *[]byte {
+	p := flowBufs.Get().(*[]byte)
+	if cap(*p) < n {
+		*p = make([]byte, n)
+	}
+	*p = (*p)[:n]
+	return p
+}
+
+// putFlowBuf gives p back, holding b instead where what was appended to p
+// outgrew it.
+func putFlowBuf(p *[]byte, b []byte) {
+	if cap(b) > cap(*p) {
+		*p = b
+	}
+	if cap(*p) <= flowBufKeep {
+		flowBufs.Put(p)
+	}
+}
+
 func (c *flowConn) Read(b []byte) (int, error) {
 	if len(c.rpending) > 0 {
 		n := copy(b, c.rpending)
@@ -1116,7 +1168,8 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		if n == 0 {
 			return 0, err
 		}
-		in := bytespool.Alloc(int32(n))
+		buf := getFlowBuf(n)
+		in := *buf
 		copy(in, b[:n])
 		// What does not fit in b goes to rpending, never past len(b).
 		var out []byte
@@ -1125,7 +1178,7 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		} else {
 			out = c.readFrames(in[:n], b[:0:len(b)])
 		}
-		bytespool.Free(in)
+		putFlowBuf(buf, in)
 		if c.isBroken() {
 			c.Close()
 			return 0, errFlowGivenUp
@@ -1199,6 +1252,7 @@ func (c *flowConn) readFrames(in, out []byte) []byte {
 	// A server pings only once the client preface is in: until then stock
 	// sends nothing but its SETTINGS.
 	c.pingReady = c.pingReady || (!c.client && c.settingsSent)
+	c.fedAt = time.Time{}
 	out = c.rp.feed(in, out, (*flowReader)(c))
 	credit := len(c.wcredit) > 0
 	c.mu.Unlock()
@@ -1216,16 +1270,16 @@ func (c *flowConn) Write(b []byte) (int, error) {
 		return c.Conn.Write(b)
 	}
 	c.wmu.Lock()
-	out := bytespool.Alloc(int32(len(b) + 64))
-	out = c.fromServer(b, out[:0])
+	buf := getFlowBuf(len(b) + 64)
+	out := c.fromServer(b, (*buf)[:0])
 	if c.isBroken() {
-		bytespool.Free(out)
+		putFlowBuf(buf, out)
 		c.wmu.Unlock()
 		c.Close()
 		return 0, errFlowGivenUp
 	}
 	err := c.send(out)
-	bytespool.Free(out)
+	putFlowBuf(buf, out)
 	c.wmu.Unlock()
 	c.drainQueue()
 	if err != nil {
@@ -1237,6 +1291,7 @@ func (c *flowConn) Write(b []byte) (int, error) {
 // fromServer processes frames on their way from the server to the client.
 func (c *flowConn) fromServer(in, out []byte) []byte {
 	c.mu.Lock()
+	c.fedAt = time.Time{}
 	out = c.wp.feed(in, out, (*flowWriter)(c))
 	c.mu.Unlock()
 	return out
@@ -1248,15 +1303,15 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 	if c.mode.Load() == flowPlain {
 		return c.Conn.Write(b)
 	}
-	out := bytespool.Alloc(int32(len(b) + 64))
-	out = c.readFrames(b, out[:0])
+	buf := getFlowBuf(len(b) + 64)
+	out := c.readFrames(b, (*buf)[:0])
 	if c.isBroken() {
-		bytespool.Free(out)
+		putFlowBuf(buf, out)
 		c.Close()
 		return 0, errFlowGivenUp
 	}
 	err := c.send(out)
-	bytespool.Free(out)
+	putFlowBuf(buf, out)
 	if err != nil {
 		return 0, err
 	}
@@ -1266,6 +1321,8 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 // injectToClient queues frames for the client without ever waiting for a
 // write in progress: whoever holds wmu drains the queue after letting go.
 // Only the guard's PING comes this way, and only one is ever queued.
+// Like creditClient it is a server's alone: a client arms no guard and
+// governs no upload, so writeToServer has no queue to drain after it.
 func (c *flowConn) injectToClient(frames []byte) {
 	c.mu.Lock()
 	if c.closed || len(c.wqueue) > 0 {
@@ -1460,7 +1517,7 @@ func (c *flowConn) appendUpConnRelease(out []byte) []byte {
 // so anything above the minimum is our own backlog and must not feed back into
 // the caps.
 func (c *flowConn) currentRTT() time.Duration {
-	if c.rttBase != 0 && c.kOK && c.kstat.minRTT > 0 && 4*c.kstat.minRTT >= c.rttBase {
+	if c.rttBase != 0 && c.floorVouched() {
 		return c.kstat.minRTT
 	}
 	switch {
@@ -1518,8 +1575,7 @@ func (c *flowConn) rebasePing() {
 // both prefaces are through, before data can queue in front of its ACK, so the
 // connection learns the round trip of the empty path. Once the kernel vouches
 // for that round trip, no more are needed.
-func (c *flowConn) appendPing(out []byte) []byte {
-	now := time.Now()
+func (c *flowConn) appendPing(now time.Time, out []byte) []byte {
 	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
@@ -1621,7 +1677,9 @@ func (c *flowConn) armGuard(s *flowStream) {
 func (c *flowConn) fireGuard() {
 	c.mu.Lock()
 	c.guardArmed = false
-	if c.closed || c.incremental || !c.anyWaiting() {
+	// A probe still queued behind a write in progress answers for this one
+	// too: another would be dropped, see injectToClient, and noted as sent.
+	if c.closed || c.incremental || !c.anyWaiting() || len(c.wqueue) > 0 {
 		c.mu.Unlock()
 		return
 	}
@@ -1818,7 +1876,7 @@ func (r *flowReader) frame(f h2Frame) {
 				c.giveUp()
 				return
 			}
-			now := time.Now()
+			now := c.fedNow()
 			s = &flowStream{}
 			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
 			s.down.cap = max(c.downLearned.value(now, c.down.init), flowStartWindow)
@@ -1915,7 +1973,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if s == nil || inc == 0 || !c.down.enabled() {
 			break
 		}
-		now := time.Now()
+		now := c.fedNow()
 		s.down.returned += inc
 		if !s.serverDone {
 			c.downOpenReturned += inc
@@ -2024,7 +2082,7 @@ func (r *flowReader) boundary(out []byte) []byte {
 	}
 	c.opened = c.opened[:0]
 	if c.client && !c.peerGoverned {
-		out = c.appendPing(out)
+		out = c.appendPing(c.fedNow(), out)
 	}
 	return out
 }
@@ -2134,7 +2192,7 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		if s == nil || inc == 0 || !c.up.enabled() {
 			break
 		}
-		now := time.Now()
+		now := c.fedNow()
 		s.up.returned += inc
 		var q int
 		switch {
@@ -2232,5 +2290,5 @@ func (w *flowWriter) boundary(out []byte) []byte {
 		return out
 	}
 	out = c.queuedLocked(out)
-	return c.appendPing(out)
+	return c.appendPing(c.fedNow(), out)
 }
