@@ -62,6 +62,9 @@ func TestFlowClientPastShownWindow(t *testing.T) {
 				t.Fatalf("data within the %d shown ended the connection: %v", shown, h.readErr)
 			}
 			h.conn.take()
+			h.c.mu.Lock()
+			unread := h.c.upConnSent - h.c.upConnReturned
+			h.c.mu.Unlock()
 			got := h.fromClient(func(fr *http2.Framer) { fr.WriteData(1, false, []byte{0}) })
 			if h.toClient.streams[1] >= conn {
 				if h.readErr == nil || !h.c.isBroken() {
@@ -74,6 +77,18 @@ func TestFlowClientPastShownWindow(t *testing.T) {
 			}
 			if !hasReset(t, got, 1) {
 				t.Fatal("the stack was not told stream 1 was reset")
+			}
+			// Of the frame past the window the stack takes nothing into the
+			// body, and the connection counts it returned, as a stack that
+			// refused it returns its connection credit.
+			if d := dataFrames(got); len(d) != 0 {
+				t.Fatalf("%d bytes of the frame past stream 1's window reached the stack", len(d)-4)
+			}
+			h.c.mu.Lock()
+			after := h.c.upConnSent - h.c.upConnReturned
+			h.c.mu.Unlock()
+			if after != unread {
+				t.Fatalf("the refused frame left %d bytes unread on the connection", after-unread)
 			}
 			h.sync()
 			if !hasReset(t, h.conn.take(), 1) {

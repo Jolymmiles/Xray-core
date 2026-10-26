@@ -26,7 +26,7 @@ import (
 
 type passFrames struct{}
 
-func (passFrames) frame(h2Frame) {}
+func (passFrames) frame(h2Frame) bool { return false }
 func (passFrames) control(_ h2Frame, header, payload, out []byte) []byte {
 	return append(append(out, header...), payload...)
 }
