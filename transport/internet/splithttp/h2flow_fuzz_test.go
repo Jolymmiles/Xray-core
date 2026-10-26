@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	mrand "math/rand/v2"
 	"testing"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -33,12 +34,19 @@ func FuzzFlowConn(f *testing.F) {
 	f.Add([]byte("\x00\x00\x06\x040\x00\x00\x00\x00\x00\x040000\x00\x00\x01\x01700010\x00\x00\x1e\x040\x00\x00\x00\x00000000\x00\x04\x00\x0000000000000000000000"), []byte("0"), uint8(3))
 
 	f.Fuzz(func(t *testing.T, fromClient, fromServer []byte, cut uint8) {
-		// The same input with the send window off and at its default.
-		for _, sendWindow := range []int64{0, flowServerSendWindow} {
+		// The same input with the send window off and at its default, and
+		// with a kernel that reports a queue of 0 to 350 ms over a 50 ms
+		// path, so the cuts and the models run.
+		for i, sendWindow := range []int64{0, flowServerSendWindow, flowServerSendWindow} {
 			capture := &captureConn{}
 			c := newFlowConn(capture, testUp, testDown)
 			c.sendWindow = sendWindow
 			c.rtt = 1
+			if i == 2 {
+				c.tcp, c.kAt, c.kOK = fakeRawConn{}, time.Now().Add(time.Hour), true
+				c.kstat = tcpStats{rtt: time.Duration(cut%8+1) * 50 * time.Millisecond, minRTT: 50 * time.Millisecond}
+				c.rttBase = 50 * time.Millisecond
+			}
 			step := int(cut%16) + 1
 			out := c.readFrames([]byte(h2Preface), nil)
 			for in := fromClient; len(in) > 0; {

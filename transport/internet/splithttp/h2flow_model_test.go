@@ -86,6 +86,7 @@ type flowModel struct {
 	toCli      []rawFrame // frames on their way to the client
 	cliBuf     []byte     // what a client's governor passed on to the client
 	goaway     bool       // the server sent GOAWAY: no new streams
+	goawayAt   int        // the step from which the server may send GOAWAY
 }
 
 var modelWindows = []int64{h2InitWindow, 128 << 10, 256 << 10, 1 << 20, 4 << 20, 16 << 20}
@@ -971,7 +972,7 @@ func (m *flowModel) protoStep() {
 		m.fromServer(func(fr *http2.Framer) { fr.WritePing(false, modelServerPing) })
 	case r < 92 && !m.clientSide:
 		m.changeServerWindow()
-	case r < 94 && !m.goaway && m.steps > 2500:
+	case r < 94 && !m.goaway && m.steps > m.goawayAt:
 		// The server stops taking new streams. At times the last ones
 		// were still on their way and are refused.
 		last := m.next - 2
@@ -1017,6 +1018,12 @@ func TestFlowModelProtocol(t *testing.T) {
 func runProtoModel(t *testing.T, seed uint64, up, down flowLimit, client bool, sendWindow int64, resize bool) {
 	m := makeFlowModel(t, seed, up, down)
 	m.proto, m.clientSide, m.resize = true, client, resize
+	// Half the runs send GOAWAY early: a client that changes its window
+	// ends most runs with the governor giving up long before step 2500.
+	m.goawayAt = 2500
+	if seed%2 == 1 {
+		m.goawayAt = 100 + int(seed*7919%400)
+	}
 	m.c.client, m.c.sendWindow = client, sendWindow
 	m.start(false)
 	for n := 0; n < 3000 && !m.failed; n++ {
