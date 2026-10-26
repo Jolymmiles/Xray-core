@@ -9,6 +9,7 @@ import (
 	"io"
 	gonet "net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,13 +216,28 @@ func TestH2WindowsEndToEnd(t *testing.T) {
 		MaxConnectionReceiveWindow: 16 << 20,
 	}}).h2ReceiveConfig(false))
 	h2.AllowHTTP = true
+	var mu sync.Mutex
+	var conns []*flowConn
 	h2.DialTLSContext = func(ctx context.Context, network, _ string, _ *gotls.Config) (gonet.Conn, error) {
 		c, err := (&gonet.Dialer{}).DialContext(ctx, network, ln.Addr().String())
 		if err != nil {
 			return nil, err
 		}
-		return newFlowClientConn(c), nil
+		fc := newFlowClientConn(c)
+		mu.Lock()
+		conns = append(conns, fc)
+		mu.Unlock()
+		return fc, nil
 	}
+	// The governed connections hold their flowGroup until they close.
+	t.Cleanup(func() {
+		h2.CloseIdleConnections()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
 	client := &http.Client{Transport: h2}
 
 	const size = 32 << 20

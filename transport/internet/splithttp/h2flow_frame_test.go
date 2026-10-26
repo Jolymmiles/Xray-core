@@ -127,9 +127,9 @@ func TestFlowCapsFrameSize(t *testing.T) {
 		go srv.Serve(tl)
 		addr := ln.Addr().String()
 		if tc.client {
-			transferBoth(t, newFlowTestClient(addr, true).Client)
+			transferBoth(t, newFlowTestClient(t, addr, true).Client)
 		} else if tc.name == "stock server, x/net client" {
-			transferBoth(t, newFlowTestClient(addr, false).Client)
+			transferBoth(t, newFlowTestClient(t, addr, false).Client)
 		} else {
 			transferBoth(t, h2Client(addr))
 		}
