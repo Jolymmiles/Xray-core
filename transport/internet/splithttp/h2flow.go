@@ -319,8 +319,10 @@ func validSettings(payload []byte) bool {
 	return true
 }
 
+// frame sees each frame's header before its payload passes on; a frame it
+// drops passes on neither.
 type frameHandler interface {
-	frame(f h2Frame)
+	frame(f h2Frame) (drop bool)
 	control(f h2Frame, header, payload, out []byte) []byte
 	boundary(out []byte) []byte
 }
@@ -331,6 +333,7 @@ type frameParser struct {
 	hdrLen  int
 	ctrl    []byte
 	remain  int
+	skip    bool
 	collect bool
 	inBlock bool
 }
@@ -344,7 +347,9 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 		switch {
 		case p.remain > 0:
 			n := min(p.remain, len(in))
-			out = append(out, in[:n]...)
+			if !p.skip {
+				out = append(out, in[:n]...)
+			}
 			in, p.remain = in[n:], p.remain-n
 			if p.remain == 0 {
 				out = p.done(out, h)
@@ -379,8 +384,10 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 				}
 				continue
 			}
-			h.frame(p.f)
-			out = append(out, p.hdr[:]...)
+			p.skip = h.frame(p.f)
+			if !p.skip {
+				out = append(out, p.hdr[:]...)
+			}
 			p.remain = p.f.length
 			if p.remain == 0 {
 				out = p.done(out, h)
@@ -1887,7 +1894,7 @@ func capFrameSize(payload []byte) {
 // flowReader handles frames from the client to the server.
 type flowReader flowConn
 
-func (r *flowReader) frame(f h2Frame) {
+func (r *flowReader) frame(f h2Frame) (drop bool) {
 	c := (*flowConn)(r)
 	switch f.typ {
 	case h2Headers:
@@ -1895,7 +1902,7 @@ func (r *flowReader) frame(f h2Frame) {
 		if s == nil && f.stream%2 == 1 && !c.closed {
 			if len(c.streams) >= flowMaxStreams {
 				c.giveUp()
-				return
+				return false
 			}
 			now := c.fedNow()
 			s = &flowStream{}
@@ -1920,17 +1927,24 @@ func (r *flowReader) frame(f h2Frame) {
 		up := !c.client && c.up.enabled()
 		if up && c.upConnSent > h2InitWindow+c.upConnForwarded {
 			c.giveUp()
-			return
+			return false
 		}
 		if s := c.stream(f.stream); s != nil {
 			s.upSent += int64(f.length)
 			// Past a stream's window is the stream's error alone, as with a
 			// stack shown that window: the stream is reset both ways, see
-			// appendResets, and the connection goes on.
-			if up && s.upSent > int64(c.serverShown)+s.upForwarded {
+			// appendResets, and the connection goes on. The frame is dropped:
+			// a stack shown the window takes none of it into the body, and one
+			// that ended the stream would end the body cleanly before the
+			// reset. Its bytes count as returned on the connection, as a
+			// stack returns connection credit for data it refused.
+			// An empty frame takes no window and is past none, though a
+			// lowered window may leave what came before it past.
+			if up && f.length > 0 && s.upSent > int64(c.serverShown)+s.upForwarded {
 				c.resets = append(c.resets, f.stream)
 				c.drop(f.stream)
-				return
+				c.upConnReturned += int64(f.length)
+				return true
 			}
 			if f.flags&h2FlagEndStream != 0 {
 				s.clientDone = true
@@ -1940,6 +1954,7 @@ func (r *flowReader) frame(f h2Frame) {
 	case h2RSTStream:
 		c.drop(f.stream)
 	}
+	return false
 }
 
 func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
@@ -2113,7 +2128,7 @@ func (r *flowReader) boundary(out []byte) []byte {
 // flowWriter handles frames from the server to the client.
 type flowWriter flowConn
 
-func (w *flowWriter) frame(f h2Frame) {
+func (w *flowWriter) frame(f h2Frame) (drop bool) {
 	c := (*flowConn)(w)
 	s := c.stream(f.stream)
 	switch f.typ {
@@ -2141,6 +2156,7 @@ func (w *flowWriter) frame(f h2Frame) {
 	case h2RSTStream:
 		c.drop(f.stream)
 	}
+	return false
 }
 
 func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {

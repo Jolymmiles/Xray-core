@@ -19,15 +19,16 @@ type dataSniffer struct {
 	max *atomic.Int64
 }
 
-func (d dataSniffer) frame(f h2Frame) {
+func (d dataSniffer) frame(f h2Frame) bool {
 	if f.typ == h2Data {
 		for {
 			cur := d.max.Load()
 			if int64(f.length) <= cur || d.max.CompareAndSwap(cur, int64(f.length)) {
-				return
+				return false
 			}
 		}
 	}
+	return false
 }
 
 func (dataSniffer) control(_ h2Frame, header, payload, out []byte) []byte {
