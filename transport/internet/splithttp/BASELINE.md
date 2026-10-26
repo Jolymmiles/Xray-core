@@ -855,19 +855,28 @@ Limits:
 
   No request failed or took over 10 s in any run. Server CPU time, server
   peak RSS and the client's peak anonymous memory stay within 6% of
-  `28e1e458` in every row. Two rows are over the line of a tenth this
+  `28e1e458` in every row. Two rows were over the line of a tenth this
   stand is judged by: the p95 of twenty slow downloads (79 against 115
   ms) and the p50 of four uploads (82.6 against 91.1). Both were run
   again with `2c733fb4`, the head before the third review, as a third
-  build: on a server the review's changes come down to one call of the
-  upload model with a gain of 1, which gives the values it gave, and the
-  slow downloads do not reach it. Twelve and sixteen runs, medians for
-  `28e1e458`, `2c733fb4` and `cbf6fd81`: slow downloads p95 153, 158 and
-  181 ms; four uploads p50 79, 81 and 82 ms, p95 198, 198 and 207. In a
-  rank test `cbf6fd81` against `2c733fb4` gives z 0.46 and 0.94, and
-  against `28e1e458`, both rounds pooled, 1.46 and 1.92; `28e1e458`'s own
-  slow-download p95 moved from 79 to 153 ms between the rounds. The stand
-  tells no difference there.
+  build, twelve and sixteen runs, medians for `28e1e458`, `2c733fb4` and
+  `cbf6fd81`: slow downloads p95 153, 158 and 181 ms; four uploads p50
+  79, 81 and 82 ms, p95 198, 198 and 207. `28e1e458`'s own slow-download
+  p95 moved from 79 to 153 ms between those rounds, so the slow downloads
+  were then run as one interleaved set of thirty runs each:
+
+  ```sh
+  python3 stand.py $O $S --workload downloads --mbit 1000 --readers 20       --read-rate 100000 --client-limit-mb 40 --runs 30
+  ```
+
+  | Twenty slow downloads, 30 runs | `28e1e458` | `cbf6fd81` |
+  | --- | --- | --- |
+  | p95, median (quartiles; least-most) | 147 (94-206; 66-256) ms | 158 (107-209; 57-308) ms |
+  | p50, median | 52.3 ms | 52.3 ms |
+  | Requests failed or over 10 s | 0 of 1005 | 0 of 999 |
+  | Client killed at its limit | 0 of 30 | 0 of 30 |
+
+  The head's p95 is 8% over `28e1e458`'s, inside the line.
   Not covered by any of these: GC, goroutines, file descriptors, and the
   interface and TCP counters of either end.
   Tried on the way and dropped, each for a regression of eight downloads at
