@@ -23,15 +23,17 @@ import (
 
 // flowClient is an XHTTP-like HTTP/2 client: x/net's transport over a dialed
 // connection, optionally governed, keeping the governed connections around.
+// They close with the test: a governed connection holds its flowGroup until
+// it closes, and one left to the server's close lingers past the test.
 type flowClient struct {
 	*http.Client
 	mu    sync.Mutex
 	conns []*flowConn
 }
 
-func newFlowTestClient(addr string, governed bool) *flowClient {
+func newFlowTestClient(t testing.TB, addr string, governed bool) *flowClient {
 	fc := &flowClient{}
-	fc.Client = &http.Client{Transport: &http2.Transport{
+	tr := &http2.Transport{
 		AllowHTTP: true,
 		DialTLSContext: func(ctx context.Context, network, _ string, _ *gotls.Config) (net.Conn, error) {
 			c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
@@ -44,7 +46,16 @@ func newFlowTestClient(addr string, governed bool) *flowClient {
 			fc.mu.Unlock()
 			return g, nil
 		},
-	}}
+	}
+	fc.Client = &http.Client{Transport: tr}
+	t.Cleanup(func() {
+		tr.CloseIdleConnections()
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
+		for _, c := range fc.conns {
+			c.Close()
+		}
+	})
 	return fc
 }
 
@@ -81,7 +92,7 @@ func TestFlowClientSlowReaderBounded(t *testing.T) {
 					}
 				}
 			}))
-			client := newFlowTestClient(addr, governed)
+			client := newFlowTestClient(t, addr, governed)
 			resp, err := client.Get("http://x/down")
 			if err != nil {
 				t.Fatal(err)
@@ -120,7 +131,7 @@ func TestFlowClientSlowReaderBounded(t *testing.T) {
 func TestFlowClientIntegrityDuplex(t *testing.T) {
 	for _, sc := range clientCases {
 		_, addr := startFlowServer(t, sc.up, sc.down, true, http.HandlerFunc(echoHandler))
-		client := newFlowTestClient(addr, true)
+		client := newFlowTestClient(t, addr, true)
 		var wg sync.WaitGroup
 		errs := make(chan error, 16)
 		for i := 0; i < 16; i++ {
@@ -179,7 +190,7 @@ func clientDownloadRate(t *testing.T, sc struct {
 			}
 		}
 	}))
-	client := newFlowTestClient(lagProxy(t, addr, rtt/2), governed)
+	client := newFlowTestClient(t, lagProxy(t, addr, rtt/2), governed)
 	if resp, err := client.Get("http://x/warm"); err == nil {
 		resp.Body.Read(make([]byte, 1))
 		resp.Body.Close()
@@ -236,7 +247,7 @@ func TestFlowClientMeasuresRTT(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}))
-	client := newFlowTestClient(lagProxy(t, addr, 25*time.Millisecond), true)
+	client := newFlowTestClient(t, lagProxy(t, addr, 25*time.Millisecond), true)
 	resp, err := client.Get("http://x/")
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +273,7 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 				w.Write(make([]byte, 100<<10))
 			}
 		}))
-		client := newFlowTestClient(addr, true)
+		client := newFlowTestClient(t, addr, true)
 		var wg sync.WaitGroup
 		for i := 0; i < 300; i++ {
 			wg.Add(1)
@@ -367,7 +378,7 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 	tl.mu.Lock()
 	tl.sendWindow = sendWindow
 	tl.mu.Unlock()
-	client := newFlowTestClient(addr, true)
+	client := newFlowTestClient(t, addr, true)
 	serverConns := func() []*flowConn {
 		tl.mu.Lock()
 		defer tl.mu.Unlock()

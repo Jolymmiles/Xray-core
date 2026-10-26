@@ -1211,7 +1211,7 @@ func TestFlowCloseUnderLoad(t *testing.T) {
 	tl, addr := startFlowServer(t, testUp, testDown, true, http.HandlerFunc(echoHandler))
 	before := goroutines()
 	for round := 0; round < 10; round++ {
-		client := newFlowTestClient(addr, true)
+		client := newFlowTestClient(t, addr, true)
 		var wg sync.WaitGroup
 		for i := 0; i < 8; i++ {
 			wg.Add(1)
