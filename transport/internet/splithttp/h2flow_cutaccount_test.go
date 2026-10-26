@@ -44,6 +44,26 @@ func TestFlowFinishedDownloadCutNotCounted(t *testing.T) {
 	}
 }
 
+// TestFlowFinishedPICutNotCounted is the same late credit where PI holds the
+// download instead, on a path whose queue stands at 60 ms over a 50 ms
+// setpoint floor: what pi cuts off that cap is not noted either.
+func TestFlowFinishedPICutNotCounted(t *testing.T) {
+	h, s := queuedDownload(t)
+	h.fromServer(func(fr *http2.Framer) { fr.WriteData(1, true, nil) })
+	h.c.mu.Lock()
+	h.c.incremental = true
+	h.c.kstat.rtt = 110 * time.Millisecond
+	s.down.flat = flowFullRounds
+	s.down.mark = time.Now().Add(-200 * time.Millisecond)
+	h.c.mu.Unlock()
+	credit(h, s)
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if h.c.effect.cut != 0 {
+		t.Fatalf("pi noted %g bytes of cut on a download the server had finished", h.c.effect.cut)
+	}
+}
+
 // TestFlowPISlowReaderNoOverflow has a reader that took one byte over an hour,
 // and a 1 GiB cap over ten seconds, at the last slow round before the cap
 // shrinks: the cap shrinks. The cap times the round in nanoseconds wrapped,
