@@ -789,7 +789,9 @@ Limits:
   The stand is `burst.py`: an official client, 60 Mbit/s at RTT 144 ms, a
   queue of five bandwidth-delay products, one download, four plain TCP
   downloads from the server's namespace for 20 s from the 10th second;
-  three runs each, Mbit/s, median (least-most):
+  three runs each, Mbit/s, median (least-most), on an earlier revision of
+  this change; the acceptance below runs the burst on the head, eight runs
+  each:
 
   ```sh
   python3 burst.py --origin ./origin --client ./xray-official \
@@ -797,7 +799,7 @@ Limits:
       --server pr=./xray-pr --server pr-nocuts=./xray-pr --h2flow 'pr-nocuts={"enabled": true, "queueCuts": false}' --runs 3
   ```
 
-  | | `28e1e458` | no governor | this change | `queueCuts: false` |
+  | | `28e1e458` | no governor | an earlier revision | `queueCuts: false` |
   | --- | --- | --- | --- | --- |
   | Before the burst | 56.5 | 57.1 | 56.5 | 57.0 |
   | Mean over the burst | 10.8 (10.7-10.8) | 41.3 (41.2-41.5) | 23.2 (22.7-23.4) | 36.2 (35.5-37.8) |
@@ -806,7 +808,7 @@ Limits:
 
   With `--burst 90 --duration 120`, over the burst and over its second
   half: `28e1e458`, two runs, 2.5 (2.4-2.7) and 0.4; eight runs each, no
-  governor 21.1 (18.8-24.9) and 14.1 (8.9-20.9), this change 14.2
+  governor 21.1 (18.8-24.9) and 14.1 (8.9-20.9), that revision 14.2
   (7.2-16.4) and 10.6 (3.5-13.3), back at 4/5 of the rate before in 1.8 s
   against 2.0 without the governor. Judged by every drop rather than the
   controller's own cuts the same eight runs gave 12.5 and 6.5 (0.6-9.5),
@@ -816,17 +818,58 @@ Limits:
   similar stand (60 Mbit/s, RTT 144 ms, four flows for 90 s), three runs,
   got 13-16 and 8-14 on the fork's build of this change, 16-17 and 10-13
   without the governor.
-  What it cost, `stand.py` against an official client, `28e1e458` and this
-  change, p50/p95 of the request beside the load, six runs each unless
-  given: twenty uploads into a slow origin, twelve runs, 52/468 and
-  52/552 ms, the worst run at 0.80 and 0.69 s; eight downloads at 100 Mbit/s 65/312 and 65/260,
-  11.5 MB/s on both, and over 24 runs each p50 at 65-73 ms in 21 and 22
-  runs, the rest at 96-122 on both; at 1 Gbit/s, twelve
-  runs, 69/109 and 69/107, 114.1 MB/s on both; one download at RTT 150 ms
-  190/354 and 191/354; four uploads 52/216 and 52/206; twenty slow
-  downloads with `--client-limit-mb 40` 52/332 and 52/273, the client
-  holding 13.5 and 13.2 MB, killed in none. A download after an upload
-  starts as on `28e1e458`, 0.53 s median after three seconds idle.
+  What it costs, as accepted after the third review: `28e1e458` against
+  the head `cbf6fd81` (later commits change only this file), both built
+  with Go 1.27.3, `CGO_ENABLED=0 go build -trimpath -tags http2legacy`;
+  client official Xray v26.10.10 (go1.27.2); host a privileged
+  linux/amd64 container under Docker Desktop on WSL2 (kernel 6.18.54), AMD
+  Ryzen 5 5600, 12 threads. Runs alternate between the builds in shuffled
+  order; medians (least-most where given) over the runs, p50/p95 of the
+  request beside the load:
+
+  ```sh
+  O="--origin ./origin --client ./xray-official"
+  S="--server base=./xray-28e1e458 --server head=./xray-cbf6fd81"
+  python3 stand.py $O $S --workload downloads --readers 8 --read-rate 0 --runs 24
+  python3 stand.py $O $S --workload uploads --readers 20 --runs 12
+  python3 stand.py $O $S --workload downloads --readers 8 --read-rate 0 --mbit 1000 --runs 8
+  python3 stand.py $O $S --workload downloads --readers 1 --read-rate 0 --rtt 150 --runs 8
+  python3 stand.py $O $S --workload uploads --readers 4 --read-rate 0 --runs 8
+  python3 stand.py $O $S --workload downloads --mbit 1000 --readers 20       --read-rate 100000 --client-limit-mb 40 --runs 6
+  python3 burst.py $O $S --runs 8
+  python3 burst.py $O $S --burst 90 --duration 120 --runs 8
+  python3 freshstart.py $O $S --runs 6
+  ```
+
+  | Load | Runs | `28e1e458` | `cbf6fd81` |
+  | --- | --- | --- | --- |
+  | 8 downloads, 100 Mbit/s | 24 | 65.6/293 ms, 92 Mbit/s | 65.9/313 ms, 92 Mbit/s |
+  | 8 downloads, 1 Gbit/s | 8 | 70.5/108 ms, 912 Mbit/s | 69.0/116 ms, 912 Mbit/s |
+  | 1 download, RTT 150 ms | 8 | 190.5/354 ms, 84 Mbit/s | 190.5/354 ms, 84 Mbit/s |
+  | 20 uploads into a slow origin | 12 | 52.5/578 ms | 52.6/466 ms |
+  | 4 uploads | 8 | 82.6/251 ms | 91.1/187 ms |
+  | 20 slow downloads, client limit 40 MB | 6 | 52.2/79 ms, client 23.8 MB, killed 0 | 52.2/115 ms, client 23.5 MB, killed 0 |
+  | Burst 20 s, Mbit/s, over it / its second half | 8 | 10.8 (10.0-11.7) / 0.8 (0.8-0.9) | 25.6 (25.0-26.1) / 18.4 (17.1-19.2) |
+  | Burst 90 s, the same | 8 | 2.7 (2.5-2.7) / 0.4 (0.4-0.4) | 16.8 (14.5-18.6) / 14.1 (9.7-15.6) |
+  | First start after an upload / later starts | 6 | 0.64 / 0.53 s | 0.63 / 0.53 s |
+
+  No request failed or took over 10 s in any run. Server CPU time, server
+  peak RSS and the client's peak anonymous memory stay within 6% of
+  `28e1e458` in every row. Two rows are over the line of a tenth this
+  stand is judged by: the p95 of twenty slow downloads (79 against 115
+  ms) and the p50 of four uploads (82.6 against 91.1). Both were run
+  again with `2c733fb4`, the head before the third review, as a third
+  build: on a server the review's changes come down to one call of the
+  upload model with a gain of 1, which gives the values it gave, and the
+  slow downloads do not reach it. Twelve and sixteen runs, medians for
+  `28e1e458`, `2c733fb4` and `cbf6fd81`: slow downloads p95 153, 158 and
+  181 ms; four uploads p50 79, 81 and 82 ms, p95 198, 198 and 207. In a
+  rank test `cbf6fd81` against `2c733fb4` gives z 0.46 and 0.94, and
+  against `28e1e458`, both rounds pooled, 1.46 and 1.92; `28e1e458`'s own
+  slow-download p95 moved from 79 to 153 ms between the rounds. The stand
+  tells no difference there.
+  Not covered by any of these: GC, goroutines, file descriptors, and the
+  interface and TCP counters of either end.
   Tried on the way and dropped, each for a regression of eight downloads at
   100 Mbit/s, whose request beside them has 65 ms at p50 on `28e1e458`, or
   for not holding the burst:
