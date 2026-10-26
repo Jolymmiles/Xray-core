@@ -112,7 +112,7 @@ func TestFlowWindowHugeCredit(t *testing.T) {
 	}
 	w.returned += 1 << 40
 	now = now.Add(60 * time.Millisecond)
-	w.model(now, 50*time.Millisecond, h2InitWindow, limit)
+	w.model(now, 50*time.Millisecond, h2InitWindow, limit, 1)
 	if w.cap != limit {
 		t.Fatalf("model: cap %d after a round of 2^40, want the limit %d", w.cap, limit)
 	}
