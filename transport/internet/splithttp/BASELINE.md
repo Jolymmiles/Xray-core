@@ -819,7 +819,8 @@ Limits:
   got 13-16 and 8-14 on the fork's build of this change, 16-17 and 10-13
   without the governor.
   What it costs, as accepted after the third review: `28e1e458` against
-  the head `cbf6fd81` (later commits change only this file), both built
+  the head `cbf6fd81` (later commits change only tests and this file;
+  the production code is the same), both built
   with Go 1.27.3, `CGO_ENABLED=0 go build -trimpath -tags http2legacy`;
   client official Xray v26.10.10 (go1.27.2); host a privileged
   linux/amd64 container under Docker Desktop on WSL2 (kernel 6.18.54), AMD
@@ -909,6 +910,24 @@ Limits:
     connection.
   - An active prober that cannot authenticate gets no data on a stream, so
     it starts no download and reaches no queue.
+  - TLS handshake and fingerprint: not touched. The governor wraps the
+    listener TLS or REALITY returns and sees only the HTTP/2 frames inside
+    the connection; no TLS, REALITY or ALPN setting changes. What an XHTTP TLS
+    listener answers to probes that never reach HTTP/2 (TLS, ALPN,
+    HTTP/1.1) is compared byte for byte with the governor on and off
+    (`TestFlowListenerAnswersProbesLikeStock`).
+  - Connection lifecycle: an HTTP/1.1 request over the header limit is
+    answered and closed as on stock TLS, close_notify right after the
+    answer (`TestFlowListenerClosesLikeStock`); a client that sends past
+    the windows it was shown gets the stock answers, the stream reset with
+    FLOW_CONTROL_ERROR past a stream's window and the connection ended past
+    the connection's (`TestFlowClientPastShownWindow`).
+  - Malformed input: malformed SETTINGS get the same answer from a governed
+    server as from stock (`TestFlowMalformedSettingsGetStockErrors`); a
+    malformed SETTINGS ACK reaches a governed client's stack whole, for the
+    stack to raise, and is not taken for the ACK of the governor's own
+    SETTINGS (`TestFlowClientMalformedOwnedAckReachesStack`).
+  - These tests check answers and closes, not packet sizes or timing.
   - Not measured: record counts and timing beside a foreign queue, against
     stock or `28e1e458`; links whose other traffic is not bulk TCP; BBR on
     the server.
