@@ -56,7 +56,8 @@ func TestFlowClientRecordSizes(t *testing.T) {
 		}
 		_, addr := startFlowServer(t, up, down, false, handler)
 		rec := &writeSizes{}
-		client := &http.Client{Transport: &http2.Transport{
+		var fc *flowConn
+		tr := &http2.Transport{
 			AllowHTTP: true,
 			DialTLSContext: func(ctx context.Context, network, _ string, _ *gotls.Config) (net.Conn, error) {
 				c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
@@ -65,11 +66,27 @@ func TestFlowClientRecordSizes(t *testing.T) {
 				}
 				rec.Conn = c
 				if tc.governed {
-					return newFlowClientConn(rec), nil
+					g := newFlowClientConn(rec)
+					rec.mu.Lock()
+					fc = g
+					rec.mu.Unlock()
+					return g, nil
 				}
 				return rec, nil
 			},
-		}}
+		}
+		// A governed connection holds its flowGroup until it closes: close
+		// it with the test, whichever way the test ends.
+		t.Cleanup(func() {
+			tr.CloseIdleConnections()
+			rec.mu.Lock()
+			g := fc
+			rec.mu.Unlock()
+			if g != nil {
+				g.Close()
+			}
+		})
+		client := &http.Client{Transport: tr}
 		resp, err := client.Get("http://x/")
 		if err != nil {
 			t.Fatal(err)
