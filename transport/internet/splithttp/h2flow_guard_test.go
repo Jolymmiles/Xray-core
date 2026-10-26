@@ -100,23 +100,10 @@ func TestFlowClientNotFooledByStockHealthCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	srv := &http2.Server{ReadIdleTimeout: 10 * time.Millisecond, PingTimeout: time.Second}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go srv.ServeConn(c, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				time.Sleep(300 * time.Millisecond)
-				w.Write([]byte("ok"))
-			})})
-		}
-	}()
 	var fc *flowConn
+	var served []net.Conn
 	var mu sync.Mutex
-	client := &http.Client{Transport: &http2.Transport{
+	tr := &http2.Transport{
 		AllowHTTP: true,
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *gotls.Config) (net.Conn, error) {
 			c, err := (&net.Dialer{}).DialContext(ctx, network, ln.Addr().String())
@@ -129,8 +116,44 @@ func TestFlowClientNotFooledByStockHealthCheck(t *testing.T) {
 			mu.Unlock()
 			return g, nil
 		},
-	}}
-	resp, err := client.Get("http://x/")
+	}
+	// The client connection holds a flowGroup until it closes: close it,
+	// whatever the test ends with, so that no group outlives the test.
+	t.Cleanup(func() {
+		ln.Close()
+		tr.CloseIdleConnections()
+		mu.Lock()
+		defer mu.Unlock()
+		if fc != nil {
+			fc.Close()
+		}
+		for _, c := range served {
+			c.Close()
+		}
+	})
+	srv := &http2.Server{ReadIdleTimeout: 10 * time.Millisecond, PingTimeout: time.Second}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			served = append(served, c)
+			mu.Unlock()
+			go srv.ServeConn(c, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(300 * time.Millisecond)
+				w.Write([]byte("ok"))
+			})})
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://x/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Transport: tr}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
