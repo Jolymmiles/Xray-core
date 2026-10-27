@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -369,7 +370,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			clientReader = timeoutReader
 		}
 		multiBuffer, err1 := timeoutReader.ReadMultiBufferTimeout(time.Millisecond * 500)
-		if err1 != nil && err1 != buf.ErrReadTimeout {
+		// A client that half-closes before any payload still sends the
+		// header; the copy below meets the same end of the request.
+		if err1 != nil && err1 != buf.ErrReadTimeout && errors.Cause(err1) != io.EOF {
+			buf.ReleaseMulti(multiBuffer)
 			return err1
 		}
 		// A pipe reports the timeout as buf.ErrReadTimeout, the wrapper as

@@ -277,3 +277,36 @@ func TestVisionPadsHeaderWithoutFirstPayload(t *testing.T) {
 		})
 	}
 }
+
+// A client that half-closes right after CONNECT still gets its request sent:
+// the header goes out, and the response direction stays open.
+func TestHeaderSentWhenClientEndsBeforeFirstPayload(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		wrap func(buf.Reader) buf.Reader
+	}{
+		{name: "plain reader", wrap: plainReader},
+		{name: "timeout reader", wrap: wrappedReader},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			v := newTestpreInstance(t)
+			synctest.Test(t, func(t *testing.T) {
+				f, id := startFirstPayloadRequest(t, v, "", false, test.wrap)
+				defer f.finish(t)
+
+				f.reader.close()
+				synctest.Wait()
+				select {
+				case err := <-f.processed:
+					f.processed <- err
+					t.Fatalf("Process returned %v before the response, want it to wait for one", err)
+				default:
+				}
+				got := f.peer.bytes()
+				if len(got) < 17 || !bytes.Equal(got[1:17], id.Bytes()) {
+					t.Fatalf("the peer got %x, want the VLESS header", got)
+				}
+			})
+		})
+	}
+}
