@@ -36,6 +36,10 @@ type TimeoutWrapperReader struct {
 	mb   MultiBuffer
 	err  error
 	done chan struct{}
+
+	// abandon guards abandoned against the read that a timeout left pending.
+	abandon   sync.Mutex
+	abandoned bool
 }
 
 func (r *TimeoutWrapperReader) ReadMultiBuffer() (MultiBuffer, error) {
@@ -58,8 +62,16 @@ func (r *TimeoutWrapperReader) ReadMultiBufferTimeout(duration time.Duration) (M
 	if r.done == nil {
 		r.done = make(chan struct{})
 		go func() {
-			r.mb, r.err = r.Reader.ReadMultiBuffer()
+			mb, err := r.Reader.ReadMultiBuffer()
+			r.abandon.Lock()
+			if r.abandoned {
+				mb = ReleaseMulti(mb)
+			}
+			r.mb, r.err = mb, err
+			// Closed under the lock, so Abandon sees either a read that
+			// has ended or one that will see abandoned.
 			close(r.done)
+			r.abandon.Unlock()
 		}()
 	}
 	timer := time.NewTimer(duration)
@@ -73,6 +85,23 @@ func (r *TimeoutWrapperReader) ReadMultiBufferTimeout(duration time.Duration) (M
 		return r.mb, r.err
 	case <-timer.C:
 		return nil, nil
+	}
+}
+
+// Abandon tells the reader that its owner reads no more. It does not wait: a
+// read that a timeout left pending releases what it returns when it ends, and
+// one that has ended is released now.
+func (r *TimeoutWrapperReader) Abandon() {
+	if r.done == nil {
+		return
+	}
+	r.abandon.Lock()
+	defer r.abandon.Unlock()
+	r.abandoned = true
+	select {
+	case <-r.done:
+		r.mb = ReleaseMulti(r.mb)
+	default:
 	}
 }
 

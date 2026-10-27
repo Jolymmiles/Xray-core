@@ -220,8 +220,22 @@ guard it.
   asserts `buf.TimeoutReader` on `link.Reader` has to wrap the reader itself
   when the assertion fails, and read through the wrapper from then on, as the
   HTTP outbound does to wait at most 500 ms for a first payload that a
-  server-first protocol never sends (XTLS/Xray-core#7193). Covered by
-  `TestHTTPOutboundServerFirst` (`testing/scenarios/http_test.go`).
+  server-first protocol never sends (XTLS/Xray-core#7193), and the VLESS
+  outbound does so the request header waits up to 500 ms for the first
+  payload with sniffing on or off. The wrapper reports a timeout as an empty
+  read, not `buf.ErrReadTimeout`, so the VLESS outbound treats an empty read
+  as a timeout and Vision follows the header with its padding-only block;
+  upstream sends the header alone when its wrapper times out. A wrapper the
+  outbound creates is abandoned when the request ends
+  (`TimeoutWrapperReader.Abandon`, fork-only), so a read an early return left
+  pending releases its buffers when it ends. The
+  Shadowsocks 2022 outbound does not wrap: its zero timeout takes only data a
+  pipe already holds, and a wrapper started with a zero timeout almost never
+  has the first read done, as in upstream. Callers of `buf.CopyOnceTimeout`
+  (Trojan, VMess, Shadowsocks, Mux.Cool) still skip their 100 ms wait on a
+  plain reader. Covered by `TestHTTPOutboundServerFirst`
+  (`testing/scenarios/http_test.go`) and
+  `proxy/vless/outbound/first_payload_test.go`.
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
   allocation-free picker, not `PickRoute`. A routing `script` (upstream
   XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports

@@ -5,6 +5,7 @@ import (
 	"io"
 	"runtime"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	. "github.com/xtls/xray-core/common/buf"
@@ -131,4 +132,48 @@ func TestWriterCreation(t *testing.T) {
 			t.Fatal("writer is not a SequentialWriter")
 		}
 	}
+}
+
+// A reader abandoned with a read pending releases what that read returns:
+// nobody is left to take it.
+func TestTimeoutWrapperReaderAbandonReleasesPendingRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		results := make(chan MultiBuffer)
+		reader := &TimeoutWrapperReader{Reader: &controlledReader{result: results}}
+		if got, _ := reader.ReadMultiBufferTimeout(time.Millisecond); !got.IsEmpty() {
+			t.Fatalf("timed-out read returned %q, want no payload", got.String())
+		}
+
+		reader.Abandon()
+		b := New()
+		b.WriteString("late")
+		results <- MultiBuffer{b}
+		synctest.Wait()
+		if b.Len() != 0 {
+			t.Fatal("the read that ended after Abandon kept its buffer")
+		}
+	})
+}
+
+// A read that ended before Abandon is released by Abandon itself.
+func TestTimeoutWrapperReaderAbandonReleasesFinishedRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		results := make(chan MultiBuffer)
+		reader := &TimeoutWrapperReader{Reader: &controlledReader{result: results}}
+		if got, _ := reader.ReadMultiBufferTimeout(time.Millisecond); !got.IsEmpty() {
+			t.Fatalf("timed-out read returned %q, want no payload", got.String())
+		}
+		b := New()
+		b.WriteString("done")
+		results <- MultiBuffer{b}
+		synctest.Wait()
+		if b.Len() == 0 {
+			t.Fatal("the read released its buffer before Abandon")
+		}
+
+		reader.Abandon()
+		if b.Len() != 0 {
+			t.Fatal("Abandon left the finished read's buffer")
+		}
+	})
 }

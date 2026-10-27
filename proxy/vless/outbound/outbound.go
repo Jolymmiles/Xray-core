@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -358,28 +359,52 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		if request.Command == protocol.RequestCommandMux && request.Port == 666 {
 			serverWriter = xudp.NewPacketWriter(serverWriter, target, xudp.GetGlobalID(ctx))
 		}
+		// The dispatcher gives a reader a timeout only where sniffing or user
+		// stats need one, so give it one here otherwise: the header waits up
+		// to 500 ms for the first payload either way. A read the timeout
+		// leaves pending ends inside the wrapper, so the request is copied
+		// through it as well.
 		timeoutReader, ok := clientReader.(buf.TimeoutReader)
-		if ok {
-			multiBuffer, err1 := timeoutReader.ReadMultiBufferTimeout(time.Millisecond * 500)
-			if err1 == nil {
-				if err := serverWriter.WriteMultiBuffer(multiBuffer); err != nil {
-					return err // ...
-				}
-			} else if err1 != buf.ErrReadTimeout {
-				return err1
-			} else if requestAddons.Flow == vless.XRV {
+		if !ok {
+			wrapper := &buf.TimeoutWrapperReader{Reader: clientReader}
+			// The copy below takes every read but the one an early return
+			// leaves pending; Abandon releases that one when it ends.
+			defer wrapper.Abandon()
+			timeoutReader = wrapper
+			clientReader = wrapper
+		}
+		multiBuffer, err1 := timeoutReader.ReadMultiBufferTimeout(time.Millisecond * 500)
+		// A client that half-closes before any payload still sends the
+		// header; the copy below meets the same end of the request. Data that
+		// comes with a read error is sent before the error ends the request,
+		// as buf.Copy does.
+		readErr := err1 != nil && err1 != buf.ErrReadTimeout && errors.Cause(err1) != io.EOF
+		if readErr && multiBuffer.IsEmpty() {
+			buf.ReleaseMulti(multiBuffer)
+			return err1
+		}
+		// A pipe reports the timeout as buf.ErrReadTimeout, the wrapper as
+		// an empty read; either way Vision pads the header.
+		if !multiBuffer.IsEmpty() {
+			if err := serverWriter.WriteMultiBuffer(multiBuffer); err != nil {
+				return err // ...
+			}
+		} else {
+			buf.ReleaseMulti(multiBuffer)
+			if requestAddons.Flow == vless.XRV {
 				mb := make(buf.MultiBuffer, 1)
 				errors.LogInfo(ctx, "Insert padding with empty content to camouflage VLESS header ", mb.Len())
 				if err := serverWriter.WriteMultiBuffer(mb); err != nil {
 					return err // ...
 				}
 			}
-		} else {
-			errors.LogDebug(ctx, "Reader is not timeout reader, will send out vless header separately from first payload")
 		}
 		// Flush; bufferWriter.WriteMultiBuffer now is bufferWriter.writer.WriteMultiBuffer
 		if err := bufferWriter.SetBuffered(false); err != nil {
 			return errors.New("failed to write A request payload").Base(err)
+		}
+		if readErr {
+			return err1
 		}
 
 		if requestAddons.Flow == vless.XRV {

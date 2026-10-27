@@ -42,7 +42,9 @@ The characterization suite also fixes these stream semantics:
   headers falls back to the streaming decoder without losing payload bytes;
 - plain TCP has no body framing or transformation;
 - the outbound buffers the request header and waits up to 500 ms for an
-  immediately available first payload before flushing;
+  immediately available first payload before flushing, whether or not the
+  dispatcher gave the link reader a timeout; with Vision, a wait that ends
+  without a payload sends a padding-only block after the header;
 - the inbound buffers the response header and flushes it with the first
   response payload.
 
