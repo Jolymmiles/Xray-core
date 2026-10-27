@@ -32,12 +32,20 @@ guard it.
   than renumber silently.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
+- An inbound whose REALITY private key, ML-DSA-65 seed or a short ID is
+  malformed is refused when its handler is built (`NewAlwaysOnInboundHandler`
+  calls `reality.Config.CheckServerKeys`). Upstream's `GetREALITYConfig`
+  panics on each, and only JSON configs check them first, so a protobuf config
+  or a HandlerService `AddInbound` took the whole process down. Covered by
+  `TestAddInboundRejectsMalformedREALITYKeys` in
+  `app/proxyman/inbound/reality_keys_test.go`.
 - Every uTLS client Xray dials with is created in the fork-owned
   `transport/internet/tls/uclient.go`: `NewUClient`, `UClient` and
   `ClientHandshake` build the ClientHello when the client is created and
   return the error, where upstream builds it during the handshake.
   `ClientHandshake`, which the TCP, WebSocket, HTTPUpgrade, XHTTP, gRPC,
-  MASQUE and xdrive dialers use, closes the connection on any failure.
+  MASQUE and xdrive dialers and the XDNS DoH resolver use, closes the
+  connection on any failure.
   `WithHTTP11ALPN` replaces upstream's `WebsocketHandshakeContext` without
   reading uTLS's private config; for a fingerprint without ALPN it adds the
   extension before `pre_shared_key`, where upstream appends it after, which
@@ -80,6 +88,23 @@ guard it.
   ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
   the ClientHello snapshot tests and the fork's
   `TestSecondaryKeyShareSelectedByServer`.
+- Vision takes the TLS input buffers through `proxy.VisionBuffers`
+  (`proxy/vision_buffers.go`), which checks the field types and caches their
+  offsets per connection type and fails closed on any other layout; upstream
+  reads them by reflection on every request (`vless.AccessTLSBuffers`, which
+  the fork does not carry). The raw input buffer may be held by value
+  (crypto/tls up to Go 1.27, uTLS, VLESS encryption) or by pointer (the
+  REALITY server since `83f621788ca8`, crypto/tls after Go 1.27, where the
+  connection swaps pooled buffers). At the switch to direct copy Vision
+  empties that buffer, as upstream did before XTLS/Xray-core#7176, which
+  stopped out of caution about the pool Go added in golang/go `0d1836382f`.
+  That pool takes a buffer back only while the connection reads and then
+  drops the connection's pointer; after the switch nothing reads the TLS
+  connection, so the buffer is in no pool. Without the release every Vision
+  connection in direct copy keeps a record-sized buffer (about 17 KiB) until
+  it closes. Covered by `proxy/vision_buffers_test.go`,
+  `proxy/vision_carrier_test.go` and `TestVisionReaderSwitchTakesBufferedTLSInput`
+  (`proxy/vision_reader_test.go`).
 - The REALITY client's spider, which browses the site over the connection
   when the server shows a real certificate (the server forwarded the hello to
   its target, or a middlebox redirected or intercepted it), works over TCP as
@@ -97,7 +122,7 @@ guard it.
   a redirect to another host no longer starts a second HTTP/2 session on it,
   which the site rejected. Covered by
   `transport/internet/reality/spider_test.go` and `spider_lease_test.go`.
-- Every shipped and release-tested build uses Go 1.27.2 (`go.mod`) and
+- Every shipped and release-tested build uses Go 1.27.3 (`go.mod`) and
   `-tags http2legacy`, which keeps x/net's own `http2.Transport` and
   `http2.Server` (the XHTTP client, H2MUX and DoH among them; MASQUE uses only
   x/net's framer). Without the tag, Go 1.27's x/net wraps net/http. Before
@@ -189,6 +214,14 @@ guard it.
   `TestCanceledDialGetsNoConnection` and
   `TestRejectedAuthenticationClosesWithProtocolError` in
   `transport/internet/hysteria/dial_cancel_test.go`.
+- The dispatcher gives an outbound link's reader a timeout
+  (`buf.TimeoutWrapperReader`) only where sniffing or user uplink stats need
+  one (`aa7aaf17`); upstream's `WrapLink` always does. Upstream code that
+  asserts `buf.TimeoutReader` on `link.Reader` has to wrap the reader itself
+  when the assertion fails, and read through the wrapper from then on, as the
+  HTTP outbound does to wait at most 500 ms for a first payload that a
+  server-first protocol never sends (XTLS/Xray-core#7193). Covered by
+  `TestHTTPOutboundServerFirst` (`testing/scenarios/http_test.go`).
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
   allocation-free picker, not `PickRoute`. A routing `script` (upstream
   XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports
@@ -196,8 +229,10 @@ guard it.
   Mirror any new hook upstream adds to `PickRoute` in `PickRouteTag`. Covered
   by `app/router/script_fastpath_test.go` and upstream's
   `TestRouterScriptDNSDispatcherReentry`.
-  The scripts ship enabled, as upstream does, with two known risks the
-  maintainer accepted on 2026-10-10 (PR #33 review findings R1-1, R1-3).
+  The scripts ship enabled, as upstream does, in upstream's sandbox of
+  whitelisted functions (XTLS/Xray-core#7136, which also refuses inline
+  scripts for now), with two known risks the maintainer accepted on
+  2026-10-10 (PR #33 review findings R1-1, R1-3).
   `Pool` in `common/lua/pool.go` creates one state, about 177 KiB plus the
   script's data, per concurrent call with no bound; a plain bound would
   deadlock a routing script whose DNS lookup re-enters routing, and an
@@ -226,6 +261,37 @@ guard it.
   (`fc8f8a45`), so the wire format is unchanged. Covered by
   `TestServerKeepsFragmentsOfDifferentPacketsApart` in
   `transport/internet/finalmask/xdns/hardening_test.go`.
+- The XDNS DoH resolver over h3 closes the UDP socket and `quic.Transport`
+  of a dial that fails or is canceled; upstream (XTLS/Xray-core#7140) closes
+  them only once a dial succeeds. It refuses `"congestion": "brutal"`, which
+  upstream's dial meets with a panic in a goroutine nothing recovers. Covered
+  by `TestDOHResolverH3ClosesTheSocketOfAFailedDial` and
+  `TestNewDOHResolverRejectsBrutalCongestion` in
+  `transport/internet/finalmask/xdns/resolver_doh_test.go`. Its TLS config
+  names the host of its URL unless `serverName` names another. Upstream left
+  the name empty: over h1 and h2 a resolver without `serverName` verified its
+  server only with a pinned leaf certificate or `verifyPeerCertByName`, and
+  then sent no SNI; over h3, http3 put the name in the ClientHello but a
+  pinned CA was checked against the empty one and refused. The ClientHello
+  over h1 and h2 now carries the URL's host as SNI, as from Go's net/http,
+  curl or a browser and as over h3 already: a passive observer sees the DoH
+  host name where it saw a hello without SNI, active probing meets the same
+  server. A URL with an IP address still sends no SNI. A redirect to another
+  host is verified against the URL's name too: it is followed only when the
+  new host's certificate also covers that name, or a pinned leaf certificate
+  or `verifyPeerCertByName` accepts it; over h3 the new host's own name used
+  to be checked. The TLS config is built
+  once per resolver, after its QUIC settings are checked. Covered by
+  `TestDOHResolverTLSNamesTheServerOfItsURL`,
+  `TestDOHResolverH3PinnedCAWithoutServerName` and
+  `TestDOHResolverBuildsItsTLSConfigOnce`.
+- The TUN stack copies a TCP segment that was put together from IP fragments,
+  or joined because its checksum is looked at, instead of keeping the buffers
+  it was read into: upstream (XTLS/Xray-core#7179) kept the buffer of the last
+  piece, so the connection read other bytes than were sent or waited for
+  bytes it had acknowledged. Covered by
+  `TestTCPSegmentPutTogetherWithSegments` in
+  `proxy/tun/fragment_kept_test.go`.
 - Gecko (`transport/internet/finalmask/salamander/conn.go`) quarantines a
   message ID that received chunks of two messages: a repeated index must
   carry the same bytes and chunk lengths must match the split every sender
@@ -258,13 +324,13 @@ guard it.
   `TestRawUDPRefusesGeckoWithoutIntegrity`
   (`transport/internet/udp/gecko_integrity_test.go`) and
   `TestRawUDPInboundsRefuseGeckoUnderNominalQUIC`.
-- WireGuard's TUN wrappers close once: wireguard-go closes the device itself
-  when it shuts down after a failed bind, and the owner closes it again.
-  Upstream's netstack TUN (`proxy/wireguard/netstack.go`) panics on the
-  second close and takes down a running instance that added such an inbound;
-  the kernel TUN (`proxy/wireguard/tun_linux.go`) repeats its teardown and
-  closes its netlink handle concurrently. Covered by
-  `TestNetTUNCloseIsIdempotent` and `TestKernelTunCloseTearsDownOnce`.
+- WireGuard's kernel TUN wrapper (`proxy/wireguard/tun_linux.go`) closes
+  once: wireguard-go closes the device itself when it shuts down after a
+  failed bind, and the owner closes it again. Upstream's repeats its teardown
+  and closes its netlink handle concurrently. The netstack TUN
+  (`proxy/wireguard/netstack.go`), which upstream rebuilt on Xray's own
+  TCP/IP stack in XTLS/Xray-core#7156, closes once in upstream too. Covered by
+  `TestKernelTunCloseTearsDownOnce` and `TestNetTUNCloseIsIdempotent`.
 - `outbound.Manager.RemoveHandler`, which HandlerService `RemoveOutbound`
   calls, closes the handler it removes, after unpublishing it and without the
   manager lock: a port of upstream XTLS/Xray-core#7112 at `29885292ca`, open

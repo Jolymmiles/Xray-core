@@ -24,6 +24,12 @@ type interConn struct {
 
 	client bool
 	user   *protocol.MemoryUser
+	lock   chan struct{}
+	mu     sync.Mutex
+}
+
+func (c *interConn) unlock() {
+	<-c.lock
 }
 
 func (c *interConn) User() *protocol.MemoryUser {
@@ -40,6 +46,9 @@ func (c *interConn) Read(b []byte) (int, error) {
 }
 
 func (c *interConn) Write(b []byte) (int, error) {
+	c.lock <- struct{}{}
+	defer c.unlock()
+
 	if c.client {
 		c.client = false
 		if _, err := c.stream.Write(append(quicvarint.Append(nil, FrameTypeTCPRequest), b...)); err != nil {
@@ -47,11 +56,20 @@ func (c *interConn) Write(b []byte) (int, error) {
 		}
 		return len(b), nil
 	}
-
 	return c.stream.Write(b)
 }
 
 func (c *interConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case c.lock <- struct{}{}:
+		defer c.unlock()
+	default:
+		c.stream.CancelRead(0)
+		c.stream.CancelWrite(0)
+		return nil
+	}
 	c.stream.CancelRead(0)
 	return c.stream.Close()
 }

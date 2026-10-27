@@ -3,6 +3,7 @@ package reality
 import (
 	"context"
 	"crypto/ecdh"
+	"crypto/mldsa"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -11,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
 )
@@ -95,10 +95,13 @@ func TestREALITYUClientEcho(t *testing.T) {
 	if _, err := rand.Read(seed); err != nil {
 		t.Fatal(err)
 	}
-	verifyKey, _ := mldsa65.NewKeyFromSeed((*[32]byte)(seed))
+	verifyKey, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, keys := range map[string]struct{ seed, verify []byte }{
 		"x25519":                {},
-		"ml-dsa-65":             {seed: seed, verify: verifyKey.Bytes()},
+		"ml-dsa-65":             {seed: seed, verify: verifyKey.PublicKey().Bytes()},
 		"server ml-dsa-65 only": {seed: seed},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -140,7 +143,10 @@ func TestREALITYUClientClosesOnFailure(t *testing.T) {
 	if _, err := rand.Read(otherSeed); err != nil {
 		t.Fatal(err)
 	}
-	wrongKey, _ := mldsa65.NewKeyFromSeed((*[32]byte)(otherSeed))
+	wrongKey, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), otherSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, config := range map[string]func(publicKey []byte) *Config{
 		"unknown fingerprint": func(publicKey []byte) *Config {
 			return &Config{Fingerprint: "no-such-fingerprint", ServerName: keyShareTestServerName, PublicKey: publicKey}
@@ -157,7 +163,7 @@ func TestREALITYUClientClosesOnFailure(t *testing.T) {
 				ServerName:    keyShareTestServerName,
 				PublicKey:     publicKey,
 				ShortId:       []byte{1, 2, 3, 4, 5, 6, 7, 8},
-				Mldsa65Verify: wrongKey.Bytes(),
+				Mldsa65Verify: wrongKey.PublicKey().Bytes(),
 			}
 		},
 	} {

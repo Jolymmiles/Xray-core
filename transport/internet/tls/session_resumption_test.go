@@ -175,7 +175,7 @@ func runUClientHandshakes(
 			t.Fatalf("unexpected TLS marker on connection %d: got %d, want %d", i+1, marker[0], i)
 		}
 
-		states = append(states, clientConn.ConnectionState())
+		states = append(states, clientConn.UConn.ConnectionState())
 		if _, err := clientConn.Write([]byte{byte(i)}); err != nil {
 			clientConn.Close()
 			t.Fatalf("acknowledge TLS marker on connection %d: %v", i+1, err)

@@ -283,7 +283,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	}
 
 	var input *bytes.Reader
-	var rawInput *bytes.Buffer
+	var rawInput **bytes.Buffer
 	var visionCarrier proxy.VisionCarrier
 	allowUDP443 := false
 	switch requestAddons.Flow {

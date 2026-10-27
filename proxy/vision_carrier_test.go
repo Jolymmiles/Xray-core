@@ -71,7 +71,7 @@ func TestResolveVisionCarrierCommonConnection(t *testing.T) {
 				if !ok {
 					t.Fatal("VisionCarrier.Buffers() rejected CommonConn")
 				}
-				if input != wantInput || rawInput != wantRawInput {
+				if input != wantInput || *rawInput != *wantRawInput {
 					t.Fatal("VisionCarrier.Buffers() changed Vision buffer identity")
 				}
 				if carrier.CanSpliceCopy() != test.wantDirectCopy {
