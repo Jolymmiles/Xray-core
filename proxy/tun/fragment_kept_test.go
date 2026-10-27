@@ -4,45 +4,73 @@ import (
 	"bytes"
 	"crypto/rand"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 )
 
-// A TCP segment that came in fragments is put together outside the buffers the
-// link was read into, so it is copied rather than kept: keeping it took the
-// buffer of the last fragment instead, and the connection read other bytes.
-func TestTCPSegmentFromFragmentsWithSegments(t *testing.T) {
-	for _, test := range []struct{ src, dst string }{
-		{"10.0.0.1:1234", "10.0.0.2:80"},
-		{"[fd00::1]:1234", "[fd00::2]:80"},
+// A TCP segment that is put together outside the buffers the link was read
+// into is copied rather than kept: keeping it took the buffer the last piece
+// was read into instead, and the connection read other bytes. Fragments are
+// put together by the reassembly, a segment larger than a buffer is joined when
+// its checksum is looked at.
+func TestTCPSegmentPutTogetherWithSegments(t *testing.T) {
+	for _, test := range []struct {
+		name, src, dst string
+		verify         bool
+		size, fragment int
+	}{
+		{"fragments", "10.0.0.1:1234", "10.0.0.2:80", false, 5000, 1024},
+		{"fragments over IPv6", "[fd00::1]:1234", "[fd00::2]:80", false, 5000, 1024},
+		{"joined to verify", "10.0.0.1:1234", "10.0.0.2:80", true, 30000, 0},
+		{"joined to verify over IPv6", "[fd00::1]:1234", "[fd00::2]:80", true, 30000, 0},
 	} {
-		conns := make(chan accepted, 1)
-		p, l := newPeer(t, test.src, test.dst)
-		l.segments = true
-		newTestStack(t, l, accept(conns))
-		p.connect(nil)
-		a := take(t, conns)
+		t.Run(test.name, func(t *testing.T) {
+			conns := make(chan accepted, 1)
+			p, l := newPeer(t, test.src, test.dst)
+			l.segments = true
+			s := newTestStack(t, l, accept(conns))
+			s.verify = test.verify
+			p.connect(nil)
+			a := take(t, conns)
 
-		sent := make([]byte, 5000)
-		rand.Read(sent)
-		for _, part := range split(summed(p.bytes(p.seq, tcpAck|tcpPsh, nil, sent)), 1024, 1) {
-			l.in <- part
-		}
-		for r := p.receive(); r.ack != p.seq+uint32(len(sent)); r = p.receive() {
-		}
-		var received []byte
-		for len(received) < len(sent) {
-			mb, err := a.conn.(buf.Reader).ReadMultiBuffer()
-			if err != nil {
-				t.Fatal(err)
+			sent := make([]byte, test.size)
+			rand.Read(sent)
+			packet := summed(p.bytes(p.seq, tcpAck|tcpPsh, nil, sent))
+			if test.fragment == 0 {
+				l.in <- packet
+			} else {
+				for _, part := range split(packet, test.fragment, 1) {
+					l.in <- part
+				}
 			}
-			for _, b := range mb {
-				received = append(received, b.Bytes()...)
+			for r := p.receive(); r.ack != p.seq+uint32(len(sent)); r = p.receive() {
 			}
-			buf.ReleaseMulti(mb)
-		}
-		if !bytes.Equal(received, sent) {
-			t.Fatal(test.src, ": read something else than what was sent in fragments")
-		}
+
+			// what was acknowledged is queued: reading it does not wait, unless something is wrong
+			received := make(chan []byte, 1)
+			go func() {
+				var b []byte
+				for len(b) < len(sent) {
+					mb, err := a.conn.(buf.Reader).ReadMultiBuffer()
+					if err != nil {
+						break
+					}
+					for _, part := range mb {
+						b = append(b, part.Bytes()...)
+					}
+					buf.ReleaseMulti(mb)
+				}
+				received <- b
+			}()
+			select {
+			case b := <-received:
+				if !bytes.Equal(b, sent) {
+					t.Fatalf("read %d bytes other than the %d that were sent", len(b), len(sent))
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("not all that was acknowledged could be read")
+			}
+		})
 	}
 }
