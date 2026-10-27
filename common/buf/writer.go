@@ -22,44 +22,17 @@ type BufferToBytesWriter struct {
 // WriteMultiBuffer implements Writer. This method takes ownership of the given buffer.
 func (w *BufferToBytesWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	defer ReleaseMulti(mb)
-	return w.writeMultiBuffer(nil, mb)
-}
 
-// WriteMultiBufferWithPrefix writes an owned prefix and MultiBuffer without
-// first allocating a combined MultiBuffer slice.
-func (w *BufferToBytesWriter) WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error {
-	defer prefix.Release()
-	defer ReleaseMulti(mb)
-	return w.writeMultiBuffer(prefix.Bytes(), mb)
-}
-
-// WriteMultiBufferWithPrefixBytes writes a borrowed prefix and takes ownership
-// of the payload buffers. The prefix is used only for the duration of the call.
-func (w *BufferToBytesWriter) WriteMultiBufferWithPrefixBytes(prefix []byte, mb MultiBuffer) error {
-	defer ReleaseMulti(mb)
-	return w.writeMultiBuffer(prefix, mb)
-}
-
-func (w *BufferToBytesWriter) writeMultiBuffer(prefix []byte, mb MultiBuffer) error {
 	size := mb.Len()
-	if len(prefix) != 0 {
-		size += int32(len(prefix))
-	}
 	if size == 0 {
 		return nil
 	}
 
-	if prefix == nil && len(mb) == 1 {
+	if len(mb) == 1 {
 		return WriteAllBytes(w.Writer, mb[0].Bytes(), w.counter)
-	}
-	if len(prefix) != 0 && len(mb) == 0 {
-		return WriteAllBytes(w.Writer, prefix, w.counter)
 	}
 
 	bufferCount := len(mb)
-	if len(prefix) != 0 {
-		bufferCount++
-	}
 	var bs [][]byte
 	if bufferCount <= len(w.inline) {
 		bs = w.inline[:0]
@@ -68,9 +41,6 @@ func (w *BufferToBytesWriter) writeMultiBuffer(prefix []byte, mb MultiBuffer) er
 			w.cache = make([][]byte, 0, bufferCount)
 		}
 		bs = w.cache
-	}
-	if len(prefix) != 0 {
-		bs = append(bs, prefix)
 	}
 	for _, b := range mb {
 		bs = append(bs, b.Bytes())
@@ -117,14 +87,6 @@ type BufferedWriter struct {
 	flushNext bool
 }
 
-type prefixMultiBufferWriter interface {
-	WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error
-}
-
-type prefixBytesMultiBufferWriter interface {
-	WriteMultiBufferWithPrefixBytes(prefix []byte, mb MultiBuffer) error
-}
-
 // PrefixWriter keeps a short prefix inline until the first payload arrives,
 // then enters synchronized pass-through mode.
 type PrefixWriter struct {
@@ -156,21 +118,38 @@ func (w *PrefixWriter) WriteMultiBuffer(multiBuffer MultiBuffer) error {
 	if w.prefixLen == 0 {
 		return w.writer.WriteMultiBuffer(multiBuffer)
 	}
-	prefix := w.prefix[:w.prefixLen]
+	head := New()
+	_, _ = head.Write(w.prefix[:w.prefixLen])
 	w.prefixLen = 0
-	defer clear(w.prefix[:])
-	if writer, ok := w.writer.(prefixBytesMultiBufferWriter); ok {
-		return writer.WriteMultiBufferWithPrefixBytes(prefix, multiBuffer)
+	clear(w.prefix[:])
+	return writeWithHead(w.writer, head, multiBuffer)
+}
+
+// writeWithHead copies payload behind the bytes already in head, as upstream's
+// BufferedWriter does with a buffered header, and hands the result to writer
+// in one call. It takes ownership of head and payload.
+//
+// A header written in a slice of its own leaves a TLS or REALITY connection
+// as a record of its own: a fixed size right after the handshake that stock
+// Xray never sends. Here it shares the first record with the payload.
+func writeWithHead(writer Writer, head *Buffer, payload MultiBuffer) error {
+	out := MultiBuffer{head}
+	for _, b := range payload {
+		if b == nil {
+			continue
+		}
+		data := b.Bytes()
+		for len(data) > 0 {
+			if head.IsFull() {
+				head = New()
+				out = append(out, head)
+			}
+			n, _ := head.Write(data)
+			data = data[n:]
+		}
+		b.Release()
 	}
-	prefixBuffer := New()
-	_, _ = prefixBuffer.Write(prefix)
-	if writer, ok := w.writer.(prefixMultiBufferWriter); ok {
-		return writer.WriteMultiBufferWithPrefix(prefixBuffer, multiBuffer)
-	}
-	combined := make(MultiBuffer, len(multiBuffer)+1)
-	combined[0] = prefixBuffer
-	copy(combined[1:], multiBuffer)
-	return w.writer.WriteMultiBuffer(combined)
+	return writer.WriteMultiBuffer(out)
 }
 
 var _ Writer = (*PrefixWriter)(nil)
@@ -267,17 +246,9 @@ func (w *BufferedWriter) WriteMultiBuffer(b MultiBuffer) error {
 			}
 			return w.writer.WriteMultiBuffer(b)
 		}
-		if writer, ok := w.writer.(prefixMultiBufferWriter); ok {
-			prefix := w.buffer
-			w.buffer = nil
-			return writer.WriteMultiBufferWithPrefix(prefix, b)
-		}
-
-		combined := make(MultiBuffer, len(b)+1)
-		combined[0] = w.buffer
-		copy(combined[1:], b)
+		head := w.buffer
 		w.buffer = nil
-		return w.writer.WriteMultiBuffer(combined)
+		return writeWithHead(w.writer, head, b)
 	}
 
 	reader := MultiBufferContainer{
@@ -366,28 +337,6 @@ func (w *BufferedWriter) Close() error {
 // SequentialWriter is a Writer that writes MultiBuffer sequentially into the underlying io.Writer.
 type SequentialWriter struct {
 	io.Writer
-}
-
-// WriteMultiBufferWithPrefix writes the owned prefix before the owned payload
-// without allocating a temporary combined MultiBuffer slice.
-func (w *SequentialWriter) WriteMultiBufferWithPrefix(prefix *Buffer, mb MultiBuffer) error {
-	if err := WriteAllBytes(w.Writer, prefix.Bytes(), nil); err != nil {
-		prefix.Release()
-		ReleaseMulti(mb)
-		return err
-	}
-	prefix.Release()
-	return w.WriteMultiBuffer(mb)
-}
-
-// WriteMultiBufferWithPrefixBytes writes a borrowed prefix before taking
-// ownership of the payload buffers.
-func (w *SequentialWriter) WriteMultiBufferWithPrefixBytes(prefix []byte, mb MultiBuffer) error {
-	if err := WriteAllBytes(w.Writer, prefix, nil); err != nil {
-		ReleaseMulti(mb)
-		return err
-	}
-	return w.WriteMultiBuffer(mb)
 }
 
 // WriteMultiBuffer implements Writer.

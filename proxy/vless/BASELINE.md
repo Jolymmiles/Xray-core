@@ -53,7 +53,13 @@ The characterization suite also fixes these stream semantics:
 A successful upload EOF on a TCP request is propagated as a write-half close
 when the outbound connection supports `CloseWrite`. The download direction
 remains open until the peer response and EOF have been delivered. This applies
-to plain TCP, TLS, and REALITY VLESS carriers and does not add protocol bytes.
+to plain TCP, TLS, and REALITY VLESS carriers and does not add VLESS bytes. On
+TLS and REALITY the write-half close is `CloseWrite` of the TLS connection,
+which sends a close_notify alert: a 19-byte application-data record in TLS
+1.3, right after the last payload of that direction. Upstream sends the same
+alert from the client only when it closes the whole connection, after the
+one-second uplink-only/downlink-only timeout; the 2026-10-27 capture saw no
+server alert from upstream before the client closed.
 Transports without half-close support retain their existing lifecycle. This
 baseline covers one VLESS connection per TCP/TLS/REALITY carrier; it does not
 establish SMUX logical-stream half-close support.
@@ -191,7 +197,10 @@ creates the Vision-only traffic state; the Vision control benchmark remains at
 112 B and one allocation. `BufferedWriter.SetFlushNext` now transfers the first
 payload buffers alongside the header rather than copying their bytes into the
 header buffer. It still makes one underlying multi-buffer write; the additional
-eight bytes are slice metadata, not payload storage.
+eight bytes are slice metadata, not payload storage. This transfer was
+reverted on 2026-10-27: on TLS and REALITY each buffer of that write became
+its own record, so the header left in a record of its own (see "Header and
+first payload in one TLS record").
 
 TCP lifecycle characterization also found and fixed two resource leaks:
 failed TLS/REALITY/header setup now closes the dialed connection, and listener
@@ -208,6 +217,78 @@ Acceptance gates for this pass:
   buffers, VLESS encoding, and VLESS inbound;
 - `go vet` reports only the four pre-existing Vision `unsafe.Pointer`
   diagnostics in inbound and outbound.
+
+## Header and first payload in one TLS record (2026-10-27)
+
+The 2026-07-18 transfer of the first payload buffers handed the header to
+`BufferToBytesWriter` as a separate slice, and the inbound response prefix
+writer did the same with the two-byte response header. `net.Buffers` writes
+each slice with its own `Write`, and on TLS and REALITY each `Write` is a
+record. Right after the handshake the client therefore sent a record holding
+only the request header (43 bytes without flow, 61 with Vision, for an IPv4
+destination) and the server a 19-byte record holding only the response
+header. Stock Xray sends neither: upstream copies the first payload into the
+header buffer and writes both at once. Per-flow constant record sizes are
+features a passive classifier can use, so this pass restores upstream's
+copy: `BufferedWriter` in flush-next mode and `PrefixWriter` copy the first
+payload behind the header and pass the result as one buffer, or as
+`buf.Size` chunks when it is larger. The prefix methods on
+`BufferToBytesWriter` and `SequentialWriter` are gone.
+
+Record sizes after the handshake on loopback, Xray client and server over
+REALITY, sniffing enabled on the client's SOCKS inbound, a 517-byte request
+echoed back, four connections per binary (`application data` lengths; the
+first client record is the encrypted Finished):
+
+| Binary | Client records | Server records after the handshake |
+| --- | --- | --- |
+| upstream `1b1647cd`, no flow | `53 560` | `536` |
+| fork `72ba70ee`, no flow | `53 43 534` | `19 534` |
+| this change, no flow | `53 560` | `536` |
+| fork `72ba70ee`, Vision | `53 61 565..754` | `19 590..786` |
+| this change, Vision | `53 655..827` | `558..697` |
+
+Every Vision record size varies with its random padding. The trailing 19-byte
+record each direction still shows in the fork is the close_notify of the
+write-half close described above, not a VLESS header. Without sniffing the
+outbound still sends its header before the first payload arrives; that is a
+separate defect of the first-payload wait and is not changed here.
+
+Isolated benchmarks, linux/amd64, AMD Ryzen 9 9950X, Go 1.27.3, CPU governor
+`powersave`, host load average 3-4; before and after binaries alternated in
+five rounds of two samples, medians of ten:
+
+```sh
+go test ./common/buf -run '^$' -benchmem -count=2 \
+  -bench 'Benchmark(BufferedWriterHeaderAndFirstPayload|BufferedTCPWriterHeaderAndFirstPayload|PrefixedBufferedTCPWriterHeaderAndFirstPayload|VLESSResponsePrefixWriter|PrefixedBufferedSequentialWriter|IdlePrefixWriter|HeaderAndFirstPayloadOverTLS)$'
+```
+
+| Benchmark (1400-byte first payload) | Before | After | Bytes | Allocations |
+| --- | ---: | ---: | ---: | ---: |
+| Request header over TLS | 3.566 µs | 2.031 µs | 244 -> 201 | 4 -> 5 |
+| Response header over TLS | 3.463 µs | 2.135 µs | 199 -> 202 | 3 -> 5 |
+| `BufferedWriter` flush-next, recording writer | 75.99 ns | 81.51 ns (~) | 168 -> 160 | 5 -> 5 |
+| `PrefixWriter` to `io.Discard` | 69.63 ns | 87.30 ns | 240 -> 273 | 5 -> 6 |
+| Prefixed `SequentialWriter` to `io.Discard` | 59.38 ns | 70.75 ns | 168 -> 176 | 5 -> 6 |
+
+The TLS benchmarks write through a real `crypto/tls` client on loopback and
+are the path a connection takes: one sealed record and one system call
+instead of two. The writer-only benchmarks add the copy of the first payload
+and one slice allocation; they write to `io.Discard` and miss the record cost.
+The process benchmark (`BenchmarkVLESSTCPProcess`, 50 connections, five
+samples each) shows no significant change: TLS no flow 1.263 -> 1.263 ms,
+TLS Vision 1.259 -> 1.328 ms (p=0.84), REALITY no flow 1.523 -> 1.491 ms,
+REALITY Vision 1.504 -> 1.540 ms (p=0.55). Its client has no sniffing, so
+only the server side changes there.
+
+Regression tests: `TestHeaderAndFirstPayloadShareOneTLSRecord` and
+`TestHeaderWithLargeFirstPayloadKeepsBytesAndLeadsWithPayload`
+(`common/buf/writer_tls_record_test.go`) count the records of a real TLS
+client, and the integration test
+`TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload`
+(`common/singmux/vless_tcp_record_integration_test.go`) reads the records
+between an Xray client and server over TLS and REALITY, with and without
+Vision.
 
 ## TLS, REALITY, and Vision process baseline (2026-07-18)
 
