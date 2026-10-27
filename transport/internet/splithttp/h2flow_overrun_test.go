@@ -370,3 +370,120 @@ func TestFlowSiblingUploadAfterDroppedOverrun(t *testing.T) {
 		t.Fatalf("stockErr=%v, govErr=%v (want both nil)", stockErr, govErr)
 	}
 }
+
+// TestFlowDataInHeaderBlockAsStock sends a DATA frame past the stream's window
+// inside an open header block: the governed server ends the connection as a
+// stock one does. The governor dropped the frame and reset the stream, and
+// the stack never saw the protocol error.
+func TestFlowDataInHeaderBlockAsStock(t *testing.T) {
+	run := func(t *testing.T, governed bool) (gotGoAway bool, errCode http2.ErrCode) {
+		unblock := make(chan struct{})
+		defer close(unblock)
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/bump" {
+				io.Copy(io.Discard, r.Body)
+				return
+			}
+			<-unblock
+		})
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		var listener net.Listener = ln
+		h2cfg := &http.HTTP2Config{
+			MaxReceiveBufferPerStream:     flowShownUp,
+			MaxReceiveBufferPerConnection: flowServerReceiveWindow,
+		}
+		if governed {
+			h2cfg = (&Config{H2Flow: &H2FlowConfig{Mode: 1}}).h2ReceiveConfig(true)
+			listener = &flowListener{
+				Listener:   ln,
+				up:         flowDefault,
+				down:       flowDefault,
+				connWindow: h2ConnWindow(h2cfg),
+			}
+		}
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		srv := &http.Server{Handler: handler, Protocols: protocols, HTTP2: h2cfg}
+		go srv.Serve(listener)
+		defer srv.Close()
+
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		conn.Write([]byte(h2Preface))
+		fr := http2.NewFramer(conn, conn)
+		fr.WriteSettings()
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
+				fr.WriteSettingsAck()
+				break
+			}
+		}
+
+		var hb1, hb3 bytes.Buffer
+		enc1 := hpack.NewEncoder(&hb1)
+		for _, kv := range [][2]string{{":method", "POST"}, {":scheme", "http"}, {":path", "/upload"}, {":authority", "example.com"}} {
+			enc1.WriteField(hpack.HeaderField{Name: kv[0], Value: kv[1]})
+		}
+		enc3 := hpack.NewEncoder(&hb3)
+		for _, kv := range [][2]string{{":method", "POST"}, {":scheme", "http"}, {":path", "/bump"}, {":authority", "example.com"}} {
+			enc3.WriteField(hpack.HeaderField{Name: kv[0], Value: kv[1]})
+		}
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: hb1.Bytes(), EndHeaders: true})
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: hb3.Bytes(), EndHeaders: true})
+		for i := 0; i < 4; i++ {
+			fr.WriteData(3, false, make([]byte, 16384))
+		}
+		connWin := int64(h2InitWindow) - 4*16384
+		for connWin < int64(flowShownUp)+16384 {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wu, ok := f.(*http2.WindowUpdateFrame); ok && wu.StreamID == 0 {
+				connWin += int64(wu.Increment)
+			}
+		}
+
+		chunk := make([]byte, 16384)
+		for sent := 0; sent < flowShownUp; sent += len(chunk) {
+			fr.WriteData(1, false, chunk)
+		}
+		// Start a trailer HEADERS block without END_HEADERS (p.inBlock = true),
+		// then send a DATA frame that exceeds stream 1's window.
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: hb1.Bytes(), EndHeaders: false})
+		fr.WriteData(1, false, make([]byte, 100))
+
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				return gotGoAway, errCode
+			}
+			if ga, ok := f.(*http2.GoAwayFrame); ok {
+				return true, ga.ErrCode
+			}
+		}
+	}
+
+	stockGA, stockCode := run(t, false)
+	govGA, govCode := run(t, true)
+	t.Logf("data inside header block -> stock: goAway=%v code=%v; governed: goAway=%v code=%v",
+		stockGA, stockCode, govGA, govCode)
+	if govGA != stockGA || govCode != stockCode {
+		t.Fatalf("governed (goAway=%v, code=%v) differs from stock (goAway=%v, code=%v)",
+			govGA, govCode, stockGA, stockCode)
+	}
+}
