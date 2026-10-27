@@ -183,11 +183,14 @@ func TestFlowUploadPastWindowAsStock(t *testing.T) {
 	}
 }
 
-// TestFlowDroppedOverrunReturnsConnCredit sends a frame past a stream's shown
-// upload window: the connection credit for the dropped frame goes back to the
-// client. The stack never saw the frame, so it sent no WINDOW_UPDATE for it,
-// and the credit stayed with the governor.
-func TestFlowDroppedOverrunReturnsConnCredit(t *testing.T) {
+// TestFlowDroppedOverrunTakesNoConnWindow has a stream that read part of its
+// body send a frame past its shown upload window: the dropped frame takes
+// nothing from the connection window, and nothing but the reset goes to the
+// client, as with a stack that refuses it. The governor counted the frame
+// returned and gave back what its release allowed, which for a stream that
+// had read was nothing, and a sibling's legal upload then closed the
+// connection; where it did give credit back, a stock server sends none.
+func TestFlowDroppedOverrunTakesNoConnWindow(t *testing.T) {
 	h := newFlowHarness(t)
 	t.Cleanup(func() { h.c.Close() })
 	h.track()
@@ -197,28 +200,34 @@ func TestFlowDroppedOverrunReturnsConnCredit(t *testing.T) {
 	h.fromServer(func(fr *http2.Framer) {
 		fr.WriteWindowUpdate(0, 8<<20)
 	})
-	h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, 1, flowShownUp) })
+	// The handler reads the first 64 KiB and returns both credits.
+	h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, 1, 64<<10) })
 	h.fromServer(func(fr *http2.Framer) {
-		fr.WriteWindowUpdate(0, flowShownUp)
+		fr.WriteWindowUpdate(0, 64<<10)
+		fr.WriteWindowUpdate(1, 64<<10)
 	})
+	h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, 1, flowShownUp-(64<<10)) })
 	h.conn.take()
 
-	// Stream 1 sends a 16 KiB DATA frame past stream 1's 1 MiB shown window.
+	h.c.mu.Lock()
+	before := h2InitWindow + h.c.upConnForwarded - h.c.upConnSent
+	h.c.mu.Unlock()
 	h.fromClient(func(fr *http2.Framer) {
 		fr.WriteData(1, false, make([]byte, 16384))
 	})
 	h.sync()
+	toClient := h.conn.take()
 
 	h.c.mu.Lock()
-	rel := h.c.upConnRelease()
-	sent := h.c.upConnSent
-	ret := h.c.upConnReturned
-	fwd := h.c.upConnForwarded
+	after := h2InitWindow + h.c.upConnForwarded - h.c.upConnSent
 	h.c.mu.Unlock()
-	t.Logf("upConnSent=%d, upConnReturned=%d, upConnForwarded=%d, upConnRelease()=%d",
-		sent, ret, fwd, rel)
-	if rel > 0 {
-		t.Fatalf("the dropped frame left %d bytes of connection credit with the governor", rel)
+	if after != before {
+		t.Fatalf("the dropped frame took %d bytes of the connection window (%d before, %d after)", before-after, before, after)
+	}
+	for _, f := range rawFrames(t, toClient) {
+		if f.typ != h2RSTStream {
+			t.Fatalf("frame of type %d went to the client with the reset; a stock server sends only RST_STREAM", f.typ)
+		}
 	}
 }
 
@@ -366,6 +375,340 @@ func TestFlowSiblingUploadAfterDroppedOverrun(t *testing.T) {
 	stockErr := run(t, false)
 	govErr := run(t, true)
 	t.Logf("stream 3 256 KiB upload after stream 1 overrun -> stock err: %v; governed err: %v", stockErr, govErr)
+	if stockErr != nil || govErr != nil {
+		t.Fatalf("stockErr=%v, govErr=%v (want both nil)", stockErr, govErr)
+	}
+}
+
+// TestFlowSiblingUploadAfterReadingStreamOverrun is
+// TestFlowSiblingUploadAfterDroppedOverrun with stream 1 read in part before
+// it sends past its window: stock and governed both take stream 3's body.
+// The governor's release after the drop gave nothing back once stream 1 had
+// read, and stream 3 closed the connection.
+func TestFlowSiblingUploadAfterReadingStreamOverrun(t *testing.T) {
+	run := func(t *testing.T, governed bool) error {
+		unblock1 := make(chan struct{})
+		defer close(unblock1)
+		read64Ready := make(chan struct{})
+		startRead3 := make(chan struct{})
+		siblingDone := make(chan error, 1)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/sibling" {
+				<-startRead3
+				rest := make([]byte, 320<<10)
+				_, err := io.ReadFull(r.Body, rest)
+				siblingDone <- err
+				return
+			}
+			buf := make([]byte, 64<<10)
+			if _, err := io.ReadFull(r.Body, buf); err != nil {
+				return
+			}
+			close(read64Ready)
+			<-unblock1
+		})
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		var listener net.Listener = ln
+		// After reading 64 KiB on stream 1, stock has 960 KiB stream window left (total 1 MiB)
+		// and 1280 KiB connection window left, matching governed's advertised windows.
+		h2cfg := &http.HTTP2Config{
+			MaxReceiveBufferPerStream:     flowShownUp - (64 << 10),
+			MaxReceiveBufferPerConnection: flowConnFloor + 256<<10,
+		}
+		if governed {
+			h2cfg = (&Config{H2Flow: &H2FlowConfig{Mode: 1}}).h2ReceiveConfig(true)
+			listener = &flowListener{
+				Listener:   ln,
+				up:         flowDefault,
+				down:       flowDefault,
+				connWindow: h2ConnWindow(h2cfg),
+			}
+		}
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		srv := &http.Server{Handler: handler, Protocols: protocols, HTTP2: h2cfg}
+		go srv.Serve(listener)
+		defer srv.Close()
+
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		conn.Write([]byte(h2Preface))
+		fr := http2.NewFramer(conn, conn)
+		fr.WriteSettings()
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
+				fr.WriteSettingsAck()
+				break
+			}
+		}
+
+		encodeHeaders := func(path string) []byte {
+			var hb bytes.Buffer
+			enc := hpack.NewEncoder(&hb)
+			for _, kv := range [][2]string{
+				{":method", "POST"},
+				{":scheme", "http"},
+				{":path", path},
+				{":authority", "example.com"},
+			} {
+				enc.WriteField(hpack.HeaderField{Name: kv[0], Value: kv[1]})
+			}
+			return hb.Bytes()
+		}
+
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: encodeHeaders("/upload"), EndHeaders: true})
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: encodeHeaders("/sibling"), EndHeaders: true})
+
+		chunk := make([]byte, 16384)
+		for i := 0; i < 4; i++ {
+			fr.WriteData(1, false, chunk)
+		}
+		<-read64Ready
+
+		ping1 := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		fr.WritePing(false, ping1)
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pf, ok := f.(*http2.PingFrame); ok && pf.IsAck() && pf.Data == ping1 {
+				break
+			}
+		}
+
+		// Stream 1 sends the remaining 960 KiB of its 1 MiB window, plus 16 KiB past it.
+		for sent := 64 << 10; sent < flowShownUp; sent += len(chunk) {
+			fr.WriteData(1, false, chunk)
+		}
+		fr.WriteData(1, false, chunk) // 16 KiB past stream 1's window
+
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rst, ok := f.(*http2.RSTStreamFrame); ok && rst.StreamID == 1 {
+				break
+			}
+		}
+
+		// Stream 3 sends the remaining 320 KiB (20 * 16 KiB) of the connection window granted to the client.
+		for i := 0; i < 20; i++ {
+			if err := fr.WriteData(3, i == 19, chunk); err != nil {
+				close(startRead3)
+				return err
+			}
+		}
+		ping2 := [8]byte{9, 8, 7, 6, 5, 4, 3, 2}
+		fr.WritePing(false, ping2)
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				close(startRead3)
+				return err
+			}
+			if pf, ok := f.(*http2.PingFrame); ok && pf.IsAck() && pf.Data == ping2 {
+				break
+			}
+		}
+		close(startRead3)
+		return <-siblingDone
+	}
+
+	stockErr := run(t, false)
+	govErr := run(t, true)
+	t.Logf("two-stream self-read overrun -> stockErr=%v, govErr=%v", stockErr, govErr)
+	if stockErr != nil || govErr != nil {
+		t.Fatalf("stockErr=%v, govErr=%v (want both nil)", stockErr, govErr)
+	}
+}
+
+// TestFlowSiblingUploadAfterFinishedStreamOverrun has stream 3 widen the
+// connection window and finish before stream 1 sends past its window, and
+// stream 5 then upload within the connection window: stock and governed both
+// take stream 5's body.
+func TestFlowSiblingUploadAfterFinishedStreamOverrun(t *testing.T) {
+	run := func(t *testing.T, governed bool) error {
+		unblock1 := make(chan struct{})
+		defer close(unblock1)
+		bumpReady := make(chan struct{})
+		startRead5 := make(chan struct{})
+		siblingDone := make(chan error, 1)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/bump":
+				buf := make([]byte, 64<<10)
+				if _, err := io.ReadFull(r.Body, buf); err != nil {
+					return
+				}
+				close(bumpReady)
+				io.Copy(io.Discard, r.Body)
+			case "/sibling":
+				<-startRead5
+				rest := make([]byte, 256<<10)
+				_, err := io.ReadFull(r.Body, rest)
+				siblingDone <- err
+			default:
+				<-unblock1
+			}
+		})
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		var listener net.Listener = ln
+		h2cfg := &http.HTTP2Config{
+			MaxReceiveBufferPerStream:     flowShownUp,
+			MaxReceiveBufferPerConnection: flowConnFloor + 256<<10,
+		}
+		if governed {
+			h2cfg = (&Config{H2Flow: &H2FlowConfig{Mode: 1}}).h2ReceiveConfig(true)
+			listener = &flowListener{
+				Listener:   ln,
+				up:         flowDefault,
+				down:       flowDefault,
+				connWindow: h2ConnWindow(h2cfg),
+			}
+		}
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		srv := &http.Server{Handler: handler, Protocols: protocols, HTTP2: h2cfg}
+		go srv.Serve(listener)
+		defer srv.Close()
+
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		conn.Write([]byte(h2Preface))
+		fr := http2.NewFramer(conn, conn)
+		fr.WriteSettings()
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
+				fr.WriteSettingsAck()
+				break
+			}
+		}
+
+		encodeHeaders := func(path string) []byte {
+			var hb bytes.Buffer
+			enc := hpack.NewEncoder(&hb)
+			for _, kv := range [][2]string{
+				{":method", "POST"},
+				{":scheme", "http"},
+				{":path", path},
+				{":authority", "example.com"},
+			} {
+				enc.WriteField(hpack.HeaderField{Name: kv[0], Value: kv[1]})
+			}
+			return hb.Bytes()
+		}
+
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: encodeHeaders("/upload"), EndHeaders: true})
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 3, BlockFragment: encodeHeaders("/bump"), EndHeaders: true})
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 5, BlockFragment: encodeHeaders("/sibling"), EndHeaders: true})
+
+		chunk := make([]byte, 16384)
+		for i := 0; i < 4; i++ {
+			fr.WriteData(3, false, chunk)
+		}
+		<-bumpReady
+
+		ping0 := [8]byte{0, 1, 2, 3, 4, 5, 6, 7}
+		fr.WritePing(false, ping0)
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pf, ok := f.(*http2.PingFrame); ok && pf.IsAck() && pf.Data == ping0 {
+				break
+			}
+		}
+
+		// Stream 3 finishes its upload (END_STREAM).
+		fr.WriteData(3, true, nil)
+
+		ping1 := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		fr.WritePing(false, ping1)
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pf, ok := f.(*http2.PingFrame); ok && pf.IsAck() && pf.Data == ping1 {
+				break
+			}
+		}
+
+		// Stream 1 sends 1 MiB + 16 KiB (overrunning its 1 MiB stream window).
+		for sent := 0; sent < flowShownUp; sent += len(chunk) {
+			fr.WriteData(1, false, chunk)
+		}
+		fr.WriteData(1, false, chunk) // 16 KiB past stream 1's 1 MiB window
+
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rst, ok := f.(*http2.RSTStreamFrame); ok && rst.StreamID == 1 {
+				break
+			}
+		}
+
+		// Stream 5 now sends 256 KiB, within the connection window that was already granted.
+		for i := 0; i < 16; i++ {
+			if err := fr.WriteData(5, i == 15, chunk); err != nil {
+				close(startRead5)
+				return err
+			}
+		}
+		ping2 := [8]byte{9, 8, 7, 6, 5, 4, 3, 2}
+		fr.WritePing(false, ping2)
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				close(startRead5)
+				return err
+			}
+			if pf, ok := f.(*http2.PingFrame); ok && pf.IsAck() && pf.Data == ping2 {
+				break
+			}
+		}
+		close(startRead5)
+		return <-siblingDone
+	}
+
+	stockErr := run(t, false)
+	govErr := run(t, true)
+	t.Logf("stockErr=%v, govErr=%v", stockErr, govErr)
 	if stockErr != nil || govErr != nil {
 		t.Fatalf("stockErr=%v, govErr=%v (want both nil)", stockErr, govErr)
 	}
