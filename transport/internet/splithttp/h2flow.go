@@ -1966,14 +1966,15 @@ func (r *flowReader) frame(f h2Frame) (drop bool) {
 			// appendResets, and the connection goes on. The frame is dropped:
 			// a stack shown the window takes none of it into the body, and one
 			// that ended the stream would end the body cleanly before the
-			// reset. Its bytes count as returned on the connection, and go
-			// back to the client with the reset, see appendResets.
+			// reset. Like a stack that refuses it, the governor takes none of
+			// it from the connection window either, and returns no credit for
+			// it.
 			// An empty frame takes no window and is past none, though a
 			// lowered window may leave what came before it past.
 			if up && f.length > 0 && s.upSent > int64(c.serverShown)+s.upForwarded {
 				c.resets = append(c.resets, f.stream)
 				c.drop(f.stream)
-				c.upConnReturned += int64(f.length)
+				c.upConnSent -= int64(f.length)
 				return true
 			}
 			if f.flags&h2FlagEndStream != 0 {
@@ -2109,12 +2110,6 @@ func (c *flowConn) appendResets(out []byte) []byte {
 		c.wqueue = appendRSTStream(c.wqueue, id, h2ErrFlowControl)
 	}
 	c.resets = c.resets[:0]
-	// The stack never saw the frames dropped past a stream's window, so it
-	// will not return their connection credit: the governor does.
-	if rel := c.upConnRelease(); rel > 0 {
-		c.upConnForwarded += rel
-		c.creditClient(0, rel)
-	}
 	c.wakeQueue()
 	return out
 }
