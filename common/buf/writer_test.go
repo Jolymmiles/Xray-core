@@ -173,7 +173,7 @@ func TestNewWriterPreservesStreamCounter(t *testing.T) {
 	}
 }
 
-func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
+func TestBufferedWriterFlushNextJoinsHeaderAndFirstPayload(t *testing.T) {
 	underlying := new(recordingMultiBufferWriter)
 	writer := NewBufferedWriter(underlying)
 	if _, err := writer.Write([]byte("header")); err != nil {
@@ -193,8 +193,8 @@ func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
 	if got := firstWrite.String(); got != "headerpayload" {
 		t.Fatalf("wire output = %q, want %q", got, "headerpayload")
 	}
-	if len(firstWrite) != 2 || firstWrite[1] != payload {
-		t.Fatal("first payload buffer was copied instead of transferred")
+	if len(firstWrite) != 1 {
+		t.Fatalf("header and first payload span %d buffers, want 1", len(firstWrite))
 	}
 
 	next := FromBytes([]byte("next"))
@@ -207,7 +207,7 @@ func TestBufferedWriterFlushNextPreservesFirstPayloadBuffers(t *testing.T) {
 	ReleaseMulti(underlying.calls[1])
 }
 
-func TestBufferedWriterWithPrefixPreservesFirstPayloadBuffers(t *testing.T) {
+func TestBufferedWriterWithPrefixJoinsHeaderAndFirstPayload(t *testing.T) {
 	underlying := new(recordingMultiBufferWriter)
 	writer, err := NewBufferedWriterWithPrefix(underlying, []byte("header"))
 	if err != nil {
@@ -220,8 +220,8 @@ func TestBufferedWriterWithPrefixPreservesFirstPayloadBuffers(t *testing.T) {
 	if len(underlying.calls) != 1 || underlying.calls[0].String() != "headerpayload" {
 		t.Fatalf("first write = %v, want headerpayload", underlying.calls)
 	}
-	if len(underlying.calls[0]) != 2 || underlying.calls[0][1] != payload {
-		t.Fatal("first payload buffer was copied instead of transferred")
+	if len(underlying.calls[0]) != 1 {
+		t.Fatalf("header and first payload span %d buffers, want 1", len(underlying.calls[0]))
 	}
 	ReleaseMulti(underlying.calls[0])
 }
@@ -262,8 +262,8 @@ func TestPrefixWriterPreservesFirstPayloadAndPassesThrough(t *testing.T) {
 	if len(underlying.calls) != 1 || underlying.calls[0].String() != "\x00\x00first" {
 		t.Fatalf("first write = %q, want prefixed payload", underlying.calls[0].String())
 	}
-	if len(underlying.calls[0]) != 2 || underlying.calls[0][1] != first {
-		t.Fatal("first payload buffer was copied")
+	if len(underlying.calls[0]) != 1 {
+		t.Fatalf("prefix and first payload span %d buffers, want 1", len(underlying.calls[0]))
 	}
 	ReleaseMulti(underlying.calls[0])
 
@@ -470,5 +470,31 @@ func BenchmarkNewStreamWriter(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		writerBenchmarkSink = NewWriter(connection)
+	}
+}
+
+func TestPrefixWriterFirstPayloadSkipsNilAndEmptyBuffers(t *testing.T) {
+	underlying := new(recordingMultiBufferWriter)
+	writer, err := NewPrefixWriter(underlying, []byte{0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	large := bytes.Repeat([]byte{'x'}, 3*Size+7)
+	if err := writer.WriteMultiBuffer(MultiBuffer{nil, New(), FromBytes([]byte("ab")), nil, FromBytes(large)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 1 {
+		t.Fatalf("underlying writes = %d, want 1", len(underlying.calls))
+	}
+	written := underlying.calls[0]
+	defer ReleaseMulti(written)
+	want := append([]byte{0, 0, 'a', 'b'}, large...)
+	if got := []byte(written.String()); !bytes.Equal(got, want) {
+		t.Fatalf("written %d bytes, want %d", len(got), len(want))
+	}
+	for index, chunk := range written[:len(written)-1] {
+		if !chunk.IsFull() {
+			t.Fatalf("chunk %d holds %d bytes before the last chunk, want %d", index, chunk.Len(), Size)
+		}
 	}
 }
