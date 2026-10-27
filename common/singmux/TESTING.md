@@ -164,7 +164,7 @@ two-byte response header in a record of its own. Stock Xray sends neither
 header alone.
 
 ```sh
-go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload$' -count=1 -v
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload$' -count=1 -timeout 10m -v
 ```
 
 The XHTTP Mux.Cool gate runs an Xray client with Mux.Cool over XHTTP (TLS,
