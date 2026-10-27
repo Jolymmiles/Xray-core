@@ -30,10 +30,10 @@ var (
 // their checked offsets are resolved once per concrete pointer type.
 //
 // rawInput points at what the connection holds as its raw input buffer when
-// Vision reads it. crypto/tls before Go 1.27.3 and uTLS hold the buffer
-// itself; crypto/tls from Go 1.27.3 and the REALITY server hold a pointer to
-// it, nil while no input is buffered and replaced as the connection takes
-// buffers from its pool, so rawInput then points at that field.
+// Vision reads it. crypto/tls up to Go 1.27 and uTLS hold the buffer itself;
+// the REALITY server, like crypto/tls after Go 1.27, holds a pointer to it,
+// nil while no input is buffered and replaced as the connection takes buffers
+// from its pool, so rawInput then points at that field.
 func VisionBuffers(connection any) (*bytes.Reader, **bytes.Buffer, bool) {
 	value := reflect.ValueOf(connection)
 	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() || value.Type().Elem().Kind() != reflect.Struct {

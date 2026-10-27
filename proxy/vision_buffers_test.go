@@ -7,16 +7,16 @@ import (
 	"unsafe"
 )
 
-// visionBufferFixture has the layout of crypto/tls before Go 1.27.3 and of
-// uTLS: the connection holds its raw input buffer.
+// visionBufferFixture has the layout of crypto/tls up to Go 1.27 and of uTLS:
+// the connection holds its raw input buffer.
 type visionBufferFixture struct {
 	prefix   uint64
 	rawInput bytes.Buffer
 	input    bytes.Reader
 }
 
-// visionPointerBufferFixture has the layout of crypto/tls from Go 1.27.3 and
-// of the REALITY server: the connection holds a pointer to its raw input
+// visionPointerBufferFixture has the layout of the REALITY server and of
+// crypto/tls after Go 1.27: the connection holds a pointer to its raw input
 // buffer, nil while nothing is buffered, and replaces it as it takes buffers
 // from its pool.
 type visionPointerBufferFixture struct {
