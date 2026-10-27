@@ -54,6 +54,12 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 		if quicParams == nil {
 			quicParams = &internet.QuicParams{}
 		}
+		switch quicParams.Congestion {
+		case "", "reno", "bbr", "force-brutal":
+		default:
+			cancel()
+			return nil, errors.New(`xdns DoH over h3: "congestion" is "reno", "bbr" or "force-brutal", not "`, quicParams.Congestion, `"`)
+		}
 		quicConfig := &quic.Config{
 			InitialStreamReceiveWindow:     quicParams.InitStreamReceiveWindow,
 			MaxStreamReceiveWindow:         quicParams.MaxStreamReceiveWindow,
@@ -84,6 +90,9 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 				}
 				qc, err := tr.Dial(ctx, conn.RemoteAddr(), tlsCfg, cfg)
 				if err != nil {
+					// Closing the socket first ends the read loop tr.Close waits for.
+					conn.Close()
+					tr.Close()
 					return nil, err
 				}
 				context.AfterFunc(qc.Context(), func() { tr.Close(); conn.Close() })
