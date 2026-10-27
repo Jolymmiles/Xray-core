@@ -936,6 +936,31 @@ Limits:
   starts after 3 s idle at 0.64-0.68 s in 9 of 18 against 3 of 18 (0.53
   s otherwise; rank test z 0.98), eight downloads p50 91 against 100 ms (z
   1.13).
+  After the fifth review the queue stands for rebase where its least over
+  the window is no more than a tenth of its most or 20 ms under it (C7);
+  the connection credit of a frame dropped past a stream's window goes back
+  to the client (C8), and nothing inside an open header block is dropped
+  (C9). A logging build of `e627b971` wrote every check, three runs or one
+  of each: on the RTT step with netem jitter (`--step-jitter`, 0 to 16 ms
+  each way) the smoothed queue spread by up to 14 ms; a 20 s burst of other
+  traffic by 38 to 370 ms while it fills; with 64 connections the server's
+  own queue by 12 to 15 ms at times, the median 17. The 20 ms takes these
+  64-connection checks as well (46 of 85 against 9), where the cuts do
+  nothing and 45 checks rebase from pinned caps anyway. `e627b971`
+  against the head, runs interleaved, medians:
+
+  | Load | Runs | `e627b971` | head |
+  | --- | --- | --- | --- |
+  | RTT step 20 to 70 ms, jitter 16 ms, 200 Mbit/s, over the step | 3 | 166.2 (125.2-179.5) | 180.4 (166.9-180.6) Mbit/s |
+  | The same at 100 Mbit/s | 3 | 79.1 (70.4-88.8) | 90.1 (89.9-90.2) Mbit/s |
+  | 64 connections, 128 downloads, 1 Gbit/s, p50/p95 | 12 | 164/273 ms | 160/241 ms |
+  | Burst 20 s, over it / its second half | 12 | 25.4 / 17.8 Mbit/s | 25.4 / 18.0 Mbit/s |
+  | Burst 90 s, the same | 6 | 15.2 / 11.5 Mbit/s | 16.7 / 12.5 Mbit/s |
+  | 8 downloads, 100 Mbit/s, p50/p95 | 24 | 66/274 ms | 66/282 ms (z 0.72 / 0.85) |
+
+  Both recover in the step's second half, 189.4 and 94.6 Mbit/s. Eight
+  downloads made no check at all in the logging build; their p50 was over
+  100 ms in 4 of 24 runs before and 6 of 24 after.
   Tried on the way and dropped, each for a regression of eight downloads at
   100 Mbit/s, whose request beside them has 65 ms at p50 on `28e1e458`, or
   for not holding the burst:
