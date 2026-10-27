@@ -376,7 +376,8 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 				length: int(p.hdr[0])<<16 | int(p.hdr[1])<<8 | int(p.hdr[2]),
 			}
 			// Inside a header block nothing but CONTINUATION may come;
-			// whatever does passes on unread for the stack to reject.
+			// whatever does passes on unread and whole for the stack to
+			// reject.
 			if !p.inBlock && p.f.control() {
 				p.collect = true
 				if p.f.length == 0 {
@@ -1961,8 +1962,8 @@ func (r *flowReader) frame(f h2Frame) (drop bool) {
 			// appendResets, and the connection goes on. The frame is dropped:
 			// a stack shown the window takes none of it into the body, and one
 			// that ended the stream would end the body cleanly before the
-			// reset. Its bytes count as returned on the connection, as a
-			// stack returns connection credit for data it refused.
+			// reset. Its bytes count as returned on the connection, and go
+			// back to the client with the reset, see appendResets.
 			// An empty frame takes no window and is past none, though a
 			// lowered window may leave what came before it past.
 			if up && f.length > 0 && s.upSent > int64(c.serverShown)+s.upForwarded {
@@ -2104,6 +2105,12 @@ func (c *flowConn) appendResets(out []byte) []byte {
 		c.wqueue = appendRSTStream(c.wqueue, id, h2ErrFlowControl)
 	}
 	c.resets = c.resets[:0]
+	// The stack never saw the frames dropped past a stream's window, so it
+	// will not return their connection credit: the governor does.
+	if rel := c.upConnRelease(); rel > 0 {
+		c.upConnForwarded += rel
+		c.creditClient(0, rel)
+	}
 	c.wakeQueue()
 	return out
 }
