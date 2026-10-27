@@ -151,6 +151,8 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 	}
 	client := &http.Client{
 		Transport: tr,
+		// The configured URL names the server: a redirect fails the query.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	r := &DOHResolver{
 		ctx:    ctx,
