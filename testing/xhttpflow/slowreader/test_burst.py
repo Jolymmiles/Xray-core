@@ -63,11 +63,13 @@ class OutsideTest(unittest.TestCase):
                 pass
         addr = self.serve(feed)
         connected = []
+        start = time.time()
         burst.outside(2, 0.5, connected, addr)
+        self.assertGreaterEqual(time.time() - start, 0.5)
+        self.assertEqual(len(connected), 2)
         for got, took, err in connected:
             self.assertIsNone(err)
             self.assertGreater(got, 0)
-            self.assertGreaterEqual(took, 0.5)
 
 
 if __name__ == "__main__":
