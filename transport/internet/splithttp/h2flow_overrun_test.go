@@ -82,16 +82,7 @@ func TestFlowUploadPastWindowAsStock(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				for {
-					f, err := fr.ReadFrame()
-					if err != nil {
-						t.Fatal(err)
-					}
-					if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
-						fr.WriteSettingsAck()
-						break
-					}
-				}
+				connWin := readServerPreface(t, fr)
 
 				var hb1, hb3 bytes.Buffer
 				enc1 := hpack.NewEncoder(&hb1)
@@ -131,7 +122,7 @@ func TestFlowUploadPastWindowAsStock(t *testing.T) {
 				// Wait for the connection window to hold all the test sends
 				// on stream 1, the frame past its window too, so that only
 				// the stream's window is sent past.
-				connWin := int64(h2InitWindow) - 4*16384
+				connWin -= 4 * 16384
 				for connWin < int64(flowShownUp)+8192 {
 					f, err := fr.ReadFrame()
 					if err != nil {
@@ -295,16 +286,7 @@ func TestFlowSiblingUploadAfterDroppedOverrun(t *testing.T) {
 		conn.Write([]byte(h2Preface))
 		fr := http2.NewFramer(conn, conn)
 		fr.WriteSettings()
-		for {
-			f, err := fr.ReadFrame()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
-				fr.WriteSettingsAck()
-				break
-			}
-		}
+		readServerPreface(t, fr)
 
 		var hb1, hb3 bytes.Buffer
 		enc1 := hpack.NewEncoder(&hb1)
@@ -446,16 +428,7 @@ func TestFlowSiblingUploadAfterReadingStreamOverrun(t *testing.T) {
 		conn.Write([]byte(h2Preface))
 		fr := http2.NewFramer(conn, conn)
 		fr.WriteSettings()
-		for {
-			f, err := fr.ReadFrame()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
-				fr.WriteSettingsAck()
-				break
-			}
-		}
+		readServerPreface(t, fr)
 
 		encodeHeaders := func(path string) []byte {
 			var hb bytes.Buffer
@@ -605,16 +578,7 @@ func TestFlowSiblingUploadAfterFinishedStreamOverrun(t *testing.T) {
 		conn.Write([]byte(h2Preface))
 		fr := http2.NewFramer(conn, conn)
 		fr.WriteSettings()
-		for {
-			f, err := fr.ReadFrame()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
-				fr.WriteSettingsAck()
-				break
-			}
-		}
+		readServerPreface(t, fr)
 
 		encodeHeaders := func(path string) []byte {
 			var hb bytes.Buffer
@@ -765,16 +729,7 @@ func TestFlowDataInHeaderBlockAsStock(t *testing.T) {
 		conn.Write([]byte(h2Preface))
 		fr := http2.NewFramer(conn, conn)
 		fr.WriteSettings()
-		for {
-			f, err := fr.ReadFrame()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
-				fr.WriteSettingsAck()
-				break
-			}
-		}
+		connWin := readServerPreface(t, fr)
 
 		var hb1, hb3 bytes.Buffer
 		enc1 := hpack.NewEncoder(&hb1)
@@ -790,7 +745,7 @@ func TestFlowDataInHeaderBlockAsStock(t *testing.T) {
 		for i := 0; i < 4; i++ {
 			fr.WriteData(3, false, make([]byte, 16384))
 		}
-		connWin := int64(h2InitWindow) - 4*16384
+		connWin -= 4 * 16384
 		for connWin < int64(flowShownUp)+16384 {
 			f, err := fr.ReadFrame()
 			if err != nil {
@@ -829,4 +784,31 @@ func TestFlowDataInHeaderBlockAsStock(t *testing.T) {
 		t.Fatalf("governed (goAway=%v, code=%v) differs from stock (goAway=%v, code=%v)",
 			govGA, govCode, stockGA, stockCode)
 	}
+}
+
+// readServerPreface reads the server's SETTINGS, acknowledges them, and reads
+// on to the server's first WINDOW_UPDATE on the connection. It returns the
+// connection window that the client then holds. A client that sends past
+// 65535 bytes before that WINDOW_UPDATE arrives is past the window.
+func readServerPreface(t *testing.T, fr *http2.Framer) int64 {
+	t.Helper()
+	connWin, settings := int64(h2InitWindow), false
+	for !settings || connWin == h2InitWindow {
+		f, err := fr.ReadFrame()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch f := f.(type) {
+		case *http2.SettingsFrame:
+			if !f.IsAck() {
+				fr.WriteSettingsAck()
+				settings = true
+			}
+		case *http2.WindowUpdateFrame:
+			if f.StreamID == 0 {
+				connWin += int64(f.Increment)
+			}
+		}
+	}
+	return connWin
 }
