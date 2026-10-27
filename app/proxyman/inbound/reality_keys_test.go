@@ -17,8 +17,8 @@ import (
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 )
 
-// A protobuf or HandlerService config skips the JSON key checks, so a
-// malformed REALITY key has to be refused when the handler is built rather
+// A protobuf or HandlerService config skips the JSON checks, so a malformed
+// REALITY key or short ID has to be refused when the handler is built rather
 // than panic the whole process when its listener starts.
 func TestAddInboundRejectsMalformedREALITYKeys(t *testing.T) {
 	validKey := make([]byte, 32)
@@ -31,6 +31,7 @@ func TestAddInboundRejectsMalformedREALITYKeys(t *testing.T) {
 		{"short private key", &reality.Config{PrivateKey: []byte{1}}, "private key"},
 		{"no private key", &reality.Config{}, "private key"},
 		{"short ML-DSA seed", &reality.Config{PrivateKey: validKey, Mldsa65Seed: []byte{1}}, "ML-DSA-65 seed"},
+		{"short short ID", &reality.Config{PrivateKey: validKey, ShortIds: [][]byte{make([]byte, 8), {1, 2}}}, "short ID"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

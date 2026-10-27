@@ -32,11 +32,11 @@ guard it.
   than renumber silently.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
-- An inbound whose REALITY private key or ML-DSA-65 seed is malformed is
-  refused when its handler is built (`NewAlwaysOnInboundHandler` calls
-  `reality.Config.CheckServerKeys`). Upstream's `GetREALITYConfig` panics on
-  either, and only JSON configs check them first, so a protobuf config or a
-  HandlerService `AddInbound` took the whole process down. Covered by
+- An inbound whose REALITY private key, ML-DSA-65 seed or a short ID is
+  malformed is refused when its handler is built (`NewAlwaysOnInboundHandler`
+  calls `reality.Config.CheckServerKeys`). Upstream's `GetREALITYConfig`
+  panics on each, and only JSON configs check them first, so a protobuf config
+  or a HandlerService `AddInbound` took the whole process down. Covered by
   `TestAddInboundRejectsMalformedREALITYKeys` in
   `app/proxyman/inbound/reality_keys_test.go`.
 - Every uTLS client Xray dials with is created in the fork-owned
