@@ -32,6 +32,13 @@ guard it.
   than renumber silently.
   `third_party/reality/FORK.md` lists every fork change and the update
   procedure. Covered by `transport/internet/reality/keyshare_test.go`.
+- An inbound whose REALITY private key or ML-DSA-65 seed is malformed is
+  refused when its handler is built (`NewAlwaysOnInboundHandler` calls
+  `reality.Config.CheckServerKeys`). Upstream's `GetREALITYConfig` panics on
+  either, and only JSON configs check them first, so a protobuf config or a
+  HandlerService `AddInbound` took the whole process down. Covered by
+  `TestAddInboundRejectsMalformedREALITYKeys` in
+  `app/proxyman/inbound/reality_keys_test.go`.
 - Every uTLS client Xray dials with is created in the fork-owned
   `transport/internet/tls/uclient.go`: `NewUClient`, `UClient` and
   `ClientHandshake` build the ClientHello when the client is created and
@@ -254,6 +261,13 @@ guard it.
   (`fc8f8a45`), so the wire format is unchanged. Covered by
   `TestServerKeepsFragmentsOfDifferentPacketsApart` in
   `transport/internet/finalmask/xdns/hardening_test.go`.
+- The XDNS DoH resolver over h3 closes the UDP socket and `quic.Transport`
+  of a dial that fails or is canceled; upstream (XTLS/Xray-core#7140) closes
+  them only once a dial succeeds. It refuses `"congestion": "brutal"`, which
+  upstream's dial meets with a panic in a goroutine nothing recovers. Covered
+  by `TestDOHResolverH3ClosesTheSocketOfAFailedDial` and
+  `TestNewDOHResolverRejectsBrutalCongestion` in
+  `transport/internet/finalmask/xdns/resolver_doh_test.go`.
 - Gecko (`transport/internet/finalmask/salamander/conn.go`) quarantines a
   message ID that received chunks of two messages: a repeated index must
   carry the same bytes and chunk lengths must match the split every sender
