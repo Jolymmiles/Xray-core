@@ -880,6 +880,62 @@ Limits:
   The head's p95 is 8% over `28e1e458`'s, inside the line.
   Not covered by any of these: GC, goroutines, file descriptors, and the
   interface and TCP counters of either end.
+  After the fourth review the server changes in three places: a first cut
+  with nothing in flight is judged from the next round with some (C2),
+  data past a stream's shown upload window is dropped, not forwarded, ahead
+  of the reset (C3), client streams past a GOAWAY's last are not taken up
+  (C5), and rebase also runs where a gain of none froze the caps over a
+  queue that stood (C4). The client holds credit until it knows its
+  server, and keeps the stack's window on a later SETTINGS (C1, C6). The
+  server of `cbf6fd81` against the head `d46c6c88` (the commit after it
+  changes only this file), same builds, client and
+  host as the acceptance above, runs interleaved, medians:
+
+  | Load | Runs | `cbf6fd81` | head |
+  | --- | --- | --- | --- |
+  | 8 downloads, 100 Mbit/s, p50/p95 | 24 | 65/307 ms | 66/305 ms |
+  | 20 uploads into a slow origin, p50/p95 | 30 | 52/568 (quartiles 510-631) ms | 52/544 (421-619) ms |
+  | 20 slow downloads, client limit 40 MB, p50/p95 | 12 | 52/177 ms, killed 0 | 52/106 ms, killed 0 |
+  | Burst 20 s, over it / its second half | 12 | 25.6 / 18.2 Mbit/s | 25.3 / 18.7 Mbit/s |
+  | Burst 90 s, the same | 8 | 15.8 / 11.7 Mbit/s | 15.9 / 13.8 Mbit/s |
+
+  The uploads were first run twelve times each, p95 455 against 549 ms
+  (rank test z 1.27); the thirty above are one interleaved set run after
+  them. No request failed or took over 10 s in any of these.
+
+  The RTT-step stand (`rtt/burstrtt.py`, 20 to 120 ms at the 10th second
+  for 60 s, no other flows), official client, three runs each, Mbit/s over
+  the step, against the head before C4 and with the governor off:
+
+  | Link | before C4 | head | no governor |
+  | --- | --- | --- | --- |
+  | 100 Mbit/s | 15.4 (11.2-47.6) | 89.2 (89.2-89.3) | 94.7 |
+  | 200 Mbit/s | 24.0 (23.9-37.3) | 178.5 (178.4-180.5) | 188.6 |
+
+  At 50 Mbit/s, where the cap is near init before the step, C4 changes
+  nothing: 44.4 against 44.4 and 44.3 on the builds with three quarters and
+  with none of the standing queue, 47.0 without the governor.
+
+  The gain of none counts only where the queue's least over the window is
+  at nine tenths of its most. At three quarters, a 20 s burst of other
+  traffic was taken for the path once a run, its gain was learnt again and
+  the download cut anew: over twelve runs its second half fell from 18.2
+  to 15.2 Mbit/s; at nine tenths it is 17.9 against 18.0. With 64
+  connections and 128 downloads at 1 Gbit/s, twelve runs, p50/p95 149/280
+  before C4 and 148/321 ms with it (rank test z -0.23 and 0.81); a logging
+  build counted 65 rebases over four runs there, 9 of them through the gain
+  of none, against 17 of 85 at three quarters.
+  A governed client behind a governed server, against the same server
+  (`both.sh`): eight downloads p50 65 ms in 9 of 12 runs, as with the
+  official client and the client before C1; the client holding 23.9 MB
+  under a 40 MB limit; burst 20 s 25.3 / 18.1 Mbit/s; RTT step 20 to 120
+  ms 44.5. Showing the stack's window less the credit forwarded ahead,
+  tried first for C1, kept the connection but put the queue beside eight
+  downloads at 180-290 ms. Toward a server without the governor the hold
+  costs the first request of a connection a round now and then: later
+  starts after 3 s idle at 0.64-0.68 s in 9 of 18 against 3 of 18 (0.53
+  s otherwise; rank test z 0.98), eight downloads p50 91 against 100 ms (z
+  1.13).
   Tried on the way and dropped, each for a regression of eight downloads at
   100 Mbit/s, whose request beside them has 65 ms at p50 on `28e1e458`, or
   for not holding the burst:
