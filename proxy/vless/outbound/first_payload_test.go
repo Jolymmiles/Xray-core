@@ -398,3 +398,36 @@ func TestPendingReadReleasedAfterHeaderWriteFails(t *testing.T) {
 		}
 	})
 }
+
+// failingPayloadReader returns its payload together with an error that is
+// not the end of the request.
+type failingPayloadReader struct{ payload []byte }
+
+func (r *failingPayloadReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	if r.payload == nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	mb := buf.MultiBuffer{buf.FromBytes(r.payload)}
+	r.payload = nil
+	return mb, io.ErrUnexpectedEOF
+}
+
+// A first payload that comes with a read error is still sent after the
+// header, as buf.Copy sends the data of a failed read, and the request then
+// ends with that error.
+func TestFirstPayloadWithReadErrorArrives(t *testing.T) {
+	payload := []byte("payload before a read error")
+	v := newTestpreInstance(t)
+	synctest.Test(t, func(t *testing.T) {
+		f, id := startFirstPayloadRequest(t, v, "", false, func(buf.Reader) buf.Reader {
+			return &failingPayloadReader{payload: append([]byte(nil), payload...)}
+		})
+		defer f.finish(t)
+
+		synctest.Wait()
+		got := f.peer.bytes()
+		if len(got) < 17 || !bytes.Equal(got[1:17], id.Bytes()) || !bytes.HasSuffix(got, payload) {
+			t.Fatalf("the peer got %x, want the VLESS header followed by %x", got, payload)
+		}
+	})
+}

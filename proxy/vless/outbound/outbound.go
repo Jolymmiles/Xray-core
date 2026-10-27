@@ -375,9 +375,11 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 		multiBuffer, err1 := timeoutReader.ReadMultiBufferTimeout(time.Millisecond * 500)
 		// A client that half-closes before any payload still sends the
-		// header; the copy below meets the same end of the request.
-		if err1 != nil && err1 != buf.ErrReadTimeout && errors.Cause(err1) != io.EOF {
-			buf.ReleaseMulti(multiBuffer)
+		// header; the copy below meets the same end of the request. Data that
+		// comes with a read error is sent before the error ends the request,
+		// as buf.Copy does.
+		readErr := err1 != nil && err1 != buf.ErrReadTimeout && errors.Cause(err1) != io.EOF
+		if readErr && multiBuffer.IsEmpty() {
 			return err1
 		}
 		// A pipe reports the timeout as buf.ErrReadTimeout, the wrapper as
@@ -399,6 +401,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		// Flush; bufferWriter.WriteMultiBuffer now is bufferWriter.writer.WriteMultiBuffer
 		if err := bufferWriter.SetBuffered(false); err != nil {
 			return errors.New("failed to write A request payload").Base(err)
+		}
+		if readErr {
+			return err1
 		}
 
 		if requestAddons.Flow == vless.XRV {
