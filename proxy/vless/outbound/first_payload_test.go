@@ -310,3 +310,46 @@ func TestHeaderSentWhenClientEndsBeforeFirstPayload(t *testing.T) {
 		})
 	}
 }
+
+// lastPayloadReader returns its payload together with io.EOF, as a reader
+// does that meets the end of the request in the same read.
+type lastPayloadReader struct{ payload []byte }
+
+func (r *lastPayloadReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	if r.payload == nil {
+		return nil, io.EOF
+	}
+	mb := buf.MultiBuffer{buf.FromBytes(r.payload)}
+	r.payload = nil
+	return mb, io.EOF
+}
+
+// A first payload that comes with io.EOF is sent after the header.
+func TestFirstPayloadWithEOFArrives(t *testing.T) {
+	payload := []byte("payload and the end of the request")
+	for _, test := range []struct {
+		name string
+		wrap func(buf.Reader) buf.Reader
+	}{
+		{name: "plain reader", wrap: func(buf.Reader) buf.Reader {
+			return &lastPayloadReader{payload: append([]byte(nil), payload...)}
+		}},
+		{name: "timeout reader", wrap: func(buf.Reader) buf.Reader {
+			return wrappedReader(&lastPayloadReader{payload: append([]byte(nil), payload...)})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			v := newTestpreInstance(t)
+			synctest.Test(t, func(t *testing.T) {
+				f, id := startFirstPayloadRequest(t, v, "", false, test.wrap)
+				defer f.finish(t)
+
+				synctest.Wait()
+				got := f.peer.bytes()
+				if len(got) < 17 || !bytes.Equal(got[1:17], id.Bytes()) || !bytes.HasSuffix(got, payload) {
+					t.Fatalf("the peer got %x, want the VLESS header followed by %x", got, payload)
+				}
+			})
+		})
+	}
+}
