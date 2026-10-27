@@ -393,7 +393,7 @@ func (m *clientManager) dial(ctx context.Context, dest net.Destination, streamSe
 				instance:     core.FromContext(ctx),
 				dest:         dest,
 				config:       streamSettings.ProtocolSettings.(*Config),
-				tlsConfig:    tlsConfig.GetTLSConfig(tls.WithDestination(dest)),
+				tlsConfig:    tlsConfig.GetClientTLSConfig(tls.WithDestination(dest)),
 				socketConfig: streamSettings.SocketSettings,
 				finalMask:    streamSettings.FinalMask,
 				quicParams:   streamSettings.QuicParams,

@@ -8,10 +8,6 @@ import (
 	stdnet "net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +17,7 @@ import (
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"github.com/xtls/xray-core/transport/internet/tls"
+	"github.com/xtls/xray-core/transport/internet/tls/refreshtest"
 )
 
 func h3ResolverConfig(congestion string) *ResolverProto {
@@ -221,54 +218,13 @@ func TestDOHResolverH3PinnedCAWithoutServerName(t *testing.T) {
 	}
 }
 
-func certificateRefreshWorkers() int {
-	stack := make([]byte, 1<<20)
-	n := runtime.Stack(stack, true)
-	return strings.Count(string(stack[:n]), "transport/internet/tls.setupOcspTicker.func1()")
-}
-
-// refreshingCertificate is a TLS config with a certificate that GetTLSConfig
-// starts a refresh worker for. The workers stop once its files are removed.
-func refreshingCertificate(t *testing.T) (*tls.Config, int) {
-	t.Helper()
-	certificate, _ := cert.MustGenerate(nil, cert.DNSNames("dns.example"))
-	certPEM, keyPEM := certificate.ToPEM()
-	dir := t.TempDir()
-	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
-	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	baseline := certificateRefreshWorkers()
-	t.Cleanup(func() {
-		os.Remove(certPath)
-		os.Remove(keyPath)
-		deadline := time.NewTimer(5 * time.Second)
-		defer deadline.Stop()
-		tick := time.NewTicker(10 * time.Millisecond)
-		defer tick.Stop()
-		for certificateRefreshWorkers() > baseline {
-			select {
-			case <-tick.C:
-			case <-deadline.C:
-				t.Error("certificate refresh workers did not stop after their files were removed")
-				return
-			}
-		}
-	})
-	return &tls.Config{Certificate: []*tls.Certificate{{
-		Certificate: certPEM, Key: keyPEM, Usage: tls.Certificate_ENCIPHERMENT,
-		CertificatePath: certPath, KeyPath: keyPath, OcspStapling: 1,
-	}}}, baseline
-}
-
 // A resolver refused for its congestion control builds no TLS config, and one
-// that dials again reuses the TLS config it was built with.
+// that dials again reuses the TLS config it was built with. That is a client's
+// config, so a certificate in it starts no refresh worker that would outlive
+// the resolver.
 func TestDOHResolverBuildsItsTLSConfigOnce(t *testing.T) {
 	t.Run("refused", func(t *testing.T) {
-		tlsConfig, baseline := refreshingCertificate(t)
+		tlsConfig, baseline := refreshtest.Config(t, tls.Certificate_ENCIPHERMENT)
 		tlsConfig.NextProtocol = []string{"h3"}
 		for range 3 {
 			resolver, err := NewDOHResolver(&ResolverProto{
@@ -280,12 +236,12 @@ func TestDOHResolverBuildsItsTLSConfigOnce(t *testing.T) {
 				t.Fatal(`NewDOHResolver accepted "congestion": "brutal"`)
 			}
 		}
-		if workers := certificateRefreshWorkers() - baseline; workers != 0 {
+		if workers := refreshtest.Workers() - baseline; workers != 0 {
 			t.Fatalf("three refused resolvers left %d certificate refresh workers", workers)
 		}
 	})
 	t.Run("redialed", func(t *testing.T) {
-		tlsConfig, baseline := refreshingCertificate(t)
+		tlsConfig, baseline := refreshtest.Config(t, tls.Certificate_ENCIPHERMENT)
 		dialer := &finalmask.Dialer{DialTCP: func(net.Destination) (net.Conn, error) {
 			local, peer := stdnet.Pipe()
 			peer.Close()
@@ -308,8 +264,21 @@ func TestDOHResolverBuildsItsTLSConfigOnce(t *testing.T) {
 				t.Fatal("a TLS handshake with a closed peer succeeded")
 			}
 		}
-		if workers := certificateRefreshWorkers() - baseline; workers != 1 {
-			t.Fatalf("a resolver that dialed three times has %d certificate refresh workers, want 1", workers)
+		if workers := refreshtest.Workers() - baseline; workers != 0 {
+			t.Fatalf("a resolver that dialed three times started %d certificate refresh workers", workers)
+		}
+	})
+	t.Run("closed", func(t *testing.T) {
+		tlsConfig, baseline := refreshtest.Config(t, tls.Certificate_ENCIPHERMENT)
+		resolver, err := NewDOHResolver(&ResolverProto{
+			Type: "https", Addr: "https://dns.example/dns-query", Worker: 1, TlsConfig: tlsConfig,
+		}, &finalmask.Dialer{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolver.Close()
+		if workers := refreshtest.Workers() - baseline; workers != 0 {
+			t.Fatalf("a closed resolver left %d certificate refresh workers", workers)
 		}
 	})
 }
