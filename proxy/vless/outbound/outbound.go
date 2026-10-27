@@ -366,8 +366,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		// through it as well.
 		timeoutReader, ok := clientReader.(buf.TimeoutReader)
 		if !ok {
-			timeoutReader = &buf.TimeoutWrapperReader{Reader: clientReader}
-			clientReader = timeoutReader
+			wrapper := &buf.TimeoutWrapperReader{Reader: clientReader}
+			// The copy below takes every read but the one an early return
+			// leaves pending; Abandon releases that one when it ends.
+			defer wrapper.Abandon()
+			timeoutReader = wrapper
+			clientReader = wrapper
 		}
 		multiBuffer, err1 := timeoutReader.ReadMultiBufferTimeout(time.Millisecond * 500)
 		// A client that half-closes before any payload still sends the

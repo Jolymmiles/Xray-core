@@ -225,7 +225,10 @@ guard it.
   payload with sniffing on or off. The wrapper reports a timeout as an empty
   read, not `buf.ErrReadTimeout`, so the VLESS outbound treats an empty read
   as a timeout and Vision follows the header with its padding-only block;
-  upstream sends the header alone when its wrapper times out. The
+  upstream sends the header alone when its wrapper times out. A wrapper the
+  outbound creates is abandoned when the request ends
+  (`TimeoutWrapperReader.Abandon`, fork-only), so a read an early return left
+  pending releases its buffers when it ends. The
   Shadowsocks 2022 outbound does not wrap: its zero timeout takes only data a
   pipe already holds, and a wrapper started with a zero timeout almost never
   has the first read done, as in upstream. Callers of `buf.CopyOnceTimeout`

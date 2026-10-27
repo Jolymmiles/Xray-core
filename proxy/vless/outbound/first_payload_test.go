@@ -353,3 +353,48 @@ func TestFirstPayloadWithEOFArrives(t *testing.T) {
 		})
 	}
 }
+
+// failingWriteConn fails every write, as a connection the server dropped.
+type failingWriteConn struct{ stat.Connection }
+
+func (failingWriteConn) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// When the header cannot be sent after the wait, a first payload that the
+// pending read returns later is released: Process is no longer there to take
+// it.
+func TestPendingReadReleasedAfterHeaderWriteFails(t *testing.T) {
+	v := newTestpreInstance(t)
+	synctest.Test(t, func(t *testing.T) {
+		h := newFlowHandler(t, v, uuid.New(), "")
+		clientEnd, serverEnd := stdnet.Pipe()
+		defer clientEnd.Close()
+		defer serverEnd.Close()
+		reader := newHeldReader()
+		defer reader.close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.DomainAddress("example.com"), 443),
+		}})
+		processed := make(chan error, 1)
+		link := &transport.Link{Reader: reader, Writer: buf.Discard}
+		go func() { processed <- h.Process(ctx, link, pipeDialer{conn: failingWriteConn{clientEnd}}) }()
+
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case err := <-processed:
+			if err == nil {
+				t.Fatal("Process succeeded on a connection that fails every write")
+			}
+		default:
+			t.Fatal("Process did not return after the header write failed")
+		}
+
+		b := buf.New()
+		b.WriteString("payload that comes after Process returned")
+		reader.payloads <- buf.MultiBuffer{b}
+		synctest.Wait()
+		if b.Len() != 0 {
+			t.Fatalf("the pending read still holds %d bytes after Process returned", b.Len())
+		}
+	})
+}
