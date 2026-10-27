@@ -4,7 +4,6 @@ package singmux_test
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"io"
 	"net"
 	"path/filepath"
@@ -164,7 +163,7 @@ func TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload(t *testing.T) {
 				serverPath := filepath.Join(scenarioDir, "server.json")
 				clientPath := filepath.Join(scenarioDir, "client.json")
 				writeConfig(t, serverPath, xrayVLESSTCPConfig(t, true, serverPort, 0, security, flow, certificate, privateKey, realityTarget))
-				writeConfig(t, clientPath, withSOCKSSniffing(t, xrayVLESSTCPConfig(t, false, relayPort, socksPort, security, flow, certificate, "", "")))
+				writeConfig(t, clientPath, xrayVLESSTCPConfig(t, false, relayPort, socksPort, security, flow, certificate, "", ""))
 				server := startE2EProcess(t, xray, "run", "-config", serverPath)
 				waitTCP(t, server, serverPort)
 				client := startE2EProcess(t, xray, "run", "-config", clientPath)
@@ -197,22 +196,4 @@ func TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload(t *testing.T) {
 			})
 		}
 	}
-}
-
-// withSOCKSSniffing turns on sniffing for the client's SOCKS inbound. Without
-// it the outbound does not wait for the first payload before it sends the
-// request header, a separate defect this test does not cover.
-func withSOCKSSniffing(t *testing.T, config []byte) []byte {
-	t.Helper()
-	var decoded map[string]any
-	if err := json.Unmarshal(config, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	inbound := decoded["inbounds"].([]any)[0].(map[string]any)
-	inbound["sniffing"] = map[string]any{"enabled": true, "destOverride": []string{"http", "tls"}}
-	encoded, err := json.Marshal(decoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return encoded
 }

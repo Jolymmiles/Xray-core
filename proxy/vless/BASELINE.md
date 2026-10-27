@@ -250,9 +250,10 @@ first client record is the encrypted Finished):
 
 Every Vision record size varies with its random padding. The trailing 19-byte
 record each direction still shows in the fork is the close_notify of the
-write-half close described above, not a VLESS header. Without sniffing the
-outbound still sends its header before the first payload arrives; that is a
-separate defect of the first-payload wait and is not changed here.
+write-half close described above, not a VLESS header. These binaries predate
+PR #61, so without sniffing their outbound sent its header before the first
+payload arrived; since #61 it waits for the first payload whatever the link
+reader, and the integration test below runs without sniffing.
 
 Isolated benchmarks, linux/amd64, AMD Ryzen 9 9950X, Go 1.27.3, CPU governor
 `powersave`, host load average 3-4; before and after binaries alternated in
@@ -278,8 +279,8 @@ and one slice allocation; they write to `io.Discard` and miss the record cost.
 The process benchmark (`BenchmarkVLESSTCPProcess`, 50 connections, five
 samples each) shows no significant change: TLS no flow 1.263 -> 1.263 ms,
 TLS Vision 1.259 -> 1.328 ms (p=0.84), REALITY no flow 1.523 -> 1.491 ms,
-REALITY Vision 1.504 -> 1.540 ms (p=0.55). Its client has no sniffing, so
-only the server side changes there.
+REALITY Vision 1.504 -> 1.540 ms (p=0.55). It ran before PR #61: its client
+has no sniffing, so only the server side changed there.
 
 Regression tests: `TestHeaderAndFirstPayloadShareOneTLSRecord` and
 `TestHeaderWithLargeFirstPayloadKeepsBytesAndLeadsWithPayload`
