@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
@@ -428,6 +429,15 @@ func TestFirstPayloadWithReadErrorArrives(t *testing.T) {
 		got := f.peer.bytes()
 		if len(got) < 17 || !bytes.Equal(got[1:17], id.Bytes()) || !bytes.HasSuffix(got, payload) {
 			t.Fatalf("the peer got %x, want the VLESS header followed by %x", got, payload)
+		}
+		select {
+		case err := <-f.processed:
+			f.processed <- err
+			if errors.Cause(err) != io.ErrUnexpectedEOF {
+				t.Fatalf("Process returned %v, want the read error", err)
+			}
+		default:
+			t.Fatal("Process did not end with the read error")
 		}
 	})
 }

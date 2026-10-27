@@ -380,6 +380,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		// as buf.Copy does.
 		readErr := err1 != nil && err1 != buf.ErrReadTimeout && errors.Cause(err1) != io.EOF
 		if readErr && multiBuffer.IsEmpty() {
+			buf.ReleaseMulti(multiBuffer)
 			return err1
 		}
 		// A pipe reports the timeout as buf.ErrReadTimeout, the wrapper as
