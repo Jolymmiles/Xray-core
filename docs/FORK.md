@@ -276,15 +276,27 @@ guard it.
   over h1 and h2 now carries the URL's host as SNI, as from Go's net/http,
   curl or a browser and as over h3 already: a passive observer sees the DoH
   host name where it saw a hello without SNI, active probing meets the same
-  server. A URL with an IP address still sends no SNI. A redirect to another
-  host is verified against the URL's name too: it is followed only when the
-  new host's certificate also covers that name, or a pinned leaf certificate
-  or `verifyPeerCertByName` accepts it; over h3 the new host's own name used
-  to be checked. The TLS config is built
+  server. A URL with an IP address still sends no SNI. The TLS config is built
   once per resolver, after its QUIC settings are checked. Covered by
   `TestDOHResolverTLSNamesTheServerOfItsURL`,
   `TestDOHResolverH3PinnedCAWithoutServerName` and
   `TestDOHResolverBuildsItsTLSConfigOnce`.
+- The XDNS DoH resolver follows no HTTP redirect, over h1, h2 or h3: a 3xx
+  answer is a failed query. Upstream (XTLS/Xray-core#7140) keeps Go's default
+  policy, which follows up to 10 redirects to any host and turns a 301, 302
+  or 303 into a GET without the query, whose page was then read as the DNS
+  answer. A redirect to another host was also verified against the URL's
+  name, so it failed unless that host's certificate covered the name too. A
+  DoH client uses only the URL it is configured with (RFC 8484, Section 3);
+  a server that moved, such as Google's former `dns.google.com` addresses,
+  which answered 301 to the page `https://dns.google/`, needs its new URL in
+  the configuration. Only a party that holds the server's TLS identity, or a
+  certificate from a CA the client trusts, can send the redirect. Refused, it
+  can no longer make the client connect to a host or fetch a path it names:
+  an observer sees only connections to the configured server, and the query
+  fails with a logged error. Covered by
+  `TestDOHResolverRefusesRedirects` in
+  `transport/internet/finalmask/xdns/resolver_doh_test.go`.
 - The TUN stack copies a TCP segment that was put together from IP fragments,
   or joined because its checksum is looked at, instead of keeping the buffers
   it was read into: upstream (XTLS/Xray-core#7179) kept the buffer of the last
