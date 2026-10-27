@@ -109,7 +109,6 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 			},
 		}
 	default:
-		tlsConfig := config.TlsConfig.GetTLSConfig()
 		tr = &http.Transport{
 			ForceAttemptHTTP2: true,
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -122,6 +121,8 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 					return nil, err
 				}
 				setaddr(conn.RemoteAddr())
+				// the server of the URL is named unless "serverName" names another, as http3 does over h3
+				tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(dest))
 				if fingerprint := tls.GetFingerprint(config.TlsConfig.Fingerprint); fingerprint != nil {
 					// ClientHandshake closes conn on any failure.
 					uConn, err := tls.ClientHandshake(ctx, conn, tlsConfig, fingerprint)

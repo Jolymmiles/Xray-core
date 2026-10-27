@@ -1,11 +1,17 @@
 package xdns
 
 import (
+	gotls "crypto/tls"
+	"crypto/x509"
 	"io"
+	stdnet "net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/protocol/tls/cert"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 	"github.com/xtls/xray-core/transport/internet/tls"
@@ -76,5 +82,67 @@ func TestNewDOHResolverRejectsBrutalCongestion(t *testing.T) {
 			t.Fatalf("NewDOHResolver refused %q: %v", congestion, err)
 		}
 		resolver.Close()
+	}
+}
+
+// Over h1 and h2 the resolver dials TLS itself, so it names the server of its
+// URL as h3 does; without a "serverName" no handshake verified the server.
+func TestDOHResolverTLSNamesTheServerOfItsURL(t *testing.T) {
+	ca, _ := cert.MustGenerate(nil, cert.Authority(true), cert.KeyUsage(x509.KeyUsageDigitalSignature|x509.KeyUsageCertSign))
+	issued, _ := cert.MustGenerate(ca, cert.DNSNames("dns.example"))
+	leafPEM, leafKey := issued.ToPEM()
+	leaf, err := gotls.X509KeyPair(leafPEM, leafKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make(chan string, 4)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("answer"))
+	}))
+	server.TLS = &gotls.Config{
+		Certificates: []gotls.Certificate{leaf},
+		GetConfigForClient: func(hello *gotls.ClientHelloInfo) (*gotls.Config, error) {
+			names <- hello.ServerName
+			return nil, nil
+		},
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	caPEM, _ := ca.ToPEM()
+	dialer := &finalmask.Dialer{DialTCP: func(net.Destination) (net.Conn, error) {
+		return stdnet.Dial("tcp", server.Listener.Addr().String())
+	}}
+	resolver, err := NewDOHResolver(&ResolverProto{
+		Type:   "https",
+		Addr:   "https://dns.example/dns-query",
+		Worker: 1,
+		TlsConfig: &tls.Config{Certificate: []*tls.Certificate{{
+			Certificate: caPEM,
+			Usage:       tls.Certificate_AUTHORITY_VERIFY,
+		}}},
+	}, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(resolver.Close)
+
+	resolver.Send([]byte("query"))
+	answer := make(chan string, 1)
+	go func() {
+		p := make([]byte, 64)
+		n, _ := resolver.Read(p)
+		answer <- string(p[:n])
+	}()
+	select {
+	case got := <-answer:
+		if got != "answer" {
+			t.Fatalf("read %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer through a resolver without a serverName")
+	}
+	if name := <-names; name != "dns.example" {
+		t.Fatalf("the ClientHello named %q", name)
 	}
 }

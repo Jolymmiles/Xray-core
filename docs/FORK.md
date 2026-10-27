@@ -267,7 +267,17 @@ guard it.
   upstream's dial meets with a panic in a goroutine nothing recovers. Covered
   by `TestDOHResolverH3ClosesTheSocketOfAFailedDial` and
   `TestNewDOHResolverRejectsBrutalCongestion` in
-  `transport/internet/finalmask/xdns/resolver_doh_test.go`.
+  `transport/internet/finalmask/xdns/resolver_doh_test.go`. Over h1 and h2
+  it names the server of its URL in the TLS handshake unless `serverName`
+  names another, as http3 does over h3; upstream left the name empty there,
+  so without a `serverName` no handshake could verify the server. Covered by
+  `TestDOHResolverTLSNamesTheServerOfItsURL`.
+- The TUN stack copies a TCP segment that was put together from IP fragments,
+  or joined because its checksum is looked at, instead of keeping the buffers
+  it was read into: upstream (XTLS/Xray-core#7179) kept the buffer of the last
+  fragment and the connection read other bytes than were sent. Covered by
+  `TestTCPSegmentFromFragmentsWithSegments` in
+  `proxy/tun/fragment_kept_test.go`.
 - Gecko (`transport/internet/finalmask/salamander/conn.go`) quarantines a
   message ID that received chunks of two messages: a repeated index must
   carry the same bytes and chunk lengths must match the split every sender
