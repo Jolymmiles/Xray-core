@@ -7,12 +7,12 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/xtls/xray-core/common/bytespool"
 	"github.com/xtls/xray-core/common/platform"
 	"golang.org/x/net/http2"
 )
@@ -20,11 +20,14 @@ import (
 // flowConn sits between a TLS/REALITY connection and the local HTTP/2 stack.
 // It rewrites HTTP/2 flow control so that nothing buffers more than its reader
 // has recently shown it can consume, the way TCP autotuning does:
-//   - uplink: the client is shown a small initial window and gets credit only
-//     as the handler reads, capped at twice what the handler read per RTT;
+//   - uplink: the client is shown Go's own initial window, see flowShownUp,
+//     and gets more credit only as the handler reads, while the handler's
+//     unread data stays under a cap that follows what it read per RTT;
 //   - downlink: the server is shown a small client window and gets the
 //     client's credit back only while unread data at the client stays under
-//     twice what the client read per RTT.
+//     a cap that follows what the client read per RTT.
+// The cap starts at twice that, see adjust, and may follow a model of the
+// path or the queue instead, see model and pi.
 // On a server both apply; on a client only the downlink does, since that is
 // the only side of the exchange whose buffers are local. Neither peer needs to
 // know: each only ever sees a window no larger than the other side granted.
@@ -41,8 +44,12 @@ const (
 	h2Settings     = 0x4
 	h2PushPromise  = 0x5
 	h2Ping         = 0x6
+	h2GoAway       = 0x7
 	h2WindowUpdate = 0x8
 	h2Continuation = 0x9
+
+	// h2ErrFlowControl is FLOW_CONTROL_ERROR.
+	h2ErrFlowControl = 0x3
 
 	h2FlagEndStream  = 0x1
 	h2FlagAck        = 0x1
@@ -90,11 +97,28 @@ func (l flowLimit) enabled() bool {
 }
 
 // flowEnabled is the default for XHTTP connections whose "h2Flow" does not
-// say: off unless XRAY_XHTTP_FLOW=on.
-var flowEnabled = platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }) == "on"
+// say: off unless XRAY_XHTTP_FLOW is on, true or 1. It is read again when the
+// config's "env" changes the environment.
+var flowEnabled atomic.Bool
 
-// flowDefault never lets a window shrink below the initial window HTTP/2
-// itself defines, nor grow beyond what the peer really granted.
+func reloadFlowEnv() error {
+	switch strings.ToLower(strings.TrimSpace(platform.NewEnvFlag(platform.XHTTPFlow).GetValue(func() string { return "" }))) {
+	case "on", "true", "1":
+		flowEnabled.Store(true)
+	default:
+		flowEnabled.Store(false)
+	}
+	return nil
+}
+
+func init() {
+	platform.RegisterEnvReload(reloadFlowEnv)
+}
+
+// flowDefault never lets a cap shrink below the initial window HTTP/2 itself
+// defines, and lets it grow to 1 GiB. A cap only bounds what is shown: what
+// the sender is handed never goes past what the peer really granted, see the
+// bank in downRelease and upRelease.
 var flowDefault = flowLimit{init: h2InitWindow, max: 1 << 30}
 
 // The initial window each side is shown, where the receiver grants that
@@ -144,7 +168,14 @@ const flowShownFull = max(h2InitWindow, flowShownDown)
 // found says the frame carries an initial window at all. One that does not
 // changes nothing here: what the stack was shown stands, and shownLimited
 // with it.
+//
+// A client whose server governs, once restock has shown it the stack's own
+// window, shows a later one as it is, less what changeInitialWindow takes
+// off for credit already forwarded.
 func (c *flowConn) shownDown(real int32, found bool) int32 {
+	if c.client && c.peerGoverned && !c.restock {
+		return h2MaxWindow
+	}
 	if found {
 		c.shownLimited = !c.client && c.sendWindow != 0 && real > h2InitWindow
 	}
@@ -166,6 +197,8 @@ func initialWindow(payload []byte) (real int32, found bool) {
 
 type tcpStats struct {
 	rtt, minRTT, rttVar time.Duration
+	// inFlight is the bytes sent and not yet acknowledged.
+	inFlight int64
 }
 
 type flowListener struct {
@@ -176,6 +209,9 @@ type flowListener struct {
 	// sendWindow is what one connection's client may hold, 0 for no
 	// limit, see flowConn.downRelease.
 	sendWindow int64
+	// noQueueCuts leaves the queue on the path to TCP, see
+	// flowConn.noQueueCuts.
+	noQueueCuts bool
 }
 
 func (l *flowListener) Accept() (net.Conn, error) {
@@ -184,7 +220,7 @@ func (l *flowListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	fc := newFlowConn(c, l.up, l.down)
-	fc.sendWindow = l.sendWindow
+	fc.sendWindow, fc.noQueueCuts = l.sendWindow, l.noQueueCuts
 	if l.connWindow > 0 {
 		fc.upConnGrant, fc.upConnGrantKnown = int64(max(l.connWindow, h2InitWindow)-h2InitWindow), true
 	}
@@ -263,6 +299,8 @@ func (f h2Frame) control() bool {
 		return f.stream == 0 && f.length%6 == 0 && f.length <= h2MinMaxFrameSize
 	case h2Ping:
 		return f.stream == 0 && f.length == 8
+	case h2GoAway:
+		return f.stream == 0 && f.length >= 8 && f.length <= h2MinMaxFrameSize
 	case h2WindowUpdate:
 		return f.length == 4
 	}
@@ -281,8 +319,10 @@ func validSettings(payload []byte) bool {
 	return true
 }
 
+// frame sees each frame's header before its payload passes on; a frame it
+// drops passes on neither.
 type frameHandler interface {
-	frame(f h2Frame)
+	frame(f h2Frame) (drop bool)
 	control(f h2Frame, header, payload, out []byte) []byte
 	boundary(out []byte) []byte
 }
@@ -293,6 +333,7 @@ type frameParser struct {
 	hdrLen  int
 	ctrl    []byte
 	remain  int
+	skip    bool
 	collect bool
 	inBlock bool
 }
@@ -306,7 +347,9 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 		switch {
 		case p.remain > 0:
 			n := min(p.remain, len(in))
-			out = append(out, in[:n]...)
+			if !p.skip {
+				out = append(out, in[:n]...)
+			}
 			in, p.remain = in[n:], p.remain-n
 			if p.remain == 0 {
 				out = p.done(out, h)
@@ -333,7 +376,8 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 				length: int(p.hdr[0])<<16 | int(p.hdr[1])<<8 | int(p.hdr[2]),
 			}
 			// Inside a header block nothing but CONTINUATION may come;
-			// whatever does passes on unread for the stack to reject.
+			// whatever does passes on unread and whole for the stack to
+			// reject.
 			if !p.inBlock && p.f.control() {
 				p.collect = true
 				if p.f.length == 0 {
@@ -341,8 +385,10 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 				}
 				continue
 			}
-			h.frame(p.f)
-			out = append(out, p.hdr[:]...)
+			p.skip = !p.inBlock && h.frame(p.f)
+			if !p.skip {
+				out = append(out, p.hdr[:]...)
+			}
 			p.remain = p.f.length
 			if p.remain == 0 {
 				out = p.done(out, h)
@@ -387,6 +433,15 @@ type flowWindow struct {
 	flat     int
 	steady   int
 	piPrev   float64
+	piRTT    time.Duration
+	// rate is what the reader took per second over pi's last round, and
+	// capped whether the cap held it then: it took a quarter of the cap.
+	rate   float64
+	capped bool
+	// noted is returned as of the connection's last flowEffect note, and
+	// tookAt when it last grew.
+	noted  int64
+	tookAt time.Time
 }
 
 // adjust sets the cap to twice what the reader consumed over the last round
@@ -419,7 +474,9 @@ func (w *flowWindow) adjust(now time.Time, rtt time.Duration, init, limit int32,
 		w.ramped = true
 	}
 	if !w.ramped && w.prev > 0 {
-		grow += 2 * s * (copied - w.prev) / w.prev
+		// In floats: credit a hostile client returns has no bound, and the
+		// product of two such rounds would wrap.
+		grow += int64(min(2*float64(s)*float64(copied-w.prev)/float64(w.prev), float64(limit)))
 	}
 	if hold {
 		grow = min(grow, int64(w.cap))
@@ -464,38 +521,46 @@ const (
 // quarter faster than the round before for flowSettledRounds rounds in a
 // row, counted from the round that ended its ramp. Flat rounds before that
 // do not count: a reader that grew slowly would otherwise be settled by the
-// first low round after them. Only then does a window follow the path model. One round without
-// growth is not enough for that: the end of a round may fall between the
-// reader getting data and returning its credit, so that it reads low and the
-// next makes up for it. A window that took such a round at the start of a
-// stream for its rate had that one small round to model the path from, fell
-// to it, and grew back a quarter at a time.
+// first low round after them. Only then does a window follow the path model.
+// One round without growth is not enough for that: the end of a round may
+// fall between the reader getting data and returning its credit, so that it
+// reads low and the next makes up for it. A window that took such a round at
+// the start of a stream for its rate had that one small round to model the
+// path from, fell to it, and grew back a quarter at a time.
 func (w *flowWindow) settled() bool {
 	return w.steady >= flowSettledRounds
 }
 
 // model sets the cap from the path model; rtprop is the empty path's round
-// trip.
-func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int32) {
+// trip. gain scales the cap a new round sets, as a probe widens it, from init
+// too: a probe is asked for where the caps sit at init; within a round the cap
+// stays where that round set it.
+func (w *flowWindow) model(now time.Time, rtprop time.Duration, init, limit int32, gain float64) {
 	round := max(rtprop, flowModelMinRound)
 	if w.rateAt == 0 && w.prev > 0 {
 		// The ramp's last round seeds the filter, so one slow first round
 		// cannot drop a window the reader just showed it fills.
-		w.rates[0] = w.prev * int64(time.Second) / int64(round)
+		w.rates[0] = flowRate(w.prev, round)
 		w.rateAt = 1
 	}
 	if now.Sub(w.mark) < round {
 		return
 	}
-	w.rates[w.rateAt%flowModelRounds] = (w.returned - w.markBase) * int64(time.Second) / int64(now.Sub(w.mark))
+	w.rates[w.rateAt%flowModelRounds] = flowRate(w.returned-w.markBase, now.Sub(w.mark))
 	w.rateAt++
 	w.mark, w.markBase = now, w.returned
 	var bw int64
 	for _, r := range w.rates {
 		bw = max(bw, r)
 	}
-	target := bw * int64(rtprop) / int64(time.Second) * flowModelGainPercent / 100
-	w.cap = int32(min(max(target, int64(init)), int64(limit)))
+	target := min(float64(bw)*rtprop.Seconds()*flowModelGainPercent/100, float64(limit))
+	w.cap = int32(min(max(target, float64(init))*gain, float64(limit)))
+}
+
+// flowRate is bytes per second, in floats and held well inside int64: credit
+// a hostile client returns has no bound, and times a second it would wrap.
+func flowRate(bytes int64, d time.Duration) int64 {
+	return int64(min(float64(bytes)/d.Seconds(), 1<<53))
 }
 
 // Once the reader's rate has grown by less than a quarter for flowFullRounds
@@ -515,30 +580,67 @@ const (
 // pi moves the cap once per round trip so that the queue settles at a quarter
 // of the empty path's round trip, or at four times the RTT variance where the
 // path jitters more: the floor is the lowest sample ever, deep in the jitter's
-// tail, while the smoothed RTT sits at its middle, and that gap is no queue. In velocity form it adds Ki
-// times the error and Kp times its change. With the queue under a quarter of
-// the setpoint the cap may also grow by a quarter per round trip, so that it
-// catches up with a path that got faster. A reader that takes less than a
-// quarter of the window per round trip limits itself: the cap does not grow
-// then, and shrinks by a quarter after flowShrinkAfter such rounds.
-func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32) {
+// tail, while the smoothed RTT sits at its middle, and that gap is no queue.
+// In velocity form it adds Ki times the error and Kp times its change. With
+// the queue under a quarter of the setpoint the cap may also grow by a
+// quarter per round trip, so that it catches up with a path that got faster.
+// A reader that takes less than a quarter of what the window gives it per
+// round limits itself: the cap does not grow then, and shrinks by a quarter
+// after flowShrinkAfter such rounds.
+// Cuts are scaled by gain, see flowEffect, and pi returns the bytes it cut
+// against the queue.
+//
+// A step up is taken at share, the mean rate of the connection's downloads
+// that their caps hold, where there are several: steps down in proportion
+// to each one's rate and steps up in proportion to each one's own would keep
+// whatever split the downloads started with, and a download that starts
+// beside another would keep the share it found. The steps add up to what
+// they did, so the queue sees the same loop.
+func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32, gain, share float64) (cut float64) {
 	round := now.Sub(w.mark)
 	if round < max(st.minRTT, flowModelMinRound) {
-		return
+		return 0
 	}
 	copied := w.returned - w.markBase
 	w.mark, w.markBase = now, w.returned
+	w.rate = float64(copied) / round.Seconds()
 	set := max(st.minRTT/4, 4*st.rttVar, flowPIMinSet)
 	e := min(max(float64(set-(st.rtt-st.minRTT))/float64(set), -2), 1)
+	step := flowPIKi*e + flowPIKp*(e-w.piPrev)
 	held := float64(copied) * float64(set) / float64(round)
-	delta := held * (flowPIKi*e + flowPIKp*(e-w.piPrev))
+	if step > 0 && share > 0 {
+		held = share * set.Seconds()
+	}
+	delta := held * step
 	w.piPrev = e
 	cap := float64(w.cap)
 	if e > 0.75 {
 		delta = max(delta, cap/4)
 	}
 	delta = min(max(delta, -flowPIMaxStep*cap), flowPIMaxStep*cap)
-	if 4*copied < int64(w.cap) {
+	if delta < 0 {
+		delta *= gain
+		cut = -delta
+	}
+	if w.piRTT > 0 {
+		// Where cuts do not move the queue, the cap follows the round trip,
+		// so the reader keeps its rate as the queue grows and shrinks. Up
+		// only while the cap is what holds the reader: above what some other
+		// limit lets it take, a cap that grew would leave a later cut
+		// nothing to land on, and flowEffect nothing to judge it by.
+		follow := (1 - gain) * cap * float64(st.rtt-w.piRTT) / float64(w.piRTT)
+		follow = min(max(follow, -flowPIMaxStep*cap), flowPIMaxStep*cap)
+		if follow < 0 || 4*float64(copied)*float64(st.rtt) >= 3*cap*float64(round) {
+			delta += follow
+		}
+	}
+	w.piRTT = st.rtt
+	// The cap covers a round trip, the round the empty path's: beside a
+	// queue a reader that takes all it is given still copies only the
+	// round's share of the cap, and must not be taken for one that limits
+	// itself.
+	w.capped = 4*float64(copied) >= float64(w.cap)*float64(round)/float64(max(st.rtt, round))
+	if !w.capped {
 		delta = min(delta, 0)
 		if w.slow++; w.slow >= flowShrinkAfter {
 			delta = min(delta, -cap/4)
@@ -548,6 +650,9 @@ func (w *flowWindow) pi(now time.Time, st tcpStats, init, limit int32) {
 		w.slow = 0
 	}
 	w.cap = int32(min(max(int64(cap+delta), int64(init)), int64(limit)))
+	// What reached the cap: a cap at init, or a round trip followed up, takes
+	// less off than the step, and bytes that never left the cap are no cut.
+	return min(cut, max(cap-float64(w.cap), 0))
 }
 
 // flowLearned remembers the largest cap a stream on this connection needed
@@ -597,8 +702,14 @@ type flowConn struct {
 	alpnH2   atomic.Bool
 	alpnDone atomic.Bool
 
-	mu          sync.Mutex
-	streams     map[uint32]*flowStream
+	// mu guards every field below that is not atomic, the write side's
+	// included; wmu only keeps the writes to Conn whole and in order, and
+	// whoever calls send holds it.
+	// rpending and prefix belong to the one reader.
+	mu      sync.Mutex
+	streams map[uint32]*flowStream
+	// fedAt is when the bytes being parsed came, see fedNow.
+	fedAt       time.Time
 	upLearned   flowLearned
 	downLearned flowLearned
 	clientInit  int32
@@ -611,20 +722,47 @@ type flowConn struct {
 	rttLast     time.Duration
 	rttBase     time.Duration
 	rttSamples  int
-	pingData    uint64
-	pings       []flowPing
-	pingSentAt  time.Time
-	lastPing    time.Time
+	// pingBase is the path's round trip once it has risen over rttBase, see
+	// rebasePing, and pingStep how far it rose.
+	pingBase, pingStep time.Duration
+	// pingData is the payload of the last PING sent, kept for the tests.
+	pingData   uint64
+	pings      []flowPing
+	pingSentAt time.Time
+	lastPing   time.Time
 
 	incremental bool
 	guard       *time.Timer
 	guardProbe  bool
+	// guardArmed says the guard is set to fire for a stream that waits.
+	guardArmed bool
+	// peerGoverned says, on a client, that the server governs its downloads,
+	// as its PING ahead of any reply shows: the client then credits them as
+	// its reader does, and governing them twice takes no rate. serverReplied
+	// notes the server's first HEADERS.
+	peerGoverned, serverReplied bool
+	// pingTagged says a server has sent its tagged first PING, see flowPingTag.
+	pingTagged bool
+	// resets are streams whose client sent past their window, to be reset.
+	resets []uint32
+	// group is what a client shares with its other connections to the server,
+	// see flowGroup; probeSince is when its downloads were last seen to sit
+	// at init under a raised round trip, and wide that a probe widens them.
+	group      *flowGroup
+	probeSince time.Time
+	wide       bool
+	// restock says the server has been seen to govern and has yet to be
+	// shown the stack's window, see appendRestock; settingsOwn notes, in
+	// order, which SETTINGS sent to the server were the governor's.
+	restock     bool
+	settingsOwn []bool
 
 	rp       frameParser
 	rpending []byte
 	prefix   int
 	opened   []uint32
 
+	// wmu is held across each write to Conn; what follows it is still mu's.
 	wmu          sync.Mutex
 	wp           frameParser
 	wqueue       []byte
@@ -634,6 +772,10 @@ type flowConn struct {
 	pingReady    bool
 	closed       bool
 	broken       bool
+	// goneAway says the server sent GOAWAY, and goAwayLast is the last
+	// client stream it named: it takes up none past that.
+	goneAway   bool
+	goAwayLast uint32
 
 	// Connection-level window of the upload: DATA the client sent, credit
 	// the server returned on stream 0, and credit handed on to the client.
@@ -670,6 +812,32 @@ type flowConn struct {
 	kstat tcpStats
 	kAt   time.Time
 	kOK   bool
+	// base is the round trip of the empty path once the path itself has
+	// moved, see kernelStats: zero while the kernel's min_rtt stands for it.
+	base time.Duration
+	// baseStep is what the path added to the kernel's floor when base was
+	// last taken.
+	baseStep time.Duration
+	baseWin  flowMinWindow
+	lowGain  time.Time
+	// lowQueue is the most the queue stood at since lowGain began.
+	lowQueue time.Duration
+	// pinned says the downloads that took data lately all have caps at
+	// init, see cutGain.
+	pinned bool
+
+	// noQueueCuts leaves the queue on the path to TCP: a server that sets
+	// it neither runs pi nor cuts against a long queue, and its downloads'
+	// windows follow their readers alone, held while a queue stands. Such
+	// a server never takes a download below its share of a link that other
+	// traffic keeps full, and holds its own queue no shorter than TCP does.
+	noQueueCuts bool
+
+	// downShare is the mean rate of the downloads their caps hold, as of
+	// the last flowEffect note, see pi; 0 with fewer than two.
+	downShare float64
+
+	effect flowEffect
 }
 
 // queueing tells how far the kernel RTT of this TCP connection has climbed
@@ -691,6 +859,44 @@ func (c *flowConn) queueing(now time.Time) int {
 	return 0
 }
 
+// cutGain is how much of a cut against the queue takes effect, see
+// flowEffect: the connection notes its round trip, the bytes its kernel has
+// in flight and the caps of the downloads that took data lately, once per
+// round trip of the empty path. A stream that carries no data, as an
+// upload's beside the download, would have its cap stand for a cut that
+// never moved. Lately, not since the last note: a download that slows
+// returns credit less often than once a round, and a round it missed would
+// take its cap out of the sum, a cut that never happened.
+func (c *flowConn) cutGain(now time.Time) float64 {
+	if !c.kOK || !c.effect.due(now, max(c.kstat.minRTT, flowModelMinRound)) {
+		return c.effect.value()
+	}
+	var caps, n int64
+	var rates float64
+	var held int
+	for _, s := range c.streams {
+		if s.down.returned != s.down.noted {
+			s.down.noted, s.down.tookAt = s.down.returned, now
+		}
+		if !s.serverDone && now.Sub(s.down.tookAt) < max(flowEffectRecent*c.kstat.minRTT, time.Second) {
+			caps += int64(s.down.cap)
+			n++
+			if s.down.capped && s.down.rate > 0 {
+				rates += s.down.rate
+				held++
+			}
+		}
+	}
+	// One download has no share but its own.
+	c.downShare = 0
+	if held > 1 {
+		c.downShare = rates / float64(held)
+	}
+	c.pinned = n > 0 && caps <= 2*n*int64(c.down.init)
+	set := max(c.kstat.minRTT/4, 4*c.kstat.rttVar, flowPIMinSet)
+	return c.effect.note(now, c.kstat.rtt, c.kstat.minRTT, set, c.kstat.inFlight, caps)
+}
+
 // kernelStats refreshes the kernel's view of this TCP connection and reports
 // whether there is one.
 func (c *flowConn) kernelStats(now time.Time) bool {
@@ -700,8 +906,132 @@ func (c *flowConn) kernelStats(now time.Time) bool {
 	if now.Sub(c.kAt) >= flowKernelEvery {
 		c.kAt = now
 		c.kstat, c.kOK = readTCPStats(c.tcp)
+		if c.kOK && c.kstat.minRTT > 0 {
+			c.rebase(now)
+		}
 	}
 	return c.kOK && c.kstat.minRTT > 0
+}
+
+// flowBaseWindow is how long the round trip must stand over the kernel's
+// min_rtt, with cuts that do not move it, before that is the path's own.
+const flowBaseWindow = 2500 * time.Millisecond
+
+// flowBaseJitter is how far a path's smoothed round trip wanders by itself
+// while the path stands still: a queue that moves by no more stands.
+const flowBaseJitter = 20 * time.Millisecond
+
+// rebase has the queue counted from the path's round trip where the path
+// itself has moved. The kernel keeps its min_rtt for minutes, so a route or
+// cell that adds to the round trip reads as a standing queue: cuts do not
+// shorten it, the gain comes down, and with an error that never turns the
+// caps never grow back. Once cuts have done nothing for flowBaseWindow, with
+// the downloads' caps at init all that time, and the round trip has not come
+// under the kernel's floor plus twice the setpoint since, its least value
+// over that time is the path's. A queue of the server's own is its downloads'
+// data: their caps are well above init, and the gain of connections that
+// share it reads low now and then, which alone took a queue of the server's
+// own for the path's. The base only falls after that, with the round trip,
+// so a queue of the server's own on top of it never raises it; it is dropped
+// once the round trip has come back by half of what the path added. Half of
+// that, not the setpoint: the setpoint grows with the round trip's variance,
+// and a step of a few setpoints would lose its base to a jittery round.
+func (c *flowConn) rebase(now time.Time) {
+	floor := c.kstat.minRTT
+	least := c.baseWin.note(now, c.kstat.rtt)
+	set := max(floor/4, 4*c.kstat.rttVar, flowPIMinSet)
+	if c.base != 0 {
+		c.base = min(c.base, least)
+		if c.base-floor <= c.baseStep/2 {
+			c.base = 0
+		}
+	}
+	// A gain of none, a cut that landed in flight and moved the queue not at
+	// all, turns the cuts off: the caps stay where the cuts before it left
+	// them, and on a path whose window was over twice init before it moved
+	// they never come down to init. A gain of none counts as well where the
+	// queue stood through the window, its least no more than a tenth of its
+	// most or flowBaseJitter under it: a path that moved holds it whatever
+	// the connections do, while one that other traffic keeps fills and
+	// drains by more, and taken for the path would have its gain learnt
+	// again and cut anew.
+	if c.effect.active && (c.effect.gain < 0.5 && c.pinned || c.effect.gain == 0) {
+		if c.lowGain.IsZero() {
+			c.lowGain, c.lowQueue = now, 0
+		}
+		c.lowQueue = max(c.lowQueue, c.kstat.rtt-floor)
+	} else {
+		c.lowGain = time.Time{}
+	}
+	if c.base == 0 && !c.lowGain.IsZero() && now.Sub(c.lowGain) >= flowBaseWindow && c.baseWin.full(now) &&
+		least > floor+2*set {
+		if c.pinned || c.lowQueue-(least-floor) <= max(c.lowQueue/10, flowBaseJitter) {
+			c.base, c.baseStep = least, least-floor
+			c.lowGain = time.Time{}
+		} else {
+			// The queue moved: the server's own, or its own on top of a path
+			// that moved and has drained since. The next window looks again.
+			c.lowGain, c.lowQueue = now, c.kstat.rtt-floor
+		}
+	}
+	if c.client && c.group != nil {
+		c.probeClient(now, floor, least, set)
+	}
+	c.kstat.minRTT = max(floor, c.base)
+}
+
+// probeClient is rebase for a client, which has no gain of its cuts to go by
+// and whose connections share the path, see flowGroup: once its downloads
+// have sat at init for flowProbeAfter under a round trip over the kernel's
+// floor it asks its group to probe, and takes the base only if the path
+// answered.
+func (c *flowConn) probeClient(now time.Time, floor, least, set time.Duration) {
+	var caps, n int64
+	for _, s := range c.streams {
+		if !s.serverDone && s.downSent > 0 {
+			caps += int64(s.down.cap)
+			n++
+		}
+	}
+	if n > 0 && caps <= 2*n*int64(c.down.init) && c.kstat.rtt-floor > 2*set && c.base == 0 {
+		if c.probeSince.IsZero() {
+			c.probeSince = now
+		}
+		if now.Sub(c.probeSince) >= flowProbeAfter {
+			c.group.request(now, c.kstat.rtt)
+		}
+	} else {
+		c.probeSince = time.Time{}
+	}
+	var moved time.Time
+	c.wide, moved = c.group.step(now)
+	if c.base == 0 && !moved.IsZero() && now.Sub(moved) < flowBaseWindow && least > floor+2*set {
+		c.base, c.baseStep = least, least-floor
+		c.probeSince = time.Time{}
+	}
+}
+
+// flowMinWindow is the least of a value over the last one to two
+// flowBaseWindow halves.
+type flowMinWindow struct {
+	start, at time.Time
+	cur, prev time.Duration
+}
+
+func (w *flowMinWindow) note(now time.Time, v time.Duration) time.Duration {
+	if w.start.IsZero() {
+		w.start, w.at, w.cur, w.prev = now, now, v, v
+	}
+	if now.Sub(w.at) >= flowBaseWindow/2 {
+		w.at, w.prev, w.cur = now, w.cur, v
+	}
+	w.cur = min(w.cur, v)
+	return min(w.cur, w.prev)
+}
+
+// full reports whether the window has covered flowBaseWindow.
+func (w *flowMinWindow) full(now time.Time) bool {
+	return !w.start.IsZero() && now.Sub(w.start) >= flowBaseWindow
 }
 
 // pingFloor is the round trip of the empty path for pingQueueing. The first
@@ -711,7 +1041,7 @@ func (c *flowConn) kernelStats(now time.Time) bool {
 // proxy: a min_rtt that far below the PING's means exactly that, and the PING
 // is kept.
 func (c *flowConn) pingFloor(now time.Time) time.Duration {
-	floor := c.rttBase
+	floor := max(c.rttBase, c.pingBase)
 	if c.floorConfirmed(now) && c.kstat.minRTT < floor {
 		floor = c.kstat.minRTT
 	}
@@ -728,7 +1058,21 @@ func (c *flowConn) modelled(now time.Time) bool {
 // empty path: it has a min_rtt for this socket that is not far below what the
 // PINGs show, so no TCP proxy sits in front.
 func (c *flowConn) floorConfirmed(now time.Time) bool {
-	return c.kernelStats(now) && (c.rttBase == 0 || 4*c.kstat.minRTT >= c.rttBase)
+	return c.kernelStats(now) && c.floorVouched()
+}
+
+// fedNow is the time the bytes being parsed came: read once per Read or
+// Write, the first time a frame needs it.
+func (c *flowConn) fedNow() time.Time {
+	if c.fedAt.IsZero() {
+		c.fedAt = time.Now()
+	}
+	return c.fedAt
+}
+
+// floorVouched is floorConfirmed on the kernel's stats as last read.
+func (c *flowConn) floorVouched() bool {
+	return c.kOK && c.kstat.minRTT > 0 && (c.rttBase == 0 || 4*c.kstat.minRTT >= c.rttBase)
 }
 
 // Without a confirmed floor the PING-seen queue cannot be told from the round
@@ -804,7 +1148,41 @@ func newFlowConn(c net.Conn, up, down flowLimit) *flowConn {
 func newFlowClientConn(c net.Conn) *flowConn {
 	fc := newFlowConn(c, flowLimit{}, flowDefault)
 	fc.client = true
+	// Only a connection the kernel reports on takes part in a probe.
+	if fc.tcp != nil {
+		if addr := c.RemoteAddr(); addr != nil {
+			fc.group = joinFlowGroup(addr.String())
+		}
+	}
 	return fc
+}
+
+// flowBufs holds the scratch buffers of Read and Write. It holds pointers: a
+// slice put in a sync.Pool as it is costs an allocation each time.
+var flowBufs = sync.Pool{New: func() any { return new([]byte) }}
+
+// flowBufKeep is the largest scratch buffer kept for reuse.
+const flowBufKeep = 256 << 10
+
+// getFlowBuf returns a scratch buffer of n bytes.
+func getFlowBuf(n int) *[]byte {
+	p := flowBufs.Get().(*[]byte)
+	if cap(*p) < n {
+		*p = make([]byte, n)
+	}
+	*p = (*p)[:n]
+	return p
+}
+
+// putFlowBuf gives p back, holding b instead where what was appended to p
+// outgrew it.
+func putFlowBuf(p *[]byte, b []byte) {
+	if cap(b) > cap(*p) {
+		*p = b
+	}
+	if cap(*p) <= flowBufKeep {
+		flowBufs.Put(p)
+	}
 }
 
 func (c *flowConn) Read(b []byte) (int, error) {
@@ -833,15 +1211,17 @@ func (c *flowConn) Read(b []byte) (int, error) {
 		if n == 0 {
 			return 0, err
 		}
-		in := bytespool.Alloc(int32(n))
+		buf := getFlowBuf(n)
+		in := *buf
 		copy(in, b[:n])
+		// What does not fit in b goes to rpending, never past len(b).
 		var out []byte
 		if c.client {
-			out = c.fromServer(in[:n], b[:0])
+			out = c.fromServer(in[:n], b[:0:len(b)])
 		} else {
-			out = c.readFrames(in[:n], b[:0])
+			out = c.readFrames(in[:n], b[:0:len(b)])
 		}
-		bytespool.Free(in)
+		putFlowBuf(buf, in)
 		if c.isBroken() {
 			c.Close()
 			return 0, errFlowGivenUp
@@ -870,6 +1250,10 @@ func (c *flowConn) release() {
 }
 
 func (c *flowConn) releaseLocked() {
+	if c.group != nil {
+		c.group.leave()
+		c.group = nil
+	}
 	c.streams = map[uint32]*flowStream{}
 	c.downOpen, c.downOpenForwarded, c.downOpenSent, c.downOpenReturned = 0, 0, 0, 0
 	c.opened = nil
@@ -879,11 +1263,13 @@ func (c *flowConn) releaseLocked() {
 	if c.guard != nil {
 		c.guard.Stop()
 	}
+	c.guardArmed = false
 }
 
 // giveUp marks the connection for closing at the next read or write and
 // drops its state at once: the peer lowered its window below the credit
-// already handed on, or opened more streams than the governor tracks.
+// already handed on, sent past the window it was shown, or opened more
+// streams than the governor tracks.
 func (c *flowConn) giveUp() {
 	c.broken = true
 	c.releaseLocked()
@@ -909,6 +1295,7 @@ func (c *flowConn) readFrames(in, out []byte) []byte {
 	// A server pings only once the client preface is in: until then stock
 	// sends nothing but its SETTINGS.
 	c.pingReady = c.pingReady || (!c.client && c.settingsSent)
+	c.fedAt = time.Time{}
 	out = c.rp.feed(in, out, (*flowReader)(c))
 	credit := len(c.wcredit) > 0
 	c.mu.Unlock()
@@ -926,16 +1313,16 @@ func (c *flowConn) Write(b []byte) (int, error) {
 		return c.Conn.Write(b)
 	}
 	c.wmu.Lock()
-	out := bytespool.Alloc(int32(len(b) + 64))
-	out = c.fromServer(b, out[:0])
+	buf := getFlowBuf(len(b) + 64)
+	out := c.fromServer(b, (*buf)[:0])
 	if c.isBroken() {
-		bytespool.Free(out)
+		putFlowBuf(buf, out)
 		c.wmu.Unlock()
 		c.Close()
 		return 0, errFlowGivenUp
 	}
 	err := c.send(out)
-	bytespool.Free(out)
+	putFlowBuf(buf, out)
 	c.wmu.Unlock()
 	c.drainQueue()
 	if err != nil {
@@ -947,6 +1334,7 @@ func (c *flowConn) Write(b []byte) (int, error) {
 // fromServer processes frames on their way from the server to the client.
 func (c *flowConn) fromServer(in, out []byte) []byte {
 	c.mu.Lock()
+	c.fedAt = time.Time{}
 	out = c.wp.feed(in, out, (*flowWriter)(c))
 	c.mu.Unlock()
 	return out
@@ -958,15 +1346,15 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 	if c.mode.Load() == flowPlain {
 		return c.Conn.Write(b)
 	}
-	out := bytespool.Alloc(int32(len(b) + 64))
-	out = c.readFrames(b, out[:0])
+	buf := getFlowBuf(len(b) + 64)
+	out := c.readFrames(b, (*buf)[:0])
 	if c.isBroken() {
-		bytespool.Free(out)
+		putFlowBuf(buf, out)
 		c.Close()
 		return 0, errFlowGivenUp
 	}
 	err := c.send(out)
-	bytespool.Free(out)
+	putFlowBuf(buf, out)
 	if err != nil {
 		return 0, err
 	}
@@ -976,6 +1364,8 @@ func (c *flowConn) writeToServer(b []byte) (int, error) {
 // injectToClient queues frames for the client without ever waiting for a
 // write in progress: whoever holds wmu drains the queue after letting go.
 // Only the guard's PING comes this way, and only one is ever queued.
+// Like creditClient it is a server's alone: a client arms no guard and
+// governs no upload, so writeToServer has no queue to drain after it.
 func (c *flowConn) injectToClient(frames []byte) {
 	c.mu.Lock()
 	if c.closed || len(c.wqueue) > 0 {
@@ -1170,7 +1560,7 @@ func (c *flowConn) appendUpConnRelease(out []byte) []byte {
 // so anything above the minimum is our own backlog and must not feed back into
 // the caps.
 func (c *flowConn) currentRTT() time.Duration {
-	if c.rttBase != 0 && c.kOK && c.kstat.minRTT > 0 && 4*c.kstat.minRTT >= c.rttBase {
+	if c.rttBase != 0 && c.floorVouched() {
 		return c.kstat.minRTT
 	}
 	switch {
@@ -1195,6 +1585,32 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 	if c.rtt == 0 || sample < c.rtt {
 		c.rtt = sample
 	}
+	c.rebasePing()
+}
+
+// rebasePing moves the floor PINGs are measured against where the path's own
+// round trip has risen: rttBase keeps the least PING for the life of the
+// connection, so a route or network that adds to the round trip reads as a
+// standing queue, and queueShrink holds the windows at init. Where even the
+// least PING over the last one to two flowRTTWindow stands that far above,
+// the queue is not one cuts can drain, as an own queue drains within seconds
+// of a quarter cut a second, and that least PING is the path's. The base only
+// falls after that, with the PINGs, and is dropped once they have come back
+// by half of what the path added.
+func (c *flowConn) rebasePing() {
+	if c.rttPrev == 0 {
+		return
+	}
+	least := min(c.rtt, c.rttPrev)
+	if c.pingBase != 0 {
+		c.pingBase = min(c.pingBase, least)
+		if c.pingBase-c.rttBase <= c.pingStep/2 {
+			c.pingBase, c.pingStep = 0, 0
+		}
+	}
+	if floor := max(c.rttBase, c.pingBase); least-floor > max(floor, flowQueueShrink) {
+		c.pingBase, c.pingStep = least, least-c.rttBase
+	}
 }
 
 // appendPing adds a PING for the remote peer once a second while streams are
@@ -1202,8 +1618,7 @@ func (c *flowConn) sampleRTT(now time.Time, sample time.Duration) {
 // both prefaces are through, before data can queue in front of its ACK, so the
 // connection learns the round trip of the empty path. Once the kernel vouches
 // for that round trip, no more are needed.
-func (c *flowConn) appendPing(out []byte) []byte {
-	now := time.Now()
+func (c *flowConn) appendPing(now time.Time, out []byte) []byte {
 	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
@@ -1222,8 +1637,20 @@ type flowPing struct {
 // health checks do, and remembers it to recognize the ACK. The last
 // flowPingSlots are remembered, so a guard probe sent while a periodic PING
 // is due back does not make that one's ACK look foreign.
+// flowPingTag marks the first PING a governed server sends, with its first
+// SETTINGS: a governed client takes it, and no other early PING, for a
+// server that governs its downloads, see peerGoverned. The PING's payload is
+// inside TLS, but on plain TLS any client that connects sees it before its
+// first request; under REALITY a client that cannot authenticate never
+// reaches the governor.
+const flowPingTag = 0x6b7a3f91
+
 func (c *flowConn) appendPingFrame(out []byte) []byte {
 	c.pingData = rand.Uint64()
+	if !c.client && !c.pingTagged {
+		c.pingTagged = true
+		c.pingData = flowPingTag<<32 | c.pingData&0xffffffff
+	}
 	c.pings = append(c.pings, flowPing{c.pingData, time.Now()})
 	if len(c.pings) > flowPingSlots {
 		c.pings = c.pings[len(c.pings)-flowPingSlots:]
@@ -1254,7 +1681,7 @@ func (c *flowConn) pingAck(f h2Frame, payload []byte) bool {
 	return false
 }
 
-// flowGuardMin bounds how long a downlink stream may sit with the server out
+// flowGuardMin is the least time a downlink stream sits with the server out
 // of window and no credit from the client before the guard steps in.
 var flowGuardMin = 200 * time.Millisecond
 
@@ -1278,18 +1705,26 @@ func (c *flowConn) armGuard(s *flowStream) {
 		return
 	}
 	s.down.waiting = time.Now()
-	if c.guard == nil {
+	// A guard already armed for a stream that waits longer stays as it is:
+	// moved for each stream that gets stuck after it, it would never fire
+	// while they keep coming.
+	switch {
+	case c.guard == nil:
 		c.guard = time.AfterFunc(c.guardDelay(), c.fireGuard)
-	} else {
+	case !c.guardArmed:
 		c.guard.Reset(c.guardDelay())
 	}
+	c.guardArmed = true
 }
 
 // fireGuard asks the client for a PING: its ACK arrives on the read side,
 // where stuck streams can then be given more room in order with other frames.
 func (c *flowConn) fireGuard() {
 	c.mu.Lock()
-	if c.closed || c.incremental || !c.anyWaiting() {
+	c.guardArmed = false
+	// A probe still queued behind a write in progress answers for this one
+	// too: another would be dropped, see injectToClient, and noted as sent.
+	if c.closed || c.incremental || !c.anyWaiting() || len(c.wqueue) > 0 {
 		c.mu.Unlock()
 		return
 	}
@@ -1342,6 +1777,7 @@ func (c *flowConn) unstick(now time.Time, out []byte) []byte {
 	}
 	if again && c.guard != nil {
 		c.guard.Reset(delay)
+		c.guardArmed = true
 	}
 	return out
 }
@@ -1386,6 +1822,16 @@ func (c *flowConn) downRelease(s *flowStream) int64 {
 		// the same, or its window would stay at one frame.
 		ahead := max(int64(s.down.cap)-flowShownFull, flowShownFull-flowShownLimited)
 		rel = min(rel, s.downSent+ahead-s.downForwarded)
+	}
+	if c.client && (c.restock || !c.peerGoverned && !c.serverReplied) {
+		// Until the server's first reply shows whether it governs, and until
+		// restock has shown a server that does the stack's window, a client
+		// forwards credit only as its stack returns it. The server adds the
+		// raise restock shows to every open stream, and credit forwarded
+		// ahead of the stack before it would stand above the stack's window:
+		// a reader that paused would be sent past it, and the stack would
+		// close the connection.
+		rel = min(rel, s.down.returned-s.downForwarded)
 	}
 	if rel <= 0 || c.client || c.sendWindow == 0 {
 		return rel
@@ -1475,20 +1921,26 @@ func capFrameSize(payload []byte) {
 // flowReader handles frames from the client to the server.
 type flowReader flowConn
 
-func (r *flowReader) frame(f h2Frame) {
+func (r *flowReader) frame(f h2Frame) (drop bool) {
 	c := (*flowConn)(r)
 	switch f.typ {
 	case h2Headers:
 		s := c.stream(f.stream)
-		if s == nil && f.stream%2 == 1 && !c.closed {
+		// A stream the client opened before it saw the server's GOAWAY is
+		// one the server will not take up: the stack drops it, and so does
+		// the governor.
+		if s == nil && f.stream%2 == 1 && !c.closed && !(c.goneAway && f.stream > c.goAwayLast) {
 			if len(c.streams) >= flowMaxStreams {
 				c.giveUp()
-				return
+				return false
 			}
-			now := time.Now()
+			now := c.fedNow()
 			s = &flowStream{}
 			s.up.cap = max(c.upLearned.value(now, c.up.init), flowStartWindow)
 			s.down.cap = max(c.downLearned.value(now, c.down.init), flowStartWindow)
+			if c.client && c.peerGoverned {
+				s.down.cap = c.down.max
+			}
 			c.streams[f.stream] = s
 			c.downOpen++
 			c.opened = append(c.opened, f.stream)
@@ -1499,8 +1951,32 @@ func (r *flowReader) frame(f h2Frame) {
 		}
 	case h2Data:
 		c.upConnSent += int64(f.length)
+		// The stack is given larger windows than the client is shown, so it
+		// would not stop a client that sends past what it was shown: the
+		// governor does, as the stack would with the windows shown.
+		up := !c.client && c.up.enabled()
+		if up && c.upConnSent > h2InitWindow+c.upConnForwarded {
+			c.giveUp()
+			return false
+		}
 		if s := c.stream(f.stream); s != nil {
 			s.upSent += int64(f.length)
+			// Past a stream's window is the stream's error alone, as with a
+			// stack shown that window: the stream is reset both ways, see
+			// appendResets, and the connection goes on. The frame is dropped:
+			// a stack shown the window takes none of it into the body, and one
+			// that ended the stream would end the body cleanly before the
+			// reset. Like a stack that refuses it, the governor takes none of
+			// it from the connection window either, and returns no credit for
+			// it.
+			// An empty frame takes no window and is past none, though a
+			// lowered window may leave what came before it past.
+			if up && f.length > 0 && s.upSent > int64(c.serverShown)+s.upForwarded {
+				c.resets = append(c.resets, f.stream)
+				c.drop(f.stream)
+				c.upConnSent -= int64(f.length)
+				return true
+			}
 			if f.flags&h2FlagEndStream != 0 {
 				s.clientDone = true
 				c.finish(f.stream, s)
@@ -1509,6 +1985,7 @@ func (r *flowReader) frame(f h2Frame) {
 	case h2RSTStream:
 		c.drop(f.stream)
 	}
+	return false
 }
 
 func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
@@ -1516,6 +1993,10 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	switch f.typ {
 	case h2Settings:
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
+			init, shown := c.clientInit, c.clientShown
+			if c.client {
+				c.settingsOwn = append(c.settingsOwn, false)
+			}
 			if c.down.enabled() && !c.changeInitialWindow(payload, c.shownDown(initialWindow(payload)), &c.clientInit, &c.clientShown, func(s *flowStream) (int64, int64, bool) {
 				return s.down.returned, s.downForwarded, s.serverDone
 			}) {
@@ -1526,8 +2007,11 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 			c.pingReady = c.pingReady || c.client
 			out = append(out, header...)
 			out = append(out, payload...)
-			// A raised window funds credit the receiver no longer owes.
-			if c.down.enabled() {
+			// A raised window funds credit the receiver no longer owes. A
+			// SETTINGS that left the windows as they were funds nothing, and
+			// a walk over every stream for each one would let a client that
+			// floods them cost the server that walk each time.
+			if c.down.enabled() && (c.clientInit != init || c.clientShown != shown) {
 				for id, s := range c.streams {
 					if s.serverDone {
 						continue
@@ -1556,7 +2040,7 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if s == nil || inc == 0 || !c.down.enabled() {
 			break
 		}
-		now := time.Now()
+		now := c.fedNow()
 		s.down.returned += inc
 		if !s.serverDone {
 			c.downOpenReturned += inc
@@ -1565,37 +2049,13 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 		if inc < flowSmallCredit {
 			c.incremental = true
 		}
-		var q int
-		switch {
-		case c.client && c.modelled(now):
-		case c.client:
-			q = c.pingQueueing(now)
-		default:
-			q = c.queueing(now)
-		}
-		switch {
-		case c.client && c.modelled(now) && s.down.settled():
-			s.down.model(now, c.currentRTT(), c.down.init, c.down.max)
-		case !c.client && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
-			// Only clients that credit in small steps: one that waits for
-			// half of its own window could be held below that half. Only
-			// where the kernel sees the path: behind a TCP proxy it sees
-			// no queue at all.
-			s.down.pi(now, c.kstat, c.down.init, c.down.max)
-		default:
-			s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
-		}
-		switch {
-		case c.client:
-			if q == 2 {
-				c.queueShrink(&s.down, now, c.down.init)
-			}
-			if !c.floorConfirmed(now) {
-				s.down.cap = min(s.down.cap, flowUnconfirmedDown)
-			}
-		case q == 2 && now.Sub(s.down.qAt) >= c.currentRTT():
-			s.down.qAt = now
-			s.down.cap = max(c.down.init, s.down.cap/4*3)
+		if c.client && c.peerGoverned {
+			// The server governs this download, as it does an official
+			// client's once it has been shown the real window, see
+			// restock: the reader's credit goes on as it comes.
+			s.down.cap = c.down.max
+		} else {
+			c.governDown(now, s)
 		}
 		c.downLearned.note(now, c.down.init, s.down.cap)
 		rel := c.downRelease(s)
@@ -1609,8 +2069,66 @@ func (r *flowReader) control(f h2Frame, header, payload, out []byte) []byte {
 	return append(out, payload...)
 }
 
+// appendRestock makes a client whose server governs its downloads look to
+// that server as an official client does: it sends the stack's own initial
+// window in a SETTINGS of the governor's, whose ACK the stack does not see,
+// and hands on all the credit it held back. The server then governs these
+// downloads, the client's memory with them, as it does an official
+// client's; two governors that each held back credit took rate and memory
+// a server-side governor alone keeps. No stream has been forwarded more than
+// its stack returned by then, see downRelease: the server adds the raise of
+// the initial window to every open stream, on top of what it was forwarded.
+func (c *flowConn) appendRestock(out []byte) []byte {
+	c.restock = false
+	out = append(out, 0, 0, 6, h2Settings, 0, 0, 0, 0, 0)
+	out = binary.BigEndian.AppendUint16(out, h2SettingInitialWindowSize)
+	out = binary.BigEndian.AppendUint32(out, uint32(c.clientInit))
+	c.settingsOwn = append(c.settingsOwn, true)
+	c.clientShown = c.clientInit
+	for id, s := range c.streams {
+		if s.serverDone {
+			continue
+		}
+		s.down.cap = c.down.max
+		if rel := c.downRelease(s); rel > 0 {
+			c.forwardDown(s, rel)
+			out = appendWindowUpdate(out, id, rel)
+		}
+	}
+	return out
+}
+
+// appendResets resets the streams whose client sent past the window it was
+// shown, with FLOW_CONTROL_ERROR, as a stack shown that window would: to the
+// stack, as if from the client, so the handler ends, and to the client.
+func (c *flowConn) appendResets(out []byte) []byte {
+	if len(c.resets) == 0 {
+		return out
+	}
+	for _, id := range c.resets {
+		out = appendRSTStream(out, id, h2ErrFlowControl)
+		c.wqueue = appendRSTStream(c.wqueue, id, h2ErrFlowControl)
+	}
+	c.resets = c.resets[:0]
+	c.wakeQueue()
+	return out
+}
+
+// appendRSTStream adds an RST_STREAM for id with code to out.
+func appendRSTStream(out []byte, id, code uint32) []byte {
+	out = append(out, 0, 0, 4, h2RSTStream, 0)
+	out = binary.BigEndian.AppendUint32(out, id&0x7fffffff)
+	return binary.BigEndian.AppendUint32(out, code)
+}
+
 func (r *flowReader) boundary(out []byte) []byte {
 	c := (*flowConn)(r)
+	out = c.appendResets(out)
+	// Ahead of any credit: the server is to know the window before it is
+	// handed what the window holds.
+	if c.client && c.restock && c.clientInit != 0 {
+		out = c.appendRestock(out)
+	}
 	for _, id := range c.opened {
 		s := c.stream(id)
 		if s == nil {
@@ -1632,8 +2150,8 @@ func (r *flowReader) boundary(out []byte) []byte {
 		}
 	}
 	c.opened = c.opened[:0]
-	if c.client {
-		out = c.appendPing(out)
+	if c.client && !c.peerGoverned {
+		out = c.appendPing(c.fedNow(), out)
 	}
 	return out
 }
@@ -1641,11 +2159,14 @@ func (r *flowReader) boundary(out []byte) []byte {
 // flowWriter handles frames from the server to the client.
 type flowWriter flowConn
 
-func (w *flowWriter) frame(f h2Frame) {
+func (w *flowWriter) frame(f h2Frame) (drop bool) {
 	c := (*flowConn)(w)
 	s := c.stream(f.stream)
 	switch f.typ {
 	case h2Data:
+		if c.group != nil {
+			c.group.bytes.Add(int64(f.length))
+		}
 		c.downConnWindow -= int64(f.length)
 		if s != nil {
 			s.downSent += int64(f.length)
@@ -1658,6 +2179,7 @@ func (w *flowWriter) frame(f h2Frame) {
 		}
 		fallthrough
 	case h2Headers:
+		c.serverReplied = true
 		if s != nil && f.flags&h2FlagEndStream != 0 {
 			c.endDown(s)
 			c.finish(f.stream, s)
@@ -1665,12 +2187,24 @@ func (w *flowWriter) frame(f h2Frame) {
 	case h2RSTStream:
 		c.drop(f.stream)
 	}
+	return false
 }
 
 func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	c := (*flowConn)(w)
 	switch f.typ {
 	case h2Settings:
+		// The ACK of a SETTINGS the governor sent, see restock, is not the
+		// stack's to see: ACKs come in the order the SETTINGS went.
+		// Only a well-formed one: an ACK with a payload is a FRAME_SIZE_ERROR
+		// the stack has to see to raise, and it takes no SETTINGS off the queue.
+		if c.client && f.flags&h2FlagAck != 0 && f.length == 0 && f.stream == 0 && len(c.settingsOwn) > 0 {
+			own := c.settingsOwn[0]
+			c.settingsOwn = c.settingsOwn[1:]
+			if own {
+				return out
+			}
+		}
 		if f.flags&h2FlagAck == 0 && validSettings(payload) {
 			if c.up.enabled() && !c.changeInitialWindow(payload, max(c.up.init, flowShownUp), &c.serverInit, &c.serverShown, func(s *flowStream) (int64, int64, bool) {
 				return s.up.returned, s.upForwarded, s.clientDone
@@ -1700,6 +2234,24 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		if c.client && c.pingAck(f, payload) {
 			return out
 		}
+		// A governed server sends a PING of its own with its first SETTINGS,
+		// before it answers anything, tagged: a stock server's health check can
+		// come early too, and is not one.
+		if c.client && f.flags&h2FlagAck == 0 && !c.serverReplied && !c.peerGoverned && len(payload) == 8 && binary.BigEndian.Uint32(payload) == flowPingTag {
+			c.peerGoverned, c.restock = true, true
+		}
+	case h2GoAway:
+		// The server will not take up the client's streams past the last it
+		// names: the stacks forget them, so does the governor.
+		last := binary.BigEndian.Uint32(payload) & 0x7fffffff
+		if !c.goneAway || last < c.goAwayLast {
+			c.goneAway, c.goAwayLast = true, last
+		}
+		for id := range c.streams {
+			if id > last && id%2 == 1 {
+				c.drop(id)
+			}
+		}
 	case h2WindowUpdate:
 		inc := int64(binary.BigEndian.Uint32(payload) & 0x7fffffff)
 		if f.stream == 0 && inc > 0 && c.up.enabled() {
@@ -1713,12 +2265,12 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		if s == nil || inc == 0 || !c.up.enabled() {
 			break
 		}
-		now := time.Now()
+		now := c.fedNow()
 		s.up.returned += inc
 		var q int
 		switch {
 		case c.modelled(now) && s.up.settled():
-			s.up.model(now, c.currentRTT(), c.up.init, c.up.max)
+			s.up.model(now, c.currentRTT(), c.up.init, c.up.max, 1)
 		case c.modelled(now):
 			s.up.adjust(now, c.currentRTT(), c.up.init, c.up.max, true, false)
 		default:
@@ -1743,11 +2295,74 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 	return append(out, payload...)
 }
 
+// governDown sets a download's cap from its reader and the queue on the path,
+// as the stream's credit comes back.
+func (c *flowConn) governDown(now time.Time, s *flowStream) {
+	var q int
+	switch {
+	case c.client && c.modelled(now):
+	case c.client:
+		q = c.pingQueueing(now)
+	default:
+		q = c.queueing(now)
+	}
+	switch {
+	case c.client && c.modelled(now) && s.down.settled():
+		gain := 1.0
+		if c.wide {
+			gain = flowProbeGain
+		}
+		s.down.model(now, c.currentRTT(), c.down.init, c.down.max, gain)
+	case !c.client && !c.noQueueCuts && c.incremental && s.down.flat >= flowFullRounds && c.modelled(now):
+		// Only clients that credit in small steps: one that waits for
+		// half of its own window could be held below that half. Only
+		// where the kernel sees the path: behind a TCP proxy it sees
+		// no queue at all.
+		// A download the server has finished takes no part in the gain, see
+		// cutGain, and neither does what is cut from it.
+		gain := c.cutGain(now)
+		if cut := s.down.pi(now, c.kstat, c.down.init, c.down.max, gain, c.downShare); !s.serverDone {
+			c.effect.cutBy(cut)
+		}
+	default:
+		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
+		// A round trip pi saw before the stream left it is no step to
+		// follow when it comes back.
+		s.down.piRTT = 0
+	}
+	switch {
+	case c.client:
+		if q == 2 {
+			c.queueShrink(&s.down, now, c.down.init)
+		}
+		if !c.floorConfirmed(now) {
+			s.down.cap = min(s.down.cap, flowUnconfirmedDown)
+		}
+	case q == 2 && !c.noQueueCuts && now.Sub(s.down.qAt) >= c.currentRTT():
+		s.down.qAt = now
+		before := s.down.cap
+		// The quarter cut as it always was, before/4*3, scaled by the gain.
+		// A client that has not shown it credits in small steps may wait for
+		// half of its own window before it credits at all: a cap under that
+		// stops the download until the guard lifts it, see unstick, and the
+		// next cut stops it again. Such a client is cut no lower than the
+		// guard would lift it.
+		floor := c.down.init
+		if !c.incremental {
+			floor = int32(min(int64(c.down.max), max(int64(floor), int64(c.clientInit)/2+flowSmallCredit)))
+		}
+		s.down.cap = max(min(floor, before), before-int32(c.cutGain(now)*float64(before-before/4*3)))
+		if !s.serverDone {
+			c.effect.cutBy(float64(before - s.down.cap))
+		}
+	}
+}
+
 func (w *flowWriter) boundary(out []byte) []byte {
 	c := (*flowConn)(w)
 	if c.client || !c.settingsSent {
 		return out
 	}
 	out = c.queuedLocked(out)
-	return c.appendPing(out)
+	return c.appendPing(c.fedNow(), out)
 }

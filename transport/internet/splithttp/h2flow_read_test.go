@@ -41,12 +41,20 @@ func frameStream(clientSide bool) ([]byte, map[uint32][]byte) {
 	fr := http2.NewFramer(&s, nil)
 	fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20})
 	data := map[uint32][]byte{}
+	// A client may send no more than the windows it starts with: a governed
+	// server ends the connection past them.
+	budget := h2InitWindow
 	for i := 0; i < 400; i++ {
 		id := uint32(1 + 2*(i%7))
 		if clientSide && i < 7 {
 			fr.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: []byte{0x82}, EndHeaders: true})
 		}
-		p := make([]byte, mrand.IntN(16384))
+		n := mrand.IntN(16384)
+		if clientSide {
+			n = min(mrand.IntN(300), budget)
+			budget -= n
+		}
+		p := make([]byte, n)
 		for j := range p {
 			p[j] = byte(i*31 + j)
 		}
@@ -126,6 +134,29 @@ func TestFlowReadChunked(t *testing.T) {
 					t.Fatalf("%s round %d: stream %d data differs", tc.name, round, id)
 				}
 			}
+		}
+	}
+}
+
+// TestFlowReadStaysInBuffer reads a client's opening frames into a buffer
+// that is a slice of a larger one: the credit the governor adds for the new
+// stream makes its output longer than the read, and none of it may land past
+// the buffer, in memory the caller still owns.
+func TestFlowReadStaysInBuffer(t *testing.T) {
+	sc := &scriptConn{}
+	c := newFlowConn(sc, flowDefault, flowDefault)
+	in := append([]byte(h2Preface), frames(func(fr *http2.Framer) {
+		fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 4 << 20})
+		fr.WriteHeaders(http2.HeadersFrameParam{StreamID: 1, BlockFragment: []byte{0x82}, EndHeaders: true})
+	})...)
+	sc.feed(in)
+	buf := bytes.Repeat([]byte{0xee}, 1024)
+	if _, err := c.Read(buf[:len(in)]); err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range buf[len(in):] {
+		if v != 0xee {
+			t.Fatalf("Read wrote past the %d-byte buffer it was given, at %d", len(in), len(in)+i)
 		}
 	}
 }

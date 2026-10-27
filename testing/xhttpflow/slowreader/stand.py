@@ -140,10 +140,10 @@ def remove_namespace(ns):
         raise RuntimeError(f"network namespace {ns} may be left behind: " + "; ".join(errors))
 
 
-def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, server_cc="cubic"):
-    """Two namespaces of this run joined by a veth pair, shaped in both. The
-    server's namespace gets server_cc as its TCP congestion control, or the
-    stand does not start."""
+def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, server_cc="cubic", queue_bdp=2):
+    """Two namespaces of this run joined by a veth pair, shaped in both, with
+    a queue of queue_bdp bandwidth-delay products. The server's namespace gets
+    server_cc as its TCP congestion control, or the stand does not start."""
     existing = subprocess.run(["ip", "netns", "list"], check=True, capture_output=True, text=True).stdout.split()
     for ns in (srv, cli):
         if ns in existing:
@@ -157,8 +157,9 @@ def setup_network(stack, srv, cli, mbit=MBIT, rtt_ms=RTT_MS, app_buffer=0, serve
     sh(f"ip -n {srv} addr add 10.9.0.1/24 dev {vsrv}")
     sh(f"ip -n {cli} addr add 10.9.0.2/24 dev {vcli}")
     # netem drops what exceeds its queue, so the queue holds twice the
-    # bandwidth-delay product: the windows, not the queue, limit the flows.
-    limit = max(1000, int(mbit * 1e6 / 8 * rtt_ms / 1000 / 1500 * 2))
+    # bandwidth-delay product by default: the windows, not the queue, limit
+    # the flows.
+    limit = max(1000, int(mbit * 1e6 / 8 * rtt_ms / 1000 / 1500 * queue_bdp))
     for ns, dev in ((srv, vsrv), (cli, vcli)):
         sh(f"ip -n {ns} link set lo up")
         sh(f"ip -n {ns} link set {dev} up")

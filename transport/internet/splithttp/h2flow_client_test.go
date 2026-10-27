@@ -23,15 +23,17 @@ import (
 
 // flowClient is an XHTTP-like HTTP/2 client: x/net's transport over a dialed
 // connection, optionally governed, keeping the governed connections around.
+// They close with the test: a governed connection holds its flowGroup until
+// it closes, and one left to the server's close lingers past the test.
 type flowClient struct {
 	*http.Client
 	mu    sync.Mutex
 	conns []*flowConn
 }
 
-func newFlowTestClient(addr string, governed bool) *flowClient {
+func newFlowTestClient(t testing.TB, addr string, governed bool) *flowClient {
 	fc := &flowClient{}
-	fc.Client = &http.Client{Transport: &http2.Transport{
+	tr := &http2.Transport{
 		AllowHTTP: true,
 		DialTLSContext: func(ctx context.Context, network, _ string, _ *gotls.Config) (net.Conn, error) {
 			c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
@@ -44,7 +46,16 @@ func newFlowTestClient(addr string, governed bool) *flowClient {
 			fc.mu.Unlock()
 			return g, nil
 		},
-	}}
+	}
+	fc.Client = &http.Client{Transport: tr}
+	t.Cleanup(func() {
+		tr.CloseIdleConnections()
+		fc.mu.Lock()
+		defer fc.mu.Unlock()
+		for _, c := range fc.conns {
+			c.Close()
+		}
+	})
 	return fc
 }
 
@@ -81,7 +92,7 @@ func TestFlowClientSlowReaderBounded(t *testing.T) {
 					}
 				}
 			}))
-			client := newFlowTestClient(addr, governed)
+			client := newFlowTestClient(t, addr, governed)
 			resp, err := client.Get("http://x/down")
 			if err != nil {
 				t.Fatal(err)
@@ -100,11 +111,18 @@ func TestFlowClientSlowReaderBounded(t *testing.T) {
 			close(stop)
 			resp.Body.Close()
 			t.Logf("%s, governed client %v: server wrote %d, client read %d, gap %d, unread at client %d", sc.name, governed, written.Load(), consumed.Load(), gap, unread)
-			if governed && unread > int64(h2InitWindow)+64<<10 {
+			// In front of a governed server the client leaves its downloads
+			// to it, see appendRestock, and is held as an official client is:
+			// to the server's send window.
+			serverGoverned := sc.down.enabled()
+			if governed && !serverGoverned && unread > int64(h2InitWindow)+64<<10 {
 				t.Fatalf("%s: unread at the governed client %d", sc.name, unread)
 			}
-			if governed && gap > 512<<10 {
+			if governed && !serverGoverned && gap > 512<<10 {
 				t.Fatalf("%s: gap %d between written and read", sc.name, gap)
+			}
+			if governed && serverGoverned && gap > flowServerSendWindow+512<<10 {
+				t.Fatalf("%s: gap %d between written and read, over the server's send window", sc.name, gap)
 			}
 		}
 	}
@@ -113,7 +131,7 @@ func TestFlowClientSlowReaderBounded(t *testing.T) {
 func TestFlowClientIntegrityDuplex(t *testing.T) {
 	for _, sc := range clientCases {
 		_, addr := startFlowServer(t, sc.up, sc.down, true, http.HandlerFunc(echoHandler))
-		client := newFlowTestClient(addr, true)
+		client := newFlowTestClient(t, addr, true)
 		var wg sync.WaitGroup
 		errs := make(chan error, 16)
 		for i := 0; i < 16; i++ {
@@ -172,7 +190,7 @@ func clientDownloadRate(t *testing.T, sc struct {
 			}
 		}
 	}))
-	client := newFlowTestClient(lagProxy(t, addr, rtt/2), governed)
+	client := newFlowTestClient(t, lagProxy(t, addr, rtt/2), governed)
 	if resp, err := client.Get("http://x/warm"); err == nil {
 		resp.Body.Read(make([]byte, 1))
 		resp.Body.Close()
@@ -229,7 +247,7 @@ func TestFlowClientMeasuresRTT(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}))
-	client := newFlowTestClient(lagProxy(t, addr, 25*time.Millisecond), true)
+	client := newFlowTestClient(t, lagProxy(t, addr, 25*time.Millisecond), true)
 	resp, err := client.Get("http://x/")
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +273,7 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 				w.Write(make([]byte, 100<<10))
 			}
 		}))
-		client := newFlowTestClient(addr, true)
+		client := newFlowTestClient(t, addr, true)
 		var wg sync.WaitGroup
 		for i := 0; i < 300; i++ {
 			wg.Add(1)
@@ -300,9 +318,10 @@ func TestFlowClientStreamStateReleased(t *testing.T) {
 
 // TestFlowChainedGovernorsSlowReaders puts a governor at both ends of twelve
 // downloads, as on a bridge in front of a governed server, and reads them in
-// stops and starts, so the caps shrink at both ends while each holds credit
-// back. Every download must still complete: with the client showing more than
-// the lowest cap (see flowShownDown) the two governors wait for each other.
+// stops and starts, so the server's caps shrink. The client sees the server
+// govern and leaves the downloads to it, see appendRestock: every download
+// must still complete, and the client must hold nothing back. Two governors
+// that each held credit once waited for each other, see flowShownDown.
 // It runs without the server's send window and with the default one.
 //
 // The readers pause after every read until a cap has been seen to fall at
@@ -359,7 +378,7 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 	tl.mu.Lock()
 	tl.sendWindow = sendWindow
 	tl.mu.Unlock()
-	client := newFlowTestClient(addr, true)
+	client := newFlowTestClient(t, addr, true)
 	serverConns := func() []*flowConn {
 		tl.mu.Lock()
 		defer tl.mu.Unlock()
@@ -401,7 +420,7 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 			case <-tick.C:
 				lowServer = min(lowServer, lowestDownCap(serverConns()))
 				lowClient = min(lowClient, lowestDownCap(clientConns()))
-				if lowServer < flowStartWindow && lowClient < flowStartWindow {
+				if lowServer < flowStartWindow {
 					fell.Store(true)
 				}
 			}
@@ -462,9 +481,17 @@ func chainedSlowReaders(t *testing.T, sendWindow int64) {
 		logDownState(t, "client", clientConns())
 		t.FailNow()
 	}
-	if lowServer >= flowStartWindow || lowClient >= flowStartWindow {
-		t.Fatalf("lowest cap seen: server %d, client %d; both must fall under the starting %d for the two governors to hold credit at once",
-			lowServer, lowClient, flowStartWindow)
+	if lowServer >= flowStartWindow {
+		t.Fatalf("lowest cap seen: server %d, client %d; the server's must fall under the starting %d", lowServer, lowClient, flowStartWindow)
+	}
+	for _, c := range clientConns() {
+		c.mu.Lock()
+		// A connection the transport dialed and never used saw no reply.
+		deferred := !c.serverReplied || c.peerGoverned && !c.restock
+		c.mu.Unlock()
+		if !deferred {
+			t.Fatal("the client did not leave its downloads to the governed server")
+		}
 	}
 	t.Logf("lowest cap seen: server %d, client %d", lowServer, lowClient)
 }

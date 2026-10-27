@@ -2,8 +2,10 @@ package splithttp
 
 import (
 	"bytes"
+	"encoding/binary"
 	mrand "math/rand/v2"
 	"testing"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -32,12 +34,19 @@ func FuzzFlowConn(f *testing.F) {
 	f.Add([]byte("\x00\x00\x06\x040\x00\x00\x00\x00\x00\x040000\x00\x00\x01\x01700010\x00\x00\x1e\x040\x00\x00\x00\x00000000\x00\x04\x00\x0000000000000000000000"), []byte("0"), uint8(3))
 
 	f.Fuzz(func(t *testing.T, fromClient, fromServer []byte, cut uint8) {
-		// The same input with the send window off and at its default.
-		for _, sendWindow := range []int64{0, flowServerSendWindow} {
+		// The same input with the send window off and at its default, and
+		// with a kernel that reports a queue of 0 to 350 ms over a 50 ms
+		// path, so the cuts and the models run.
+		for i, sendWindow := range []int64{0, flowServerSendWindow, flowServerSendWindow} {
 			capture := &captureConn{}
 			c := newFlowConn(capture, testUp, testDown)
 			c.sendWindow = sendWindow
 			c.rtt = 1
+			if i == 2 {
+				c.tcp, c.kAt, c.kOK = fakeRawConn{}, time.Now().Add(time.Hour), true
+				c.kstat = tcpStats{rtt: time.Duration(cut%8+1) * 50 * time.Millisecond, minRTT: 50 * time.Millisecond}
+				c.rttBase = 50 * time.Millisecond
+			}
 			step := int(cut%16) + 1
 			out := c.readFrames([]byte(h2Preface), nil)
 			for in := fromClient; len(in) > 0; {
@@ -73,6 +82,14 @@ func FuzzFlowConn(f *testing.F) {
 			if err := downCountersAgree(c); err != nil {
 				t.Fatalf("send window %d: %v", sendWindow, err)
 			}
+			// The governor rewrites credit and SETTINGS, never data: what
+			// the server reads of each stream is what the client sent, as
+			// far as the frames parse and the connection was not given up.
+			if !c.isBroken() {
+				if sent, got := dataFrames(fromClient), dataFrames(out[len(h2Preface):]); !bytes.Equal(sent, got) {
+					t.Fatalf("send window %d: the server read %d bytes of data frames, the client sent %d", sendWindow, len(got), len(sent))
+				}
+			}
 			c.Close()
 		}
 
@@ -106,4 +123,22 @@ func FuzzFlowConn(f *testing.F) {
 			}
 		}
 	})
+}
+
+// dataFrames is the stream id and payload of each DATA frame in b, in order,
+// up to the first frame that does not parse.
+func dataFrames(b []byte) []byte {
+	fr := http2.NewFramer(nil, bytes.NewReader(b))
+	fr.SetMaxReadFrameSize(1 << 24)
+	var out []byte
+	for {
+		f, err := fr.ReadFrame()
+		if err != nil {
+			return out
+		}
+		if d, ok := f.(*http2.DataFrame); ok {
+			out = binary.BigEndian.AppendUint32(out, d.StreamID)
+			out = append(out, d.Data()...)
+		}
+	}
 }
