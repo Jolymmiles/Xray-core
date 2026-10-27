@@ -6,6 +6,7 @@ import (
 	gotls "crypto/tls"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strconv"
 	"sync"
@@ -109,6 +110,13 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 			},
 		}
 	default:
+		u, err := url.Parse(config.Addr)
+		if err != nil {
+			cancel()
+			return nil, errors.New("invalid DoH resolver URL ", config.Addr).Base(err)
+		}
+		// the server of the URL is named unless "serverName" names another, as http3 does over h3
+		tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(net.Destination{Address: net.ParseAddress(u.Hostname())}))
 		tr = &http.Transport{
 			ForceAttemptHTTP2: true,
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -121,8 +129,6 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 					return nil, err
 				}
 				setaddr(conn.RemoteAddr())
-				// the server of the URL is named unless "serverName" names another, as http3 does over h3
-				tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(dest))
 				if fingerprint := tls.GetFingerprint(config.TlsConfig.Fingerprint); fingerprint != nil {
 					// ClientHandshake closes conn on any failure.
 					uConn, err := tls.ClientHandshake(ctx, conn, tlsConfig, fingerprint)
