@@ -276,9 +276,11 @@ guard it.
   over h1 and h2 now carries the URL's host as SNI, as from Go's net/http,
   curl or a browser and as over h3 already: a passive observer sees the DoH
   host name where it saw a hello without SNI, active probing meets the same
-  server. A URL with an IP address still sends no SNI. The name stays the
-  URL's for a redirect to another host, which is refused unless a pin matches
-  it; over h3 such a redirect used to be followed. The TLS config is built
+  server. A URL with an IP address still sends no SNI. A redirect to another
+  host is verified against the URL's name too: it is followed only when the
+  new host's certificate also covers that name, or a pinned leaf certificate
+  or `verifyPeerCertByName` accepts it; over h3 the new host's own name used
+  to be checked. The TLS config is built
   once per resolver, after its QUIC settings are checked. Covered by
   `TestDOHResolverTLSNamesTheServerOfItsURL`,
   `TestDOHResolverH3PinnedCAWithoutServerName` and
