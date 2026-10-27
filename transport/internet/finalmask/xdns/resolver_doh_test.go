@@ -1,6 +1,7 @@
 package xdns
 
 import (
+	"context"
 	gotls "crypto/tls"
 	"crypto/x509"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apernet/quic-go/http3"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
 	"github.com/xtls/xray-core/transport/internet"
@@ -144,5 +146,72 @@ func TestDOHResolverTLSNamesTheServerOfItsURL(t *testing.T) {
 	}
 	if name := <-names; name != "dns.example" {
 		t.Fatalf("the ClientHello named %q", name)
+	}
+}
+
+// Over h3, http3 names the server in the handshake of a copy of the TLS config,
+// while the check of a pinned certificate reads the name from the config it
+// was built in; that one has to name the server of the URL as well.
+func TestDOHResolverH3PinnedCAWithoutServerName(t *testing.T) {
+	ca, caHash := cert.MustGenerate(nil, cert.Authority(true), cert.KeyUsage(x509.KeyUsageDigitalSignature|x509.KeyUsageCertSign))
+	issued, _ := cert.MustGenerate(ca, cert.DNSNames("dns.example"))
+	certPEM, keyPEM := issued.ToPEM()
+	caPEM, _ := ca.ToPEM()
+	leaf, err := gotls.X509KeyPair(append(certPEM, caPEM...), keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http3.Server{
+		TLSConfig: &gotls.Config{Certificates: []gotls.Certificate{leaf}},
+		Handler:   http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("answer")) }),
+	}
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(socket) }()
+	t.Cleanup(func() {
+		server.Close()
+		socket.Close()
+		select {
+		case <-served:
+		case <-time.After(5 * time.Second):
+			t.Error("the h3 server did not stop")
+		}
+	})
+
+	dialer := &finalmask.Dialer{DialUDP: func(net.Destination) (net.Conn, error) {
+		local, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		return &net.PacketConnWrapper{PacketConn: local, Dest: socket.LocalAddr()}, nil
+	}}
+	resolver, err := NewDOHResolver(&ResolverProto{
+		Type:       "https",
+		Addr:       "https://dns.example/dns-query",
+		Worker:     1,
+		TlsConfig:  &tls.Config{NextProtocol: []string{"h3"}, PinnedPeerCertSha256: [][]byte{caHash[:]}},
+		QuicConfig: &internet.QuicParams{DisableChromeParrot: true},
+	}, dialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(resolver.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, "POST", "https://dns.example/dns-query", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := resolver.(*DOHResolver).client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if answer, err := io.ReadAll(response.Body); err != nil || string(answer) != "answer" {
+		t.Fatalf("answer %q, error %v", answer, err)
 	}
 }

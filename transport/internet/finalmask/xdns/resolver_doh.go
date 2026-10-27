@@ -46,6 +46,13 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 	if config.TlsConfig == nil {
 		return nil, errors.New("empty tls config")
 	}
+	u, err := url.Parse(config.Addr)
+	if err != nil {
+		return nil, errors.New("invalid DoH resolver URL ", config.Addr).Base(err)
+	}
+	// the server of the URL is named unless "serverName" names another: in the
+	// handshake, and to the checks of pinned certificates and names
+	tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(net.Destination{Address: net.ParseAddress(u.Hostname())}))
 	ctx, cancel := context.WithCancel(context.Background())
 	var tr http.RoundTripper
 	var setaddr func(addr net.Addr)
@@ -72,7 +79,7 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 			ChromeParrot:                   !quicParams.DisableChromeParrot,
 		}
 		tr = &http3.Transport{
-			TLSClientConfig: config.TlsConfig.GetTLSConfig(),
+			TLSClientConfig: tlsConfig,
 			QUICConfig:      quicConfig,
 			Dial: func(ctx context.Context, addr string, tlsCfg *gotls.Config, cfg *quic.Config) (*quic.Conn, error) {
 				dest, err := net.ParseDestination("udp:" + addr)
@@ -110,13 +117,6 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 			},
 		}
 	default:
-		u, err := url.Parse(config.Addr)
-		if err != nil {
-			cancel()
-			return nil, errors.New("invalid DoH resolver URL ", config.Addr).Base(err)
-		}
-		// the server of the URL is named unless "serverName" names another, as http3 does over h3
-		tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(net.Destination{Address: net.ParseAddress(u.Hostname())}))
 		tr = &http.Transport{
 			ForceAttemptHTTP2: true,
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
