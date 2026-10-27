@@ -270,15 +270,19 @@ guard it.
   `transport/internet/finalmask/xdns/resolver_doh_test.go`. Its TLS config
   names the host of its URL unless `serverName` names another. Upstream left
   the name empty: over h1 and h2 a resolver without `serverName` verified its
-  server only with pinned certificates or `verifyPeerCertByName`, and then
-  sent no SNI; over h3, http3 put the name in the ClientHello but a pinned CA
-  was checked against the empty one and refused. The ClientHello over h1 and
-  h2 now carries the URL's host as SNI, as from Go's net/http, curl or a
-  browser and as over h3 already: a passive observer sees the DoH host name
-  where it saw a hello without SNI, active probing meets the same server. A
-  URL with an IP address still sends no SNI. Covered by
-  `TestDOHResolverTLSNamesTheServerOfItsURL` and
-  `TestDOHResolverH3PinnedCAWithoutServerName`.
+  server only with a pinned leaf certificate or `verifyPeerCertByName`, and
+  then sent no SNI; over h3, http3 put the name in the ClientHello but a
+  pinned CA was checked against the empty one and refused. The ClientHello
+  over h1 and h2 now carries the URL's host as SNI, as from Go's net/http,
+  curl or a browser and as over h3 already: a passive observer sees the DoH
+  host name where it saw a hello without SNI, active probing meets the same
+  server. A URL with an IP address still sends no SNI. The name stays the
+  URL's for a redirect to another host, which is refused unless a pin matches
+  it; over h3 such a redirect used to be followed. The TLS config is built
+  once per resolver, after its QUIC settings are checked. Covered by
+  `TestDOHResolverTLSNamesTheServerOfItsURL`,
+  `TestDOHResolverH3PinnedCAWithoutServerName` and
+  `TestDOHResolverBuildsItsTLSConfigOnce`.
 - The TUN stack copies a TCP segment that was put together from IP fragments,
   or joined because its checksum is looked at, instead of keeping the buffers
   it was read into: upstream (XTLS/Xray-core#7179) kept the buffer of the last

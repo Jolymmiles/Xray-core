@@ -50,24 +50,27 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 	if err != nil {
 		return nil, errors.New("invalid DoH resolver URL ", config.Addr).Base(err)
 	}
+	h3 := len(config.TlsConfig.NextProtocol) == 1 && config.TlsConfig.NextProtocol[0] == "h3"
+	quicParams := config.QuicConfig
+	if quicParams == nil {
+		quicParams = &internet.QuicParams{}
+	}
+	if h3 {
+		switch quicParams.Congestion {
+		case "", "reno", "bbr", "force-brutal":
+		default:
+			return nil, errors.New(`xdns DoH over h3: "congestion" is "reno", "bbr" or "force-brutal", not "`, quicParams.Congestion, `"`)
+		}
+	}
 	// the server of the URL is named unless "serverName" names another: in the
-	// handshake, and to the checks of pinned certificates and names
+	// handshake, and to the checks of pinned certificates and names. Built once:
+	// a certificate in it starts a refresh worker that runs while its files can be read
 	tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(net.Destination{Address: net.ParseAddress(u.Hostname())}))
 	ctx, cancel := context.WithCancel(context.Background())
 	var tr http.RoundTripper
 	var setaddr func(addr net.Addr)
 	switch {
-	case len(config.TlsConfig.NextProtocol) == 1 && config.TlsConfig.NextProtocol[0] == "h3":
-		quicParams := config.QuicConfig
-		if quicParams == nil {
-			quicParams = &internet.QuicParams{}
-		}
-		switch quicParams.Congestion {
-		case "", "reno", "bbr", "force-brutal":
-		default:
-			cancel()
-			return nil, errors.New(`xdns DoH over h3: "congestion" is "reno", "bbr" or "force-brutal", not "`, quicParams.Congestion, `"`)
-		}
+	case h3:
 		quicConfig := &quic.Config{
 			InitialStreamReceiveWindow:     quicParams.InitStreamReceiveWindow,
 			MaxStreamReceiveWindow:         quicParams.MaxStreamReceiveWindow,
