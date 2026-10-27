@@ -238,7 +238,8 @@ func BenchmarkHeaderAndFirstPayloadOverTLS(b *testing.B) {
 		{name: "response", header: []byte{0, 0}, prefix: true},
 	} {
 		b.Run(test.name, func(b *testing.B) {
-			client, _, _ := newTLSRecordPair(b, false)
+			client, counting, _ := newTLSRecordPair(b, false)
+			counting.counting.Store(false)
 			if err := client.SetDeadline(time.Time{}); err != nil {
 				b.Fatal(err)
 			}

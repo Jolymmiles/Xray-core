@@ -265,8 +265,8 @@ go test ./common/buf -run '^$' -benchmem -count=2 \
 
 | Benchmark (1400-byte first payload) | Before | After | Bytes | Allocations |
 | --- | ---: | ---: | ---: | ---: |
-| Request header over TLS | 3.566 µs | 2.031 µs | 244 -> 201 | 4 -> 5 |
-| Response header over TLS | 3.463 µs | 2.135 µs | 199 -> 202 | 3 -> 5 |
+| Request header over TLS | 3.630 µs | 2.161 µs | 153 -> 160 | 4 -> 5 |
+| Response header over TLS | 3.630 µs | 2.203 µs | 104 -> 160 | 3 -> 5 |
 | `BufferedWriter` flush-next, recording writer | 75.99 ns | 81.51 ns (~) | 168 -> 160 | 5 -> 5 |
 | `PrefixWriter` to `io.Discard` | 69.63 ns | 87.30 ns | 240 -> 273 | 5 -> 6 |
 | Prefixed `SequentialWriter` to `io.Discard` | 59.38 ns | 70.75 ns | 168 -> 176 | 5 -> 6 |

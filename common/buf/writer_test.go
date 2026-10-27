@@ -472,3 +472,29 @@ func BenchmarkNewStreamWriter(b *testing.B) {
 		writerBenchmarkSink = NewWriter(connection)
 	}
 }
+
+func TestPrefixWriterFirstPayloadSkipsNilAndEmptyBuffers(t *testing.T) {
+	underlying := new(recordingMultiBufferWriter)
+	writer, err := NewPrefixWriter(underlying, []byte{0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	large := bytes.Repeat([]byte{'x'}, 3*Size+7)
+	if err := writer.WriteMultiBuffer(MultiBuffer{nil, New(), FromBytes([]byte("ab")), nil, FromBytes(large)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.calls) != 1 {
+		t.Fatalf("underlying writes = %d, want 1", len(underlying.calls))
+	}
+	written := underlying.calls[0]
+	defer ReleaseMulti(written)
+	want := append([]byte{0, 0, 'a', 'b'}, large...)
+	if got := []byte(written.String()); !bytes.Equal(got, want) {
+		t.Fatalf("written %d bytes, want %d", len(got), len(want))
+	}
+	for index, chunk := range written[:len(written)-1] {
+		if !chunk.IsFull() {
+			t.Fatalf("chunk %d holds %d bytes before the last chunk, want %d", index, chunk.Len(), Size)
+		}
+	}
+}

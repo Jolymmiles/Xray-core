@@ -113,6 +113,7 @@ tier_vless() {
 	step "checkptr" go test -gcflags=all=-d=checkptr=2 ./transport/internet/reality ./proxy ./proxy/vless/inbound ./proxy/vless/outbound -count=1 -timeout 300s
 	step "vet" go vet ./transport/internet/reality ./proxy ./proxy/vless/...
 	step "process matrix (36 cells)" go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -timeout 20m -v
+	step "header TLS records" go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload$' -count=1 -timeout 10m -v
 }
 
 tier_smux() {
