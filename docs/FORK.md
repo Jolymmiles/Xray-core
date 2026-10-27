@@ -293,6 +293,24 @@ guard it.
   only connections to the configured server, and the query fails with a
   logged error. Covered by `TestDOHResolverRefusesRedirects` in
   `transport/internet/finalmask/xdns/resolver_doh_test.go`.
+- TLS dialers build their configs with `GetClientTLSConfig`, which is
+  `GetTLSConfig` without the certificate refresh workers: upstream starts one
+  per certificate read from files (`encipherment` or `issue`) each time it
+  builds a config, and dialers build one per connection, so an outbound with
+  such a certificate in `tlsSettings` gained a goroutine per dial that ran
+  until the files could no longer be read. A client never selects one of
+  those certificates, as `GetCertificate` is a server's callback, and the
+  config, and with it the ClientHello, is otherwise the same. Listeners keep
+  `GetTLSConfig` and refresh from the start. This covers the TCP, WebSocket,
+  HTTPUpgrade, gRPC, mKCP, XHTTP, MASQUE, Hysteria and xdrive dialers, the
+  realm client and the XDNS DoH resolver. Covered by
+  `transport/internet/tls/client_config_test.go` (no workers, and the same
+  first ClientHello byte for byte for every fingerprint and crypto/tls),
+  `TestDialersStartNoCertificateRefreshWorkers` in
+  `transport/internet/tls/refreshtest/dialers_test.go`,
+  `TestServiceClientDialsStartNoCertificateRefreshWorkers` (xdrive),
+  `TestNewClientStartsNoCertificateRefreshWorkers` (realm) and
+  `TestDOHResolverBuildsItsTLSConfigOnce`.
 - The TUN stack copies a TCP segment that was put together from IP fragments,
   or joined because its checksum is looked at, instead of keeping the buffers
   it was read into: upstream (XTLS/Xray-core#7179) kept the buffer of the last

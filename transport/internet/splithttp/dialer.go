@@ -109,7 +109,7 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 	var gotlsConfig *gotls.Config
 
 	if tlsConfig != nil {
-		gotlsConfig = tlsConfig.GetTLSConfig(tls.WithDestination(dest))
+		gotlsConfig = tlsConfig.GetClientTLSConfig(tls.WithDestination(dest))
 	}
 
 	transportConfig := streamSettings.ProtocolSettings.(*Config)

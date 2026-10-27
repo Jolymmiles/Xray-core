@@ -200,7 +200,7 @@ func newServiceClient(connCtx context.Context, h1Hosts *sync.Map, streamSettings
 			return nil, err
 		}
 
-		gotlsConfig := tlsConfig.GetTLSConfig(tls.WithDestination(host))
+		gotlsConfig := tlsConfig.GetClientTLSConfig(tls.WithDestination(host))
 		// the dial outlives the request that started it, and a handshake that hangs
 		// would keep the one connection of the host to itself
 		ctx, cancel := context.WithTimeout(ctx, stall)
@@ -289,7 +289,7 @@ func newServiceClient(connCtx context.Context, h1Hosts *sync.Map, streamSettings
 
 				// built for each dial with the host as SNI, as for h2: http3 sets the
 				// SNI on a copy, which a pinned CA and the ECH lookup do not see
-				gotlsConfig := tlsConfig.GetTLSConfig(tls.WithDestination(host))
+				gotlsConfig := tlsConfig.GetClientTLSConfig(tls.WithDestination(host))
 				// it is for servers, and ChromeParrot refuses a config that has it
 				gotlsConfig.GetCertificate = nil
 				tr := &quic.Transport{Conn: pktConn, DisableGSO: quicParams.DisableGSO}

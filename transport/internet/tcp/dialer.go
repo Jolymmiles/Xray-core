@@ -36,9 +36,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		mitmAlpn11 := session.MitmAlpn11FromContext(ctx)
 		var tlsConfig *gotls.Config
 		if tls.IsFromMitm(config.ServerName) {
-			tlsConfig = config.GetTLSConfig(tls.WithOverrideName(mitmServerName))
+			tlsConfig = config.GetClientTLSConfig(tls.WithOverrideName(mitmServerName))
 		} else {
-			tlsConfig = config.GetTLSConfig(tls.WithDestination(dest))
+			tlsConfig = config.GetClientTLSConfig(tls.WithDestination(dest))
 		}
 
 		isFromMitmVerify := false

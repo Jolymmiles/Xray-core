@@ -63,9 +63,9 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 		}
 	}
 	// the server of the URL is named unless "serverName" names another: in the
-	// handshake, and to the checks of pinned certificates and names. Built once:
-	// a certificate in it starts a refresh worker that runs while its files can be read
-	tlsConfig := config.TlsConfig.GetTLSConfig(tls.WithDestination(net.Destination{Address: net.ParseAddress(u.Hostname())}))
+	// handshake, and to the checks of pinned certificates and names. Built once
+	// per resolver, as a client's config, which starts no certificate refresh worker
+	tlsConfig := config.TlsConfig.GetClientTLSConfig(tls.WithDestination(net.Destination{Address: net.ParseAddress(u.Hostname())}))
 	ctx, cancel := context.WithCancel(context.Background())
 	var tr http.RoundTripper
 	var setaddr func(addr net.Addr)

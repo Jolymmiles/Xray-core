@@ -227,12 +227,14 @@ func issueCertificate(rawCA *Certificate, domain string) (*tls.Certificate, erro
 	return &cert, err
 }
 
-func (c *Config) getCustomCA() []*Certificate {
+func (c *Config) getCustomCA(refresh bool) []*Certificate {
 	certs := make([]*Certificate, 0, len(c.Certificate))
 	for _, certificate := range c.Certificate {
 		if certificate.Usage == Certificate_AUTHORITY_ISSUE {
 			certs = append(certs, certificate)
-			setupOcspTicker(certificate, func(isReloaded, isOcspstapling bool) {})
+			if refresh {
+				setupOcspTicker(certificate, func(isReloaded, isOcspstapling bool) {})
+			}
 		}
 	}
 	return certs
@@ -433,8 +435,22 @@ func (r *RandCarrier) Read(p []byte) (n int, err error) {
 	return rand.Read(p)
 }
 
-// GetTLSConfig converts this Config into tls.Config.
+// GetTLSConfig converts this Config into tls.Config for a listener. Each
+// certificate read from files starts a worker that reloads it, and refreshes
+// its OCSP staple, until the files can no longer be read.
 func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
+	return c.buildTLSConfig(true, opts...)
+}
+
+// GetClientTLSConfig is GetTLSConfig for a dialer, which builds a config per
+// connection. The config is the same, but it starts no certificate refresh
+// workers: a client never selects a certificate through GetCertificate, and a
+// worker per connection would outlive it.
+func (c *Config) GetClientTLSConfig(opts ...Option) *tls.Config {
+	return c.buildTLSConfig(false, opts...)
+}
+
+func (c *Config) buildTLSConfig(refresh bool, opts ...Option) *tls.Config {
 	root, err := c.getCertPool()
 	if err != nil {
 		errors.LogErrorInner(context.Background(), err, "failed to load system root certificate")
@@ -476,11 +492,11 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		opt(config)
 	}
 
-	caCerts := c.getCustomCA()
+	caCerts := c.getCustomCA(refresh)
 	if len(caCerts) > 0 {
 		config.GetCertificate = getGetCertificateFunc(config, caCerts)
 	} else {
-		config.GetCertificate = getNewGetCertificateFunc(c.buildCertificateStore(true), c.RejectUnknownSni)
+		config.GetCertificate = getNewGetCertificateFunc(c.buildCertificateStore(refresh), c.RejectUnknownSni)
 	}
 
 	if sn := c.parseServerName(); len(sn) > 0 {
