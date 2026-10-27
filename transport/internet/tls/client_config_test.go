@@ -5,6 +5,7 @@ import (
 	"context"
 	gotls "crypto/tls"
 	"sort"
+	"strings"
 	"testing"
 	"testing/cryptotest"
 
@@ -129,6 +130,10 @@ func TestGetClientTLSConfigSendsTheSameClientHello(t *testing.T) {
 						client, clientErr := emitClientHelloWith(t, config.GetClientTLSConfig(path.options...), fingerprint, path.http11)
 						if !bytes.Equal(server, client) || serverErr != clientErr {
 							t.Fatalf("the client config sends another ClientHello:\nGetTLSConfig:       %x %s\nGetClientTLSConfig: %x %s", server, serverErr, client, clientErr)
+						}
+						// only the *_psk forms build no hello, with either config
+						if server == nil && !strings.Contains(name, "_psk") {
+							t.Fatalf("no ClientHello was sent: %s", serverErr)
 						}
 					})
 				}
