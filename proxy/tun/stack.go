@@ -226,10 +226,12 @@ func (s *stack) input(b []byte, rest int) {
 	verify := s.verify || p.fragment
 	if p.rest != 0 && (verify || p.proto != protoTCP) {
 		// only a segment of TCP that is not looked at can stay in pieces
-		p.payload, p.rest = s.whole(p.payload, p.rest), 0
+		p.payload, p.rest, p.copied = s.whole(p.payload, p.rest), 0, true
 	}
 	if p.fragment {
+		// what is put together is in a buffer of its own
 		p, ok = s.fragments.add(p)
+		p.copied = true
 	}
 	if !ok || verify && !p.verified() {
 		return
@@ -317,6 +319,7 @@ func (s *stack) handleTCP(p packet) {
 		options: t[tcpHeaderSize:size],
 		payload: t[size:],
 		rest:    p.rest,
+		copied:  p.copied,
 	}
 
 	s.mu.Lock()

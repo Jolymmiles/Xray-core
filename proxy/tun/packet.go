@@ -44,6 +44,8 @@ type packet struct {
 	// payload is what follows the IP header, without the last rest bytes of it when they are in other buffers
 	payload []byte
 	rest    int
+	// copied is set if payload is no longer in the buffers that the packet was read into
+	copied bool
 	// fragment is set if payload is a part of what follows the IP header: the one at offset of the packet
 	// with the number id, which has more after it or not
 	fragment bool

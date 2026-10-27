@@ -93,6 +93,8 @@ type segment struct {
 	// payload is without its last rest bytes when those are in other buffers of the stack, see stack.whole
 	payload []byte
 	rest    int
+	// copied is set if payload is not in the buffers of the stack that it was read into, see stack.keep
+	copied bool
 }
 
 // nextOption returns the first option of o and what follows it, kind is zero when there is none
@@ -756,7 +758,7 @@ func (c *tcpConn) space() uint32 {
 func (c *tcpConn) receive(s segment) {
 	// what is large, the next and all taken stays in the buffers that it was read into
 	size := len(s.payload) + s.rest
-	keep := c.stack.bufs != nil && size >= tcpKept && s.seq == c.rcvNxt && size <= int(c.window-c.rcvLen)
+	keep := c.stack.bufs != nil && !s.copied && size >= tcpKept && s.seq == c.rcvNxt && size <= int(c.window-c.rcvLen)
 	if !keep {
 		s.payload = c.stack.whole(s.payload, s.rest)
 	}
