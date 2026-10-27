@@ -51,17 +51,24 @@ func helloPeer(t *testing.T) (net.Destination, <-chan struct{}) {
 	return net.DestinationFromAddr(listener.Addr()), hellos
 }
 
-// closedUDPPort is a loopback port nothing answers UDP on. Transports over UDP
-// are dialed with a TCP destination too.
-func closedUDPPort(t *testing.T) net.Destination {
+// udpPeer is a loopback UDP socket that reports the first datagram it gets,
+// a QUIC dialer's first Initial, and answers none. Transports over UDP are
+// dialed with a TCP destination too.
+func udpPeer(t *testing.T) (net.Destination, <-chan struct{}) {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IP{127, 0, 0, 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := net.Port(conn.LocalAddr().(*net.UDPAddr).Port)
-	conn.Close()
-	return net.TCPDestination(net.LocalHostIP, port)
+	t.Cleanup(func() { conn.Close() })
+	datagrams := make(chan struct{}, 1)
+	go func() {
+		var datagram [1500]byte
+		if _, _, err := conn.ReadFrom(datagram[:]); err == nil {
+			datagrams <- struct{}{}
+		}
+	}()
+	return net.TCPDestination(net.LocalHostIP, net.Port(conn.LocalAddr().(*net.UDPAddr).Port)), datagrams
 }
 
 // Every dialer builds its TLS config for a connection without the certificate
@@ -73,6 +80,9 @@ func TestDialersStartNoCertificateRefreshWorkers(t *testing.T) {
 		protocol string
 		udp      bool
 		alpn     []string
+		// connects: the dial succeeds, and the dialer builds its TLS config before
+		// it returns. Otherwise the first packet the peer gets proves it.
+		connects bool
 	}{
 		{name: "tcp", protocol: "tcp"},
 		{name: "websocket", protocol: "websocket"},
@@ -81,7 +91,7 @@ func TestDialersStartNoCertificateRefreshWorkers(t *testing.T) {
 		{name: "splithttp", protocol: "splithttp", alpn: []string{"h2"}},
 		{name: "masque-h2", protocol: "masque", alpn: []string{"h2"}},
 		{name: "masque-h3", protocol: "masque", udp: true},
-		{name: "mkcp", protocol: kcp.ProtocolName, udp: true},
+		{name: "mkcp", protocol: kcp.ProtocolName, udp: true, connects: true},
 		{name: "hysteria", protocol: "hysteria", udp: true},
 	}
 	for _, usage := range []tls.Certificate_Usage{tls.Certificate_ENCIPHERMENT, tls.Certificate_AUTHORITY_ISSUE} {
@@ -98,29 +108,31 @@ func TestDialersStartNoCertificateRefreshWorkers(t *testing.T) {
 					ProtocolName: c.protocol, ProtocolSettings: protocolSettings,
 					SecurityType: "tls", SecuritySettings: config,
 				}
-				var dest net.Destination
-				var hellos <-chan struct{}
+				var peer net.Destination
+				var firstPackets <-chan struct{}
 				if c.udp {
-					dest = closedUDPPort(t)
+					peer, firstPackets = udpPeer(t)
 				} else {
-					dest, hellos = helloPeer(t)
+					peer, firstPackets = helloPeer(t)
 				}
 				for range 3 {
 					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-					conn, err := internet.Dial(ctx, dest, settings)
+					conn, err := internet.Dial(ctx, peer, settings)
+					cancel()
 					if err == nil {
 						conn.Close()
+					} else if c.connects {
+						t.Fatal(err)
 					} else {
 						t.Log(err)
 					}
-					cancel()
 				}
-				// a ClientHello proves the dialer built its TLS config
-				if hellos != nil {
+				// the dialer sends its first packet after building its TLS config
+				if !c.connects {
 					select {
-					case <-hellos:
+					case <-firstPackets:
 					case <-time.After(5 * time.Second):
-						t.Fatal("the dialer sent no ClientHello")
+						t.Fatal("the dialer sent nothing to the peer")
 					}
 				}
 				if workers := refreshtest.Workers() - baseline; workers != 0 {
