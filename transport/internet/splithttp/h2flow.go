@@ -917,6 +917,10 @@ func (c *flowConn) kernelStats(now time.Time) bool {
 // min_rtt, with cuts that do not move it, before that is the path's own.
 const flowBaseWindow = 2500 * time.Millisecond
 
+// flowBaseJitter is how far a path's smoothed round trip wanders by itself
+// while the path stands still: a queue that moves by no more stands.
+const flowBaseJitter = 20 * time.Millisecond
+
 // rebase has the queue counted from the path's round trip where the path
 // itself has moved. The kernel keeps its min_rtt for minutes, so a route or
 // cell that adds to the round trip reads as a standing queue: cuts do not
@@ -946,11 +950,11 @@ func (c *flowConn) rebase(now time.Time) {
 	// all, turns the cuts off: the caps stay where the cuts before it left
 	// them, and on a path whose window was over twice init before it moved
 	// they never come down to init. A gain of none counts as well where the
-	// queue stood through the window, its least at nine tenths of its most
-	// or more: a path that moved holds it whatever the connections do, while
-	// a queue of the server's own that many connections share moves as the
-	// others cut and grow, and so does one that other traffic keeps, which
-	// taken for the path would have its gain learnt again and cut anew.
+	// queue stood through the window, its least no more than a tenth of its
+	// most or flowBaseJitter under it: a path that moved holds it whatever
+	// the connections do, while one that other traffic keeps fills and
+	// drains by more, and taken for the path would have its gain learnt
+	// again and cut anew.
 	if c.effect.active && (c.effect.gain < 0.5 && c.pinned || c.effect.gain == 0) {
 		if c.lowGain.IsZero() {
 			c.lowGain, c.lowQueue = now, 0
@@ -961,7 +965,7 @@ func (c *flowConn) rebase(now time.Time) {
 	}
 	if c.base == 0 && !c.lowGain.IsZero() && now.Sub(c.lowGain) >= flowBaseWindow && c.baseWin.full(now) &&
 		least > floor+2*set {
-		if c.pinned || 10*(least-floor) >= 9*c.lowQueue {
+		if c.pinned || c.lowQueue-(least-floor) <= max(c.lowQueue/10, flowBaseJitter) {
 			c.base, c.baseStep = least, least-floor
 			c.lowGain = time.Time{}
 		} else {

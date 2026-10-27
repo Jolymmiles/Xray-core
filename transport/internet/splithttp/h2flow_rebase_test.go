@@ -95,10 +95,12 @@ func TestFlowRebaseKeepsBaseThroughJitter(t *testing.T) {
 // first cut lands in flight and the queue, the path's own, does not move:
 // the gain goes to none, the cuts stop and the cap stays above twice init.
 // rebase waited for caps at init and never ran; the gain of none is now
-// enough for it. Where the queue then keeps moving by two fifths, as a queue
-// of the server's own does while the connections that share it cut and
-// grow, with the cap still over twice init, it is not the path's, and
-// rebase does not run.
+// enough for it. A smoothed round trip that wanders by 8 ms either way on a
+// path that moved to 70 ms is still the path's: the base was taken only
+// where the round trip stood within a tenth. Where the queue keeps moving by
+// two fifths, as a queue of the server's own does while the connections
+// that share it cut and grow, with the cap still over twice init, it is not
+// the path's, and rebase does not run.
 func TestFlowRebaseWhereGainFroze(t *testing.T) {
 	const oldMinRTT = 20 * time.Millisecond
 	const newPathRTT = 120 * time.Millisecond
@@ -109,6 +111,16 @@ func TestFlowRebaseWhereGainFroze(t *testing.T) {
 		rebase bool
 	}{
 		{"path moved", func(time.Duration) time.Duration { return newPathRTT }, []int32{flowStartWindow, 512 << 10}, true},
+		{"path moved with jitter", func(since time.Duration) time.Duration {
+			// A triangle of ±8 ms around 70 ms, 400 ms round.
+			const amp = 8 * time.Millisecond
+			p := since % (400 * time.Millisecond)
+			off := amp - 2*amp*p/(200*time.Millisecond)
+			if p >= 200*time.Millisecond {
+				off = -3*amp + 2*amp*p/(200*time.Millisecond)
+			}
+			return 70*time.Millisecond + off
+		}, []int32{flowStartWindow, 512 << 10}, true},
 		// From 512 KiB the cap stays over twice init as it follows the round
 		// trip: it is the queue that does not stand that tells this from a
 		// path.
