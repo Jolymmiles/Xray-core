@@ -170,6 +170,8 @@ def one_run(server_binary, args, name):
                         head, n = take_header(head, bytes(buf[:n]))
                     with lock:
                         got[0] += n
+                if head is not None:
+                    raise OSError("no response header")
             except OSError as e:
                 result["error"] = str(e)
             finally:
@@ -271,6 +273,8 @@ def outer(args):
     h2flow = {name: json.loads(value) for name, value in (s.split("=", 1) for s in args.h2flow or [])}
     if set(h2flow) - set(servers):
         sys.exit(f"--h2flow names no --server: {', '.join(sorted(set(h2flow) - set(servers)))}")
+    if args.burst_at < SAMPLE or args.burst < SAMPLE:
+        sys.exit("--burst-at and --burst must each be at least one sample")
     if args.burst_at + args.burst + 2 > args.duration:
         sys.exit("--duration must leave time after the burst")
     srv, cli = f"xburst-{os.getpid()}-srv", f"xburst-{os.getpid()}-cli"
