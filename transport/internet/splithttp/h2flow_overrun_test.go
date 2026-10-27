@@ -777,6 +777,9 @@ func TestFlowDataInHeaderBlockAsStock(t *testing.T) {
 	}
 
 	stockGA, stockCode := run(t, false)
+	if !stockGA {
+		t.Fatal("the stock server sent no GOAWAY: the control proves nothing")
+	}
 	govGA, govCode := run(t, true)
 	t.Logf("data inside header block -> stock: goAway=%v code=%v; governed: goAway=%v code=%v",
 		stockGA, stockCode, govGA, govCode)

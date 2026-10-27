@@ -79,7 +79,11 @@ def outside(n, seconds, connected, addr=("10.9.0.1", OUTSIDE_PORT)):
     """Reads n plain TCP downloads from the outside sender for seconds, and
     adds to connected, for each, the bytes it read, how long it read and how
     it ended: None when it read to its deadline, otherwise the error. A run
-    counts only with every flow read to its deadline."""
+    counts only with every flow read to its deadline. All flows share one
+    deadline, so a flow that connects late reads no further into the samples
+    after the burst."""
+    end = time.time() + seconds
+
     def read():
         start, got = time.time(), 0
         try:
@@ -87,7 +91,6 @@ def outside(n, seconds, connected, addr=("10.9.0.1", OUTSIDE_PORT)):
         except OSError as e:
             connected.append((0, 0.0, f"connect: {e}"))
             return
-        end = time.time() + seconds
         err = None
         try:
             while time.time() < end:
@@ -104,6 +107,8 @@ def outside(n, seconds, connected, addr=("10.9.0.1", OUTSIDE_PORT)):
             err = str(e)
         finally:
             s.close()
+        if err is None and got == 0:
+            err = "no data before its deadline"
         connected.append((got, time.time() - start, err))
     threads = [threading.Thread(target=read) for _ in range(n)]
     for t in threads:
