@@ -385,7 +385,7 @@ func (p *frameParser) feed(in, out []byte, h frameHandler) []byte {
 				}
 				continue
 			}
-			p.skip = h.frame(p.f)
+			p.skip = !p.inBlock && h.frame(p.f)
 			if !p.skip {
 				out = append(out, p.hdr[:]...)
 			}
