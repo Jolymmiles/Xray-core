@@ -412,6 +412,10 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		requestURL2.Path = config2.GetNormalizedPath()
 		requestURL2.RawQuery = config2.GetNormalizedQuery()
 		httpClient2, xmuxClient2 = getHTTPClient(ctx, dest2, memory2)
+		if xmuxClient2 != nil && xmuxClient2 == xmuxClient {
+			// one dial counts once in a client, as onClose releases it once
+			xmuxClient2.DoneRunning()
+		}
 		errors.LogInfo(ctx, fmt.Sprintf("XHTTP is downloading from %s, mode %s, HTTP version %s, host %s", dest2, "stream-down", httpVersion2, requestURL2.Host))
 	}
 
@@ -440,7 +444,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			xmuxClient.LeftRequests.Add(-1)
 		}
 		conn.reader, conn.remoteAddr, conn.localAddr, err = httpClient.OpenStream(ctx, requestURL.String(), sessionId, reader, false)
-		if err != nil { // browser dialer only
+		if err != nil {
+			conn.onClose()
+			writer.Close()
 			return nil, err
 		}
 		return stat.Connection(&conn), nil
@@ -449,7 +455,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			xmuxClient2.LeftRequests.Add(-1)
 		}
 		conn.reader, conn.remoteAddr, conn.localAddr, err = httpClient2.OpenStream(ctx, requestURL2.String(), sessionId, nil, false)
-		if err != nil { // browser dialer only
+		if err != nil {
+			conn.onClose()
+			writer.Close()
 			return nil, err
 		}
 	}
@@ -458,7 +466,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			xmuxClient.LeftRequests.Add(-1)
 		}
 		_, _, _, err = httpClient.OpenStream(ctx, requestURL.String(), sessionId, reader, true)
-		if err != nil { // browser dialer only
+		if err != nil {
+			// the download is open: close it with the dial
+			conn.Close()
 			return nil, err
 		}
 		return stat.Connection(&conn), nil
