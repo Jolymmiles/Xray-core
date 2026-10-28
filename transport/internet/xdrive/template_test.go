@@ -422,3 +422,34 @@ func TestTemplateTwoStepTransport(t *testing.T) {
 	}
 	expectRead(t, client, "pong")
 }
+
+// a template storage takes its first retry delay when it is built, as a drive
+// storage does: its WAL reader may still retry after a test has moved on and
+// changed driveInitialBackoff
+func TestTemplateBackoffIsTakenAtBuild(t *testing.T) {
+	previous := driveInitialBackoff
+	t.Cleanup(func() { driveInitialBackoff = previous })
+
+	store := &fakeStore{objects: make(map[string][]byte)}
+	var failed sync.Once
+	store.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		busy := false
+		failed.Do(func() { busy = true })
+		if busy {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		store.handle(w, r)
+	}))
+	t.Cleanup(store.server.Close)
+
+	driveInitialBackoff = 5 * time.Millisecond
+	storage := newTemplateBackend(t, store, map[string]interface{}{"type": "none"}, nil)
+	driveInitialBackoff = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := storage.Put(ctx, "sessions/a", []byte("x")); err != nil {
+		t.Fatalf("Put after one 503: %v", err)
+	}
+}
