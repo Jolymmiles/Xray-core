@@ -76,6 +76,7 @@ type templateShared struct {
 	tokenClient *http.Client
 	folder      string
 	secrets     []string
+	backoff     time.Duration
 
 	tokenMu     sync.Mutex
 	token       string
@@ -121,6 +122,7 @@ func newTemplateStorage(streamSettings *internet.MemoryStreamConfig, config *Con
 			tokenClient: client,
 			folder:      config.RemoteFolder,
 			secrets:     config.Secrets,
+			backoff:     driveInitialBackoff,
 		},
 		client:   client,
 		inflight: make(chan struct{}, conc),
@@ -295,7 +297,7 @@ func (s *templateStorage) invalidateToken() {
 }
 
 func (s *templateStorage) do(ctx context.Context, op *opTemplate, vars map[string]string, body []byte) (int, []byte, error) {
-	backoff := driveInitialBackoff
+	backoff := s.backoff
 	var lastErr error
 
 	url := op.URL
