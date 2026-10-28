@@ -987,3 +987,64 @@ func TestDriveXmuxOverH3(t *testing.T) {
 	}
 	waitFor(t, "the first connection of XMUX to close", func() bool { return server.closed.Load() == 1 })
 }
+
+// sessions that start at once with "maxConcurrency" 1 each take a connection
+// of their own: a session reserves the connection it picks before another
+// session picks
+func TestSessionsReserveTheirConnection(t *testing.T) {
+	const sessions = 64
+	pool := newConnPool(&splithttp.XmuxConfig{MaxConcurrency: &splithttp.RangeConfig{From: 1, To: 1}}, func(context.Context) *http.Client {
+		return &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})}
+	})
+
+	transports := make([]*sessionTransport, sessions)
+	for i := range transports {
+		transports[i] = &sessionTransport{pool: pool}
+	}
+	t.Cleanup(func() {
+		for _, session := range transports {
+			if session.client != nil {
+				session.client.XmuxConn.(*poolConn).Close()
+			}
+			session.Close()
+		}
+	})
+
+	start := make(chan struct{})
+	errs := make(chan error, sessions)
+	var wg sync.WaitGroup
+	for _, session := range transports {
+		wg.Go(func() {
+			<-start
+			req, err := http.NewRequest(http.MethodGet, "http://xdrive.invalid/", nil)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp, err := session.RoundTrip(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("RoundTrip: %v", err)
+	}
+
+	owners := make(map[*splithttp.XmuxClient]int)
+	for _, session := range transports {
+		owners[session.client]++
+	}
+	for client, n := range owners {
+		if n > 1 {
+			t.Errorf("%d open sessions share a connection with maxConcurrency 1 (running %d)", n, client.Running.Load())
+		}
+	}
+}
