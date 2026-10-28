@@ -43,7 +43,20 @@ var (
 	globalDialerAccess sync.Mutex
 )
 
+// getHTTPClient picks a client for a dial and counts the dial in it before
+// another dial can pick, so XMUX "maxConcurrency" holds for dials that start at
+// once. The dial calls DoneRunning when it closes.
 func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (DialerClient, *XmuxClient) {
+	return pickHTTPClient(ctx, dest, streamSettings, true)
+}
+
+// getUploadHTTPClient picks a client for packet-up POSTs, which XMUX does not
+// count as running
+func getUploadHTTPClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (DialerClient, *XmuxClient) {
+	return pickHTTPClient(ctx, dest, streamSettings, false)
+}
+
+func pickHTTPClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig, reserve bool) (DialerClient, *XmuxClient) {
 	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
 
 	if browser_dialer.HasBrowserDialer() && realityConfig == nil {
@@ -75,6 +88,9 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 	}
 
 	xmuxClient := xmuxManager.GetXmuxClient(ctx)
+	if reserve {
+		xmuxClient.AddRunning()
+	}
 	return xmuxClient.XmuxConn.(DialerClient), xmuxClient
 }
 
@@ -399,12 +415,6 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		errors.LogInfo(ctx, fmt.Sprintf("XHTTP is downloading from %s, mode %s, HTTP version %s, host %s", dest2, "stream-down", httpVersion2, requestURL2.Host))
 	}
 
-	if xmuxClient != nil {
-		xmuxClient.AddRunning()
-	}
-	if xmuxClient2 != nil && xmuxClient2 != xmuxClient {
-		xmuxClient2.AddRunning()
-	}
 	var closed atomic.Int32
 
 	reader, writer := io.Pipe()
@@ -515,7 +525,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 
 				if dynamicXmuxClient != nil && (dynamicXmuxClient.LeftRequests.Add(-1) <= 0 ||
 					(dynamicXmuxClient.UnreusableAt != time.Time{} && lastWrite.After(dynamicXmuxClient.UnreusableAt))) {
-					dynamicHTTPClient, dynamicXmuxClient = getHTTPClient(ctx, dest, streamSettings)
+					dynamicHTTPClient, dynamicXmuxClient = getUploadHTTPClient(ctx, dest, streamSettings)
 				}
 
 				go func(hClient DialerClient) {
