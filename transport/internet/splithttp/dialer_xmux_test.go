@@ -2,8 +2,10 @@ package splithttp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -105,5 +107,57 @@ func TestFailedDialReleasesItsXmuxClient(t *testing.T) {
 				t.Errorf("a failed dial left %d running in its client", n)
 			}
 		})
+	}
+}
+
+// countedBody counts its closes
+type countedBody struct {
+	io.Reader
+	closes *atomic.Int32
+}
+
+func (b *countedBody) Close() error {
+	b.closes.Add(1)
+	return nil
+}
+
+// downloadDialer opens downloads and refuses uploads
+type downloadDialer struct {
+	openDialer
+	closes atomic.Int32
+}
+
+func (d *downloadDialer) OpenStream(_ context.Context, _, _ string, body io.Reader, _ bool) (io.ReadCloser, net.Addr, net.Addr, error) {
+	if body != nil {
+		return nil, nil, nil, errors.New("upload refused")
+	}
+	return &countedBody{Reader: strings.NewReader(""), closes: &d.closes}, &net.TCPAddr{}, &net.TCPAddr{}, nil
+}
+
+// a stream-up dial whose upload fails after its download opened closes the
+// download and lets go of both clients
+func TestFailedUploadClosesTheDownload(t *testing.T) {
+	dest := net.TCPDestination(net.DomainAddress("xhttp.invalid"), 443)
+	settings := &internet.MemoryStreamConfig{
+		Destination:      &dest,
+		ProtocolSettings: &Config{Mode: "stream-up", DownloadSettings: &internet.StreamConfig{}},
+	}
+	settings.DownloadSettings = &internet.MemoryStreamConfig{Destination: &dest, ProtocolSettings: &Config{}}
+	dialer := &downloadDialer{}
+	up := NewXmuxManager(&XmuxConfig{}, func() XmuxConn { return dialer })
+	down := NewXmuxManager(&XmuxConfig{}, func() XmuxConn { return dialer })
+	swapDialerMap(t, map[dialerConf]*XmuxManager{{dest, settings}: up, {dest, settings.DownloadSettings}: down})
+
+	if conn, err := Dial(context.Background(), dest, settings); err == nil {
+		conn.Close()
+		t.Fatal("Dial with a refused upload succeeded")
+	}
+	if n := dialer.closes.Load(); n != 1 {
+		t.Errorf("the open download was closed %d times, want 1", n)
+	}
+	for name, manager := range map[string]*XmuxManager{"upload": up, "download": down} {
+		if n := manager.xmuxClients[0].Running.Load(); n != 0 {
+			t.Errorf("a failed dial left %d running in its %s client", n, name)
+		}
 	}
 }
