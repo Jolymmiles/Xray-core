@@ -453,10 +453,12 @@ func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	client := t.client
 	if client == nil || client.LeftRequests.Add(-1) < 0 || !client.UnreusableAt.IsZero() && time.Now().After(client.UnreusableAt) {
+		// reserved under the pool's lock, or another session could pick the
+		// same connection past "maxConcurrency" before this one counts in it
 		t.pool.mu.Lock()
 		t.client = t.pool.xmux.GetXmuxClient(r.Context())
-		t.pool.mu.Unlock()
 		t.client.AddRunning()
+		t.pool.mu.Unlock()
 		t.client.LeftRequests.Add(-1)
 		if client != nil {
 			client.DoneRunning()
