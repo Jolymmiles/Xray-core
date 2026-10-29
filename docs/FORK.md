@@ -148,6 +148,17 @@ guard it.
   30 and 31 of the splithttp `Config` message are fork-owned: renumber them if
   upstream claims those numbers. Covered by `common/mux/server_test.go` and
   `common/singmux/xhttp_muxcool_integration_test.go`.
+- The TCP worker serves an accepted connection inline
+  (`tcpWorker.handleConnection`, `aa7aaf17`); upstream starts a goroutine per
+  connection. The XHTTP GET handler runs `addConn` itself, so the call returns
+  only when the session is over, and its `select` on the request context
+  after the call cannot see the GET end. The handler closes the session's
+  connection when the request context ends (`context.AfterFunc` before
+  `addConn`); upstream needs no such hook. Without it a packet-up session
+  whose client went away kept its upload queue read blocked, and a Mux.Cool
+  session that held an XUDP flow never went idle, so the handler and the
+  session's goroutines stayed until the process exited. Covered by
+  `TestSplitHTTPGetClosesConnWhenRequestContextEnds`.
 - Outbound `mux.maxReuseTimes` sets how many sessions one Mux.Cool
   connection of the main pool admits over its lifetime before new sessions
   open another connection. The main pool also carries UDP when
