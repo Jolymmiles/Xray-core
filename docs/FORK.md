@@ -266,10 +266,10 @@ guard it.
   compile when the config loads but run only from `Start`. A JSON-built
   config registers the inbound manager after DNS and the router
   (XTLS/Xray-core#7284), so their `Start` activates the scripts before any
-  listener opens; anything that routes or resolves before `Start`, such as
-  the TUN DNS takeover probe during initialization, sees only the JSON rules,
-  and its DNS lookups go to the servers; upstream
-  routes through the compiled script before its pool exists and panics there.
+  listener opens, and the TUN DNS takeover probe, which runs from the
+  inbound's `Start`, sees them too. Anything that routes or resolves before
+  `Start` sees only the JSON rules, and its DNS lookups go to the servers;
+  upstream routes through the compiled script before its pool exists and panics there.
   Covered by `TestRouterRoutesByRulesBeforeScriptStarts` and
   `TestDNSQueriesServersBeforeScriptStarts`. Do not gate the scripts again
   without the maintainer.
