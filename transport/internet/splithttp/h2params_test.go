@@ -2,6 +2,8 @@ package splithttp
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
 	gonet "net"
 	"net/http"
 	"strings"
@@ -128,7 +130,7 @@ func TestH2ParamsReachServerSettings(t *testing.T) {
 	listen, err := ListenXH(context.Background(), net.LocalHostIP, port, &internet.MemoryStreamConfig{
 		ProtocolName: "splithttp",
 		ProtocolSettings: &Config{Path: "shs", H2Flow: &H2FlowConfig{Mode: 2}, H2Params: []byte(
-			`{"MaxReceiveBufferPerStream":3145728,"MaxReceiveBufferPerConnection":5242880}`)},
+			`{"MaxConcurrentStreams":77,"MaxReceiveBufferPerStream":3145728,"MaxReceiveBufferPerConnection":5242880}`)},
 	}, func(conn stat.Connection) { conn.Close() })
 	common.Must(err)
 	defer listen.Close()
@@ -140,11 +142,46 @@ func TestH2ParamsReachServerSettings(t *testing.T) {
 	common.Must2(conn.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")))
 	common.Must2(conn.Write([]byte{0, 0, 0, h2Settings, 0, 0, 0, 0, 0}))
 
-	stream, connInc := readSettings(t, conn)
-	if stream != 3<<20 {
-		t.Errorf("stream window %d, want %d", stream, 3<<20)
+	settings, connInc := readServerSettings(t, conn)
+	if got := settings[h2SettingMaxConcurrentStreams]; got != 77 {
+		t.Errorf("max concurrent streams %d, want 77", got)
+	}
+	if got := settings[h2SettingInitialWindowSize]; got != 3<<20 {
+		t.Errorf("stream window %d, want %d", got, 3<<20)
 	}
 	if connWindow := connInc + h2InitWindow; connWindow != 5<<20 {
 		t.Errorf("connection window %d, want %d", connWindow, 5<<20)
 	}
+}
+
+const h2SettingMaxConcurrentStreams = 0x3
+
+// readServerSettings reads frames until the server's first SETTINGS and its
+// connection WINDOW_UPDATE, and returns every setting the SETTINGS carried
+// with the connection window increment.
+func readServerSettings(t *testing.T, r io.Reader) (map[uint16]uint32, uint32) {
+	t.Helper()
+	var settings map[uint16]uint32
+	var connIncrement uint32
+	header := make([]byte, 9)
+	for settings == nil || connIncrement == 0 {
+		if _, err := io.ReadFull(r, header); err != nil {
+			t.Fatal(err)
+		}
+		payload := make([]byte, int(header[0])<<16|int(header[1])<<8|int(header[2]))
+		if _, err := io.ReadFull(r, payload); err != nil {
+			t.Fatal(err)
+		}
+		stream := binary.BigEndian.Uint32(header[5:]) & 0x7fffffff
+		switch {
+		case header[3] == h2Settings && header[4]&h2FlagAck == 0 && settings == nil:
+			settings = map[uint16]uint32{}
+			for i := 0; i+6 <= len(payload); i += 6 {
+				settings[binary.BigEndian.Uint16(payload[i:])] = binary.BigEndian.Uint32(payload[i+2:])
+			}
+		case header[3] == h2WindowUpdate && stream == 0:
+			connIncrement = binary.BigEndian.Uint32(payload) & 0x7fffffff
+		}
+	}
+	return settings, connIncrement
 }
