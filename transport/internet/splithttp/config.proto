@@ -69,7 +69,9 @@ message Config {
   int32 serverMaxHeaderBytes = 27;
   string sessionIDTable = 28;
   RangeConfig sessionIDLength = 29;
-  RangeConfig muxKeepAliveSecs = 30;
-  RangeConfig muxKeepAliveBytes = 31;
-  H2FlowConfig h2Flow = 32;
+  bytes h2Params = 30;
+  // Fields 100 and up are fork-owned; see docs/FORK.md.
+  RangeConfig muxKeepAliveSecs = 100;
+  RangeConfig muxKeepAliveBytes = 101;
+  H2FlowConfig h2Flow = 102;
 }

@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // rawH2Client is a greedy HTTP/2 client: it sends DATA on its streams as far
@@ -271,12 +272,23 @@ func TestFlowInjectedQueueBounded(t *testing.T) {
 	}
 }
 
-// TestFlowProtoField32 (added for bdbac60e) checks the generated descriptor
-// for the new field and a wire round trip.
-func TestFlowProtoField32(t *testing.T) {
-	fd := (&Config{}).ProtoReflect().Descriptor().Fields().ByNumber(32)
-	if fd == nil || fd.Name() != "h2Flow" || fd.Message().FullName() != "xray.transport.internet.splithttp.H2FlowConfig" {
-		t.Fatalf("field 32: %v", fd)
+// TestFlowProtoFieldNumbers (added for bdbac60e) pins the fork-owned fields
+// of the generated descriptor, moved to 100-102 when upstream gave 30 to
+// h2Params, and checks a wire round trip.
+func TestFlowProtoFieldNumbers(t *testing.T) {
+	fields := (&Config{}).ProtoReflect().Descriptor().Fields()
+	for number, name := range map[int32]string{30: "h2Params", 100: "muxKeepAliveSecs", 101: "muxKeepAliveBytes", 102: "h2Flow"} {
+		if fd := fields.ByNumber(protoreflect.FieldNumber(number)); fd == nil || string(fd.Name()) != name {
+			t.Fatalf("field %d: %v, want %s", number, fd, name)
+		}
+	}
+	if fd := fields.ByName("h2Flow"); fd.Message().FullName() != "xray.transport.internet.splithttp.H2FlowConfig" {
+		t.Fatalf("h2Flow message: %v", fd.Message().FullName())
+	}
+	for _, number := range []int32{31, 32} {
+		if fd := fields.ByNumber(protoreflect.FieldNumber(number)); fd != nil {
+			t.Fatalf("field %d is %s; 31 and 32 are left to upstream", number, fd.Name())
+		}
 	}
 	in := &Config{H2Flow: &H2FlowConfig{Mode: 1, MaxStreamReceiveWindow: 1 << 20, MaxConnectionReceiveWindow: 2 << 20}}
 	raw, err := proto.Marshal(in)

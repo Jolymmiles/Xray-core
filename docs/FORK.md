@@ -145,8 +145,10 @@ guard it.
   limits them to pure XUDP. In packet-up and stream-up the server can poke an
   idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
   and `muxKeepAliveBytes`, off by default); stream-one is never poked. Fields
-  30 and 31 of the splithttp `Config` message are fork-owned: renumber them if
-  upstream claims those numbers. Covered by `common/mux/server_test.go` and
+  100 and 101 of the splithttp `Config` message are fork-owned: renumber them
+  if upstream claims those numbers. Until v26.10.31 they were 30 and 31, which
+  upstream then gave to `h2Params`; a protobuf config or API client built
+  against the old numbers must be regenerated (JSON configs are unaffected). Covered by `common/mux/server_test.go` and
   `common/singmux/xhttp_muxcool_integration_test.go`.
 - Outbound `mux.maxReuseTimes` sets how many sessions one Mux.Cool
   connection of the main pool admits over its lifetime before new sessions
@@ -176,8 +178,16 @@ guard it.
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
-  wiring is stock. Field 32 (`h2Flow`) of the splithttp `Config` message is
-  fork-owned: renumber it if upstream claims that number.
+  wiring is stock. Field 102 (`h2Flow`) of the splithttp `Config` message is
+  fork-owned (32 until v26.10.31): renumber it if upstream claims that number.
+  On the server, upstream's `xhttpSettings.h2Params` is the base HTTP/2
+  config; a receive window set in `h2Flow` overrides it, and with the
+  governor on the governor's 6 MiB defaults fill only a window neither sets.
+  A governed server rejects an `h2Params.MaxConcurrentStreams` above the 4096
+  streams the governor tracks; the governor still advertises at most 16 KiB
+  frames whatever `MaxReadFrameSize` says. `h2Params` is parsed before the
+  listener binds, so a bad value leaves no listener behind (upstream's
+  `ListenXH` leaks it). Covered by `transport/internet/splithttp/h2params_test.go`.
   A governed server lets one connection's client hold 4 MiB of its data,
   unread or as window still open; `h2Flow.maxConnectionSendWindow` sets it
   and `-1` lifts that limit, nothing else. The limit does not hold a client

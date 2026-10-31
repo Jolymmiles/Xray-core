@@ -1,7 +1,10 @@
 package splithttp
 
 import (
+	"encoding/json"
 	"net/http"
+
+	"github.com/xtls/xray-core/common/errors"
 
 	"golang.org/x/net/http2"
 )
@@ -74,6 +77,48 @@ func (c *Config) h2ReceiveConfig(server bool) *http.HTTP2Config {
 		MaxReceiveBufferPerStream:     stream,
 		MaxReceiveBufferPerConnection: conn,
 	}
+}
+
+// serverHTTP2Config returns the HTTP/2 settings of an XHTTP server over TCP,
+// or nil to keep Go's defaults. Upstream's h2Params is the base; a receive
+// window set in h2Flow overrides it, and with the governor on its defaults
+// fill a window still unset. A governed server must not advertise more
+// concurrent streams than the governor tracks.
+func (c *Config) serverHTTP2Config() (*http.HTTP2Config, error) {
+	var conf *http.HTTP2Config
+	if len(c.H2Params) > 0 {
+		conf = new(http.HTTP2Config)
+		if err := json.Unmarshal(c.H2Params, conf); err != nil {
+			return nil, errors.New("failed to parse h2Params").Base(err)
+		}
+	}
+	f := c.GetH2Flow()
+	stream, conn := int(f.GetMaxStreamReceiveWindow()), int(f.GetMaxConnectionReceiveWindow())
+	governed := c.h2FlowOn()
+	if conf == nil && stream == 0 && conn == 0 && !governed {
+		return nil, nil
+	}
+	if conf == nil {
+		conf = new(http.HTTP2Config)
+	}
+	if stream != 0 {
+		conf.MaxReceiveBufferPerStream = stream
+	}
+	if conn != 0 {
+		conf.MaxReceiveBufferPerConnection = conn
+	}
+	if governed {
+		if conf.MaxReceiveBufferPerStream == 0 {
+			conf.MaxReceiveBufferPerStream = flowServerReceiveWindow
+		}
+		if conf.MaxReceiveBufferPerConnection == 0 {
+			conf.MaxReceiveBufferPerConnection = flowServerReceiveWindow
+		}
+		if conf.MaxConcurrentStreams > flowMaxStreams {
+			return nil, errors.New("h2Params MaxConcurrentStreams ", conf.MaxConcurrentStreams, " exceeds the ", flowMaxStreams, " streams the h2Flow governor tracks")
+		}
+	}
+	return conf, nil
 }
 
 // newH2Transport returns an HTTP/2 transport that grants the given receive
