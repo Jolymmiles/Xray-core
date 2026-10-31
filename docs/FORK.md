@@ -146,9 +146,11 @@ guard it.
   idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
   and `muxKeepAliveBytes`, off by default); stream-one is never poked. Fields
   100 and 101 of the splithttp `Config` message are fork-owned: renumber them
-  if upstream claims those numbers. Until v26.10.31 they were 30 and 31, which
-  upstream then gave to `h2Params`; a protobuf config or API client built
-  against the old numbers must be regenerated (JSON configs are unaffected). Covered by `common/mux/server_test.go` and
+  if upstream claims those numbers. Until v26.10.31 they were 30 and 31; upstream
+  then gave 30 to `h2Params`, and the fork moved its splithttp fields to the
+  100+ block so upstream's next numbers stay free. A protobuf config or API
+  client built against the old numbers must be regenerated (JSON configs are
+  unaffected). Covered by `common/mux/server_test.go` and
   `common/singmux/xhttp_muxcool_integration_test.go`.
 - Outbound `mux.maxReuseTimes` sets how many sessions one Mux.Cool
   connection of the main pool admits over its lifetime before new sessions
@@ -261,9 +263,12 @@ guard it.
   script's data, per concurrent call with no bound; a plain bound would
   deadlock a routing script whose DNS lookup re-enters routing, and an
   acquisition error sends the connection to the default outbound. Scripts
-  compile when the config loads but run only from `Start`, after the inbound
-  manager starts, so the first connections and the TUN DNS takeover probe see
-  only the JSON rules, and DNS lookups before then go to the servers; upstream
+  compile when the config loads but run only from `Start`. A JSON-built
+  config registers the inbound manager after DNS and the router
+  (XTLS/Xray-core#7284), so their `Start` activates the scripts before any
+  listener opens; anything that routes or resolves before `Start`, such as
+  the TUN DNS takeover probe during initialization, sees only the JSON rules,
+  and its DNS lookups go to the servers; upstream
   routes through the compiled script before its pool exists and panics there.
   Covered by `TestRouterRoutesByRulesBeforeScriptStarts` and
   `TestDNSQueriesServersBeforeScriptStarts`. Do not gate the scripts again
