@@ -569,7 +569,7 @@ func Test_UplinkHTTPMethodOptions(t *testing.T) {
 					t.Skip("TLS tests are skipped on arm64, like the other TLS tests in this package")
 				}
 				if err := uplinkEcho(t, mode, "POST", transport); err != nil {
-					t.Skipf("POST baseline does not work in this setup: %v", err)
+					t.Fatalf("POST baseline failed: %v", err)
 				}
 				for _, method := range []string{"PUT", "OPTIONS"} {
 					if err := uplinkEcho(t, mode, method, transport); err != nil {
