@@ -452,8 +452,8 @@ func testMasqueTraffic(t *testing.T, tcpPort, tcp6Port, udpPort net.Port) {
 func testMasque(t *testing.T, h2 bool) {
 	serverPort, certHash := startMasqueServer(t, h2)
 
-	tcpPort := tcp.PickPort()
-	tcp6Port := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	tcpPort, tcp6Port := tcpPorts[0], tcpPorts[1]
 	udpPort := udp.PickPort()
 	clientConfig := masqueClientConfig(serverPort, certHash, h2, masqueAuthorization, tcpPort, tcp6Port, udpPort, masqueServerV4, masqueServerV6)
 
@@ -537,12 +537,12 @@ func testMasqueServer(t *testing.T, h2 bool, authorization string) error {
 	defer udpServer.Close()
 
 	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
+	tcpPorts := pickVersionSkewTCPPorts(t, 3)
 	serverPort := udp.PickPort()
 	if h2 {
-		serverPort = tcp.PickPort()
+		serverPort = tcpPorts[2]
 	}
-	tcpPort := tcp.PickPort()
-	tcp6Port := tcp.PickPort()
+	tcpPort, tcp6Port := tcpPorts[0], tcpPorts[1]
 	udpPort := udp.PickPort()
 	servers, err := InitializeServerConfigs(
 		masqueServerConfig(serverPort, tls.ParseCertificate(ct), h2, tcpDest, udpDest),
@@ -604,7 +604,7 @@ func masqueIPAddrs(p []byte) (src, dst netip.Addr) {
 
 func TestMasqueServerClientToClient(t *testing.T) {
 	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
-	serverPort := udp.PickPort()
+	serverPort := pickDualTransportPort(t)
 	servers, err := InitializeServerConfigs(&core.Config{
 		Inbound: []*core.InboundHandlerConfig{
 			masqueServerInbound(serverPort, tls.ParseCertificate(ct), http3.NextProtoH3, http2.NextProtoTLS),
