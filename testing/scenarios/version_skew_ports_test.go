@@ -71,17 +71,46 @@ func TestVersionSkewTCPPortsRemainReservedDuringAllocation(t *testing.T) {
 }
 
 func TestDualTransportPortAvoidsOccupiedTCP(t *testing.T) {
-	occupied, err := stdnet.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var occupied *stdnet.TCPListener
+	var heldUDP *stdnet.UDPConn
+	for range 128 {
+		udp, err := stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := udp.LocalAddr().(*stdnet.UDPAddr)
+		tcp, err := stdnet.ListenTCP("tcp4", &stdnet.TCPAddr{IP: addr.IP, Port: addr.Port})
+		if err != nil {
+			if closeErr := udp.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if errors.Is(err, syscall.EADDRINUSE) {
+				continue
+			}
+			t.Fatal(err)
+		}
+		occupied, heldUDP = tcp, udp
+		break
 	}
-	defer occupied.Close()
+	if occupied == nil {
+		t.Fatal("cannot reserve a TCP/UDP pair after 128 attempts")
+	}
+	t.Cleanup(func() {
+		if err := occupied.Close(); err != nil {
+			t.Error(err)
+		}
+		if heldUDP != nil {
+			if err := heldUDP.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	addr := occupied.Addr().(*stdnet.TCPAddr)
-	first := true
 	port := reserveDualTransportPort(t, func() (*stdnet.UDPConn, error) {
-		if first {
-			first = false
-			return stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: addr.IP, Port: addr.Port})
+		if heldUDP != nil {
+			udp := heldUDP
+			heldUDP = nil // The allocator owns and closes this socket.
+			return udp, nil
 		}
 		return stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
 	})
