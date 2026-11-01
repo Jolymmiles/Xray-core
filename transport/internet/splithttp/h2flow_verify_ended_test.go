@@ -61,6 +61,37 @@ func TestFlowNoUploadCreditForEndedRequest(t *testing.T) {
 	}
 }
 
+// TestFlowGuardForgetsEndedDownload has the server end a download with the
+// frame that uses the last of its window while the client's side stays open,
+// as in stream-one: the frame arms the guard for the stream before it ends.
+// The stream waits for nothing, so the guard sends no PING, gives it no
+// credit, and leaves the connection's send window where it was.
+func TestFlowGuardForgetsEndedDownload(t *testing.T) {
+	h := openStreams(t, flowServerSendWindow, 4<<20, 1)
+	t.Cleanup(func() { h.c.Close() })
+	n := int(h.toServer.streams[1])
+	h.fromServer(func(fr *http2.Framer) {
+		writeDataSplit(fr, 1, n-1)
+		fr.WriteData(1, true, []byte{0})
+	})
+	h.c.mu.Lock()
+	if h.c.guard != nil {
+		h.c.guard.Stop()
+	}
+	waiting := h.c.anyWaiting()
+	out := h.c.unstick(time.Now().Add(time.Hour), nil)
+	sendWindow := h.c.sendWindow
+	h.c.mu.Unlock()
+	if waiting || len(out) != 0 || sendWindow != flowServerSendWindow {
+		t.Fatalf("after the download ended: waiting %v, guard wrote %d bytes, send window %d, want %d", waiting, len(out), sendWindow, flowServerSendWindow)
+	}
+	h.c.fireGuard()
+	h.sync()
+	if got := len(pings(t, h.conn.take())); got != 0 {
+		t.Fatalf("guard sent %d PINGs for a download the server ended", got)
+	}
+}
+
 // TestFlowGuardProbesOnlyWaitingStreams fires the guard with no stream
 // waiting for credit any more, then with one waiting: only the second may
 // send a PING.

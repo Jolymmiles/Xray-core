@@ -1465,6 +1465,9 @@ func (c *flowConn) endDown(s *flowStream) {
 		return
 	}
 	s.serverDone = true
+	// The frame that ended the stream may have armed the guard for it, see
+	// armGuard: a stream the server has finished waits for no credit.
+	s.down.waiting = time.Time{}
 	c.downOpen--
 	c.downOpenForwarded -= s.downForwarded
 	c.downOpenSent -= s.downSent
@@ -2327,8 +2330,9 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 	default:
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		// A round trip pi saw before the stream left it is no step to
-		// follow when it comes back.
-		s.down.piRTT = 0
+		// follow when it comes back, and its last error is no derivative
+		// for its first step back.
+		s.down.piRTT, s.down.piPrev = 0, 0
 	}
 	switch {
 	case c.client:

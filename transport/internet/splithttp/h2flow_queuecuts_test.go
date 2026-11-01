@@ -91,6 +91,21 @@ func TestFlowPIForgetsRoundTripOutside(t *testing.T) {
 	}
 }
 
+// TestFlowPIForgetsErrorOutside is the same for pi's last error: one taken
+// before the stream left pi is no derivative for its first step back.
+func TestFlowPIForgetsErrorOutside(t *testing.T) {
+	h, s := queuedDownload(t)
+	h.c.mu.Lock()
+	s.down.piPrev = 0.5
+	h.c.mu.Unlock()
+	credit(h, s)
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if s.down.piPrev != 0 {
+		t.Fatalf("pi's error %v kept outside pi", s.down.piPrev)
+	}
+}
+
 // TestFlowCutsAreCounted is a download against a standing queue, cut by pi
 // and by the cut at a long queue in turn: each cut is noted for flowEffect
 // to judge by.
