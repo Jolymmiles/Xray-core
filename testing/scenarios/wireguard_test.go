@@ -116,8 +116,8 @@ func TestWireguard(t *testing.T) {
 		},
 	}
 
-	clientPort := tcp.PickPort()
-	client6Port := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	clientPort, client6Port := tcpPorts[0], tcpPorts[1]
 	clientUDPPort := udp.PickPort()
 	dokodemoInbound := func(port net.Port, dest net.Destination) *core.InboundHandlerConfig {
 		return &core.InboundHandlerConfig{
@@ -233,7 +233,8 @@ func runWireguardScenario(t *testing.T, clientNoKernelTun bool, whileConnected f
 	}
 
 	serverPort := udp.PickPort()
-	commandPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	commandPort := tcpPorts[0]
 	serverConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&stats.Config{}),
@@ -296,7 +297,7 @@ func runWireguardScenario(t *testing.T, clientNoKernelTun bool, whileConnected f
 		t.Fatal("wireguard server user key did not survive configuration")
 	}
 
-	clientPort := tcp.PickPort()
+	clientPort := tcpPorts[1]
 	clientConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&log.Config{

@@ -44,10 +44,11 @@ func TestWireGuardVersionSkew(t *testing.T) {
 			hostIP := wireGuardHostIP(t)
 			destination.Address = net.IPAddress(hostIP.AsSlice())
 
-			serverPort, clientPort := udp.PickPort(), tcp.PickPort()
+			tcpPorts := pickVersionSkewTCPPorts(t, 2)
+			serverPort, clientPort := udp.PickPort(), tcpPorts[0]
 			commandPort := net.Port(0)
 			if test.serverBinary == testBinaryPath {
-				commandPort = tcp.PickPort()
+				commandPort = tcpPorts[1]
 			}
 			serverConfig, clientConfig := wireGuardVersionSkewConfigs(destination, hostIP, serverPort, clientPort, commandPort)
 			processes := make([]*exec.Cmd, 0, 2)

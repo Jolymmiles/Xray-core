@@ -52,10 +52,11 @@ func TestReverseVersionSkew(t *testing.T) {
 			t.Cleanup(func() { _ = echo.Close() })
 			destination.Address = net.IPAddress(hostIP.AsSlice())
 			userID := protocol.NewID(uuid.New())
-			externalPort, reversePort := tcp.PickPort(), tcp.PickPort()
+			tcpPorts := pickVersionSkewTCPPorts(t, 3)
+			externalPort, reversePort := tcpPorts[0], tcpPorts[1]
 			commandPort := net.Port(0)
 			if test.portalBinary == testBinaryPath {
-				commandPort = tcp.PickPort()
+				commandPort = tcpPorts[2]
 			}
 			portal, bridge := reverseVersionSkewConfigs(destination, userID, hostIP, externalPort, reversePort, commandPort)
 			processes := make([]*exec.Cmd, 0, 2)

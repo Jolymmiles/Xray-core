@@ -55,10 +55,11 @@ func testLegacyMuxVersionSkew(t *testing.T, xudp bool) {
 			common.Must(err)
 			t.Cleanup(func() { _ = udpEcho.Close() })
 
-			serverPort, clientTCPPort, clientUDPPort := tcp.PickPort(), tcp.PickPort(), udp.PickPort()
+			tcpPorts := pickVersionSkewTCPPorts(t, 3)
+			serverPort, clientTCPPort, clientUDPPort := tcpPorts[0], tcpPorts[1], udp.PickPort()
 			commandPort := net.Port(0)
 			if test.serverBinary == testBinaryPath {
-				commandPort = tcp.PickPort()
+				commandPort = tcpPorts[2]
 			}
 			serverConfig, clientConfig := legacyMuxVersionSkewConfigs(tcpDestination, udpDestination, hostIP, serverPort, clientTCPPort, clientUDPPort, commandPort, xudp)
 			commands := make([]*exec.Cmd, 0, 2)
