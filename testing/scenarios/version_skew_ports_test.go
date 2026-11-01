@@ -1,7 +1,9 @@
 package scenarios
 
 import (
+	"errors"
 	stdnet "net"
+	"syscall"
 	"testing"
 
 	"github.com/xtls/xray-core/common/net"
@@ -66,4 +68,74 @@ func TestVersionSkewTCPPortsRemainReservedDuringAllocation(t *testing.T) {
 		return listener, err
 	}
 	reserveVersionSkewTCPPorts(t, 3, listen)
+}
+
+func TestDualTransportPortAvoidsOccupiedTCP(t *testing.T) {
+	occupied, err := stdnet.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	addr := occupied.Addr().(*stdnet.TCPAddr)
+	first := true
+	port := reserveDualTransportPort(t, func() (*stdnet.UDPConn, error) {
+		if first {
+			first = false
+			return stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: addr.IP, Port: addr.Port})
+		}
+		return stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
+	})
+	if int(port) == addr.Port {
+		t.Fatalf("selected TCP-occupied port %d", port)
+	}
+	udp, err := stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: addr.IP, Port: int(port)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	tcp, err := stdnet.ListenTCP("tcp4", &stdnet.TCPAddr{IP: addr.IP, Port: int(port)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+}
+
+// pickDualTransportPort finds a loopback port available to both HTTP/2 and HTTP/3.
+func pickDualTransportPort(t *testing.T) net.Port {
+	t.Helper()
+	return reserveDualTransportPort(t, func() (*stdnet.UDPConn, error) {
+		return stdnet.ListenUDP("udp4", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
+	})
+}
+
+func reserveDualTransportPort(t *testing.T, listenUDP func() (*stdnet.UDPConn, error)) net.Port {
+	t.Helper()
+	for range 128 {
+		udp, err := listenUDP()
+		if err != nil {
+			t.Fatalf("reserve UDP port: %v", err)
+		}
+		port := udp.LocalAddr().(*stdnet.UDPAddr).Port
+		tcp, listenErr := stdnet.ListenTCP("tcp4", &stdnet.TCPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: port})
+		if err := udp.Close(); err != nil {
+			if tcp != nil {
+				if closeErr := tcp.Close(); closeErr != nil {
+					t.Errorf("close TCP reservation: %v", closeErr)
+				}
+			}
+			t.Fatalf("close UDP reservation: %v", err)
+		}
+		if listenErr != nil {
+			if errors.Is(listenErr, syscall.EADDRINUSE) {
+				continue
+			}
+			t.Fatalf("reserve TCP port %d: %v", port, listenErr)
+		}
+		if err := tcp.Close(); err != nil {
+			t.Fatalf("close TCP reservation: %v", err)
+		}
+		return net.Port(port)
+	}
+	t.Fatal("cannot reserve a port for both TCP and UDP after 128 attempts")
+	return 0
 }
