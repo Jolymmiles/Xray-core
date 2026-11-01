@@ -2330,8 +2330,9 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 	default:
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		// A round trip pi saw before the stream left it is no step to
-		// follow when it comes back.
-		s.down.piRTT = 0
+		// follow when it comes back, and its last error is no derivative
+		// for its first step back.
+		s.down.piRTT, s.down.piPrev = 0, 0
 	}
 	switch {
 	case c.client:
