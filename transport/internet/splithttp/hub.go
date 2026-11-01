@@ -404,6 +404,13 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		if hasPhysicalPeer || hasAcceptedProxyPeer {
 			virtualConn = net.WithPeerProvenance(physicalPeer, acceptedProxyPeer, virtualConn)
 		}
+		// The worker serves the connection inline, so addConn returns only once
+		// the session is over and the select below cannot see the GET end.
+		// Close the connection when the request ends: a reader of the upload
+		// queue would otherwise wait for packets nobody sends, and a Mux.Cool
+		// worker holding an XUDP flow is never idle enough to end it.
+		stopCloseOnDone := context.AfterFunc(request.Context(), func() { conn.Close() })
+		defer stopCloseOnDone()
 		h.ln.addConn(stat.Connection(virtualConn))
 
 		// "A ResponseWriter may not be used after [Handler.ServeHTTP] has returned."
