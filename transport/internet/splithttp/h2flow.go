@@ -1465,6 +1465,9 @@ func (c *flowConn) endDown(s *flowStream) {
 		return
 	}
 	s.serverDone = true
+	// The frame that ended the stream may have armed the guard for it, see
+	// armGuard: a stream the server has finished waits for no credit.
+	s.down.waiting = time.Time{}
 	c.downOpen--
 	c.downOpenForwarded -= s.downForwarded
 	c.downOpenSent -= s.downSent
