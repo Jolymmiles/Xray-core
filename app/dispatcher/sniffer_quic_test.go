@@ -41,6 +41,10 @@ func (r *datagramReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		return nil, io.EOF
 	}
 	b := buf.New()
+	if len(r.datagrams[0]) > buf.Size {
+		b.Release()
+		b = buf.NewWithSize(int32(len(r.datagrams[0])))
+	}
 	if _, err := b.Write(r.datagrams[0]); err != nil {
 		b.Release()
 		return nil, err

@@ -108,6 +108,13 @@ func (w *Writer) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		} else {
 			mb2, b := buf.SplitFirst(mb)
 			mb = mb2
+			if b.Len() > buf.Size {
+				// An older Xray reader ends the connection on a packet
+				// above buf.Size, so the writer drops such a packet, as
+				// the XUDP writer drops its own.
+				b.Release()
+				continue
+			}
 			chunk = buf.MultiBuffer{b}
 		}
 		if err := w.writeData(chunk); err != nil {

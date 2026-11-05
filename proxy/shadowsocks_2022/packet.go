@@ -724,6 +724,12 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		}
 		pktBuf, err := w.Session.EncodePacket(dest, b.Bytes())
 		b.Release()
+		if err == ErrPacketTooLarge {
+			// A packet holds at most buf.Size bytes, which is what Xray's
+			// server reads: a datagram that does not fit is dropped, as the
+			// VLESS and VMess writers drop theirs, and the session goes on.
+			continue
+		}
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err

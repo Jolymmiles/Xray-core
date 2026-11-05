@@ -1,0 +1,192 @@
+package wireguard
+
+import (
+	"bytes"
+	"errors"
+	stdnet "net"
+	"os"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/net"
+)
+
+// The inbounds hand the WireGuard and MASQUE outbounds a UDP datagram whole,
+// up to 65535 bytes, but an IP packet holds at most 65507 bytes of UDP
+// payload over IPv4 and 65527 over IPv6. The tunnel's socket refused a longer
+// one, and the error ended the UDP session. UDPConnClient drops it and sends
+// the rest of the MultiBuffer; any other error still ends the session.
+func TestUDPConnClientDropsDatagramsTooLongForIP(t *testing.T) {
+	for _, family := range []struct {
+		name    string
+		ip      net.IP
+		longest int
+	}{
+		{"IPv4", net.LocalHostIP.IP(), 65507},
+		{"IPv6", net.LocalHostIPv6.IP(), 65527},
+	} {
+		t.Run(family.name, func(t *testing.T) {
+			sink, err := net.ListenUDP("udp", &net.UDPAddr{IP: family.ip})
+			if err != nil {
+				t.Skipf("no %s loopback: %v", family.name, err)
+			}
+			t.Cleanup(func() { sink.Close() })
+			conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: family.ip})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { conn.Close() })
+
+			client := &UDPConnClient{PacketConn: conn, Dest: sink.LocalAddr().(*net.UDPAddr)}
+			sent := [][]byte{[]byte("ping"), bytes.Repeat([]byte{2}, family.longest+1), []byte("pong")}
+			mb := make(buf.MultiBuffer, len(sent))
+			for i, payload := range sent {
+				mb[i] = buf.NewWithSize(int32(len(payload)))
+				mb[i].Write(payload)
+			}
+			if err := client.WriteMultiBuffer(mb); err != nil {
+				t.Fatalf("WriteMultiBuffer() = %v, want the long datagram dropped", err)
+			}
+			received := make([]byte, 65536)
+			for _, want := range [][]byte{sent[0], sent[2]} {
+				if err := sink.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				n, _, err := sink.ReadFrom(received)
+				if err != nil {
+					t.Fatalf("waiting for %q: %v", want, err)
+				}
+				if !bytes.Equal(received[:n], want) {
+					t.Fatalf("received a datagram of %d bytes, want %q", n, want)
+				}
+			}
+
+			conn.Close()
+			if err := client.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes([]byte("ping"))}); !errors.Is(err, stdnet.ErrClosed) {
+				t.Fatalf("WriteMultiBuffer() = %v, want the error of the closed socket", err)
+			}
+		})
+	}
+}
+
+// recordingPacketConn takes a datagram of any length, as a userspace stack
+// may, and records the length of each.
+type recordingPacketConn struct {
+	net.PacketConn
+	lengths []int
+}
+
+func (c *recordingPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	c.lengths = append(c.lengths, len(p))
+	return len(p), nil
+}
+
+// The tunnel's stack may take a datagram that no IP packet holds, so the
+// client drops it before the write rather than rely on the socket's refusal.
+func TestUDPConnClientDropsDatagramsTooLongForIPBeforeTheWrite(t *testing.T) {
+	for _, family := range []struct {
+		dest    *net.UDPAddr
+		longest int
+	}{
+		{&net.UDPAddr{IP: net.IP{192, 0, 2, 1}, Port: 53}, 65507},
+		{&net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 53}, 65527},
+	} {
+		conn := &recordingPacketConn{}
+		client := &UDPConnClient{PacketConn: conn, Dest: family.dest}
+		mb := buf.MultiBuffer{buf.NewWithSize(int32(family.longest + 1)), buf.NewWithSize(int32(family.longest))}
+		mb[0].Extend(int32(family.longest + 1))
+		mb[1].Extend(int32(family.longest))
+		if err := client.WriteMultiBuffer(mb); err != nil {
+			t.Fatal(err)
+		}
+		if len(conn.lengths) != 1 || conn.lengths[0] != family.longest {
+			t.Fatalf("to %v the stack took datagrams of %v bytes, want only the one of %d", family.dest, conn.lengths, family.longest)
+		}
+	}
+}
+
+// refusingPacketConn refuses each datagram whose first byte has an error in
+// refuse, with that error, as a socket may refuse a datagram that an IP packet
+// holds, and records the first byte of the others.
+type refusingPacketConn struct {
+	net.PacketConn
+	refuse map[byte]error
+	sent   []byte
+}
+
+func (c *refusingPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	if err := c.refuse[p[0]]; err != nil {
+		return 0, err
+	}
+	c.sent = append(c.sent, p[0])
+	return len(p), nil
+}
+
+// A socket may refuse a datagram as too long that an IP packet holds: macOS
+// refuses one above net.inet.udp.maxdgram, 9216 bytes by default, and a
+// connected socket on Linux reports a router's "fragmentation needed" on its
+// next write. The client drops the refused datagram and sends the rest of the
+// MultiBuffer; any other error still ends the session.
+func TestUDPConnClientDropsDatagramsTheSocketRefusesAsTooLong(t *testing.T) {
+	tooLong := &stdnet.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendto", syscall.EMSGSIZE)}
+	conn := &refusingPacketConn{refuse: map[byte]error{2: tooLong, 4: stdnet.ErrClosed}}
+	client := &UDPConnClient{PacketConn: conn, Dest: &net.UDPAddr{IP: net.IP{192, 0, 2, 1}, Port: 53}}
+	datagrams := func(ids ...byte) buf.MultiBuffer {
+		mb := make(buf.MultiBuffer, len(ids))
+		for i, id := range ids {
+			mb[i] = buf.FromBytes(append([]byte{id}, bytes.Repeat([]byte{0}, 9999)...))
+		}
+		return mb
+	}
+	if err := client.WriteMultiBuffer(datagrams(1, 2, 3)); err != nil {
+		t.Fatalf("WriteMultiBuffer() = %v, want the refused datagram dropped", err)
+	}
+	if !bytes.Equal(conn.sent, []byte{1, 3}) {
+		t.Fatalf("the socket sent datagrams %v, want 1 and 3", conn.sent)
+	}
+	if err := client.WriteMultiBuffer(datagrams(4, 5)); !errors.Is(err, stdnet.ErrClosed) {
+		t.Fatalf("WriteMultiBuffer() = %v, want the error of the closed socket", err)
+	}
+}
+
+// The client reads the replies of the tunnel with ReadFrom into a buffer of
+// 8192 bytes, which cut a longer one without a sign, as the userspace stack
+// and a kernel socket do, and passed its start on as a whole datagram. It
+// drops such a datagram and returns the next.
+func TestUDPConnClientDropsRepliesLongerThanARead(t *testing.T) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.LocalHostIP.IP()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	server, err := net.DialUDP("udp", nil, conn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { server.Close() })
+	sent := [][]byte{[]byte("ping"), bytes.Repeat([]byte{2}, 9000), []byte("pong")}
+	for _, datagram := range sent {
+		if _, err := server.Write(datagram); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	client := &UDPConnClient{PacketConn: conn, Dest: server.LocalAddr().(*net.UDPAddr)}
+	for _, want := range [][]byte{sent[0], sent[2]} {
+		mb, err := client.ReadMultiBuffer()
+		if err != nil {
+			t.Fatalf("reading %q: %v", want, err)
+		}
+		if len(mb) != 1 || !bytes.Equal(mb[0].Bytes(), want) {
+			t.Fatalf("read a datagram of %d bytes, want %q", mb.Len(), want)
+		}
+		if mb[0].UDP == nil || mb[0].UDP.Port != net.Port(server.LocalAddr().(*net.UDPAddr).Port) {
+			t.Fatalf("the datagram comes from %v, want the server", mb[0].UDP)
+		}
+		buf.ReleaseMulti(mb)
+	}
+}
