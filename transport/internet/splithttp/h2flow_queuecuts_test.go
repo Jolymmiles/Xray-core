@@ -107,6 +107,48 @@ func TestFlowPIForgetsErrorOutside(t *testing.T) {
 	}
 }
 
+// TestFlowPIForgetsRateOutside is the same for the rate pi saw the reader
+// take and whether the cap held it: outside pi no cap of pi's holds it.
+func TestFlowPIForgetsRateOutside(t *testing.T) {
+	h, s := queuedDownload(t)
+	h.c.mu.Lock()
+	s.down.rate, s.down.capped = 10<<20, true
+	h.c.mu.Unlock()
+	credit(h, s)
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if s.down.rate != 0 || s.down.capped {
+		t.Fatalf("pi's rate %v, capped %v kept outside pi", s.down.rate, s.down.capped)
+	}
+}
+
+// TestFlowShareLeavesOutsideStreams is two downloads that both took data
+// lately: stream 1 has left pi, stream 3 is in it. The share stream 3 steps
+// up by is its own alone, not a mean with a rate stream 1 had in pi.
+func TestFlowShareLeavesOutsideStreams(t *testing.T) {
+	h, s1 := queuedDownload(t)
+	h.openRequest(3)
+	h.fromServer(func(fr *http2.Framer) { writeDataSplit(fr, 3, 200<<10) })
+	h.c.mu.Lock()
+	h.c.incremental = true
+	h.c.kstat.rtt = 110 * time.Millisecond
+	s3 := h.c.streams[3]
+	s3.down.cap = 1 << 20
+	s3.down.flat = flowFullRounds
+	s3.down.mark, s3.down.markBase = time.Now().Add(-200*time.Millisecond), s3.down.returned
+	s3.down.rate, s3.down.capped = 1<<20, true
+	s1.down.rate, s1.down.capped = 10<<20, true
+	h.c.mu.Unlock()
+	credit(h, s1) // flat 0: outside pi
+	h.fromClient(func(fr *http2.Framer) { fr.WriteWindowUpdate(3, 4<<10) })
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	if h.c.downShare != 0 {
+		t.Fatalf("outside pi: s1.down.capped=%v s1.down.rate=%v c.downShare=%v; want false, 0, 0",
+			s1.down.capped, s1.down.rate, h.c.downShare)
+	}
+}
+
 // TestFlowCutsAreCounted is a download against a standing queue, cut by pi
 // and by the cut at a long queue in turn: each cut is noted for flowEffect
 // to judge by.
