@@ -54,7 +54,13 @@ func startUDPDestinationAt(t *testing.T, port int) (*net.UDPAddr, <-chan recorde
 			if err != nil {
 				return
 			}
-			received <- recordedDatagram{size: n, fill: packet[n-1]}
+			// an empty datagram, which SOCKS sent in place of a long one, is
+			// recorded with a fill no marker has
+			var fill byte
+			if n > 0 {
+				fill = packet[n-1]
+			}
+			received <- recordedDatagram{size: n, fill: fill}
 			switch {
 			case string(packet[:n]) == "trigger":
 				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xB1}, 9000), from)
