@@ -187,14 +187,13 @@ func TestFlowChainedStallAtSendWindow(t *testing.T) {
 	}
 }
 
-// TestFlowChainedClientNotHeldToSendWindow fixes what the send window does not
-// do. Forty downloads open from a governed client, the server sends all it
-// may and the client reads nothing. The client governor opens each stream
-// with credit of its cap above what it showed, and the server governor hands
-// all of that on: a client that shows no more than the protocol default is
-// shown all of it, see shownDown. What such a client holds is up to its own
-// governor, forty times its starting cap here, with the limit as without.
-func TestFlowChainedClientNotHeldToSendWindow(t *testing.T) {
+// TestFlowChainedClientHeldLikeOfficial opens forty downloads from a governed
+// client, the server sends all it may and the client reads nothing. The client
+// sees the server govern and shows it the stack's own window, see
+// appendRestock: the server then holds it as it holds an official client, to
+// its send window and a frame a stream over it, and without the limit to the
+// start window a stream has. Both governors count the same.
+func TestFlowChainedClientHeldLikeOfficial(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		sendWindow int64
@@ -228,8 +227,14 @@ func TestFlowChainedClientNotHeldToSendWindow(t *testing.T) {
 				total += ch.sendAll(id)
 			}
 			t.Logf("governed client, 40 unread downloads: client holds %d unread (limit %d); server governor counts %d", total, tc.sendWindow, ch.h.c.clientHolds())
-			if total != 40*flowStartWindow {
-				t.Fatalf("a governed client was sent %d on forty streams, want its own governor's %d each, %d", total, flowStartWindow, 40*flowStartWindow)
+			if held := ch.h.c.clientHolds(); held != total {
+				t.Fatalf("the server governor counts %d held, the client was sent %d", held, total)
+			}
+			switch {
+			case tc.sendWindow == 0 && total != 40*flowStartWindow:
+				t.Fatalf("with no send window a governed client was sent %d on forty streams, want the start window each, %d", total, 40*flowStartWindow)
+			case tc.sendWindow != 0 && total > tc.sendWindow+40*flowShownLimited:
+				t.Fatalf("a governed client was sent %d on forty streams, over the send window %d and a frame a stream", total, tc.sendWindow)
 			}
 		})
 	}

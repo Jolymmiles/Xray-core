@@ -6,7 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	stdnet "net"
-	"sync/atomic"
+	"net/netip"
 	"testing"
 
 	"github.com/xtls/xray-core/app/proxyman"
@@ -16,25 +16,13 @@ import (
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/transport/internet"
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
-	"golang.zx2c4.com/wireguard/tun"
 )
 
-// closeCountingDevice counts the Close calls that reach the TUN and passes
-// them on to the real one.
-type closeCountingDevice struct {
-	tun.Device
-	closes atomic.Int32
-}
-
-func (d *closeCountingDevice) Close() error {
-	d.closes.Add(1)
-	return d.Device.Close()
-}
-
-// A WireGuard outbound creates its TUN in the constructor and its device on
-// first use. Removing it through the outbound manager (HandlerService
-// RemoveOutbound) must close the TUN, and closing the instance or the handler
-// afterwards must not close it again.
+// A WireGuard outbound creates its TUN and its device in the constructor and
+// brings the device up on first use. Removing it through the outbound manager
+// (HandlerService RemoveOutbound) must close the device and with it the TUN's
+// stack, and closing the instance or the handler afterwards must not fail.
+// netTun.Close runs once whoever calls it (TestNetTUNCloseIsIdempotent).
 func TestRemovedOutboundClosesTUNOnce(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -82,31 +70,36 @@ func TestRemovedOutboundClosesTUNOnce(t *testing.T) {
 			ohm := v.GetFeature(outbound.ManagerType()).(outbound.Manager)
 			handler := ohm.GetHandler("wg").(*proxymanoutbound.Handler).GetOutbound().(*Handler)
 			t.Cleanup(func() { _ = handler.Close() })
-			device := &closeCountingDevice{}
-			handler.mu.Lock()
-			device.Device = handler.tun
-			handler.tun = device
-			handler.mu.Unlock()
 			if test.deviceUp {
-				if err := handler.init(context.Background()); err != nil {
+				if err := handler.up(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 			}
+			remote := netip.MustParseAddrPort("10.0.0.3:53")
+			conn, err := handler.tnet.DialUDPAddrPort(netip.AddrPort{}, remote)
+			if err != nil {
+				t.Fatalf("the TUN's stack refused a socket before the removal: %v", err)
+			}
+			_ = conn.Close()
 
 			if err := ohm.RemoveHandler(context.Background(), "wg"); err != nil {
 				t.Fatal(err)
 			}
-			if n := device.closes.Load(); n != 1 {
-				t.Fatalf("removing the outbound closed its TUN %d times, want 1", n)
+			handler.mu.Lock()
+			device := handler.dev
+			handler.mu.Unlock()
+			if device != nil {
+				t.Fatal("removing the outbound left its device open")
+			}
+			if conn, err := handler.tnet.DialUDPAddrPort(netip.AddrPort{}, remote); err == nil {
+				_ = conn.Close()
+				t.Fatal("removing the outbound left the TUN's stack open")
 			}
 			if err := v.Close(); err != nil {
 				t.Fatal(err)
 			}
 			if err := handler.Close(); err != nil {
 				t.Fatal(err)
-			}
-			if n := device.closes.Load(); n != 1 {
-				t.Fatalf("closing the instance and the handler after the removal closed the TUN %d times in total, want 1", n)
 			}
 		})
 	}

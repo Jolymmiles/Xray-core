@@ -26,7 +26,8 @@ const (
 	driveMaxAttempts = 8
 	driveMaxInflight = 32
 	driveInlineLimit = 12000
-	driveTimeout     = 60 * time.Second
+	// driveTimeout ends a request that makes no progress for that long
+	driveTimeout = 60 * time.Second
 )
 
 var (
@@ -38,11 +39,21 @@ var (
 )
 
 type driveStorage struct {
+	*driveShared
+	// a session has a client and inflight of its own, see session
+	client   *http.Client
+	inflight chan struct{}
+	release  func()
+}
+
+// driveShared is what the sessions of a storage have in common
+type driveShared struct {
+	conns        *connPool
 	folder       string
 	clientID     string
 	clientSecret string
 	refreshToken string
-	client       *http.Client
+	tokenClient  *http.Client
 	tokenURL     string
 	filesURL     string
 	uploadURL    string
@@ -51,8 +62,6 @@ type driveStorage struct {
 	tokenMu     sync.Mutex
 	token       string
 	tokenExpiry time.Time
-
-	inflight chan struct{}
 
 	idMu sync.Mutex
 	ids  map[string]string
@@ -71,19 +80,39 @@ func newDriveStorage(streamSettings *internet.MemoryStreamConfig, config *Config
 		}
 	}
 
+	h1Hosts := new(sync.Map)
+	client := newServiceClient(context.Background(), h1Hosts, streamSettings, driveTimeout, driveMaxInflight)
 	return &driveStorage{
-		folder:       config.RemoteFolder,
-		clientID:     config.Secrets[0],
-		clientSecret: config.Secrets[1],
-		refreshToken: config.Secrets[2],
-		client:       newServiceClient(streamSettings, driveTimeout, driveMaxInflight),
-		tokenURL:     driveTokenURL,
-		filesURL:     driveFilesURL,
-		uploadURL:    driveUploadURL,
-		backoff:      driveInitialBackoff,
-		inflight:     make(chan struct{}, driveMaxInflight),
-		ids:          make(map[string]string),
+		driveShared: &driveShared{
+			conns: newConnPool(config.Xmux, func(connCtx context.Context) *http.Client {
+				return newServiceClient(connCtx, h1Hosts, streamSettings, driveTimeout, driveMaxInflight)
+			}),
+			folder:       config.RemoteFolder,
+			clientID:     config.Secrets[0],
+			clientSecret: config.Secrets[1],
+			refreshToken: config.Secrets[2],
+			tokenClient:  client,
+			tokenURL:     driveTokenURL,
+			filesURL:     driveFilesURL,
+			uploadURL:    driveUploadURL,
+			backoff:      driveInitialBackoff,
+			ids:          make(map[string]string),
+		},
+		client:   client,
+		inflight: make(chan struct{}, driveMaxInflight),
 	}, nil
+}
+
+// session returns a storage for one session, over the connections of XMUX
+// until Close, with the token and ids of s
+func (s *driveStorage) session() Storage {
+	transport := &sessionTransport{pool: s.conns}
+	return &driveStorage{
+		driveShared: s.driveShared,
+		client:      &http.Client{Transport: transport},
+		inflight:    make(chan struct{}, driveMaxInflight),
+		release:     transport.Close,
+	}
 }
 
 func flatten(name string) string {
@@ -114,7 +143,7 @@ func (s *driveStorage) accessToken(ctx context.Context) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := s.client.Do(req)
+	resp, err := s.tokenClient.Do(req)
 	if err != nil {
 		return "", errors.New("failed to refresh the access token").Base(err)
 	}
@@ -153,7 +182,7 @@ func jitter(backoff time.Duration) time.Duration {
 	if half <= 0 {
 		return backoff
 	}
-	return half + time.Duration(dice.Roll(int(half)))
+	return half + time.Duration(dice.RollInt63n(int64(half)))
 }
 
 func rateLimited(payload []byte) bool {
@@ -372,24 +401,30 @@ func (s *driveStorage) Put(ctx context.Context, name string, data []byte) error 
 }
 
 func (s *driveStorage) putInline(ctx context.Context, name string, data []byte) error {
+	_, err := s.create(ctx, name, base64.StdEncoding.EncodeToString(data))
+	return err
+}
+
+// create makes an object with description and no body and returns its id
+func (s *driveStorage) create(ctx context.Context, name, description string) (string, error) {
 	flat := flatten(name)
 
 	body, err := json.Marshal(map[string]interface{}{
 		"name":        flat,
 		"parents":     []string{s.folder},
-		"description": base64.StdEncoding.EncodeToString(data),
+		"description": description,
 	})
 	if err != nil {
-		return errors.New("failed to build the inline metadata").Base(err)
+		return "", errors.New("failed to build the inline metadata").Base(err)
 	}
 
 	status, payload, err := s.do(ctx, http.MethodPost, s.filesURL+"?fields=id",
 		"application/json; charset=UTF-8", body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if status != http.StatusOK {
-		return errors.New("Drive rejected the inline upload of ", name,
+		return "", errors.New("Drive rejected the inline upload of ", name,
 			" with ", status, ": ", string(payload))
 	}
 
@@ -397,12 +432,23 @@ func (s *driveStorage) putInline(ctx context.Context, name string, data []byte) 
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return errors.New("failed to parse the Drive upload response").Base(err)
+		return "", errors.New("failed to parse the Drive upload response").Base(err)
 	}
 	if parsed.ID != "" {
 		s.rememberID(flat, parsed.ID)
 	}
-	return nil
+	return parsed.ID, nil
+}
+
+// multipartBody is a body of an upload with metadata and data
+func multipartBody(metadata, data []byte) []byte {
+	var body bytes.Buffer
+	fmt.Fprintf(&body, "--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n", driveBoundary)
+	body.Write(metadata)
+	fmt.Fprintf(&body, "\r\n--%s\r\nContent-Type: application/octet-stream\r\n\r\n", driveBoundary)
+	body.Write(data)
+	fmt.Fprintf(&body, "\r\n--%s--\r\n", driveBoundary)
+	return body.Bytes()
 }
 
 func (s *driveStorage) putMedia(ctx context.Context, name string, data []byte) error {
@@ -416,15 +462,8 @@ func (s *driveStorage) putMedia(ctx context.Context, name string, data []byte) e
 		return errors.New("failed to build the upload metadata").Base(err)
 	}
 
-	var body bytes.Buffer
-	fmt.Fprintf(&body, "--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n", driveBoundary)
-	body.Write(metadata)
-	fmt.Fprintf(&body, "\r\n--%s\r\nContent-Type: application/octet-stream\r\n\r\n", driveBoundary)
-	body.Write(data)
-	fmt.Fprintf(&body, "\r\n--%s--\r\n", driveBoundary)
-
 	status, payload, err := s.do(ctx, http.MethodPost, s.uploadURL,
-		"multipart/related; boundary="+driveBoundary, body.Bytes())
+		"multipart/related; boundary="+driveBoundary, multipartBody(metadata, data))
 	if err != nil {
 		return err
 	}
@@ -451,45 +490,22 @@ func (s *driveStorage) Get(ctx context.Context, name string) ([]byte, error) {
 		return nil, err
 	}
 
-	status, payload, err := s.do(ctx, http.MethodGet,
-		s.filesURL+"/"+url.PathEscape(id)+"?alt=media&supportsAllDrives=true", "", nil)
-	if err != nil {
-		return nil, err
-	}
-	switch status {
-	case http.StatusOK:
-		if len(payload) > 0 {
-			return payload, nil
-		}
-		return s.getInline(ctx, id)
-	case http.StatusNotFound:
+	payload, err := s.readBody(ctx, id)
+	if err == errNotFound {
 		s.forgetID(flat)
-		return nil, errNotFound
-	default:
-		return nil, errors.New("Drive download of ", name, " answered ", status, ": ", string(payload))
 	}
+	if err != nil || len(payload) > 0 {
+		return payload, err
+	}
+	return s.getInline(ctx, id)
 }
 
 func (s *driveStorage) getInline(ctx context.Context, id string) ([]byte, error) {
-	status, payload, err := s.do(ctx, http.MethodGet,
-		s.filesURL+"/"+url.PathEscape(id)+"?fields=description&supportsAllDrives=true", "", nil)
-	if err != nil {
+	description, err := s.readDescription(ctx, id)
+	if err != nil || description == "" {
 		return nil, err
 	}
-	if status != http.StatusOK {
-		return nil, errors.New("Drive answered ", status, " for inline data: ", string(payload))
-	}
-
-	var parsed struct {
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return nil, errors.New("failed to parse the inline data").Base(err)
-	}
-	if parsed.Description == "" {
-		return nil, nil
-	}
-	data, err := base64.StdEncoding.DecodeString(parsed.Description)
+	data, err := base64.StdEncoding.DecodeString(description)
 	if err != nil {
 		return nil, errors.New("the inline data is not valid base64").Base(err)
 	}
@@ -571,5 +587,81 @@ func (s *driveStorage) List(ctx context.Context, prefix string) ([]Entry, error)
 }
 
 func (s *driveStorage) Close() error {
+	if s.release != nil {
+		s.release()
+	}
 	return nil
+}
+
+// makeSlot implements slotStore
+func (s *driveStorage) makeSlot(ctx context.Context, name string) (string, error) {
+	id, err := s.create(ctx, name, "")
+	if err == nil && id == "" {
+		err = errors.New("Drive returned no id for ", name)
+	}
+	return id, err
+}
+
+// setSlot implements slotStore, a description and a body go in one request
+func (s *driveStorage) setSlot(ctx context.Context, id, description string, body []byte) error {
+	metadata, err := json.Marshal(map[string]string{"description": description})
+	if err != nil {
+		return errors.New("failed to build the slot metadata").Base(err)
+	}
+	target := s.filesURL + "/" + url.PathEscape(id) + "?fields=id&supportsAllDrives=true"
+	contentType := "application/json; charset=UTF-8"
+	if body != nil {
+		upload, _, _ := strings.Cut(s.uploadURL, "?")
+		target = upload + "/" + url.PathEscape(id) + "?uploadType=multipart&fields=id&supportsAllDrives=true"
+		contentType = "multipart/related; boundary=" + driveBoundary
+		metadata = multipartBody(metadata, body)
+	}
+
+	status, payload, err := s.do(ctx, http.MethodPatch, target, contentType, metadata)
+	switch {
+	case err != nil:
+		return err
+	case status == http.StatusNotFound:
+		return errNotFound
+	case status != http.StatusOK:
+		return errors.New("Drive answered ", status, " for the update of ", id, ": ", string(payload))
+	}
+	return nil
+}
+
+// readDescription implements slotStore
+func (s *driveStorage) readDescription(ctx context.Context, id string) (string, error) {
+	status, payload, err := s.do(ctx, http.MethodGet,
+		s.filesURL+"/"+url.PathEscape(id)+"?fields=description&supportsAllDrives=true", "", nil)
+	switch {
+	case err != nil:
+		return "", err
+	case status == http.StatusNotFound:
+		return "", errNotFound
+	case status != http.StatusOK:
+		return "", errors.New("Drive answered ", status, " for the description of ", id, ": ", string(payload))
+	}
+
+	var parsed struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return "", errors.New("failed to parse the description of ", id).Base(err)
+	}
+	return parsed.Description, nil
+}
+
+// readBody implements slotStore
+func (s *driveStorage) readBody(ctx context.Context, id string) ([]byte, error) {
+	status, payload, err := s.do(ctx, http.MethodGet,
+		s.filesURL+"/"+url.PathEscape(id)+"?alt=media&supportsAllDrives=true", "", nil)
+	switch {
+	case err != nil:
+		return nil, err
+	case status == http.StatusNotFound:
+		return nil, errNotFound
+	case status != http.StatusOK:
+		return nil, errors.New("Drive answered ", status, " for the body of ", id, ": ", string(payload))
+	}
+	return payload, nil
 }

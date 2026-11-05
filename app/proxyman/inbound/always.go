@@ -16,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport/internet"
+	"github.com/xtls/xray-core/transport/internet/reality"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -87,6 +88,11 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 	mss, err := internet.ToMemoryStreamConfig(receiverConfig.StreamSettings)
 	if err != nil {
 		return nil, errors.New("failed to parse stream config").Base(err)
+	}
+	if config := reality.ConfigFromStreamSettings(mss); config != nil {
+		if err := config.CheckServerKeys(); err != nil {
+			return nil, err
+		}
 	}
 
 	newCtx := session.ContextWithInbound(ctx, &session.Inbound{Tag: tag, Source: src})

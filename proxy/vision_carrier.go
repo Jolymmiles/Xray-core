@@ -74,8 +74,8 @@ func (c VisionCarrier) Supported() bool {
 }
 
 // Buffers returns the carrier-owned TLS input buffers used by Vision's
-// direct-copy transition.
-func (c VisionCarrier) Buffers() (*bytes.Reader, *bytes.Buffer, bool) {
+// direct-copy transition, as VisionBuffers does.
+func (c VisionCarrier) Buffers() (*bytes.Reader, **bytes.Buffer, bool) {
 	if !c.Supported() {
 		return nil, nil, false
 	}

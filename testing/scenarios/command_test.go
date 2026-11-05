@@ -44,8 +44,8 @@ func TestCommanderListenConfigurationItem(t *testing.T) {
 	common.Must(err)
 	defer tcpServer.Close()
 
-	clientPort := tcp.PickPort()
-	cmdPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	clientPort, cmdPort := tcpPorts[0], tcpPorts[1]
 	clientConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&commander.Config{
@@ -132,8 +132,8 @@ func TestCommanderRemoveHandler(t *testing.T) {
 	common.Must(err)
 	defer tcpServer.Close()
 
-	clientPort := tcp.PickPort()
-	cmdPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	clientPort, cmdPort := tcpPorts[0], tcpPorts[1]
 	clientConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&commander.Config{
@@ -225,8 +225,8 @@ func TestCommanderListHandlers(t *testing.T) {
 	common.Must(err)
 	defer tcpServer.Close()
 
-	clientPort := tcp.PickPort()
-	cmdPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	clientPort, cmdPort := tcpPorts[0], tcpPorts[1]
 	clientConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&commander.Config{
@@ -338,8 +338,9 @@ func TestCommanderAddRemoveUser(t *testing.T) {
 	u1 := protocol.NewID(uuid.New())
 	u2 := protocol.NewID(uuid.New())
 
-	cmdPort := tcp.PickPort()
-	serverPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 3)
+	cmdPort := tcpPorts[0]
+	serverPort := tcpPorts[1]
 	serverConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&commander.Config{
@@ -408,7 +409,7 @@ func TestCommanderAddRemoveUser(t *testing.T) {
 		},
 	}
 
-	clientPort := tcp.PickPort()
+	clientPort := tcpPorts[2]
 	clientConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&policy.Config{
@@ -510,8 +511,8 @@ func TestCommanderStats(t *testing.T) {
 	defer tcpServer.Close()
 
 	userID := protocol.NewID(uuid.New())
-	serverPort := tcp.PickPort()
-	cmdPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 3)
+	serverPort, cmdPort := tcpPorts[1], tcpPorts[0]
 
 	serverConfig := &core.Config{
 		App: []*serial.TypedMessage{
@@ -595,7 +596,7 @@ func TestCommanderStats(t *testing.T) {
 		},
 	}
 
-	clientPort := tcp.PickPort()
+	clientPort := tcpPorts[2]
 	clientConfig := &core.Config{
 		Inbound: []*core.InboundHandlerConfig{
 			{

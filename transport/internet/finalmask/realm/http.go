@@ -85,7 +85,7 @@ func NewClient(scheme, host, port, token string, tlsConfig *tls.Config) *Client 
 	client := http.DefaultClient
 	if tlsConfig != nil {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.TLSClientConfig = tlsConfig.GetTLSConfig()
+		tr.TLSClientConfig = tlsConfig.GetClientTLSConfig()
 		client = &http.Client{Transport: tr}
 	}
 	return &Client{

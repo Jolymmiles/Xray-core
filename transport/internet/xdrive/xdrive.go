@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -87,6 +88,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	if err != nil {
 		return nil, err
 	}
+	storage = sessionStorage(storage)
 
 	session, err := newSessionID()
 	if err != nil {
@@ -94,15 +96,33 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		return nil, err
 	}
 
-	if err := storage.Put(ctx, announceName(session, time.Now()), nil); err != nil {
+	p := paramsFromConfig(config)
+	var announce []byte
+	var r ring
+	slots, ok := storage.(slotStore)
+	if ok {
+		if r, err = makeRing(ctx, slots, session, p); err == nil {
+			announce, _ = json.Marshal(r)
+		} else {
+			ok = false
+			errors.LogWarningInner(ctx, err, "failed to make the slots of session ", session, ", it goes in segments")
+		}
+	}
+
+	if err := storage.Put(ctx, announceName(session, time.Now()), announce); err != nil {
 		storage.Close()
 		return nil, errors.New("failed to announce session ", session).Base(err)
 	}
 
+	if ok {
+		errors.LogInfo(ctx, "opened session ", session, " in ", len(r.Up.Slots), " slots")
+		return newSlotConn(context.Background(), slots, r.Up, r.Down, p, func() {
+			storage.Close()
+		}), nil
+	}
 	errors.LogInfo(ctx, "opened session ", session)
-
 	return newConn(context.Background(), storage,
-		uplinkPrefix(session), downlinkPrefix(session), paramsFromConfig(config), func() {
+		uplinkPrefix(session), downlinkPrefix(session), p, func() {
 			storage.Close()
 		}), nil
 }
@@ -205,9 +225,8 @@ func (l *Listener) acceptPending(logCtx context.Context) (bool, error) {
 			continue
 		}
 		go l.drop(full)
-		errors.LogInfo(logCtx, "accepted session ", session)
 		accepted = true
-		l.addConn(l.newSessionConn(session))
+		l.addConn(l.newSessionConn(logCtx, session, listed.Inline))
 	}
 	return accepted, nil
 }
@@ -227,13 +246,24 @@ func (l *Listener) claim(session string) bool {
 	return true
 }
 
-func (l *Listener) newSessionConn(session string) *Conn {
-	return newConn(l.ctx, l.storage,
-		downlinkPrefix(session), uplinkPrefix(session), l.params, func() {
-			l.mu.Lock()
-			delete(l.active, session)
-			l.mu.Unlock()
-		})
+// newSessionConn takes a session in the slots that its announcement has, or
+// in segments if it has none
+func (l *Listener) newSessionConn(logCtx context.Context, session string, announce []byte) *Conn {
+	storage := sessionStorage(l.storage)
+	onClose := func() {
+		storage.Close()
+		l.mu.Lock()
+		delete(l.active, session)
+		l.mu.Unlock()
+	}
+	if slots, ok := storage.(slotStore); ok {
+		if r, ok := decodeRing(announce); ok {
+			errors.LogInfo(logCtx, "accepted session ", session, " in ", len(r.Down.Slots), " slots")
+			return newSlotConn(l.ctx, slots, r.Down, r.Up, l.params, onClose)
+		}
+	}
+	errors.LogInfo(logCtx, "accepted session ", session)
+	return newConn(l.ctx, storage, downlinkPrefix(session), uplinkPrefix(session), l.params, onClose)
 }
 
 func (l *Listener) collectLoop(logCtx context.Context) {

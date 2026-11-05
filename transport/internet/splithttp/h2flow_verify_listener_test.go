@@ -41,9 +41,9 @@ func listenGovernedXH(t *testing.T, governed, proxyProtocol bool, addConn func(s
 	if proxyProtocol {
 		settings.SocketSettings = &internet.SocketConfig{AcceptProxyProtocol: true}
 	}
-	saved := flowEnabled
-	flowEnabled = governed
-	defer func() { flowEnabled = saved }()
+	saved := flowEnabled.Load()
+	flowEnabled.Store(governed)
+	defer flowEnabled.Store(saved)
 	port := tcp.PickPort()
 	ln, err := ListenXH(context.Background(), xnet.LocalHostIP, port, settings, addConn)
 	if err != nil {

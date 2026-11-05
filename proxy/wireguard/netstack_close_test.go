@@ -9,7 +9,7 @@ import (
 // example after the bind fails to open on a port in use, and the server's own
 // Close closes it again. A second Close must not panic the process.
 func TestNetTUNCloseIsIdempotent(t *testing.T) {
-	device, _, _, err := CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, nil, 1420, false)
+	device, _, err := CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, nil, 1420, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,7 @@
 # xtls/reality — Xray-core fork copy
 
-Source: `github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0`
-(`h1:rb+fKQFhz+5I2PPuQsNYxI5mUU840XWYtRF0ZBjvkws=`), copied verbatim from the
+Source: `github.com/xtls/reality v0.0.0-20261014101318-83f621788ca8`
+(`h1:RjLnVvlzK4q6zWaSBPNRGsrgx2fbJDeUWffjw574uzs=`), copied verbatim from the
 Go module cache. The root `go.mod` replaces the module with this directory.
 `LICENSE` (MPL-2.0) and `LICENSE-Go` (BSD) are unchanged.
 

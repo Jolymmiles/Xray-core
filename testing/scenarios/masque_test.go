@@ -25,10 +25,6 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 	"golang.org/x/sync/errgroup"
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 
 	"github.com/xtls/xray-core/app/log"
 	"github.com/xtls/xray-core/app/proxyman"
@@ -64,53 +60,30 @@ const (
 	masqueAuthorization = "Basic dUBleGFtcGxlLmNvbTpw"
 )
 
+// masqueEcho answers what comes to the echo port of the server, TCP and UDP alike
+type masqueEcho struct{}
+
+func (masqueEcho) HandleConnection(conn net.Conn, dest net.Destination) {
+	defer conn.Close()
+	if dest.Port != masqueEchoPort {
+		return
+	}
+	b := make([]byte, 2048)
+	for {
+		n, err := conn.Read(b)
+		if err != nil {
+			return
+		}
+		if _, err := conn.Write(xor(b[:n])); err != nil {
+			return
+		}
+	}
+}
+
 func startMasqueServer(t *testing.T, h2 bool) (net.Port, [32]byte) {
-	dev, _, gstack, err := wireguard.CreateNetTUN([]netip.Addr{masqueServerV4, masqueServerV6}, nil, transmasque.MinPacketSize, false)
+	dev, _, err := wireguard.CreateNetTUN([]netip.Addr{masqueServerV4, masqueServerV6}, nil, transmasque.MinPacketSize, masqueEcho{})
 	common.Must(err)
 	t.Cleanup(func() { dev.Close() })
-
-	for _, addr := range []netip.Addr{masqueServerV4, masqueServerV6} {
-		proto := ipv4.ProtocolNumber
-		if addr.Is6() {
-			proto = ipv6.ProtocolNumber
-		}
-		local := tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(addr.AsSlice()), Port: masqueEchoPort}
-		l, err := gonet.ListenTCP(gstack, local, proto)
-		common.Must(err)
-		go func() {
-			for {
-				c, err := l.Accept()
-				if err != nil {
-					return
-				}
-				go func() {
-					defer c.Close()
-					b := make([]byte, 2048)
-					for {
-						n, err := c.Read(b)
-						if err != nil {
-							return
-						}
-						if _, err := c.Write(xor(b[:n])); err != nil {
-							return
-						}
-					}
-				}()
-			}
-		}()
-		u, err := gonet.DialUDP(gstack, &local, nil, proto)
-		common.Must(err)
-		go func() {
-			b := make([]byte, 2048)
-			for {
-				n, addr, err := u.ReadFrom(b)
-				if err != nil {
-					return
-				}
-				u.WriteTo(xor(b[:n]), addr)
-			}
-		}()
-	}
 
 	var current atomic.Pointer[connectip.Conn]
 	go func() {
@@ -479,8 +452,8 @@ func testMasqueTraffic(t *testing.T, tcpPort, tcp6Port, udpPort net.Port) {
 func testMasque(t *testing.T, h2 bool) {
 	serverPort, certHash := startMasqueServer(t, h2)
 
-	tcpPort := tcp.PickPort()
-	tcp6Port := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 2)
+	tcpPort, tcp6Port := tcpPorts[0], tcpPorts[1]
 	udpPort := udp.PickPort()
 	clientConfig := masqueClientConfig(serverPort, certHash, h2, masqueAuthorization, tcpPort, tcp6Port, udpPort, masqueServerV4, masqueServerV6)
 
@@ -564,12 +537,12 @@ func testMasqueServer(t *testing.T, h2 bool, authorization string) error {
 	defer udpServer.Close()
 
 	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
+	tcpPorts := pickVersionSkewTCPPorts(t, 3)
 	serverPort := udp.PickPort()
 	if h2 {
-		serverPort = tcp.PickPort()
+		serverPort = tcpPorts[2]
 	}
-	tcpPort := tcp.PickPort()
-	tcp6Port := tcp.PickPort()
+	tcpPort, tcp6Port := tcpPorts[0], tcpPorts[1]
 	udpPort := udp.PickPort()
 	servers, err := InitializeServerConfigs(
 		masqueServerConfig(serverPort, tls.ParseCertificate(ct), h2, tcpDest, udpDest),
@@ -631,7 +604,7 @@ func masqueIPAddrs(p []byte) (src, dst netip.Addr) {
 
 func TestMasqueServerClientToClient(t *testing.T) {
 	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
-	serverPort := udp.PickPort()
+	serverPort := pickDualTransportPort(t)
 	servers, err := InitializeServerConfigs(&core.Config{
 		Inbound: []*core.InboundHandlerConfig{
 			masqueServerInbound(serverPort, tls.ParseCertificate(ct), http3.NextProtoH3, http2.NextProtoTLS),

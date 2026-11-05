@@ -5,11 +5,13 @@ import (
 	"io"
 	stdnet "net"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
@@ -117,8 +119,11 @@ func testpreRequest(ctx context.Context, h *Handler, dialer *preconnectDialer) c
 	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{
 		Target: net.TCPDestination(net.DomainAddress("example.com"), 443),
 	}})
+	// A client that sends nothing: Process reads the link before it writes
+	// the header, so the link needs a reader.
+	link := &transport.Link{Reader: buf.NewReader(strings.NewReader("")), Writer: buf.Discard}
 	processed := make(chan error, 1)
-	go func() { processed <- h.Process(ctx, &transport.Link{}, dialer) }()
+	go func() { processed <- h.Process(ctx, link, dialer) }()
 	return processed
 }
 

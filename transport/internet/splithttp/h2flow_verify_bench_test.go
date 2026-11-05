@@ -68,6 +68,10 @@ func benchFlowConn(tb testing.TB, inner *replayConn) *flowConn {
 	c.mu.Lock()
 	c.lastPing = c.lastPing.AddDate(100, 0, 0) // keep PINGs out of the measurement
 	c.incremental = true
+	// The replay sends the same upload again and again: show its client
+	// windows it never runs out of.
+	c.upConnForwarded += 1 << 50
+	c.streams[1].upForwarded += 1 << 50
 	c.mu.Unlock()
 	c.Conn = inner
 	return c

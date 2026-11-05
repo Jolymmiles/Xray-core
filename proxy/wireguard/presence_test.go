@@ -347,3 +347,36 @@ func (*wireGuardTestTun) Events() <-chan tun.Event { return nil }
 func (*wireGuardTestTun) Close() error { return nil }
 
 func (*wireGuardTestTun) BatchSize() int { return 1 }
+
+// A peer whose datagrams a relay on this host hands over (dokodemo-door,
+// udp2raw and the like) has a loopback outer endpoint. Its flows are
+// admitted, and it counts as nobody's online address, as no loopback source
+// does elsewhere (session.NewPresenceScope). Roaming to a public address
+// makes its next flows count there.
+func TestWireGuardPresenceAdmitsLoopbackEndpointsUntracked(t *testing.T) {
+	const email = "wireguard-local@example.com"
+	fixture := presencefixture.New(t)
+	presence := newWireGuardPresence()
+	pub := [32]byte{7}
+	observation := uint64(0)
+	for _, endpoint := range []string{"127.0.0.1", "::1"} {
+		observation++
+		presence.Observe(pub, observation, netip.MustParseAddr(endpoint), fixture.Scope(t, email, endpoint))
+		flow := presence.Open(pub)
+		if flow == nil {
+			t.Fatalf("a peer behind a relay on %s got no flow", endpoint)
+		}
+		fixture.AssertIPs(t, email)
+		flow.Close()
+	}
+
+	observation++
+	presence.Observe(pub, observation, netip.MustParseAddr("192.0.2.10"), fixture.Scope(t, email, "192.0.2.10"))
+	flow := presence.Open(pub)
+	if flow == nil {
+		t.Fatal("the peer got no flow after roaming to a public address")
+	}
+	fixture.AssertIPs(t, email, "192.0.2.10")
+	flow.Close()
+	fixture.AssertIPs(t, email)
+}

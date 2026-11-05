@@ -14,7 +14,7 @@ func TestFlowWindowModel(t *testing.T) {
 		for range rounds {
 			now = now.Add(rtprop)
 			w.returned += perRound
-			w.model(now, rtprop, h2InitWindow, 1<<30)
+			w.model(now, rtprop, h2InitWindow, 1<<30, 1)
 		}
 	}
 
@@ -46,7 +46,7 @@ func TestFlowWindowModelSeed(t *testing.T) {
 	start := time.Unix(0, 0)
 	w := flowWindow{cap: 4 << 20, mark: start, ramped: true, prev: 1_000_000}
 	w.returned = 100_000
-	w.model(start.Add(rtprop), rtprop, h2InitWindow, 1<<30)
+	w.model(start.Add(rtprop), rtprop, h2InitWindow, 1<<30, 1)
 	if want := int32(1_250_000); w.cap != want {
 		t.Fatalf("a slow first round dropped the cap to %d, want %d from the ramp", w.cap, want)
 	}

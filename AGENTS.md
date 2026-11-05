@@ -174,10 +174,14 @@ go test -gcflags=all=-d=checkptr=2 \
 go vet ./transport/internet/reality ./proxy ./proxy/vless/...
 go test -tags 'integration http2legacy' ./common/singmux \
   -run '^TestVLESSTCPProcessMatrix/' -count=3 -timeout 20m -v
+go test -tags 'integration http2legacy' ./common/singmux \
+  -run '^TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload$' -count=1 \
+  -timeout 10m -v
 ```
 
 The process gate is 3 clients × 2 security modes × 2 flow modes × 3 runs:
-36/36 executions must pass.
+36/36 executions must pass. The header record gate checks that the VLESS
+header shares a TLS record with the first payload in all four modes.
 
 ### SMUX
 

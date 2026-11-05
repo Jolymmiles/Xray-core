@@ -94,3 +94,38 @@ func TestFlowTCPStats(t *testing.T) {
 		})
 	}
 }
+
+// maskedConn wraps a connection the way finalmask's connections do: it
+// embeds it and offers no NetConn.
+type maskedConn struct {
+	net.Conn
+}
+
+// TestFlowRawTCPUnderMask finds the TCP socket under a wrapper that only
+// embeds it, as with finalmask, and under one that embeds such a wrapper.
+func TestFlowRawTCPUnderMask(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			defer c.Close()
+			time.Sleep(time.Second)
+		}
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, w := range []net.Conn{&maskedConn{Conn: c}, &maskedConn{Conn: &maskedConn{Conn: c}}} {
+		if rawTCP(w) == nil {
+			t.Fatalf("no TCP socket found under %T", w)
+		}
+	}
+	if rawTCP(&maskedConn{}) != nil {
+		t.Fatal("a wrapper with no connection under it gave a socket")
+	}
+}

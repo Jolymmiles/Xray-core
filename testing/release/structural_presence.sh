@@ -25,7 +25,7 @@ go test -timeout 2h -race ./...
 go test -timeout 2h -gcflags=all=-d=checkptr=2 ./...
 go test -timeout 10m -tags 'integration http2legacy' ./common/singmux -run '^TestFreeTCPUDPPort' -count=1
 go test -timeout 10m -tags 'integration http2legacy' ./common/singmux \
-	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix)$' -count=3 -v
+	-run '^(TestSMUXProcessInteropMatrix|TestH2MUXProcessInteropMatrix|TestVLESSTCPProcessMatrix|TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload)$' -count=3 -v
 go test -timeout 10m -tags 'integration http2legacy' ./testing/scenarios \
 	-run '^(TestDirectVersionSkew|TestLegacyMuxVersionSkew|TestXUDPVersionSkew|TestReverseVersionSkew|TestWireGuardVersionSkew)$' -count=1 -v
 go test -timeout 10m -race ./testing/presence -run '^(TestSevenThousandExactOwnersEndAtZero|TestProductionPresenceOwnershipSourceAudit)$' -count=3

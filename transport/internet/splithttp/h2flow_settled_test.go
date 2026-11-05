@@ -50,6 +50,8 @@ func TestFlowUploadFollowsModelOnceSettled(t *testing.T) {
 			t.Cleanup(func() { h.c.Close() })
 			h.track()
 			h.openStream(4 << 20)
+			// Connection credit, so the client may send the upload.
+			h.fromServer(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 8<<20) })
 			h.fromClient(func(fr *http2.Framer) { writeDataSplit(fr, id, 200<<10) })
 			vouchedPath(h.c)
 			h.c.mu.Lock()
@@ -95,6 +97,9 @@ func TestFlowClientDownloadFollowsModelOnceSettled(t *testing.T) {
 			}
 			vouchedPath(ch.cg)
 			ch.cg.mu.Lock()
+			// The model is for a server that does not govern: the chain's
+			// does, and the client would leave the window to it.
+			ch.cg.peerGoverned = false
 			s := ch.cg.streams[id]
 			start := s.down.cap
 			lowRoundBehind(&s.down, tc.flat)

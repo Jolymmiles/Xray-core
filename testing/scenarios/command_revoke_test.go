@@ -128,8 +128,8 @@ func TestCommanderRemoveUserClosesItsConnections(t *testing.T) {
 	victimID := protocol.NewID(uuid.New())
 	bystanderID := protocol.NewID(uuid.New())
 
-	cmdPort := tcp.PickPort()
-	serverPort := tcp.PickPort()
+	tcpPorts := pickVersionSkewTCPPorts(t, 4)
+	cmdPort, serverPort := tcpPorts[0], tcpPorts[1]
 	serverConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&commander.Config{
@@ -192,8 +192,7 @@ func TestCommanderRemoveUserClosesItsConnections(t *testing.T) {
 		},
 	}
 
-	victimPort := tcp.PickPort()
-	bystanderPort := tcp.PickPort()
+	victimPort, bystanderPort := tcpPorts[2], tcpPorts[3]
 	servers, err := InitializeServerConfigs(
 		serverConfig,
 		revokeClientConfig(victimPort, serverPort, dest, victimID),

@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // rawH2Client is a greedy HTTP/2 client: it sends DATA on its streams as far
@@ -115,15 +116,15 @@ func (c *rawH2Client) pump(quiet time.Duration) {
 // the connection. Stock Go holds that to its 1 MiB connection window; the
 // PR states that a governed server reaches its 6 MiB only "while the outbound
 // keeps up" and that behind a proxy or without TCP_INFO windows never exceed
-// Go's 1 MiB. Neither holds for the connection: the governor caps streams,
-// not their sum.
+// Go's 1 MiB. The governor holds the connection to Go's 1 MiB as well, see
+// upConnRelease, and the test fails if it holds more than 64 KiB over that.
 func TestFlowServerUnreadPerConnection(t *testing.T) {
 	results := map[bool]int64{}
 	for _, governed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("governed=%v", governed), func(t *testing.T) {
-			saved := flowEnabled
-			flowEnabled = governed
-			defer func() { flowEnabled = saved }()
+			saved := flowEnabled.Load()
+			flowEnabled.Store(governed)
+			defer flowEnabled.Store(saved)
 			block := make(chan struct{})
 			defer close(block)
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -187,9 +188,10 @@ func (l *blockingListener) Accept() (net.Conn, error) {
 
 // TestFlowInjectedQueueBounded (added for bdbac60e) stops reading on the
 // client so the server's writes block, then opens and resets streams. Every
-// new stream makes the governor queue a WINDOW_UPDATE for the client in
-// wqueue, outside net/http's own control-frame limit, and nothing drains it
-// while the write is blocked: the queue grows with what the client sends.
+// new stream makes the governor queue upload credit for the client, outside
+// net/http's own control-frame limit, and nothing drains it while the write
+// is blocked. The credit goes with its stream, see creditClient, so the queue
+// must not grow with what the client sends.
 func TestFlowInjectedQueueBounded(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -263,19 +265,30 @@ func TestFlowInjectedQueueBounded(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		n, blocked := queued()
 		sizes = append(sizes, n)
-		t.Logf("after %d client bytes: %d bytes queued in wqueue, server write blocked %v", sent, n, blocked)
+		t.Logf("after %d client bytes: %d bytes of frames queued for the client, server write blocked %v", sent, n, blocked)
 	}
 	if sizes[len(sizes)-1] > 64<<10 {
-		t.Fatalf("wqueue holds %v bytes after the client sent %d bytes and stopped reading; it grows without bound", sizes, sent)
+		t.Fatalf("the governor queues %v bytes of frames for the client after the client sent %d bytes and stopped reading; it grows without bound", sizes, sent)
 	}
 }
 
-// TestFlowProtoField32 (added for bdbac60e) checks the generated descriptor
-// for the new field and a wire round trip.
-func TestFlowProtoField32(t *testing.T) {
-	fd := (&Config{}).ProtoReflect().Descriptor().Fields().ByNumber(32)
-	if fd == nil || fd.Name() != "h2Flow" || fd.Message().FullName() != "xray.transport.internet.splithttp.H2FlowConfig" {
-		t.Fatalf("field 32: %v", fd)
+// TestFlowProtoFieldNumbers (added for bdbac60e) pins the fork-owned fields
+// of the generated descriptor, moved to 100-102 when upstream gave 30 to
+// h2Params, and checks a wire round trip.
+func TestFlowProtoFieldNumbers(t *testing.T) {
+	fields := (&Config{}).ProtoReflect().Descriptor().Fields()
+	for number, name := range map[int32]string{30: "h2Params", 100: "muxKeepAliveSecs", 101: "muxKeepAliveBytes", 102: "h2Flow"} {
+		if fd := fields.ByNumber(protoreflect.FieldNumber(number)); fd == nil || string(fd.Name()) != name {
+			t.Fatalf("field %d: %v, want %s", number, fd, name)
+		}
+	}
+	if fd := fields.ByName("h2Flow"); fd.Message().FullName() != "xray.transport.internet.splithttp.H2FlowConfig" {
+		t.Fatalf("h2Flow message: %v", fd.Message().FullName())
+	}
+	for _, number := range []int32{31, 32} {
+		if fd := fields.ByNumber(protoreflect.FieldNumber(number)); fd != nil {
+			t.Fatalf("field %d is %s; 31 and 32 are left to upstream", number, fd.Name())
+		}
 	}
 	in := &Config{H2Flow: &H2FlowConfig{Mode: 1, MaxStreamReceiveWindow: 1 << 20, MaxConnectionReceiveWindow: 2 << 20}}
 	raw, err := proto.Marshal(in)

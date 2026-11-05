@@ -9,20 +9,22 @@ import (
 	"io"
 	gonet "net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/platform"
 	"github.com/xtls/xray-core/testing/servers/tcp"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
 func TestH2FlowMode(t *testing.T) {
-	defer func(v bool) { flowEnabled = v }(flowEnabled)
+	defer flowEnabled.Store(flowEnabled.Load())
 	for _, env := range []bool{false, true} {
-		flowEnabled = env
+		flowEnabled.Store(env)
 		for mode, want := range map[int32]bool{0: env, 1: true, 2: false} {
 			c := &Config{H2Flow: &H2FlowConfig{Mode: mode}}
 			if got := c.h2FlowOn(); got != want {
@@ -35,9 +37,22 @@ func TestH2FlowMode(t *testing.T) {
 	}
 }
 
+// TestH2FlowEnvReload checks that XRAY_XHTTP_FLOW set by the config's "env"
+// takes effect, the way core reloads it before it starts.
+func TestH2FlowEnvReload(t *testing.T) {
+	defer flowEnabled.Store(flowEnabled.Load())
+	for value, want := range map[string]bool{"on": true, "ON": true, "true": true, "1": true, "": false, "off": false, "0": false} {
+		t.Setenv(platform.XHTTPFlow, value)
+		common.Must(platform.ReloadEnvSettings())
+		if got := (&Config{}).h2FlowOn(); got != want {
+			t.Errorf("XRAY_XHTTP_FLOW=%q: got %v, want %v", value, got, want)
+		}
+	}
+}
+
 func TestH2ReceiveConfig(t *testing.T) {
-	defer func(v bool) { flowEnabled = v }(flowEnabled)
-	flowEnabled = false
+	defer flowEnabled.Store(flowEnabled.Load())
+	flowEnabled.Store(false)
 	for _, tc := range []struct {
 		name         string
 		flow         *H2FlowConfig
@@ -141,6 +156,10 @@ func TestH2ServerGrantsWindows(t *testing.T) {
 		// The server grants flowServerReceiveWindow on the connection; the
 		// governor shows Go's default until readers take more.
 		{"governor on, default", &H2FlowConfig{Mode: 1}, flowServerReceiveWindow, flowConnFloor, true},
+		// A connection window under HTTP/2's own, which a proto config can
+		// carry: net/http grants its default instead, and so does the
+		// governor's accounting.
+		{"governor on, connection window under 65535", &H2FlowConfig{Mode: 1, MaxConnectionReceiveWindow: 1000}, flowServerReceiveWindow, flowConnFloor, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			port := tcp.PickPort()
@@ -197,13 +216,28 @@ func TestH2WindowsEndToEnd(t *testing.T) {
 		MaxConnectionReceiveWindow: 16 << 20,
 	}}).h2ReceiveConfig(false))
 	h2.AllowHTTP = true
+	var mu sync.Mutex
+	var conns []*flowConn
 	h2.DialTLSContext = func(ctx context.Context, network, _ string, _ *gotls.Config) (gonet.Conn, error) {
 		c, err := (&gonet.Dialer{}).DialContext(ctx, network, ln.Addr().String())
 		if err != nil {
 			return nil, err
 		}
-		return newFlowClientConn(c), nil
+		fc := newFlowClientConn(c)
+		mu.Lock()
+		conns = append(conns, fc)
+		mu.Unlock()
+		return fc, nil
 	}
+	// The governed connections hold their flowGroup until they close.
+	t.Cleanup(func() {
+		h2.CloseIdleConnections()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
 	client := &http.Client{Transport: h2}
 
 	const size = 32 << 20
@@ -238,5 +272,18 @@ func TestH2WindowsEndToEnd(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestH2ConnWindowFollowsNetHTTP checks the connection window the governor
+// counts as granted against what net/http grants for the same setting.
+func TestH2ConnWindowFollowsNetHTTP(t *testing.T) {
+	for set, want := range map[int]int32{0: 1 << 20, 1000: 1 << 20, 65534: 1 << 20, 65535: 65535, 3 << 20: 3 << 20, 1 << 31: 1 << 20} {
+		if got := h2ConnWindow(&http.HTTP2Config{MaxReceiveBufferPerConnection: set}); got != want {
+			t.Errorf("MaxReceiveBufferPerConnection %d: counted %d, want %d", set, got, want)
+		}
+	}
+	if got := h2ConnWindow(nil); got != 1<<20 {
+		t.Errorf("no HTTP/2 config: counted %d, want %d", got, 1<<20)
 	}
 }

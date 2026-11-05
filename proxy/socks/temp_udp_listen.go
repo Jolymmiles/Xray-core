@@ -2,12 +2,11 @@ package socks
 
 import (
 	"context"
-	"net"
 	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
-	xnet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal"
 )
 
@@ -16,6 +15,9 @@ func NewTempUDPConn(udpConn net.PacketConn, tcpConn net.Conn, expectedRemote *ne
 		PacketConn:        udpConn,
 		AssociatedTCPConn: tcpConn,
 	}
+	t.Timer = signal.CancelAfterInactivity(context.Background(), func() {
+		t.Close()
+	}, net.ConnIdleTimeout)
 	t.ExpectedRemote.Store(expectedRemote)
 	return t
 }
@@ -27,7 +29,7 @@ type TempUDPConn struct {
 	AssociatedTCPConn net.Conn
 	ExpectedRemote    atomic.Pointer[net.UDPAddr]
 	Timer             *signal.ActivityTimer
-	drops             xnet.DropLog
+	drops             net.DropLog
 }
 
 func (c *TempUDPConn) Read(b []byte) (n int, err error) {
@@ -71,10 +73,10 @@ func (c *TempUDPConn) readFrom(b []byte) (int, net.Addr, bool, error) {
 		return n, remote, false, err
 	}
 	n, _, flags, remote, err := socket.ReadMsgUDP(b, nil)
-	if xnet.IsMessageTooLong(err) {
+	if net.IsMessageTooLong(err) {
 		return 0, nil, true, nil
 	}
-	return n, remote, xnet.IsTruncated(flags), err
+	return n, remote, net.IsTruncated(flags), err
 }
 
 func (c *TempUDPConn) Write(b []byte) (n int, err error) {
@@ -87,9 +89,7 @@ func (c *TempUDPConn) RemoteAddr() net.Addr {
 }
 
 func (c *TempUDPConn) SetTimeout(d time.Duration) {
-	c.Timer = signal.CancelAfterInactivity(context.Background(), func() {
-		c.Close()
-	}, d)
+	c.Timer.SetTimeout(d)
 }
 
 func (c *TempUDPConn) Close() error {

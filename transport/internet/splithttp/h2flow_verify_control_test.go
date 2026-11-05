@@ -235,3 +235,33 @@ func TestFlowPingViolationsGetStockErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestFlowGuardProbeQueuedOnce fires the guard twice while a write to the
+// client is in progress: the first probe waits in the queue and the second
+// finds it there, so the governor sends one PING and notes one, where the
+// second was dropped from the queue and still counted as sent.
+func TestFlowGuardProbeQueuedOnce(t *testing.T) {
+	h := newFlowHarness(t)
+	h.openStream(4 << 20)
+	h.conn.take()
+	h.c.mu.Lock()
+	h.c.streams[1].down.waiting = time.Now()
+	h.c.mu.Unlock()
+	h.c.wmu.Lock()
+	h.c.fireGuard()
+	h.c.mu.Lock()
+	sentAt, noted := h.c.pingSentAt, len(h.c.pings)
+	h.c.mu.Unlock()
+	h.c.fireGuard()
+	h.c.mu.Lock()
+	again, notedAgain := h.c.pingSentAt, len(h.c.pings)
+	h.c.mu.Unlock()
+	h.c.wmu.Unlock()
+	h.c.drainQueue()
+	if !again.Equal(sentAt) || notedAgain != noted {
+		t.Fatalf("a second probe behind a queued one was noted: sent at %v then %v, %d then %d PINGs outstanding", sentAt, again, noted, notedAgain)
+	}
+	if got := pings(t, h.conn.take()); len(got) != 1 {
+		t.Fatalf("the guard sent %d PINGs, want 1", len(got))
+	}
+}

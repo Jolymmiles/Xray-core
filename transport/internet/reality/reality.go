@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/hmac"
+	"crypto/mldsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	gotls "crypto/tls"
@@ -20,7 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/reality"
 	"github.com/xtls/xray-core/common/crypto"
@@ -29,7 +30,6 @@ import (
 	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/transport/internet/tls"
-	"golang.org/x/crypto/hkdf"
 	"golang.org/x/net/http2"
 )
 
@@ -117,8 +117,8 @@ func (c *UConn) VerifyConnection(state utls.ConnectionState) error {
 				if len(certs[0].Extensions) > 0 {
 					h.Write(c.HandshakeState.Hello.Raw)
 					h.Write(c.HandshakeState.ServerHello.Raw)
-					verify, _ := mldsa65.Scheme().UnmarshalBinaryPublicKey(c.Config.Mldsa65Verify)
-					if mldsa65.Verify(verify.(*mldsa65.PublicKey), h.Sum(nil), nil, certs[0].Extensions[0].Value) {
+					verify, _ := mldsa.NewPublicKey(mldsa.MLDSA65(), c.Config.Mldsa65Verify)
+					if mldsa.Verify(verify, h.Sum(nil), certs[0].Extensions[0].Value, nil) == nil {
 						c.Verified = true
 						return nil
 					}
@@ -191,7 +191,7 @@ func (c *UConn) seal() error {
 	}
 	publicKey, err := ecdh.X25519().NewPublicKey(config.PublicKey)
 	if err != nil {
-		return errors.New("REALITY: publicKey == nil")
+		return errors.New("REALITY: nil publicKey").Base(err)
 	}
 	ecdhe := c.HandshakeState.State13.KeyShareKeys.Ecdhe
 	if ecdhe == nil {
@@ -200,12 +200,11 @@ func (c *UConn) seal() error {
 	if ecdhe == nil {
 		return errors.New("Current fingerprint ", c.ClientHelloID.Client, c.ClientHelloID.Version, " does not support TLS 1.3, REALITY handshake cannot establish.")
 	}
-	c.AuthKey, _ = ecdhe.ECDH(publicKey)
-	if c.AuthKey == nil {
-		return errors.New("REALITY: SharedKey == nil")
+	if c.AuthKey, err = ecdhe.ECDH(publicKey); err != nil {
+		return errors.New("REALITY: nil sharedKey").Base(err)
 	}
-	if _, err := hkdf.New(sha256.New, c.AuthKey, hello.Random[:20], []byte("REALITY")).Read(c.AuthKey); err != nil {
-		return err
+	if c.AuthKey, err = hkdf.Key(sha256.New, c.AuthKey, hello.Random[:20], "REALITY", 32); err != nil {
+		return errors.New("REALITY: nil authKey").Base(err)
 	}
 	aead := crypto.NewAesGcm(c.AuthKey)
 	if config.Show {

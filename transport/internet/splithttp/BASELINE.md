@@ -750,6 +750,281 @@ Limits:
     for the path returns for bytes the prober sends before it is refused.
   - Not measured: record counts and timing of the first round trips, on
     this change or against stock.
+- A server scales its cuts against a queue by what they do to it
+  (`flowEffect`, `cutGain`). It cut against any queue the kernel saw, and a
+  queue that other traffic keeps full does not shorten when it does: pi took
+  a download to `init` per round trip, about a megabit per second with a
+  second of other traffic in the queue. Now, while the queue stands over a
+  quarter more than pi's setpoint, each connection adds up the bytes pi and
+  the cut at a long queue take off its caps, and notes once per round trip
+  of the empty path how far the queue fell from its peak. Once the cuts come
+  to a fifth of the caps of its downloads that took data within the last
+  second, and what its kernel has in flight (`tcp_info` unacked times MSS)
+  has come down as far, the queue's fall for that cut is the gain, within 0
+  and 1; the measurement then starts afresh, and the gain stays until the
+  next such cut, or goes back to 1 once the queue halves. pi's negative
+  steps and the cut at a long queue are scaled by it; growth is not, and a
+  cap whose reader takes what the cap gives follows the round trip by the
+  rest of the gain, so the download keeps its rate beside a queue it cannot
+  move. Only the controller's own cuts count: beside other traffic a loss
+  that drops what is in flight, the caps following the round trip down and
+  a dip of the other traffic's queue move together now and then, and read
+  together as a cut that worked; cut after cut then took a download from
+  10 to under 1 Mbit/s over a long burst. A download stays in the caps for a
+  second after it last returned credit: one that slows returns it less
+  often than once a round, and a round it missed would read as its cap cut.
+  A small gain is kept as it is: a client's connections share its own queue,
+  and each one's cut moves it by that connection's share. The queue halving
+  gives the gain back: with only the controller's cuts to judge by, a small
+  gain cuts little and is judged again late, and the neighbours' cuts that
+  drain the queue are what shows it to be the client's own.
+  pi's test for a reader that limits itself compares what the reader took
+  in a round with the round's share of the cap, the cap over the round trip
+  times the round: beside a queue of a second, a reader that takes all it
+  is given copies less than a quarter of the cap per round of the empty
+  path, and the cap was cut by a quarter every three rounds for it.
+  `"h2Flow": {"queueCuts": false}` turns the cuts off for an inbound: pi
+  and the cut at a long queue do not run, and the windows follow their
+  readers alone (`H2FlowConfig.noQueueCuts`).
+  The stand is `burst.py`: an official client, 60 Mbit/s at RTT 144 ms, a
+  queue of five bandwidth-delay products, one download, four plain TCP
+  downloads from the server's namespace for 20 s from the 10th second;
+  three runs each, Mbit/s, median (least-most), on an earlier revision of
+  this change; the acceptance below runs the burst on the head, eight runs
+  each:
+
+  ```sh
+  python3 burst.py --origin ./origin --client ./xray-official \
+      --server main=./xray-main --server stock=./xray-main --h2flow 'stock={"enabled": false}' \
+      --server pr=./xray-pr --server pr-nocuts=./xray-pr --h2flow 'pr-nocuts={"enabled": true, "queueCuts": false}' --runs 3
+  ```
+
+  | | `28e1e458` | no governor | an earlier revision | `queueCuts: false` |
+  | --- | --- | --- | --- | --- |
+  | Before the burst | 56.5 | 57.1 | 56.5 | 57.0 |
+  | Mean over the burst | 10.8 (10.7-10.8) | 41.3 (41.2-41.5) | 23.2 (22.7-23.4) | 36.2 (35.5-37.8) |
+  | Mean over its second half | 0.8 (0.8-0.8) | 31.0 (30.6-31.0) | 16.5 (16.3-16.8) | 20.7 (20.4-25.5) |
+  | Back at 4/5 after it | 4.0 (4.0-4.0) s | 2.0 s | 2.0 (1.5-4.0) s | 2.5 (2.0-3.0) s |
+
+  With `--burst 90 --duration 120`, over the burst and over its second
+  half: `28e1e458`, two runs, 2.5 (2.4-2.7) and 0.4; eight runs each, no
+  governor 21.1 (18.8-24.9) and 14.1 (8.9-20.9), that revision 14.2
+  (7.2-16.4) and 10.6 (3.5-13.3), back at 4/5 of the rate before in 1.8 s
+  against 2.0 without the governor. Judged by every drop rather than the
+  controller's own cuts the same eight runs gave 12.5 and 6.5 (0.6-9.5),
+  back in 3.5 s. The stand's runs vary widely here; eight runs each is the
+  least that told the builds apart. A client that credits in large steps,
+  so that pi never governs its downloads, is not behind: Mihomo Meta on a
+  similar stand (60 Mbit/s, RTT 144 ms, four flows for 90 s), three runs,
+  got 13-16 and 8-14 on the fork's build of this change, 16-17 and 10-13
+  without the governor.
+  What it costs, as accepted after the third review: `28e1e458` against
+  the head `cbf6fd81` (later commits change only tests and this file;
+  the production code is the same), both built
+  with Go 1.27.3, `CGO_ENABLED=0 go build -trimpath -tags http2legacy`;
+  client official Xray v26.10.10 (go1.27.2); host a privileged
+  linux/amd64 container under Docker Desktop on WSL2 (kernel 6.18.54), AMD
+  Ryzen 5 5600, 12 threads. Runs alternate between the builds in shuffled
+  order; medians (least-most where given) over the runs, p50/p95 of the
+  request beside the load:
+
+  ```sh
+  O="--origin ./origin --client ./xray-official"
+  S="--server base=./xray-28e1e458 --server head=./xray-cbf6fd81"
+  python3 stand.py $O $S --workload downloads --readers 8 --read-rate 0 --runs 24
+  python3 stand.py $O $S --workload uploads --readers 20 --runs 12
+  python3 stand.py $O $S --workload downloads --readers 8 --read-rate 0 --mbit 1000 --runs 8
+  python3 stand.py $O $S --workload downloads --readers 1 --read-rate 0 --rtt 150 --runs 8
+  python3 stand.py $O $S --workload uploads --readers 4 --read-rate 0 --runs 8
+  python3 stand.py $O $S --workload downloads --mbit 1000 --readers 20       --read-rate 100000 --client-limit-mb 40 --runs 6
+  python3 burst.py $O $S --runs 8
+  python3 burst.py $O $S --burst 90 --duration 120 --runs 8
+  python3 freshstart.py $O $S --runs 6
+  ```
+
+  | Load | Runs | `28e1e458` | `cbf6fd81` |
+  | --- | --- | --- | --- |
+  | 8 downloads, 100 Mbit/s | 24 | 65.6/293 ms, 92 Mbit/s | 65.9/313 ms, 92 Mbit/s |
+  | 8 downloads, 1 Gbit/s | 8 | 70.5/108 ms, 912 Mbit/s | 69.0/116 ms, 912 Mbit/s |
+  | 1 download, RTT 150 ms | 8 | 190.5/354 ms, 84 Mbit/s | 190.5/354 ms, 84 Mbit/s |
+  | 20 uploads into a slow origin | 12 | 52.5/578 ms | 52.6/466 ms |
+  | 4 uploads | 8 | 82.6/251 ms | 91.1/187 ms |
+  | 20 slow downloads, client limit 40 MB | 6 | 52.2/79 ms, client 23.8 MB, killed 0 | 52.2/115 ms, client 23.5 MB, killed 0 |
+  | Burst 20 s, Mbit/s, over it / its second half | 8 | 10.8 (10.0-11.7) / 0.8 (0.8-0.9) | 25.6 (25.0-26.1) / 18.4 (17.1-19.2) |
+  | Burst 90 s, the same | 8 | 2.7 (2.5-2.7) / 0.4 (0.4-0.4) | 16.8 (14.5-18.6) / 14.1 (9.7-15.6) |
+  | First start after an upload / later starts | 6 | 0.64 / 0.53 s | 0.63 / 0.53 s |
+
+  No request failed or took over 10 s in any run. Server CPU time, server
+  peak RSS and the client's peak anonymous memory stay within 6% of
+  `28e1e458` in every row. Two rows were over the line of a tenth this
+  stand is judged by: the p95 of twenty slow downloads (79 against 115
+  ms) and the p50 of four uploads (82.6 against 91.1). Both were run
+  again with `2c733fb4`, the head before the third review, as a third
+  build, twelve and sixteen runs, medians for `28e1e458`, `2c733fb4` and
+  `cbf6fd81`: slow downloads p95 153, 158 and 181 ms; four uploads p50
+  79, 81 and 82 ms, p95 198, 198 and 207. `28e1e458`'s own slow-download
+  p95 moved from 79 to 153 ms between those rounds, so the slow downloads
+  were then run as one interleaved set of thirty runs each:
+
+  ```sh
+  python3 stand.py $O $S --workload downloads --mbit 1000 --readers 20       --read-rate 100000 --client-limit-mb 40 --runs 30
+  ```
+
+  | Twenty slow downloads, 30 runs | `28e1e458` | `cbf6fd81` |
+  | --- | --- | --- |
+  | p95, median (quartiles; least-most) | 147 (94-206; 66-256) ms | 158 (107-209; 57-308) ms |
+  | p50, median | 52.3 ms | 52.3 ms |
+  | Requests failed or over 10 s | 0 of 1005 | 0 of 999 |
+  | Client killed at its limit | 0 of 30 | 0 of 30 |
+
+  The head's p95 is 8% over `28e1e458`'s, inside the line.
+  Not covered by any of these: GC, goroutines, file descriptors, and the
+  interface and TCP counters of either end.
+  After the fourth review the server changes in three places: a first cut
+  with nothing in flight is judged from the next round with some (C2),
+  data past a stream's shown upload window is dropped, not forwarded, ahead
+  of the reset (C3), client streams past a GOAWAY's last are not taken up
+  (C5), and rebase also runs where a gain of none froze the caps over a
+  queue that stood (C4). The client holds credit until it knows its
+  server, and keeps the stack's window on a later SETTINGS (C1, C6). The
+  server of `cbf6fd81` against the head `d46c6c88` (the commit after it
+  changes only this file), same builds, client and
+  host as the acceptance above, runs interleaved, medians:
+
+  | Load | Runs | `cbf6fd81` | head |
+  | --- | --- | --- | --- |
+  | 8 downloads, 100 Mbit/s, p50/p95 | 24 | 65/307 ms | 66/305 ms |
+  | 20 uploads into a slow origin, p50/p95 | 30 | 52/568 (quartiles 510-631) ms | 52/544 (421-619) ms |
+  | 20 slow downloads, client limit 40 MB, p50/p95 | 12 | 52/177 ms, killed 0 | 52/106 ms, killed 0 |
+  | Burst 20 s, over it / its second half | 12 | 25.6 / 18.2 Mbit/s | 25.3 / 18.7 Mbit/s |
+  | Burst 90 s, the same | 8 | 15.8 / 11.7 Mbit/s | 15.9 / 13.8 Mbit/s |
+
+  The uploads were first run twelve times each, p95 455 against 549 ms
+  (rank test z 1.27); the thirty above are one interleaved set run after
+  them. No request failed or took over 10 s in any of these.
+
+  The RTT-step stand (`rtt/burstrtt.py`, 20 to 120 ms at the 10th second
+  for 60 s, no other flows), official client, three runs each, Mbit/s over
+  the step, against the head before C4 and with the governor off:
+
+  | Link | before C4 | head | no governor |
+  | --- | --- | --- | --- |
+  | 100 Mbit/s | 15.4 (11.2-47.6) | 89.2 (89.2-89.3) | 94.7 |
+  | 200 Mbit/s | 24.0 (23.9-37.3) | 178.5 (178.4-180.5) | 188.6 |
+
+  At 50 Mbit/s, where the cap is near init before the step, C4 changes
+  nothing: 44.4 against 44.4 and 44.3 on the builds with three quarters and
+  with none of the standing queue, 47.0 without the governor.
+
+  The gain of none counts only where the queue's least over the window is
+  at nine tenths of its most. At three quarters, a 20 s burst of other
+  traffic was taken for the path once a run, its gain was learnt again and
+  the download cut anew: over twelve runs its second half fell from 18.2
+  to 15.2 Mbit/s; at nine tenths it is 17.9 against 18.0. With 64
+  connections and 128 downloads at 1 Gbit/s, twelve runs, p50/p95 149/280
+  before C4 and 148/321 ms with it (rank test z -0.23 and 0.81); a logging
+  build counted 65 rebases over four runs there, 9 of them through the gain
+  of none, against 17 of 85 at three quarters.
+  A governed client behind a governed server, against the same server
+  (`both.sh`): eight downloads p50 65 ms in 9 of 12 runs, as with the
+  official client and the client before C1; the client holding 23.9 MB
+  under a 40 MB limit; burst 20 s 25.3 / 18.1 Mbit/s; RTT step 20 to 120
+  ms 44.5. Showing the stack's window less the credit forwarded ahead,
+  tried first for C1, kept the connection but put the queue beside eight
+  downloads at 180-290 ms. Toward a server without the governor the hold
+  costs the first request of a connection a round now and then: later
+  starts after 3 s idle at 0.64-0.68 s in 9 of 18 against 3 of 18 (0.53
+  s otherwise; rank test z 0.98), eight downloads p50 91 against 100 ms (z
+  1.13).
+  After the fifth review the queue stands for rebase where its least over
+  the window is no more than a tenth of its most or 20 ms under it (C7);
+  the connection credit of a frame dropped past a stream's window goes back
+  to the client (C8), and nothing inside an open header block is dropped
+  (C9). A logging build of `e627b971` wrote every check, three runs or one
+  of each: on the RTT step with netem jitter (`--step-jitter`, 0 to 16 ms
+  each way) the smoothed queue spread by up to 14 ms; a 20 s burst of other
+  traffic by 38 to 370 ms while it fills; with 64 connections the server's
+  own queue by 12 to 15 ms at times, the median 17. The 20 ms takes these
+  64-connection checks as well (46 of 85 against 9), where the cuts do
+  nothing and 45 checks rebase from pinned caps anyway. `e627b971`
+  against the head, runs interleaved, medians:
+
+  | Load | Runs | `e627b971` | head |
+  | --- | --- | --- | --- |
+  | RTT step 20 to 70 ms, jitter 16 ms, 200 Mbit/s, over the step | 3 | 166.2 (125.2-179.5) | 180.4 (166.9-180.6) Mbit/s |
+  | The same at 100 Mbit/s | 3 | 79.1 (70.4-88.8) | 90.1 (89.9-90.2) Mbit/s |
+  | 64 connections, 128 downloads, 1 Gbit/s, p50/p95 | 12 | 164/273 ms | 160/241 ms |
+  | Burst 20 s, over it / its second half | 12 | 25.4 / 17.8 Mbit/s | 25.4 / 18.0 Mbit/s |
+  | Burst 90 s, the same | 6 | 15.2 / 11.5 Mbit/s | 16.7 / 12.5 Mbit/s |
+  | 8 downloads, 100 Mbit/s, p50/p95 | 24 | 66/274 ms | 66/282 ms (z 0.72 / 0.85) |
+
+  Both recover in the step's second half, 189.4 and 94.6 Mbit/s. Eight
+  downloads made no check at all in the logging build; their p50 was over
+  100 ms in 4 of 24 runs before and 6 of 24 after.
+  Tried on the way and dropped, each for a regression of eight downloads at
+  100 Mbit/s, whose request beside them has 65 ms at p50 on `28e1e458`, or
+  for not holding the burst:
+  - A verdict per client address: once what the client's connections have
+    in flight and unacked halved and the queue did not come down by a
+    quarter, the queue counted as foreign and the cuts stopped. It held the
+    burst at 20.7 but split eight downloads into runs at 65 ms and runs at
+    200 to 390.
+  - A server-wide reference: every download's credit moved ±15% by chips
+    of random length, and a queue that followed them counted as the
+    server's own. Against past stretches of the reference as the noise
+    floor, an own queue followed it in 80 to 100% of six-second windows on
+    a clean link and in 3 to 18% on jittery or cellular ones; the
+    modulation alone took eight downloads to 80-101 ms, and at 64
+    connections 20 and 27 of 128 downloads stopped.
+  - A dead zone under a quarter, the RTT variance taken off the queue's
+    fall, and a gain of none held until a test cut: each killed the small
+    gains of connections sharing an own queue (80 to 160 ms).
+  - The queue smoothed again before the comparison: it lags what is in
+    flight by rounds, and a slow reader read gains of a half for cuts that
+    had landed (p95 284 against 187 ms).
+  What an observer sees of this change:
+  - Passive, on the path. Where the server's own data makes the queue,
+    nothing changes. Beside traffic that keeps a queue full the server's
+    downloads hold their rate rather than fall to `init`; the windows grow
+    and shrink with the round trip. Nothing is sent that the reader did not
+    credit, no probe or modulation is added, and the state is per
+    connection.
+  - An active prober that cannot authenticate gets no data on a stream, so
+    it starts no download and reaches no queue.
+  - TLS handshake and fingerprint: not touched. The governor wraps the
+    listener TLS or REALITY returns and sees only the HTTP/2 frames inside
+    the connection; no TLS, REALITY or ALPN setting changes. What an XHTTP TLS
+    listener answers to probes that never reach HTTP/2 (TLS, ALPN,
+    HTTP/1.1) is compared byte for byte with the governor on and off
+    (`TestFlowListenerAnswersProbesLikeStock`).
+  - Connection lifecycle: an HTTP/1.1 request over the header limit is
+    answered and closed as on stock TLS, close_notify right after the
+    answer (`TestFlowListenerClosesLikeStock`); a client that sends past
+    the windows it was shown gets the stock answers, the stream reset with
+    FLOW_CONTROL_ERROR past a stream's window and the connection ended past
+    the connection's (`TestFlowClientPastShownWindow`).
+  - Malformed input: malformed SETTINGS get the same answer from a governed
+    server as from stock (`TestFlowMalformedSettingsGetStockErrors`); a
+    malformed SETTINGS ACK reaches a governed client's stack whole, for the
+    stack to raise, and is not taken for the ACK of the governor's own
+    SETTINGS (`TestFlowClientMalformedOwnedAckReachesStack`).
+  - These tests check answers and closes, not packet sizes or timing.
+  - Not measured: record counts and timing beside a foreign queue, against
+    stock or `28e1e458`; links whose other traffic is not bulk TCP; BBR on
+    the server.
+- A governed server's first PING, sent with its first SETTINGS, carries
+  `flowPingTag` (`0x6b7a3f91`) in its upper half; its lower half and every
+  later PING are random. A governed client takes that PING, and no other
+  early one, for a server that governs its downloads (`peerGoverned`).
+  Under REALITY a prober that cannot authenticate goes to the target and
+  never sees it. On plain TLS any HTTP/2 client sees it before its first
+  request: three probe connections got `6b7a3f91b3770d97`,
+  `6b7a3f91060ebdff` and `6b7a3f9180f4a67c`, where `28e1e458` sends random
+  data. The early PING alone already tells a governed server from stock
+  there; the tag makes it a mark of this governor. Any rule the client
+  could tell the tag by without a secret the two ends share, a prober
+  could tell it by as well, so the tag stays, and h2Flow on plain TLS
+  exposes it.
 - A client that has returned nothing in small steps when the guard fires has
   the limit lifted for that connection (`TestFlowGuardLiftsSendWindow`), or a
   client that credits at half its window would stop for good. The lift is

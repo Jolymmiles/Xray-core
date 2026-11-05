@@ -28,7 +28,9 @@ func TestUDPConnDropsRepliesTooLongForIP(t *testing.T) {
 			l := newLink()
 			var written [][]byte
 			l.out = func(packet []byte) { written = append(written, packet) }
-			s := &stack{tun: l}
+			// an MTU above any packet, so that each reply leaves in one piece
+			// and its length fields can be read from it
+			s := &stack{tun: l, mtu: 1 << 17}
 			c := &udpConn{handler: &udpConnectionHandler{writePacket: s.writeUDP}, src: family.src, dst: family.dst}
 
 			sent := [][]byte{[]byte("ping"), bytes.Repeat([]byte{2}, family.longest+1), bytes.Repeat([]byte{3}, family.longest)}

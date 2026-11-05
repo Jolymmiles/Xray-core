@@ -2,11 +2,13 @@ package shadowsocks_2022
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/signal"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/pipe"
 )
@@ -33,7 +35,10 @@ func TestUDPReplyLoopDropsRepliesTheSocketRefusesAsTooLong(t *testing.T) {
 			}
 			t.Cleanup(func() { conn.Close() })
 
+			// as the server builds a session: its idle timer comes before the
+			// reply loop, which updates it and stops it when the link ends
 			s := &ServerUDPSession{}
+			s.timer = signal.CancelAfterInactivity(context.Background(), func() {}, time.Minute)
 			s.UpdateConn(conn)
 			reader, writer := pipe.New(pipe.WithoutSizeLimit())
 			long := buf.NewWithSize(65508)

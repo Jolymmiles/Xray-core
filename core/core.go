@@ -19,12 +19,12 @@ import (
 
 var (
 	Version_x byte = 26
-	Version_y byte = 10
-	Version_z byte = 13
+	Version_y byte = 11
+	Version_z byte = 1
 )
 
 // versionHHMM is the UTC hour and minute baked into Version().
-const versionHHMM = 2347
+const versionHHMM = 1424
 
 var (
 	build    = "Custom"

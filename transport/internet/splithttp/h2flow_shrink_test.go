@@ -31,7 +31,7 @@ func TestFlowWindowShrinks(t *testing.T) {
 		var get func(string) (*http.Response, error)
 		var client *flowClient
 		if role == "client" {
-			client = newFlowTestClient(proxy, true)
+			client = newFlowTestClient(t, proxy, true)
 			get = client.Get
 		} else {
 			get = h2Client(proxy).Get

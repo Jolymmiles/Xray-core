@@ -156,6 +156,17 @@ SOCKS port as proof that its provider has finished starting.
 go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPProcessMatrix/' -count=3 -v
 ```
 
+The VLESS header record gate runs an Xray client and server over TLS and
+REALITY, with and without Vision, behind a relay that reads the TLS records.
+Before the client closes, the client must have sent its request header in the
+record that carries the first payload, and the server must not have sent the
+two-byte response header in a record of its own. Stock Xray sends neither
+header alone.
+
+```sh
+go test -tags 'integration http2legacy' ./common/singmux -run '^TestVLESSTCPHeaderSharesTLSRecordWithFirstPayload$' -count=1 -timeout 10m -v
+```
+
 The XHTTP Mux.Cool gate runs an Xray client with Mux.Cool over XHTTP (TLS,
 HTTP/2) in packet-up, stream-up, and stream-one against an Xray server, with
 the server's idle-downlink KeepAlive on and off. Each mode echoes eight

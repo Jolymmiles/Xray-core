@@ -73,8 +73,10 @@ func TestShutdownSignalEndsProxyingWhenCloseHangs(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// geodata refuses intervals under a minute (XTLS/Xray-core#7267); every
+	// minute on the minute starts the download at most 60 s after start.
 	xray, held := startRelayingXray(t, map[string]any{
-		"cron":     "@every 1s",
+		"cron":     "* * * * *",
 		"outbound": "direct",
 		"assets":   []any{map[string]any{"url": fixture.URL + "/test.dat", "file": "test.dat"}},
 	}, "XRAY_LOCATION_ASSET="+assets, "SSL_CERT_FILE="+certificate)
@@ -82,8 +84,8 @@ func TestShutdownSignalEndsProxyingWhenCloseHangs(t *testing.T) {
 	case <-downloading:
 	case <-xray.done:
 		t.Fatalf("Xray exited before it started the download\n%s", xray.output())
-	case <-time.After(10 * time.Second):
-		t.Fatalf("Xray did not start the geodata download within 10s\n%s", xray.output())
+	case <-time.After(70 * time.Second):
+		t.Fatalf("Xray did not start the geodata download within 70s\n%s", xray.output())
 	}
 
 	start := time.Now()

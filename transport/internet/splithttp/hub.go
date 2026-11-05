@@ -128,7 +128,9 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 
 	h.config.ApplyXPaddingToResponse(writer, config)
 
-	if request.Method == "OPTIONS" {
+	// A real CORS preflight always carries Access-Control-Request-Method. An OPTIONS request without it is an
+	// uplink request (uplinkHTTPMethod: "OPTIONS") and must go through the normal handling below.
+	if request.Method == "OPTIONS" && request.Header.Get("Access-Control-Request-Method") != "" {
 		writer.WriteHeader(http.StatusOK)
 		return
 	}
@@ -486,6 +488,7 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 	l.isH3 = len(tlsConfig.NextProtos) == 1 && tlsConfig.NextProtos[0] == "h3"
 
 	var err error
+	var http2Config *http.HTTP2Config
 	if l.isH3 {
 		var pktConn net.PacketConn
 		var err error
@@ -552,6 +555,10 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			}
 		}()
 	} else {
+		// Parsed before binding, so a bad config leaves no listener behind.
+		if http2Config, err = l.config.serverHTTP2Config(); err != nil {
+			return nil, err
+		}
 		var addr net.Addr
 		if port == net.Port(0) { // unix
 			addr = &net.UnixAddr{Name: address.Domain(), Net: "unix"}
@@ -592,15 +599,11 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			MaxHeaderBytes:    l.config.GetNormalizedServerMaxHeaderBytes(),
 			Protocols:         protocols,
 			ConnContext:       internet.ContextWithPhysicalPeer,
-			HTTP2:             l.config.h2ReceiveConfig(true),
+			HTTP2:             http2Config,
 		}
 		if l.config.h2FlowOn() {
-			fl := &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault, sendWindow: l.config.h2SendWindow()}
-			if h2 := l.server.HTTP2; h2 != nil && h2.MaxReceiveBufferPerConnection > 0 {
-				fl.connWindow = int32(min(h2.MaxReceiveBufferPerConnection, h2MaxWindow))
-			} else {
-				fl.connWindow = 1 << 20 // Go's default
-			}
+			fl := &flowListener{Listener: l.listener, up: flowDefault, down: flowDefault, sendWindow: l.config.h2SendWindow(), noQueueCuts: l.config.GetH2Flow().GetNoQueueCuts()}
+			fl.connWindow = h2ConnWindow(l.server.HTTP2)
 			l.listener = fl
 		}
 		go func() {

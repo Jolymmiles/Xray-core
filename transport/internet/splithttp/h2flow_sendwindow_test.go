@@ -665,14 +665,11 @@ func refusedAtFullLimit(tb testing.TB, n int) (c *flowConn, window int64) {
 }
 
 // TestFlowSendWindowConnectionCreditAllocs counts what a connection
-// WINDOW_UPDATE of 4 KiB allocates on that connection. Such a frame looks at
-// no stream and allocates nothing. A queue of the streams the limit kept
-// credit from, walked after every frame from the client, handed nothing on
-// here while credit quanta held a grant of 4 KiB back, and put every stream
-// back: it allocated once a frame with sixty streams. The quanta and the
-// queue are gone; connection credit still looks at no stream. The count does not depend on
-// the clock; BenchmarkFlowConnectionCredit has the time, which a walk that
-// allocated nothing would show only there.
+// WINDOW_UPDATE of 4 KiB allocates on that connection, with sixty streams
+// open. Such a frame looks at no stream and allocates nothing; a walk over
+// the streams after every frame from the client would allocate once a frame.
+// The count does not depend on the clock; BenchmarkFlowConnectionCredit has
+// the time, which a walk that allocated nothing would show only there.
 func TestFlowSendWindowConnectionCreditAllocs(t *testing.T) {
 	credit := frames(func(fr *http2.Framer) { fr.WriteWindowUpdate(0, 4<<10) })
 	c, window := refusedAtFullLimit(t, 60)
