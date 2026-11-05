@@ -243,9 +243,11 @@ guard it.
   does not fit its 8192-byte buffer with the header, as upstream's does.
   Each drop on a UDP socket or a TUN is logged at debug level by the component
   that drops it, the first of each session or socket at once and then one a
-  second (`net.DropLog`); freedom logs it with the context of its session. The
-  drops of the proxy writers are not logged. Reads from a UDP socket take up
-  to 8192 bytes; the next entry covers a longer datagram.
+  second (`net.DropLog`), and freedom logs it with the context of its session;
+  a datagram that the Mux.Cool, Trojan, Shadowsocks 2022, VLESS, VMess or XUDP
+  writer cannot frame never reaches a socket, and that drop is not logged.
+  Reads from a UDP socket take up to 8192 bytes; the next entry covers a
+  longer datagram.
   Covered by `TestReadDatagramTakesMemoryAsTheBytesArrive`,
   `TestReadDatagramLeavesTheStreamAtTheNextDatagram`,
   `TestReadDatagramReportsAStreamThatEndsInside` and
@@ -320,10 +322,11 @@ guard it.
   `TestDNSOutboundDropsRepliesLongerThanARead` (`proxy/dns`),
   `TestUDPConnClientDropsRepliesLongerThanARead` (`proxy/wireguard`),
   `TestPacketReaderDropsDatagramsLongerThanItsBuffer` and
-  `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`), and
-  `TestLargeUDPDatagramProcessMatrix` (an Xray Trojan client, and replies of
-  9000 bytes) and `TestDokodemoTruncatedDatagramProcess` (`common/singmux`,
-  integration).
+  `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`), and,
+  in `common/singmux` (integration), `TestLargeUDPDatagramProcessMatrix`,
+  whose server drops a reply of 9000 bytes in every cell and whose Xray
+  Trojan client drops a datagram above the 8192 bytes its SOCKS association
+  reads, and `TestDokodemoTruncatedDatagramProcess`.
 - XHTTP over HTTP/2 on TCP has an optional flow-control governor
   (`transport/internet/splithttp/h2flow*.go`), off unless `XRAY_XHTTP_FLOW=on`
   or `xhttpSettings.extra.h2Flow.enabled` turns it on; with it off the HTTP/2
