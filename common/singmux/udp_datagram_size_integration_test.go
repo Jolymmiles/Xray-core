@@ -34,7 +34,14 @@ func datagramSizes(datagrams []recordedDatagram) []int {
 // socket read of Xray takes, then 8190, 7000 bytes and "pong".
 func startUDPDestination(t *testing.T) (*net.UDPAddr, <-chan recordedDatagram) {
 	t.Helper()
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	return startUDPDestinationAt(t, 0)
+}
+
+// startUDPDestinationAt is startUDPDestination on a given loopback port, or
+// on one the kernel picks for port 0.
+func startUDPDestinationAt(t *testing.T, port int) (*net.UDPAddr, <-chan recordedDatagram) {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +67,26 @@ func startUDPDestination(t *testing.T) (*net.UDPAddr, <-chan recordedDatagram) {
 		}
 	}()
 	return conn.LocalAddr().(*net.UDPAddr), received
+}
+
+// closeTCPConnectionsAt closes each TCP connection to the loopback port as it
+// is accepted.
+func closeTCPConnectionsAt(t *testing.T, port int) {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
 }
 
 // markerSize is the size of the datagrams that mark the end of a step: the
@@ -285,7 +312,12 @@ func TestLargeUDPDatagramProcessMatrix(t *testing.T) {
 // above the 8192 bytes freedom reads. Neither may arrive cut.
 func TestDokodemoTruncatedDatagramProcess(t *testing.T) {
 	binaries := buildE2EBinaries(t, t.TempDir())
-	destination, received := startUDPDestination(t)
+	destinationPort := freeTCPUDPPort(t)
+	destination, received := startUDPDestinationAt(t, destinationPort)
+	// The readiness probe reaches the destination's port over TCP through the
+	// inbound, and waits a second for the inbound to close it. Freedom retries
+	// a refused dial for that long, so the port takes TCP and closes it at once.
+	closeTCPConnectionsAt(t, destinationPort)
 	port := freeTCPUDPPort(t)
 	serverConfig, err := json.MarshalIndent(map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
