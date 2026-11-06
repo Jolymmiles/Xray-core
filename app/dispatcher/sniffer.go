@@ -45,7 +45,7 @@ type Sniffer struct {
 
 var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, network: net.Network_TCP},
-	{protocolSniffer: func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, c) }, fastHTTP: true, network: net.Network_TCP},
+	{protocolSniffer: sniffHTTPOrTracker, fastHTTP: true, network: net.Network_TCP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, network: net.Network_TCP},
 	{
 		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) },
@@ -67,6 +67,17 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffDHT(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUDPTracker(b) }, network: net.Network_UDP},
+	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffLSD(b) }, network: net.Network_UDP},
+}
+
+// sniffHTTPOrTracker is SniffHTTP but for an HTTP tracker request, which is
+// BitTorrent (BEP 3) riding on HTTP. Like SniffHTTP it decides from the
+// request line, so it may stand in the HTTP precheck.
+func sniffHTTPOrTracker(c context.Context, b []byte) (SniffResult, error) {
+	if h, err := bittorrent.SniffHTTPTracker(b); err == nil {
+		return h, nil
+	}
+	return http.SniffHTTP(b, c)
 }
 
 func NewSniffer(ctx context.Context) *Sniffer {

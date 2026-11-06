@@ -1,6 +1,7 @@
 package bittorrent
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 
@@ -24,7 +25,7 @@ func SniffBittorrent(b []byte) (*SniffHeader, error) {
 		return nil, common.ErrNoClue
 	}
 
-	if b[0] == 19 && string(b[1:20]) == "BitTorrent protocol" {
+	if bytes.HasPrefix(b, btHandshake) {
 		return &SniffHeader{}, nil
 	}
 
@@ -54,6 +55,9 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 		return nil, common.ErrNoClue
 	}
 
+	if b[0] == 0x01 {
+		return sniffUTPHandshake(b)
+	}
 	if b[0] != 0x41 {
 		return nil, errNotBittorrent
 	}
@@ -79,38 +83,94 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 		return nil, errNotBittorrent
 	}
 
-	// Walk the extension chain: selective ack (1) and extension bits (2),
-	// which µTorrent sends in its ST_SYN.
+	// A SYN carries no data: its extensions end the datagram.
+	if offset, ok := utpExtensionsEnd(b); !ok || offset != len(b) {
+		return nil, errNotBittorrent
+	}
+
+	return &SniffHeader{}, nil
+}
+
+// utpExtensionsEnd walks the extension chain after the 20-byte header:
+// selective ack (1) and extension bits (2), which µTorrent sends in its
+// ST_SYN. It returns where the chain ends.
+func utpExtensionsEnd(b []byte) (int, bool) {
 	extension, offset := b[1], 20
 	for extension != 0 {
 		if len(b) < offset+2 {
-			return nil, errNotBittorrent
+			return 0, false
 		}
 		length := int(b[offset+1])
 		switch extension {
 		case 1:
 			if length < 4 || length%4 != 0 {
-				return nil, errNotBittorrent
+				return 0, false
 			}
 		case 2:
 			if length != 8 {
-				return nil, errNotBittorrent
+				return 0, false
 			}
 		default:
-			return nil, errNotBittorrent
+			return 0, false
 		}
 		if len(b) < offset+2+length {
-			return nil, errNotBittorrent
+			return 0, false
 		}
 		extension = b[offset]
 		offset += 2 + length
 	}
+	return offset, true
+}
 
-	// A SYN carries no data: its extensions end the datagram.
-	if len(b) != offset {
+// btHandshake opens the peer protocol of BEP 3, over TCP and in uTP alike.
+var btHandshake = []byte("\x13BitTorrent protocol")
+
+// sniffUTPHandshake takes a uTP ST_DATA (type 0, version 1) whose data
+// opens with the BitTorrent handshake: the first data of a uTP flow, as a
+// flow sniffed after its SYN carries it.
+func sniffUTPHandshake(b []byte) (*SniffHeader, error) {
+	offset, ok := utpExtensionsEnd(b)
+	if !ok || !bytes.HasPrefix(b[offset:], btHandshake) {
 		return nil, errNotBittorrent
 	}
+	return &SniffHeader{}, nil
+}
 
+// SniffHTTPTracker takes an HTTP tracker request (BEP 3): a GET whose
+// request line carries info_hash= with peer_id= (an announce) or /scrape?.
+// It runs before the HTTP sniffer, which would otherwise take the flow as
+// HTTP.
+func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
+	const get = "GET /"
+	if len(b) < len(get) {
+		if bytes.HasPrefix([]byte(get), b) {
+			return nil, common.ErrNoClue
+		}
+		return nil, errNotBittorrent
+	}
+	if !bytes.HasPrefix(b, []byte(get)) {
+		return nil, errNotBittorrent
+	}
+	line := b
+	if i := bytes.IndexAny(b, "\r\n"); i >= 0 {
+		line = b[:i]
+	}
+	if bytes.Contains(line, []byte("info_hash=")) && (bytes.Contains(line, []byte("peer_id=")) || bytes.Contains(line, []byte("/scrape?"))) {
+		return &SniffHeader{}, nil
+	}
+	return nil, errNotBittorrent
+}
+
+// SniffLSD takes BitTorrent local service discovery (BEP 14), which a TUN
+// client may send into the tunnel with the rest of its multicast.
+func SniffLSD(b []byte) (*SniffHeader, error) {
+	const search = "BT-SEARCH * HTTP/1.1\r\n"
+	if len(b) < len(search) {
+		return nil, common.ErrNoClue
+	}
+	if !bytes.HasPrefix(b, []byte(search)) {
+		return nil, errNotBittorrent
+	}
 	return &SniffHeader{}, nil
 }
 
