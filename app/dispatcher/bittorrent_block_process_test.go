@@ -514,7 +514,9 @@ func btUTPSYN() []byte {
 	binary.BigEndian.PutUint32(packet[4:8], 0xD5396E1C)
 	binary.BigEndian.PutUint32(packet[8:12], 0)
 	binary.BigEndian.PutUint32(packet[12:16], 0x100000)
-	binary.BigEndian.PutUint16(packet[16:18], 1)
+	// libutp and libtorrent start the sequence number at random: this is
+	// the one a libutp ST_SYN carried in a capture.
+	binary.BigEndian.PutUint16(packet[16:18], 0x23C6)
 	return packet
 }
 
