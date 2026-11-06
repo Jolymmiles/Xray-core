@@ -80,14 +80,25 @@ func TestSniffTorrentTrafficThroughFullChain(t *testing.T) {
 		}
 	})
 
-	t.Run("http tracker announce is http, not bittorrent", func(t *testing.T) {
+	// An announce is the tracker protocol of BEP 3, and the first thing a
+	// client sends a tracker over HTTP: routed as bittorrent, not as the HTTP
+	// it rides on. A tracker over HTTPS stays TLS.
+	t.Run("http tracker announce is routed as bittorrent", func(t *testing.T) {
 		request := "GET /announce?info_hash=x&peer_id=-qB4530-xk2f9amqbtt3&port=6881 HTTP/1.1\r\nHost: tracker.example.com\r\n\r\n"
 		result, err := NewSniffer(snifferContext()).Sniff(snifferContext(), []byte(request), net.Network_TCP)
 		if err != nil {
-			t.Fatalf("Sniff returned %v, want http1", err)
+			t.Fatalf("Sniff returned %v, want bittorrent", err)
 		}
-		if got := result.Protocol(); got == "bittorrent" {
-			t.Fatalf("tracker HTTP request classified as bittorrent")
+		if got := result.Protocol(); got != "bittorrent" {
+			t.Fatalf("protocol = %q, want bittorrent", got)
+		}
+	})
+
+	t.Run("a page asking about announce is http", func(t *testing.T) {
+		request := "GET /search?q=info_hash%3D+peer_id%3D HTTP/1.1\r\nHost: example.com\r\nReferer: https://example.com/?info_hash=1&peer_id=2\r\n\r\n"
+		result, err := NewSniffer(snifferContext()).Sniff(snifferContext(), []byte(request), net.Network_TCP)
+		if err != nil || result.Protocol() == "bittorrent" {
+			t.Fatalf("Sniff = %v, %v; want http", result, err)
 		}
 	})
 

@@ -101,6 +101,32 @@ func TestBitTorrentBlockProcessE2E(t *testing.T) {
 		btAssertBlockedUDP(t, socksPort, udpEcho, payload, "UDP tracker")
 	})
 
+	t.Run("lsd announce is blocked", func(t *testing.T) {
+		payload := []byte("BT-SEARCH * HTTP/1.1\r\nHost: 239.192.152.143:6771\r\nPort: 6881\r\nInfohash: 9a813bef8f10a1c9e61ac4e9b70742cf338c2be2\r\n\r\n\r\n")
+		btAssertBlockedUDP(t, socksPort, udpEcho, payload, "LSD")
+	})
+
+	t.Run("utp data opening with the handshake is blocked", func(t *testing.T) {
+		packet := []byte{0x01, 0x00, 0x48, 0x74, 0xc5, 0x9e, 0xa1, 0x78, 0x00, 0x00, 0x00, 0x59, 0x00, 0x10, 0x00, 0x00, 0xdc, 0x52, 0x5c, 0xfe}
+		btAssertBlockedUDP(t, socksPort, udpEcho, append(packet, btPeerHandshake()...), "uTP handshake")
+	})
+
+	t.Run("http tracker announce is blocked", func(t *testing.T) {
+		request := []byte("GET /announce?compact=1&downloaded=0&event=started&info_hash=%9a%81%3b%ef%8f%10%a1%c9%e6%1a%c4%e9%b7%07%42%cf%33%8c%2b%e2&left=1&peer_id=-GT0003-abcdefghijkl&port=6881&uploaded=0 HTTP/1.1\r\nHost: tracker.example.com\r\n\r\n")
+		conn := btSOCKSConnect(t, socksPort, tcpEcho.addr.Port)
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := conn.Write(request); err != nil {
+			t.Fatalf("write announce: %v\nserver logs:\n%s", err, process.logs())
+		}
+		if _, err := conn.Read(make([]byte, len(request))); err == nil {
+			t.Fatal("proxy echoed a tracker announce")
+		}
+		if tcpEcho.recorded(request) {
+			t.Fatal("tracker announce reached the destination")
+		}
+	})
+
 	t.Run("tcp bittorrent handshake is blocked", func(t *testing.T) {
 		handshake := btPeerHandshake()
 		conn := btSOCKSConnect(t, socksPort, tcpEcho.addr.Port)
@@ -514,7 +540,9 @@ func btUTPSYN() []byte {
 	binary.BigEndian.PutUint32(packet[4:8], 0xD5396E1C)
 	binary.BigEndian.PutUint32(packet[8:12], 0)
 	binary.BigEndian.PutUint32(packet[12:16], 0x100000)
-	binary.BigEndian.PutUint16(packet[16:18], 1)
+	// libutp and libtorrent start the sequence number at random: this is
+	// the one a libutp ST_SYN carried in a capture.
+	binary.BigEndian.PutUint16(packet[16:18], 0x23C6)
 	return packet
 }
 
