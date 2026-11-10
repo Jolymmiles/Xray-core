@@ -53,7 +53,8 @@ func muxStrategy(t *testing.T, manager *mux.ClientManager) mux.ClientStrategy {
 
 // maxReuseTimes is the lifetime session budget of a carrier in the main
 // Mux.Cool pool. That pool also carries UDP when no separate XUDP pool is
-// configured; the XUDP pool keeps its budget of 128.
+// configured; the XUDP pool keeps its budget of 1024. Upstream raises a
+// concurrency of 0-128 to 128.
 func TestNewHandlerAppliesMuxMaxReuseTimes(t *testing.T) {
 	for _, test := range []struct {
 		name            string
@@ -61,9 +62,9 @@ func TestNewHandlerAppliesMuxMaxReuseTimes(t *testing.T) {
 		xudpConcurrency int32
 		want            uint32
 	}{
-		{"default", 0, 4, 128},
+		{"default", 0, 4, 1024},
 		{"one", 1, 4, 1},
-		{"above the default", 129, 4, 129},
+		{"above the default", 1025, 4, 1025},
 		{"ceiling", 60000, 4, 60000},
 		{"UDP through the main pool", 7, 0, 7},
 	} {
@@ -88,8 +89,8 @@ func TestNewHandlerAppliesMuxMaxReuseTimes(t *testing.T) {
 			t.Cleanup(func() { _ = handler.Close() })
 
 			concrete := handler.(*Handler)
-			if got := muxStrategy(t, concrete.mux); got.MaxConnection != test.want || got.MaxConcurrency != 8 {
-				t.Fatalf("mux strategy = %+v, want MaxConnection %d and MaxConcurrency 8", got, test.want)
+			if got := muxStrategy(t, concrete.mux); got.MaxConnection != test.want || got.MaxConcurrency != 128 {
+				t.Fatalf("mux strategy = %+v, want MaxConnection %d and MaxConcurrency 128", got, test.want)
 			}
 			if test.xudpConcurrency == 0 {
 				if concrete.xudp != nil {
@@ -97,8 +98,8 @@ func TestNewHandlerAppliesMuxMaxReuseTimes(t *testing.T) {
 				}
 				return
 			}
-			if got := muxStrategy(t, concrete.xudp); got.MaxConnection != 128 {
-				t.Fatalf("XUDP strategy = %+v, want MaxConnection 128", got)
+			if got := muxStrategy(t, concrete.xudp); got.MaxConnection != 1024 {
+				t.Fatalf("XUDP strategy = %+v, want MaxConnection 1024", got)
 			}
 		})
 	}

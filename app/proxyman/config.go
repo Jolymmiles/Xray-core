@@ -8,8 +8,9 @@ import (
 
 const (
 	// DefaultMuxMaxReuseTimes is the lifetime session budget of a Mux.Cool
-	// connection when maxReuseTimes is 0, as it was before the option.
-	DefaultMuxMaxReuseTimes = 128
+	// connection when maxReuseTimes is 0: upstream's fixed budget since
+	// v26.11.9 (XTLS/Xray-core bb335c6b), 128 before.
+	DefaultMuxMaxReuseTimes = 1024
 	// MaxMuxMaxReuseTimes is the largest maxReuseTimes. Session IDs are 16-bit
 	// and start at 1, so one connection never repeats an ID and leaves the
 	// IDs above 60000 unused, as XTLS/Xray-core#4231 proposes.

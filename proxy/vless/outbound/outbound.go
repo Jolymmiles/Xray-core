@@ -383,8 +383,8 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			buf.ReleaseMulti(multiBuffer)
 			return err1
 		}
-		// A pipe reports the timeout as buf.ErrReadTimeout, the wrapper as
-		// an empty read; either way Vision pads the header.
+		// The timeout comes as buf.ErrReadTimeout with no payload; Vision
+		// then pads the header.
 		if !multiBuffer.IsEmpty() {
 			if err := serverWriter.WriteMultiBuffer(multiBuffer); err != nil {
 				return err // ...
