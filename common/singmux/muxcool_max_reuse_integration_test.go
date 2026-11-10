@@ -26,7 +26,7 @@ var muxCoolOldServers = []struct{ label, revision string }{
 // Xray VLESS server over TLS and REALITY, through a relay that counts the TCP
 // connections the client opens. One session stays open on the first carrier
 // while two more open and close one after another. Within the default budget
-// of 128 both reuse that carrier; with maxReuseTimes 1 each opens its own.
+// of 1024 both reuse that carrier; with maxReuseTimes 1 each opens its own.
 // The held session echoes again afterwards: an exhausted carrier keeps the
 // sessions it already carries.
 func TestMuxCoolMaxReuseTimesProcess(t *testing.T) {
