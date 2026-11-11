@@ -313,10 +313,31 @@ guard it.
   does not fit is dropped, where upstream's readers pass its start on and the
   Shadowsocks reader fails the cut packet's authentication and ends the
   session.
+  A UDP mask (`finalmask.udp`) hides the socket from the hub and from these
+  readers, on every system, and what it takes off a packet hides the cut from
+  a spare byte above it: behind Salamander a reply of 9000 bytes comes out as
+  8184. So below the masks of the UDP hub and of the UDP dialer, which serves
+  freedom and the UDP of the other outbounds, the socket itself drops a
+  datagram that its read cut short (`FinalMask.ListenRawPacket` and
+  `DialRawUDP`), where upstream's masks decode the start of the packet as a
+  whole one. The QUIC transports, mKCP's dialer and WireGuard, which reject a
+  damaged packet themselves, keep the plain socket (`ListenPacket`,
+  `DialUDP`). A mask that opens its own sockets (xdns, xicmp, udphop) reads
+  them as before, and so does a masked link to another outbound
+  (`FakePacketConn`), whose read still cuts a datagram to the buffer.
+  With `sockopt.dialerProxy` and no mask, freedom's connection is that link,
+  which carries buffers and has a TCP address for UDP too. Upstream's freedom
+  writes to it and reads it as a stream of bytes, so a datagram of 9000 bytes
+  goes on as two, of 8192 and 808, and a reply of 9000 comes back as its
+  first 8192. Here freedom hands the link's buffers on, a datagram each,
+  without the address of the packet, as before; the noise that the
+  configuration gives as a packet crosses the link as a copy, since the link
+  takes the buffer and not its bytes.
   Covered by `TestIsMessageTooLong`, `TestIsTruncated` and, on Windows,
   `TestIsMessageTooLongOnWindows` (`common/net`),
   `TestDatagramReaderDropsDatagramsLongerThanABuffer` (`common/buf`),
   `TestHubDropsDatagramsLongerThanItsBuffer`,
+  `TestMaskedHubDropsDatagramsLongerThanItsBuffer`,
   `TestHubServesOnAfterAReadOfATooLongDatagram` and
   `TestHubStopsServingOnOtherReadErrors` (`transport/internet/udp`),
   `TestTempUDPConnDropsDatagramsLongerThanTheRead` and
@@ -324,7 +345,10 @@ guard it.
   `TestUDPReaderDropsPacketsLongerThanARead` (`proxy/shadowsocks`),
   `TestDNSOutboundDropsRepliesLongerThanARead` (`proxy/dns`),
   `TestUDPConnClientDropsRepliesLongerThanARead` (`proxy/wireguard`),
-  `TestPacketReaderDropsDatagramsLongerThanItsBuffer` and
+  `TestPacketReaderDropsDatagramsLongerThanItsBuffer`,
+  `TestPacketReaderDropsRepliesCutBelowAMask`,
+  `TestDialerProxyLinkKeepsDatagramsWhole`,
+  `TestDialerProxyLinkTakesACopyOfConfiguredNoise` and
   `TestPacketReaderSkipsTooLongErrorsOfAPacketConn` (`proxy/freedom`), and,
   in `common/singmux` (integration), `TestLargeUDPDatagramProcessMatrix`,
   whose server drops a reply of 9000 bytes in every cell and whose Xray
