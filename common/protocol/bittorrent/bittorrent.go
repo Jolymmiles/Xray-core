@@ -136,10 +136,11 @@ func sniffUTPHandshake(b []byte) (*SniffHeader, error) {
 	return &SniffHeader{}, nil
 }
 
-// SniffHTTPTracker takes an HTTP tracker request (BEP 3): a GET whose
-// request line carries info_hash= with peer_id= (an announce) or /scrape?.
-// It runs before the HTTP sniffer, which would otherwise take the flow as
-// HTTP.
+// SniffHTTPTracker takes an HTTP tracker request (BEP 3, BEP 48): a GET of
+// an announce with info_hash and peer_id parameters, or of a scrape with
+// info_hash. The path's last segment names the request, as announce or
+// announce.php does, and the parameters are whole names in the query. It
+// runs before the HTTP sniffer, which would otherwise take the flow as HTTP.
 func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 	const get = "GET /"
 	if len(b) < len(get) {
@@ -151,11 +152,28 @@ func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 	if !bytes.HasPrefix(b, []byte(get)) {
 		return nil, errNotBittorrent
 	}
-	line := b
-	if i := bytes.IndexAny(b, "\r\n"); i >= 0 {
-		line = b[:i]
+	target := b[len("GET "):]
+	if i := bytes.IndexAny(target, " \r\n"); i >= 0 {
+		target = target[:i]
 	}
-	if bytes.Contains(line, []byte("info_hash=")) && (bytes.Contains(line, []byte("peer_id=")) || bytes.Contains(line, []byte("/scrape?"))) {
+	path, query, ok := bytes.Cut(target, []byte("?"))
+	if !ok {
+		return nil, errNotBittorrent
+	}
+	request := path[bytes.LastIndexByte(path, '/')+1:]
+	var infoHash, peerID bool
+	for _, param := range bytes.Split(query, []byte("&")) {
+		name, _, _ := bytes.Cut(param, []byte("="))
+		switch string(name) {
+		case "info_hash":
+			infoHash = true
+		case "peer_id":
+			peerID = true
+		}
+	}
+	switch {
+	case bytes.HasPrefix(request, []byte("announce")) && infoHash && peerID,
+		bytes.HasPrefix(request, []byte("scrape")) && infoHash:
 		return &SniffHeader{}, nil
 	}
 	return nil, errNotBittorrent
@@ -166,7 +184,10 @@ func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 func SniffLSD(b []byte) (*SniffHeader, error) {
 	const search = "BT-SEARCH * HTTP/1.1\r\n"
 	if len(b) < len(search) {
-		return nil, common.ErrNoClue
+		if bytes.HasPrefix([]byte(search), b) {
+			return nil, common.ErrNoClue
+		}
+		return nil, errNotBittorrent
 	}
 	if !bytes.HasPrefix(b, []byte(search)) {
 		return nil, errNotBittorrent
