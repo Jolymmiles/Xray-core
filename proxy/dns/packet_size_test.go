@@ -2,6 +2,7 @@ package dns_test
 
 import (
 	"context"
+	"errors"
 	gonet "net"
 	"slices"
 	"testing"
@@ -145,7 +146,11 @@ func startRawUpstream(t *testing.T) net.Destination {
 			if query.Id == 2 {
 				reply = append(reply, make([]byte, 9000-len(reply))...)
 			}
-			_, _ = conn.WriteToUDP(reply, from)
+			// a reply that never left is not one that the outbound dropped
+			n, err = conn.WriteToUDP(reply, from)
+			if err != nil && !errors.Is(err, gonet.ErrClosed) || err == nil && n != len(reply) {
+				t.Errorf("the upstream wrote %d bytes of a reply of %d to query %d: %v", n, len(reply), query.Id, err)
+			}
 		}
 	}()
 	return net.DestinationFromAddr(conn.LocalAddr())

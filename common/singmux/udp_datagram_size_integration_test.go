@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -63,16 +64,30 @@ func startUDPDestinationAt(t *testing.T, port int) (*net.UDPAddr, <-chan recorde
 			received <- recordedDatagram{size: n, fill: fill}
 			switch {
 			case string(packet[:n]) == "trigger":
-				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xB1}, 9000), from)
-				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xB2}, 8190), from)
-				_, _ = conn.WriteToUDP(bytes.Repeat([]byte{0xC1}, 7000), from)
-				_, _ = conn.WriteToUDP([]byte("pong"), from)
+				writeUDPReply(t, conn, bytes.Repeat([]byte{0xB1}, 9000), from)
+				writeUDPReply(t, conn, bytes.Repeat([]byte{0xB2}, 8190), from)
+				writeUDPReply(t, conn, bytes.Repeat([]byte{0xC1}, 7000), from)
+				writeUDPReply(t, conn, []byte("pong"), from)
 			case n == markerSize:
-				_, _ = conn.WriteToUDP(packet[:n], from)
+				writeUDPReply(t, conn, packet[:n], from)
 			}
 		}
 	}()
 	return conn.LocalAddr().(*net.UDPAddr), received
+}
+
+// writeUDPReply sends a reply of the destination and fails the test, from the
+// destination's goroutine, if the socket did not take it whole: a reply that
+// never left is not one that Xray dropped. A destination that the test's end
+// closed has no one to reply to.
+func writeUDPReply(t *testing.T, conn *net.UDPConn, reply []byte, to *net.UDPAddr) {
+	n, err := conn.WriteToUDP(reply, to)
+	if errors.Is(err, net.ErrClosed) {
+		return
+	}
+	if err != nil || n != len(reply) {
+		t.Errorf("the destination wrote %d bytes of a reply of %d to %v: %v", n, len(reply), to, err)
+	}
 }
 
 // closeTCPConnectionsAt closes each TCP connection to the loopback port as it
