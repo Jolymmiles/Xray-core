@@ -47,8 +47,8 @@ func SniffBittorrent(b []byte) (*SniffHeader, error) {
 // unconstrained fields collide with ordinary game discovery and real-time
 // media datagrams. A genuine new uTP flow starts with ST_SYN: no timestamp
 // difference yet, and extensions, if any, that end where the datagram does.
-// Its sequence number is no evidence: libutp and libtorrent start it at
-// random, as BEP 29 leaves them free to.
+// Its sequence number is no evidence: BEP 29 initializes it to 1, but libutp
+// and libtorrent start it at random.
 func SniffUTP(b []byte) (*SniffHeader, error) {
 	if len(b) < 20 {
 		return nil, common.ErrNoClue
@@ -74,11 +74,8 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 	}
 
 	// A DNS query with transaction id 0x41xx and no EDNS shares the fields
-	// above, and its question can end where a SYN's extensions would. Its
-	// QDCOUNT and ANCOUNT are where a SYN carries its timestamp: one or two
-	// questions and at most one answer is a DNS header, and a timestamp of
-	// that shape one in a billion.
-	if qd, an := binary.BigEndian.Uint16(b[4:6]), binary.BigEndian.Uint16(b[6:8]); qd >= 1 && qd <= 2 && an <= 1 {
+	// above, and its question can end where a SYN's extensions would.
+	if isDNSQuery(b) {
 		return nil, errNotBittorrent
 	}
 
@@ -115,6 +112,44 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 	}
 
 	return &SniffHeader{}, nil
+}
+
+// isDNSQuery reports whether b reads as a DNS query: query flags with no
+// response code, and a first question whose name ends inside b and whose
+// class is one a query asks for. A SYN reads its connection id as the flags
+// and its receive window as the start of the question, which rarely fit both.
+func isDNSQuery(b []byte) bool {
+	if len(b) < 12 || b[2]&0x80 != 0 || b[3]&0x4F != 0 || binary.BigEndian.Uint16(b[4:6]) == 0 {
+		return false
+	}
+	offset := 12
+	for {
+		if offset >= len(b) {
+			return false
+		}
+		label := int(b[offset])
+		if label == 0 {
+			offset++
+			break
+		}
+		if label > 63 || offset+1+label > 12+255 {
+			return false
+		}
+		offset += 1 + label
+	}
+	if len(b) < offset+4 {
+		return false
+	}
+	qtype, qclass := binary.BigEndian.Uint16(b[offset:offset+2]), binary.BigEndian.Uint16(b[offset+2:offset+4])
+	// The root name is asked for its NS, SOA, DNSKEY or ANY in class IN.
+	if offset == 13 {
+		return qclass == 1 && (qtype == 2 || qtype == 6 || qtype == 48 || qtype == 255)
+	}
+	switch qclass {
+	case 1, 3, 4, 254, 255: // IN, CH, HS, NONE, ANY
+		return true
+	}
+	return false
 }
 
 func isTURNChannelData(b []byte) bool {

@@ -54,7 +54,17 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 		},
 		network: net.Network_UDP,
 	},
-	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) }, network: net.Network_UDP},
+	{
+		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) },
+		// A SYN is a whole datagram: read the first one, not the batch.
+		datagramSniffer: func(_ context.Context, payload []byte, datagrams [][]byte) (SniffResult, error) {
+			if len(datagrams) == 0 {
+				return bittorrent.SniffUTP(payload)
+			}
+			return bittorrent.SniffUTP(datagrams[0])
+		},
+		network: net.Network_UDP,
+	},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffDHT(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUDPTracker(b) }, network: net.Network_UDP},
 }

@@ -450,6 +450,26 @@ func TestSniffUTPIgnoresDNSQueries(t *testing.T) {
 	}
 }
 
+// TestSniffUTPTakesDNSCountShapedTimestamps keeps SYNs whose timestamp reads
+// as DNS QDCOUNT and ANCOUNT: without query flags and a question after them
+// they are no DNS query, whatever the timestamp.
+func TestSniffUTPTakesDNSCountShapedTimestamps(t *testing.T) {
+	for _, ts := range []uint32{0x00010000, 0x00010001, 0x00020000, 0x00020001} {
+		for _, connID := range []uint16{0x07E1, 0x0100} {
+			syn := utpPacket(4, connID, ts, 0, 0x100000, 0x7A10, 0, nil, nil)
+			if header, err := SniffUTP(syn); err != nil || header == nil {
+				t.Errorf("SYN with timestamp %#08x and connection id %#04x rejected: %v", ts, connID, err)
+			}
+		}
+	}
+	// The shape the timestamp check was written for: query flags as the
+	// connection id, QDCOUNT 1, and a window that cannot start a name.
+	syn := utpPacket(4, 0x0100, 0x00010000, 0, 0x00000100, 1, 0, nil, nil)
+	if header, err := SniffUTP(syn); err != nil || header == nil {
+		t.Errorf("SYN with DNS query flags but no question rejected: %v", err)
+	}
+}
+
 func ednsTwoExtraQuery() []byte {
 	query := dnsQueryFor("tracker.example.com", 0x3100, 0x0100)
 	query[11] = 2 // ARCOUNT=2
@@ -502,9 +522,6 @@ func TestSniffUTPRejectsNonUTPTraffic(t *testing.T) {
 		{"RakNet-style unconnected ping", rakNetUnconnectedPing()},
 		{"STUN binding success", stunBindingSuccessWithMappedAddress()},
 		{"TURN channel data", turnChannelData()},
-		// A SYN whose timestamp reads as QDCOUNT 1 and ANCOUNT 0 is taken
-		// for the DNS query it looks like: one timestamp in 2^32.
-		{"DNS-shaped fixed header", utpPacket(4, 0x0100, 0x00010000, 0, 0x00000100, 1, 0, nil, nil)},
 		{"SYN with data after it", utpPacket(4, 0x07E1, someTimestamp(), 0, 0x100000, 0x7A10, 0, nil, []byte("data"))},
 		{"TURN channel data matching ST_SYN fields", []byte{0x41, 0x00, 0x00, 0x10, 0x80, 0x60, 0x12, 0x34, 0x00, 0x00, 0x00, 0x00, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01, 0x07, 0x08}},
 		{"utp-shaped junk with unknown extension id", append([]byte{0x01, 0x05}, blockPayload(r, 30)...)},
