@@ -51,8 +51,12 @@ func ConnectionOutputMulti(reader buf.Reader) ConnectionOption {
 	}
 }
 
+// ConnectionOutputMultiUDP makes a connection for a UDP destination: reader
+// returns a datagram per buffer and Read returns one per call, and Write
+// writes one per call.
 func ConnectionOutputMultiUDP(reader buf.Reader) ConnectionOption {
 	return func(c *Connection) {
+		c.datagrams = true
 		c.reader = &buf.BufferedReader{
 			Reader:   reader,
 			Splitter: buf.SplitFirstBytes,
@@ -94,8 +98,11 @@ type Connection struct {
 	writeCloseErr  error
 	done           *done.Instance
 	onClose        io.Closer
-	local          net.Addr
-	remote         net.Addr
+	// datagrams marks a connection for a UDP destination, whose every buffer
+	// is a datagram.
+	datagrams bool
+	local     net.Addr
+	remote    net.Addr
 }
 
 func (c *Connection) Read(b []byte) (int, error) {
@@ -114,6 +121,13 @@ func (c *Connection) Write(b []byte) (int, error) {
 	}
 
 	l := len(b)
+	if c.datagrams && l > buf.Size {
+		// A datagram stays in one buffer: split into regular ones, its rest
+		// would go on as a datagram of its own.
+		datagram := buf.NewWithSize(int32(l))
+		common.Must2(datagram.Write(b))
+		return l, c.writer.WriteMultiBuffer(buf.MultiBuffer{datagram})
+	}
 	mb := make(buf.MultiBuffer, 0, l/buf.Size+1)
 	mb = buf.MergeBytes(mb, b)
 	return l, c.writer.WriteMultiBuffer(mb)

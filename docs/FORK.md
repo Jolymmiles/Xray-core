@@ -332,9 +332,14 @@ guard it.
   first 8192. Here freedom hands the link's buffers on, a datagram each,
   without the address of the packet, as before; the noise that the
   configuration gives as a packet crosses the link as a copy, since the link
-  takes the buffer and not its bytes.
+  takes the buffer and not its bytes. The SOCKS and Shadowsocks outbounds
+  write their packets to such a link with `Write`, which upstream splits into
+  regular buffers, so that the rest of a packet above 8192 bytes goes on as a
+  datagram of its own; a connection for a UDP destination writes each packet
+  as one buffer (`cnc.Connection`).
   Covered by `TestIsMessageTooLong`, `TestIsTruncated` and, on Windows,
   `TestIsMessageTooLongOnWindows` (`common/net`),
+  `TestDatagramConnectionWritesEachPacketAsOneBuffer` (`common/net/cnc`),
   `TestDatagramReaderDropsDatagramsLongerThanABuffer` (`common/buf`),
   `TestHubDropsDatagramsLongerThanItsBuffer`,
   `TestMaskedHubDropsDatagramsLongerThanItsBuffer`,
