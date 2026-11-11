@@ -1,6 +1,7 @@
 package freedom
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"io"
@@ -531,7 +532,54 @@ func NewPacketReader(ctx context.Context, conn net.Conn, h *Handler, defaultRule
 		}
 		return &connectedPacketReader{PacketReader: &buf.PacketReader{Reader: socket}, drops: udpDrops{ctx: ctx}}
 	}
+	if link, ok := iConn.(buf.Reader); ok {
+		return &linkPacketReader{link: link, counter: counter}
+	}
 	return &buf.PacketReader{Reader: conn}
+}
+
+// linkPacketReader reads the datagrams of a link to another outbound, the
+// connection that sockopt.dialerProxy gives (transport/internet's redirect):
+// it carries buffers, a datagram each, and has a TCP address for UDP too. Its
+// Read copies a datagram into a regular buffer and drops what does not fit,
+// so the reader takes the buffers themselves. It clears the address of each,
+// which no reader of the link's bytes carried over, and counts what it reads
+// in counter, as the statistics wrapper of the link did.
+type linkPacketReader struct {
+	link    buf.Reader
+	counter stats.Counter
+}
+
+func (r *linkPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	mb, err := r.link.ReadMultiBuffer()
+	countLinkDatagrams(mb, r.counter)
+	return mb, err
+}
+
+// linkPacketWriter writes each buffer to a link to another outbound as a
+// datagram of its own, where the link's Write splits one above buf.Size into
+// regular buffers that the other outbound sends as datagrams. It clears the
+// address of each, so that the other outbound sends it to the destination
+// freedom dialed, as it did, and counts what it writes in counter.
+type linkPacketWriter struct {
+	link    buf.Writer
+	counter stats.Counter
+}
+
+func (w *linkPacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	countLinkDatagrams(mb, w.counter)
+	return w.link.WriteMultiBuffer(mb)
+}
+
+// countLinkDatagrams clears the address of each datagram that crosses a link
+// and adds their bytes to counter.
+func countLinkDatagrams(mb buf.MultiBuffer, counter stats.Counter) {
+	for _, b := range mb {
+		b.UDP = nil
+	}
+	if counter != nil && !mb.IsEmpty() {
+		counter.Add(int64(mb.Len()))
+	}
 }
 
 // errTruncated fails a read of a UDP socket that cut a datagram short because
@@ -704,6 +752,9 @@ func NewPacketWriter(ctx context.Context, conn net.Conn, h *Handler, defaultRule
 		}
 	}
 	if _, ok := conn.RemoteAddr().(*net.UDPAddr); !ok {
+		if link, ok := iConn.(buf.Writer); ok {
+			return &linkPacketWriter{link: link, counter: counter}
+		}
 		return &buf.SequentialWriter{Writer: conn}
 	}
 	return &connectedPacketWriter{conn: conn, longest: net.MaxUDPPayload(conn.RemoteAddr()), drops: udpDrops{ctx: ctx}}
@@ -900,7 +951,9 @@ func (w *NoisePacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			}
 			// User input string or base64 encoded string or hex string
 			if n.Packet != nil {
-				noise = n.Packet
+				// A link to another outbound takes the buffer itself, and a
+				// writer behind it may change its bytes.
+				noise = bytes.Clone(n.Packet)
 			} else {
 				// Random noise
 				noise, err = GenerateRandomBytes(crypto.RandBetween(int64(n.LengthMin),
