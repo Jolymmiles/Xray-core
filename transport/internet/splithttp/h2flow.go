@@ -2331,8 +2331,11 @@ func (c *flowConn) governDown(now time.Time, s *flowStream) {
 		s.down.adjust(now, c.currentRTT(), c.down.init, c.down.max, c.client || c.incremental, q > 0)
 		// A round trip pi saw before the stream left it is no step to
 		// follow when it comes back, and an error it saw then is no change
-		// to step by: the stream comes back as a new one starts.
+		// to step by. Nor does a cap of pi's hold the stream out here, so
+		// its rate is no part of the share the downloads in pi step up by:
+		// the stream comes back as a new one starts.
 		s.down.piRTT, s.down.piPrev = 0, 0
+		s.down.rate, s.down.capped = 0, false
 	}
 	switch {
 	case c.client:
