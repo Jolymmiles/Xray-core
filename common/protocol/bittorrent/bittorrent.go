@@ -114,6 +114,15 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 	return &SniffHeader{}, nil
 }
 
+// SniffUTPDatagram is SniffUTP for a whole datagram: one too short for the
+// header is no SYN, and no later datagram makes it one.
+func SniffUTPDatagram(d []byte) (*SniffHeader, error) {
+	if len(d) < 20 {
+		return nil, errNotBittorrent
+	}
+	return SniffUTP(d)
+}
+
 // isDNSQuery reports whether b reads as a DNS query: query flags with no
 // response code, and a first question whose name ends inside b and whose
 // class is one a query asks for. A SYN reads its connection id as the flags

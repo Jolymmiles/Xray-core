@@ -68,3 +68,15 @@ func TestSniffUTPRejectsDataInTheFirstDatagram(t *testing.T) {
 		t.Fatal("SYN with data in its datagram classified as bittorrent")
 	}
 }
+
+// A first datagram too short for a uTP header is no SYN, and the datagrams
+// after it do not change that: the flow is not held for another read.
+func TestSniffShortUTPDatagramReadsOnce(t *testing.T) {
+	ctx := snifferContext()
+	link := &countingReader{datagramReader: datagramReader{datagrams: [][]byte{make([]byte, 19)}}}
+	reader := newTestCachedReader(t, link)
+	_, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
+	if link.reads != 1 {
+		t.Errorf("19-byte datagram: %d reads (%v), want 1", link.reads, err)
+	}
+}

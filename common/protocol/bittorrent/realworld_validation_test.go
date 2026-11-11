@@ -450,6 +450,19 @@ func TestSniffUTPIgnoresDNSQueries(t *testing.T) {
 	}
 }
 
+// A whole datagram shorter than the header is turned down, not waited on.
+func TestSniffUTPDatagramRejectsShortDatagrams(t *testing.T) {
+	syn := utpPacket(4, 0x07E1, someTimestamp(), 0, 0x100000, 0x7A10, 0, nil, nil)
+	for _, n := range []int{0, 1, 19} {
+		if _, err := SniffUTPDatagram(syn[:n]); err == nil || err == common.ErrNoClue {
+			t.Errorf("%d-byte datagram: %v, want a rejection", n, err)
+		}
+	}
+	if header, err := SniffUTPDatagram(syn); err != nil || header == nil {
+		t.Errorf("whole SYN: %v", err)
+	}
+}
+
 // TestSniffUTPTakesDNSCountShapedTimestamps keeps SYNs whose timestamp reads
 // as DNS QDCOUNT and ANCOUNT: without query flags and a question after them
 // they are no DNS query, whatever the timestamp.

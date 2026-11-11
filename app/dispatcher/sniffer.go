@@ -61,7 +61,7 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 			if len(datagrams) == 0 {
 				return bittorrent.SniffUTP(payload)
 			}
-			return bittorrent.SniffUTP(datagrams[0])
+			return bittorrent.SniffUTPDatagram(datagrams[0])
 		},
 		network: net.Network_UDP,
 	},
