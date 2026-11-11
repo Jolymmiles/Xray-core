@@ -71,13 +71,25 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 }
 
 // sniffHTTPOrTracker is SniffHTTP but for an HTTP tracker request, which is
-// BitTorrent (BEP 3) riding on HTTP. Like SniffHTTP it decides from the
-// request line, so it may stand in the HTTP precheck.
+// BitTorrent (BEP 3) riding on HTTP: its protocol is bittorrent, and its
+// domain is the HTTP Host, overridden as HTTP's is. Like SniffHTTP it decides
+// from the request line, so it may stand in the HTTP precheck.
 func sniffHTTPOrTracker(c context.Context, b []byte) (SniffResult, error) {
-	if h, err := bittorrent.SniffHTTPTracker(b); err == nil {
+	tracker, trackerErr := bittorrent.SniffHTTPTracker(b)
+	h, err := http.SniffHTTP(b, c)
+	if err == nil && trackerErr == nil {
+		return CompositeResult(h, tracker), nil
+	}
+	if err == nil {
 		return h, nil
 	}
-	return http.SniffHTTP(b, c)
+	if trackerErr != nil {
+		return nil, err
+	}
+	if err == common.ErrNoClue || err == protocol.ErrProtoNeedMoreData {
+		return nil, err
+	}
+	return tracker, nil
 }
 
 func NewSniffer(ctx context.Context) *Sniffer {

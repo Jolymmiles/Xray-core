@@ -33,6 +33,11 @@ func TestSniffHTTPTrackerRejects(t *testing.T) {
 		"words on the second line":     "GET /a HTTP/1.1\nGET /announce?info_hash=1&peer_id=2 HTTP/1.1\r\n",
 		"TLS ClientHello":              "\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03",
 		"lower-case get is no request": "get /announce?info_hash=1&peer_id=2 HTTP/1.1\r\n",
+		"names in the path":            "GET /docs/info_hash=x/peer_id=y HTTP/1.1\r\n",
+		"names inside other names":     "GET /api?previous_info_hash=abc&last_peer_id=def HTTP/1.1\r\n",
+		"scrape in a parameter":        "GET /search?info_hash=abc&q=/scrape? HTTP/1.1\r\n",
+		"announce without peer_id":     "GET /announce?info_hash=abc HTTP/1.1\r\n",
+		"scrape in a directory":        "GET /scrape/page?info_hash=abc HTTP/1.1\r\n",
 	} {
 		if _, err := SniffHTTPTracker([]byte(request)); err == nil {
 			t.Errorf("%s taken for a tracker request", name)
@@ -59,6 +64,19 @@ func TestSniffLSD(t *testing.T) {
 		if _, err := SniffLSD([]byte(datagram)); err == nil {
 			t.Errorf("%s taken for LSD", name)
 		}
+	}
+}
+
+// A datagram too short for the LSD request line is turned down as soon as
+// its bytes differ, and waits for more only while they match.
+func TestSniffLSDShortDatagrams(t *testing.T) {
+	for _, size := range []int{1, 20, 21} {
+		if _, err := SniffLSD(make([]byte, size)); err == common.ErrNoClue {
+			t.Errorf("%d zero bytes: no clue, want a rejection", size)
+		}
+	}
+	if _, err := SniffLSD([]byte("BT-SEARCH * HTTP/1.1")); err != common.ErrNoClue {
+		t.Errorf("start of an LSD request: %v, want no clue yet", err)
 	}
 }
 
