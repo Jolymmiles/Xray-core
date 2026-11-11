@@ -65,7 +65,7 @@ func ListenUDP(ctx context.Context, address net.Address, port net.Port, streamSe
 		if err := streamSettings.FinalMask.CheckRawUDP(); err != nil {
 			return nil, err
 		}
-		hub.conn, err = streamSettings.FinalMask.ListenPacket(ctx, &net.UDPAddr{IP: address.IP(), Port: int(port)})
+		hub.conn, err = streamSettings.FinalMask.ListenRawPacket(ctx, &net.UDPAddr{IP: address.IP(), Port: int(port)})
 	} else {
 		hub.conn, err = internet.ListenSystemPacket(ctx, &net.UDPAddr{IP: address.IP(), Port: int(port)}, streamSettings.SocketSettings)
 	}

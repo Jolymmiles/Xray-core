@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/geodata"
 	corenet "github.com/xtls/xray-core/common/net"
 	protocoludp "github.com/xtls/xray-core/common/protocol/udp"
 	"github.com/xtls/xray-core/transport/internet"
+	"github.com/xtls/xray-core/transport/internet/finalmask"
+	"github.com/xtls/xray-core/transport/internet/finalmask/filter"
 )
 
 // receiveDatagrams returns the payloads of the next n datagrams that hub
@@ -135,5 +138,42 @@ func TestHubStopsServingOnOtherReadErrors(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the hub kept reading its closed socket")
+	}
+}
+
+// A UDP mask hides the socket from the hub, which then read without the flags
+// that mark a cut datagram: behind a source filter it passed the first
+// buf.Size bytes of a longer datagram on as a datagram of their own. The
+// masks of a hub now read a socket that drops such a datagram itself.
+func TestMaskedHubDropsDatagramsLongerThanItsBuffer(t *testing.T) {
+	rules, err := geodata.ParseIPRules([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenPacket := func(ctx context.Context, addr gonet.Addr) (gonet.PacketConn, error) {
+		return (&gonet.ListenConfig{}).ListenPacket(ctx, "udp4", addr.String())
+	}
+	masks := finalmask.NewFinalMask(nil, []finalmask.UDPMask{&filter.Config{AllowedSourceIps: rules}}, nil, nil, nil, listenPacket)
+	hub, err := ListenUDP(context.Background(), corenet.LocalHostIP, 0, &internet.MemoryStreamConfig{FinalMask: masks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	client, err := gonet.DialUDP("udp4", nil, hub.Addr().(*gonet.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	sent := [][]byte{bytes.Repeat([]byte{1}, buf.Size+1), bytes.Repeat([]byte{2}, buf.Size), []byte("ping")}
+	for _, payload := range sent {
+		if n, err := client.Write(payload); err != nil || n != len(payload) {
+			t.Fatalf("wrote %d bytes of a datagram of %d: %v", n, len(payload), err)
+		}
+	}
+	for i, got := range receiveDatagrams(t, hub, 2) {
+		if want := sent[i+1]; !bytes.Equal(got, want) {
+			t.Fatalf("datagram %d: the masked hub passed on %d bytes of %#x, want %d of %#x", i, len(got), got[0], len(want), want[0])
+		}
 	}
 }
