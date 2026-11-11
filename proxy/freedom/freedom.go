@@ -74,23 +74,26 @@ func init() {
 	}
 
 	defaultBlockPrivateRule = &FinalRule{
-		action:  RuleAction_Block,
-		network: allNetworks,
-		ip:      geodata.GetPrivateIPMatcher(),
+		action:   RuleAction_Block,
+		network:  allNetworks,
+		ip:       geodata.GetPrivateIPMatcher(),
+		logLevel: log.Severity_Warning.Enum(),
 	}
 
 	defaultBlockAllRule = &FinalRule{
-		action:  RuleAction_Block,
-		network: allNetworks,
+		action:   RuleAction_Block,
+		network:  allNetworks,
+		logLevel: log.Severity_Warning.Enum(),
 	}
 }
 
 type FinalRule struct {
-	action     RuleAction
-	network    [8]bool
-	port       net.MemoryPortList
-	ip         geodata.IPMatcher
-	blockDelay *Range
+	action   RuleAction
+	network  [8]bool
+	port     net.MemoryPortList
+	ip       geodata.IPMatcher
+	delay    *Range
+	logLevel *log.Severity
 }
 
 // Handler handles Freedom connections.
@@ -104,8 +107,9 @@ type Handler struct {
 
 func buildFinalRule(config *FinalRuleConfig) (*FinalRule, error) {
 	rule := &FinalRule{
-		action:     config.GetAction(),
-		blockDelay: config.GetBlockDelay(),
+		action:   config.GetAction(),
+		delay:    config.GetDelay(),
+		logLevel: config.LogLevel,
 	}
 
 	if len(config.Networks) == 0 {
@@ -169,7 +173,7 @@ func getDefaultFinalRule(inbound *session.Inbound) *FinalRule {
 	switch inbound.Name {
 	case "vless-reverse":
 		return defaultBlockAllRule
-	case "vless", "vmess", "trojan", "hysteria", "wireguard":
+	case "vless", "vmess", "trojan", "hysteria", "wireguard", "masque":
 		return defaultBlockPrivateRule
 	default:
 		if strings.HasPrefix(inbound.Name, "shadowsocks") {
@@ -217,12 +221,12 @@ func (h *Handler) policy() policy.Session {
 	return p
 }
 
-func (h *Handler) blockDelay(rule *FinalRule) time.Duration {
+func (r *FinalRule) blockDuration() time.Duration {
 	min := uint64(30)
 	max := uint64(90)
-	if rule.blockDelay != nil {
-		min = rule.blockDelay.Min
-		max = rule.blockDelay.Max
+	if r.delay != nil {
+		min = r.delay.Min
+		max = r.delay.Max
 	}
 	span := max - min
 	if max < min {
@@ -231,9 +235,26 @@ func (h *Handler) blockDelay(rule *FinalRule) time.Duration {
 	return time.Duration(min+uint64(dice.Roll(int(span+1)))) * time.Second
 }
 
+func (r *FinalRule) log(ctx context.Context, msg ...interface{}) {
+	level := log.Severity_Info
+	if r.logLevel != nil {
+		level = *r.logLevel
+	}
+	switch level {
+	case log.Severity_Debug:
+		errors.LogDebug(ctx, msg...)
+	case log.Severity_Info:
+		errors.LogInfo(ctx, msg...)
+	case log.Severity_Warning:
+		errors.LogWarning(ctx, msg...)
+	case log.Severity_Error:
+		errors.LogError(ctx, msg...)
+	}
+}
+
 func (h *Handler) blackhole(ctx context.Context, input buf.Reader, output buf.Writer, rule *FinalRule, dest *net.Destination) error {
-	delay := h.blockDelay(rule)
-	errors.LogInfo(ctx, "blocked target: ", *dest, ", blackholing connection for ", delay)
+	delay := rule.blockDuration()
+	rule.log(ctx, "target blocked by a finalrule: ", *dest, ", blackholing connection for ", delay)
 	defer common.Close(output)
 	done := make(chan struct{})
 	go func() { // a DispatchLink inbound's reader ignores Interrupt, so don't wait for this copy
@@ -245,7 +266,7 @@ func (h *Handler) blackhole(ctx context.Context, input buf.Reader, output buf.Wr
 	case <-time.After(delay):
 		common.Interrupt(input)
 		common.Interrupt(output)
-		errors.LogInfo(ctx, "closed blackholed connection to blocked target: ", *dest)
+		rule.log(ctx, "closed blackholed connection to blocked target: ", *dest)
 	}
 	return nil
 }

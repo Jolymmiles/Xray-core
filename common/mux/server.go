@@ -176,7 +176,7 @@ func newServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 	}
 	worker := &ServerWorker{
 		dispatcher:     d,
-		link:           link,
+		link:           &transport.Link{Reader: link.Reader, Writer: &MutexWriter{Writer: link.Writer}},
 		sessionManager: newSessionRegistry(),
 		presence:       presence,
 		runtime:        runtime,
@@ -185,7 +185,7 @@ func newServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 		done:           done.New(),
 		timer:          time.NewTicker(60 * time.Second),
 	}
-	worker.responseSink = runtime.newResponseSink(link.Writer)
+	worker.responseSink = runtime.newResponseSink(worker.link.Writer)
 	if inbound := session.InboundFromContext(ctx); inbound != nil {
 		inbound.CanSpliceCopy = 3
 		if conn, ok := stat.TryUnwrapStatsConn(inbound.Conn).(muxKeepAliveConn); ok {

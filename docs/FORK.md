@@ -75,9 +75,10 @@ guard it.
   `transport/internet/reality/randomized_test.go` and
   `transport/internet/grpc/dial_test.go`.
 - uTLS comes from the fork `github.com/Jolymmiles/utls`, branch
-  `fix/keep-secondary-key-shares` (a `replace` in `go.mod`; the module path
-  stays `github.com/refraction-networking/utls`): upstream `aa6edf4b11af` plus
-  the changes listed in the fork's `FORK.md`. It keeps the private keys of the
+  `fix/keep-secondary-key-shares-a13c59f` (a `replace` in `go.mod`; the
+  module path stays `github.com/refraction-networking/utls`): upstream
+  `a13c59ffe98b`, the commit upstream Xray pins since v26.11.9, plus the
+  changes listed in the fork's `FORK.md`. It keeps the private keys of the
   classical key shares after the first and uses the one the server selected,
   so `firefox` and the `hellofirefox_*` forms, which send key shares for
   X25519 and P-256, complete a handshake with a server that selects P-256;
@@ -155,17 +156,19 @@ guard it.
 - Outbound `mux.maxReuseTimes` sets how many sessions one Mux.Cool
   connection of the main pool admits over its lifetime before new sessions
   open another connection. The main pool also carries UDP when
-  `xudpConcurrency` is 0; the XUDP pool keeps 128. It ports the option of
-  XTLS/Xray-core#4231 (head `a0bf239fc1`, not merged upstream) with these
-  differences: 0 or no key keeps the fixed 128 of earlier versions, where
-  the PR raises the default to 60000 and so keeps connections alive longer;
+  `xudpConcurrency` is 0; the XUDP pool keeps upstream's fixed 1024. It
+  ports the option of XTLS/Xray-core#4231 (head `a0bf239fc1`, not merged
+  upstream) with these differences: 0 or no key keeps upstream's fixed
+  budget, 1024 since v26.11.9 (`bb335c6b`, 128 before), where the PR raises
+  the default to 60000 and so keeps connections alive longer;
   a value outside 0-60000 fails the config, from JSON and from protobuf or
   the HandlerService API alike, where the PR clamps values above 60000 and
   lets a negative one through; `ClientStrategy.MaxConnection` keeps its
   name. The PR's `CopyChunk` frame copy, its per-session log line and its
   benchmark are not ported: the fork already drains a frame whose session
   write fails and keeps the connection, while the PR's server
-  `handleStatusNew` would end it. The budget counts admissions, not age: one
+  `handleStatusNew` would end it. Upstream v26.11.9 also raises a
+  `concurrency` of 0-128 to 128, kept here. The budget counts admissions, not age: one
   long session keeps its connection open, and an exhausted connection closes
   once its last session ends. Field 30 of `MultiplexingConfig` is fork-owned;
   if upstream claims it or ships the option under another number or type,
@@ -384,10 +387,11 @@ guard it.
   HTTP outbound does to wait at most 500 ms for a first payload that a
   server-first protocol never sends (XTLS/Xray-core#7193), and the VLESS
   outbound does so the request header waits up to 500 ms for the first
-  payload with sniffing on or off. The wrapper reports a timeout as an empty
-  read, not `buf.ErrReadTimeout`, so the VLESS outbound treats an empty read
-  as a timeout and Vision follows the header with its padding-only block;
-  upstream sends the header alone when its wrapper times out. A wrapper the
+  payload with sniffing on or off; upstream sends the header alone when the
+  reader has no timeout. The wrapper reports a timeout as
+  `buf.ErrReadTimeout`, as a pipe does (upstream XTLS/Xray-core#7327; an
+  empty read before v26.11.9), and Vision then follows the header with its
+  padding-only block, as in upstream. A wrapper the
   outbound creates is abandoned when the request ends
   (`TimeoutWrapperReader.Abandon`, fork-only), so a read an early return left
   pending releases its buffers when it ends. The
@@ -639,6 +643,13 @@ guard it.
   `TestShutdownSignalEndsProxyingWhenCloseHangs` and
   `TestShutdownSignalClosesRelayingXray`
   (`testing/scenarios/shutdown_test.go`).
+- `mux.MutexWriter`, which upstream v26.11.9 (`5745dea2`) puts in front of
+  a Mux.Cool worker's link writer, forwards `Interrupt` and `Close` to that
+  writer without taking its lock. Upstream's embeds only `buf.Writer`, so a
+  worker that ended no longer interrupted its link: the client's carrier and
+  the inbound copying a server worker's responses waited for their own
+  timeouts. Covered by `TestWorkerEndInterruptsWrappedWriter`
+  (`common/mux/mutex_writer_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.

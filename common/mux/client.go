@@ -214,6 +214,7 @@ func NewClientWorker(stream transport.Link, s ClientStrategy) (*ClientWorker, er
 // NewClientWorkerWithPresence binds an authenticated carrier scope to RVS
 // data sessions while leaving control and ordinary mux sessions untracked.
 func NewClientWorkerWithPresence(stream transport.Link, s ClientStrategy, presence session.PresenceScope) (*ClientWorker, error) {
+	stream.Writer = &MutexWriter{Writer: stream.Writer}
 	c := &ClientWorker{
 		sessionManager: newClientSessionManager(),
 		link:           stream,

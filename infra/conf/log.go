@@ -20,7 +20,7 @@ func DefaultLogConfig() *log.Config {
 type LogConfig struct {
 	AccessLog   string            `json:"access"`
 	ErrorLog    string            `json:"error"`
-	LogLevel    string            `json:"loglevel"`
+	LogLevel    string            `json:"logLevel"`
 	DNSLog      bool              `json:"dnsLog"`
 	MaskAddress string            `json:"maskAddress"`
 	Outputs     []LogOutputConfig `json:"outputs"`
