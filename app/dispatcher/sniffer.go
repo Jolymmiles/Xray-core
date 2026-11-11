@@ -10,6 +10,7 @@ import (
 	"github.com/xtls/xray-core/common/protocol/bittorrent"
 	"github.com/xtls/xray-core/common/protocol/http"
 	"github.com/xtls/xray-core/common/protocol/quic"
+	"github.com/xtls/xray-core/common/protocol/stun"
 	"github.com/xtls/xray-core/common/protocol/tls"
 )
 
@@ -47,6 +48,7 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, network: net.Network_TCP},
 	{protocolSniffer: func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, c) }, fastHTTP: true, network: net.Network_TCP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, network: net.Network_TCP},
+	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return stun.SniffSTUN(b) }, network: net.Network_TCP},
 	{
 		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) },
 		datagramSniffer: func(_ context.Context, _ []byte, datagrams [][]byte) (SniffResult, error) {
@@ -57,6 +59,17 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffDHT(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUDPTracker(b) }, network: net.Network_UDP},
+	{
+		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return stun.SniffSTUN(b) },
+		// A STUN message over UDP is its first datagram.
+		datagramSniffer: func(_ context.Context, payload []byte, datagrams [][]byte) (SniffResult, error) {
+			if len(datagrams) == 0 {
+				return stun.SniffSTUN(payload)
+			}
+			return stun.SniffSTUNDatagram(datagrams[0])
+		},
+		network: net.Network_UDP,
+	},
 }
 
 func NewSniffer(ctx context.Context) *Sniffer {
