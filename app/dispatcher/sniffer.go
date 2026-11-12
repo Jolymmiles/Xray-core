@@ -45,7 +45,7 @@ type Sniffer struct {
 
 var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, network: net.Network_TCP},
-	{protocolSniffer: func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, c) }, fastHTTP: true, network: net.Network_TCP},
+	{protocolSniffer: sniffHTTPOrTracker, fastHTTP: true, network: net.Network_TCP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, network: net.Network_TCP},
 	{
 		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) },
@@ -54,9 +54,42 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 		},
 		network: net.Network_UDP,
 	},
-	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) }, network: net.Network_UDP},
+	{
+		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) },
+		// A SYN is a whole datagram: read the first one, not the batch.
+		datagramSniffer: func(_ context.Context, payload []byte, datagrams [][]byte) (SniffResult, error) {
+			if len(datagrams) == 0 {
+				return bittorrent.SniffUTP(payload)
+			}
+			return bittorrent.SniffUTPDatagram(datagrams[0])
+		},
+		network: net.Network_UDP,
+	},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffDHT(b) }, network: net.Network_UDP},
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUDPTracker(b) }, network: net.Network_UDP},
+	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffLSD(b) }, network: net.Network_UDP},
+}
+
+// sniffHTTPOrTracker is SniffHTTP but for an HTTP tracker request, which is
+// BitTorrent (BEP 3) riding on HTTP: its protocol is bittorrent, and its
+// domain is the HTTP Host, overridden as HTTP's is. Like SniffHTTP it decides
+// from the request line, so it may stand in the HTTP precheck.
+func sniffHTTPOrTracker(c context.Context, b []byte) (SniffResult, error) {
+	tracker, trackerErr := bittorrent.SniffHTTPTracker(b)
+	h, err := http.SniffHTTP(b, c)
+	if err == nil && trackerErr == nil {
+		return CompositeResult(h, tracker), nil
+	}
+	if err == nil {
+		return h, nil
+	}
+	if trackerErr != nil {
+		return nil, err
+	}
+	if err == common.ErrNoClue || err == protocol.ErrProtoNeedMoreData {
+		return nil, err
+	}
+	return tracker, nil
 }
 
 func NewSniffer(ctx context.Context) *Sniffer {
