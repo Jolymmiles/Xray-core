@@ -2,6 +2,8 @@ package cnc
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"testing"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -53,5 +55,66 @@ func TestDatagramConnectionWritesEachPacketAsOneBuffer(t *testing.T) {
 	}
 	if got := writtenLengths(t, false, long); len(got) != 2 || got[0] != buf.Size || got[1] != 808 {
 		t.Fatalf("a stream connection wrote buffers of %v bytes, want [8192 808]", got)
+	}
+}
+
+// datagramLink returns its datagrams in turn, a buffer each, as many to a
+// read as perRead, and then fails with io.EOF.
+type datagramLink struct {
+	datagrams [][]byte
+	perRead   int
+}
+
+func (l *datagramLink) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	if len(l.datagrams) == 0 {
+		return nil, io.EOF
+	}
+	var mb buf.MultiBuffer
+	for i := 0; i < l.perRead && len(l.datagrams) > 0; i++ {
+		b := buf.NewWithSize(int32(len(l.datagrams[0])))
+		_, _ = b.Write(l.datagrams[0])
+		mb = append(mb, b)
+		l.datagrams = l.datagrams[1:]
+	}
+	return mb, nil
+}
+
+// Read of a connection for a UDP destination copied a datagram longer than
+// the buffer into it and dropped the rest without a sign, as a UDP socket
+// does: a UDP mask or a QUIC transport over sockopt.dialerProxy, which read it
+// through FakePacketConn, took the start of a packet for a whole one. Read
+// drops such a datagram and returns the next that fits, whether the link
+// returns its datagrams one or several to a read, and however many it drops
+// in a row; an empty datagram is skipped with them.
+func TestDatagramConnectionReadDropsDatagramsLongerThanTheBuffer(t *testing.T) {
+	long := bytes.Repeat([]byte{1}, buf.Size+1)
+	full := bytes.Repeat([]byte{2}, buf.Size)
+	for _, perRead := range []int{1, 3, 200} {
+		t.Run(fmt.Sprint(perRead, " to a read"), func(t *testing.T) {
+			sent := [][]byte{long, full}
+			for i := 0; i < 100; i++ {
+				sent = append(sent, long)
+			}
+			if perRead > 1 {
+				// a pipe hands on no read without bytes, so an empty
+				// datagram comes with others
+				sent = append(sent, nil)
+			}
+			sent = append(sent, []byte("pong"), long)
+			connection := NewConnection(ConnectionOutputMultiUDP(&datagramLink{datagrams: sent, perRead: perRead}))
+			p := make([]byte, buf.Size)
+			for _, want := range [][]byte{full, []byte("pong")} {
+				n, err := connection.Read(p)
+				if err != nil {
+					t.Fatalf("waiting for the datagram of %d bytes: %v", len(want), err)
+				}
+				if !bytes.Equal(p[:n], want) {
+					t.Fatalf("read %d bytes of %#x, want the datagram of %d bytes of %#x", n, p[0], len(want), want[0])
+				}
+			}
+			if n, err := connection.Read(p); n != 0 || err != io.EOF {
+				t.Fatalf("read %d bytes and %v after the last datagram, want io.EOF", n, err)
+			}
+		})
 	}
 }

@@ -1,12 +1,14 @@
 package cnc
 
 import (
+	"context"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal/done"
 )
@@ -52,14 +54,14 @@ func ConnectionOutputMulti(reader buf.Reader) ConnectionOption {
 }
 
 // ConnectionOutputMultiUDP makes a connection for a UDP destination: reader
-// returns a datagram per buffer and Read returns one per call, and Write
-// writes one per call.
+// returns a datagram per buffer and Read returns one per call, dropping one
+// longer than the buffer it reads into, and Write writes one per call.
 func ConnectionOutputMultiUDP(reader buf.Reader) ConnectionOption {
 	return func(c *Connection) {
 		c.datagrams = true
 		c.reader = &buf.BufferedReader{
 			Reader:   reader,
-			Splitter: buf.SplitFirstBytes,
+			Splitter: c.splitFirstDatagram,
 		}
 	}
 }
@@ -101,12 +103,47 @@ type Connection struct {
 	// datagrams marks a connection for a UDP destination, whose every buffer
 	// is a datagram.
 	datagrams bool
+	drops     net.DropLog
 	local     net.Addr
 	remote    net.Addr
 }
 
 func (c *Connection) Read(b []byte) (int, error) {
-	return c.reader.Read(b)
+	if !c.datagrams {
+		return c.reader.Read(b)
+	}
+	// A read without bytes or an error only dropped datagrams.
+	for {
+		if n, err := c.reader.Read(b); n > 0 || err != nil {
+			return n, err
+		}
+	}
+}
+
+// splitFirstDatagram copies the first datagram of mb that p holds into p and
+// returns the datagrams after it. It drops a datagram longer than p, where
+// buf.SplitFirstBytes copies its start as a UDP socket does, without a sign of
+// the cut: no reader of the connection can tell that start from a whole
+// datagram. It skips an empty one.
+func (c *Connection) splitFirstDatagram(mb buf.MultiBuffer, p []byte) (buf.MultiBuffer, int) {
+	for {
+		var datagram *buf.Buffer
+		mb, datagram = buf.SplitFirst(mb)
+		if datagram == nil {
+			return mb, 0
+		}
+		size := int(datagram.Len())
+		if size == 0 || size > len(p) {
+			datagram.Release()
+			if size > 0 && c.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP datagram of ", size, " bytes, longer than the ", len(p), " bytes a read takes")
+			}
+			continue
+		}
+		copy(p, datagram.Bytes())
+		datagram.Release()
+		return mb, size
+	}
 }
 
 // ReadMultiBuffer implements buf.Reader.

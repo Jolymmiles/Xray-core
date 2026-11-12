@@ -323,8 +323,7 @@ guard it.
   whole one. The QUIC transports, mKCP's dialer and WireGuard, which reject a
   damaged packet themselves, keep the plain socket (`ListenPacket`,
   `DialUDP`). A mask that opens its own sockets (xdns, xicmp, udphop) reads
-  them as before, and so does a masked link to another outbound
-  (`FakePacketConn`), whose read still cuts a datagram to the buffer.
+  them as before.
   With `sockopt.dialerProxy` and no mask, freedom's connection is that link,
   which carries buffers and has a TCP address for UDP too. Upstream's freedom
   writes to it and reads it as a stream of bytes, so a datagram of 9000 bytes
@@ -336,10 +335,16 @@ guard it.
   write their packets to such a link with `Write`, which upstream splits into
   regular buffers, so that the rest of a packet above 8192 bytes goes on as a
   datagram of its own; a connection for a UDP destination writes each packet
-  as one buffer (`cnc.Connection`).
+  as one buffer (`cnc.Connection`). Its `Read` drops a datagram longer than
+  the buffer and returns the next, where upstream's copies the start of the
+  datagram without a sign, so that a UDP mask or a QUIC transport over the
+  link (`FakePacketConn`) no longer takes the start of a packet for a whole
+  one; `common/net/cnc/BASELINE.md` has its cost.
   Covered by `TestIsMessageTooLong`, `TestIsTruncated` and, on Windows,
   `TestIsMessageTooLongOnWindows` (`common/net`),
-  `TestDatagramConnectionWritesEachPacketAsOneBuffer` (`common/net/cnc`),
+  `TestDatagramConnectionWritesEachPacketAsOneBuffer` and
+  `TestDatagramConnectionReadDropsDatagramsLongerThanTheBuffer`
+  (`common/net/cnc`),
   `TestDatagramReaderDropsDatagramsLongerThanABuffer` (`common/buf`),
   `TestHubDropsDatagramsLongerThanItsBuffer`,
   `TestMaskedHubDropsDatagramsLongerThanItsBuffer`,
