@@ -158,7 +158,12 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 				}
 				conn = uConn
 			} else {
-				conn = tls.Client(conn, gotlsConfig)
+				tlsConn := tls.Client(conn, gotlsConfig).(*tls.Conn)
+				if err := tlsConn.HandshakeContext(ctxInner); err != nil {
+					tlsConn.Close()
+					return nil, err
+				}
+				conn = tlsConn
 			}
 		}
 
