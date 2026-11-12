@@ -142,6 +142,10 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			return nil, err
 		}
 
+		// a handshake blackholed after ClientHello would hold every request queued behind this dial
+		ctxInner, cancel := context.WithTimeout(ctxInner, 10*time.Second)
+		defer cancel()
+
 		if realityConfig != nil {
 			return reality.UClient(conn, realityConfig, ctxInner, dest)
 		}
@@ -154,7 +158,12 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 				}
 				conn = uConn
 			} else {
-				conn = tls.Client(conn, gotlsConfig)
+				tlsConn := tls.Client(conn, gotlsConfig).(*tls.Conn)
+				if err := tlsConn.HandshakeContext(ctxInner); err != nil {
+					tlsConn.Close()
+					return nil, err
+				}
+				conn = tlsConn
 			}
 		}
 

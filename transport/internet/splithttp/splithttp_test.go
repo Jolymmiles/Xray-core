@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,14 @@ func TestDialWithRemoteAddr(t *testing.T) {
 }
 
 func Test_ListenXHAndDial_TLS(t *testing.T) {
+	for _, fingerprint := range []string{"", "unsafe"} {
+		t.Run("fingerprint "+strconv.Quote(fingerprint), func(t *testing.T) {
+			testListenXHAndDialTLS(t, fingerprint)
+		})
+	}
+}
+
+func testListenXHAndDialTLS(t *testing.T, fingerprint string) {
 	if runtime.GOARCH == "arm64" {
 		return
 	}
@@ -156,6 +165,7 @@ func Test_ListenXHAndDial_TLS(t *testing.T) {
 		SecuritySettings: &tls.Config{
 			Certificate:          []*tls.Certificate{tls.ParseCertificate(ct)},
 			PinnedPeerCertSha256: [][]byte{ctHash[:]},
+			Fingerprint:          fingerprint,
 		},
 	}
 	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
@@ -607,5 +617,80 @@ func Test_ServerMaxHeaderBytes(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("oversized header status = %d, want 431", resp.StatusCode)
+	}
+}
+
+func Test_DialBlackholedHandshake(t *testing.T) {
+	// "" takes the default uTLS fingerprint; "unsafe" takes Go's crypto/tls,
+	// whose handshake would otherwise wait for the first write.
+	for _, fingerprint := range []string{"", "unsafe"} {
+		t.Run("fingerprint "+strconv.Quote(fingerprint), func(t *testing.T) {
+			testDialBlackholedHandshake(t, fingerprint)
+		})
+	}
+}
+
+func testDialBlackholedHandshake(t *testing.T, fingerprint string) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	common.Must(err)
+	defer listener.Close()
+	hello := make(chan struct{}, 1)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			go func() {
+				// take the ClientHello, answer nothing
+				if n, _ := conn.Read(make([]byte, 1024)); n > 0 {
+					select {
+					case hello <- struct{}{}:
+					default:
+					}
+				}
+			}()
+		}
+	}()
+
+	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
+	streamSettings := &internet.MemoryStreamConfig{
+		ProtocolName:     "splithttp",
+		ProtocolSettings: &Config{Path: "shs"},
+		SecurityType:     "tls",
+		SecuritySettings: &tls.Config{
+			Certificate:          []*tls.Certificate{tls.ParseCertificate(ct)},
+			PinnedPeerCertSha256: [][]byte{ctHash[:]},
+			Fingerprint:          fingerprint,
+		},
+	}
+	port := net.Port(listener.Addr().(*net.TCPAddr).Port)
+
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := Dial(context.Background(), net.TCPDestination(net.DomainAddress("localhost"), port), streamSettings)
+		if err == nil {
+			_, err = conn.Read(make([]byte, 1))
+			conn.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("read through a blackholed handshake succeeded")
+		}
+		select {
+		case <-hello:
+		default:
+			t.Fatalf("dial failed before its ClientHello reached the server: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed < 9*time.Second {
+			t.Fatalf("dial failed after %v, before the 10s handshake bound: %v", elapsed.Round(time.Millisecond), err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("dial still waits on a handshake blackholed after ClientHello")
 	}
 }
