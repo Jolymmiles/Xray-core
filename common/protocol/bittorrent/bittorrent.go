@@ -136,11 +136,12 @@ func sniffUTPHandshake(b []byte) (*SniffHeader, error) {
 	return &SniffHeader{}, nil
 }
 
-// SniffHTTPTracker takes an HTTP tracker request (BEP 3, BEP 48): a GET of
-// an announce with info_hash and peer_id parameters, or of a scrape with
-// info_hash. The path's last segment names the request, as announce or
-// announce.php does, and the parameters are whole names in the query. It
-// runs before the HTTP sniffer, which would otherwise take the flow as HTTP.
+// SniffHTTPTracker takes an HTTP tracker request (BEP 3, BEP 48): a GET
+// with info_hash and peer_id parameters, an announce whatever its path
+// (RuTracker's is /ann), or a GET of a scrape, whose last path segment starts
+// with scrape, with info_hash. The parameters are whole names in the query.
+// It runs before the HTTP sniffer, which would otherwise take the flow as
+// HTTP.
 func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 	const get = "GET /"
 	if len(b) < len(get) {
@@ -172,7 +173,7 @@ func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 		}
 	}
 	switch {
-	case bytes.HasPrefix(request, []byte("announce")) && infoHash && peerID,
+	case infoHash && peerID,
 		bytes.HasPrefix(request, []byte("scrape")) && infoHash:
 		return &SniffHeader{}, nil
 	}

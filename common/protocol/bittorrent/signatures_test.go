@@ -15,6 +15,12 @@ func TestSniffHTTPTracker(t *testing.T) {
 		"Transmission announce": "GET /announce.php?passkey=abc&info_hash=%9a%81%3b%ef&peer_id=-TR4060-ab12cd34ef56&port=51413&uploaded=0&downloaded=0&left=1&numwant=80&key=1a2b3c&compact=1&supportcrypto=1&event=started HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
 		"scrape":                "GET /scrape?info_hash=%9a%81%3b%ef HTTP/1.1\r\nHost: tracker.example.com\r\n\r\n",
 		"request line only":     "GET /announce?info_hash=x&peer_id=y",
+		// Announce paths of real trackers that do not say announce.
+		"RuTracker":           "GET /ann?pk=0123456789abcdef&info_hash=%9a%81%3b%ef&peer_id=-qB4630-k8hj0wgej6ch&port=6881&uploaded=0&downloaded=0&left=0&event=started&compact=1 HTTP/1.1\r\nHost: bt4.t-ru.org\r\n\r\n",
+		"passkey in the path": "GET /0123456789abcdef/announce?info_hash=%9a%81&peer_id=-TR4060-ab12cd34ef56 HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
+		"TorrentPier":         "GET /bt/announce.php?uk=abc&info_hash=%9a%81&peer_id=-qB4630-k8hj0wgej6ch HTTP/1.1\r\nHost: bt.example.org\r\n\r\n",
+		"root path":           "GET /?info_hash=%9a%81&peer_id=-qB4630-k8hj0wgej6ch&port=6881 HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
+		"scrape.php":          "GET /scrape.php?info_hash=%9a%81 HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
 	} {
 		if _, err := SniffHTTPTracker([]byte(request)); err != nil {
 			t.Errorf("%s: %v", name, err)
