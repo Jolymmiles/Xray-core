@@ -145,6 +145,18 @@ func (fm *FinalMask) Listen(ctx context.Context, addr net.Addr) (net.Listener, e
 }
 
 func (fm *FinalMask) DialUDP(ctx context.Context, dest net.Destination) (net.Conn, error) {
+	return fm.dialUDPBelowMasks(ctx, dest, false)
+}
+
+// DialRawUDP is DialUDP for a path that hands each datagram on as it is, with
+// no transport above the masks to reject a damaged one: the UDP dialer, which
+// serves freedom and the UDP of other outbounds. Its masks read a socket that
+// drops a datagram longer than the read (wholeDatagramConn).
+func (fm *FinalMask) DialRawUDP(ctx context.Context, dest net.Destination) (net.Conn, error) {
+	return fm.dialUDPBelowMasks(ctx, dest, true)
+}
+
+func (fm *FinalMask) dialUDPBelowMasks(ctx context.Context, dest net.Destination, whole bool) (net.Conn, error) {
 	if len(fm.udpMasks) == 0 {
 		conn, addr, err := fm.dialUDP(ctx, dest)
 		if err != nil {
@@ -166,6 +178,9 @@ func (fm *FinalMask) DialUDP(ctx context.Context, dest net.Destination) (net.Con
 		conn, addr, err = fm.dialUDP(ctx, dest)
 		if err != nil {
 			return nil, err
+		}
+		if whole {
+			conn = dropCutDatagrams(conn)
 		}
 	}
 	dialer := &Dialer{
@@ -218,6 +233,17 @@ func (fm *FinalMask) DialUDP(ctx context.Context, dest net.Destination) (net.Con
 }
 
 func (fm *FinalMask) ListenPacket(ctx context.Context, addr net.Addr) (net.PacketConn, error) {
+	return fm.listenPacketBelowMasks(ctx, addr, false)
+}
+
+// ListenRawPacket is ListenPacket for a path that hands each datagram on as
+// it is, as DialRawUDP is DialUDP for one: the UDP hub, which serves the UDP
+// inbounds.
+func (fm *FinalMask) ListenRawPacket(ctx context.Context, addr net.Addr) (net.PacketConn, error) {
+	return fm.listenPacketBelowMasks(ctx, addr, true)
+}
+
+func (fm *FinalMask) listenPacketBelowMasks(ctx context.Context, addr net.Addr, whole bool) (net.PacketConn, error) {
 	if len(fm.udpMasks) == 0 {
 		return fm.listenPacket(ctx, addr)
 	}
@@ -234,6 +260,9 @@ func (fm *FinalMask) ListenPacket(ctx context.Context, addr net.Addr) (net.Packe
 		conn, err = fm.listenPacket(ctx, addr)
 		if err != nil {
 			return nil, err
+		}
+		if whole {
+			conn = dropCutDatagrams(conn)
 		}
 	}
 	lc := &ListenConfig{

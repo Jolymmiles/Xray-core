@@ -16,7 +16,7 @@ func init() {
 				if err := streamSettings.FinalMask.CheckRawUDP(); err != nil {
 					return nil, err
 				}
-				return streamSettings.FinalMask.DialUDP(ctx, dest)
+				return streamSettings.FinalMask.DialRawUDP(ctx, dest)
 			} else {
 				var sockopt *internet.SocketConfig
 				if streamSettings != nil && streamSettings.SocketSettings != nil {

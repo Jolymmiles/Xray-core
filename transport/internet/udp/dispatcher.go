@@ -197,35 +197,48 @@ func (c *dispatcherConn) callback(ctx context.Context, packet *udp.Packet) {
 	}
 }
 
+// ReadFrom reads a reply that p holds. It drops one longer than p and reads
+// the next, where a copy of its start would pass for a whole reply.
 func (c *dispatcherConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	var packet *udp.Packet
-s:
-	select {
-	case <-c.done.Wait():
+	for {
+		var packet *udp.Packet
 		select {
+		case <-c.done.Wait():
+			select {
+			case packet = <-c.cache:
+			default:
+				return 0, nil, io.EOF
+			}
 		case packet = <-c.cache:
-			break s
-		default:
-			return 0, nil, io.EOF
 		}
-	case packet = <-c.cache:
+		if int(packet.Payload.Len()) > len(p) {
+			packet.Payload.Release()
+			continue
+		}
+		n := copy(p, packet.Payload.Bytes())
+		packet.Payload.Release()
+		return n, &net.UDPAddr{
+			IP:   packet.Source.Address.IP(),
+			Port: int(packet.Source.Port),
+		}, nil
 	}
-	return copy(p, packet.Payload.Bytes()), &net.UDPAddr{
-		IP:   packet.Source.Address.IP(),
-		Port: int(packet.Source.Port),
-	}, nil
 }
 
+// WriteTo dispatches p as one datagram, in a buffer of its size when a
+// regular one does not hold it.
 func (c *dispatcherConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	buffer := buf.New()
-	raw := buffer.Extend(buf.Size)
-	n := copy(raw, p)
-	buffer.Resize(0, int32(n))
+	var buffer *buf.Buffer
+	if len(p) > buf.Size {
+		buffer = buf.NewWithSize(int32(len(p)))
+	} else {
+		buffer = buf.New()
+	}
+	copy(buffer.Extend(int32(len(p))), p)
 
 	destination := net.DestinationFromAddr(addr)
 	buffer.UDP = &destination
 	c.dispatcher.Dispatch(c.ctx, destination, buffer)
-	return n, nil
+	return len(p), nil
 }
 
 func (c *dispatcherConn) Close() error {

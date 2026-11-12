@@ -21,7 +21,12 @@ var (
 )
 
 const (
+	// maxLength is the largest datagram the writer sends: an older Xray
+	// reader ends the session on a larger one.
 	maxLength = 8192
+	// maxPacketHeader is the longest header of a datagram: a domain
+	// address, the port, the length and CRLF.
+	maxPacketHeader = 1 + 1 + 255 + 2 + 2 + 2
 
 	commandTCP byte = 1
 	commandUDP byte = 3
@@ -100,13 +105,19 @@ type PacketWriter struct {
 	Target net.Destination
 }
 
-// WriteMultiBuffer implements buf.Writer
+// WriteMultiBuffer implements buf.Writer. It drops a datagram above
+// maxLength, on which an older Xray reader ends the session, as the VLESS and
+// VMess writers drop theirs.
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	for {
 		mb2, b := buf.SplitFirst(mb)
 		mb = mb2
 		if b == nil {
 			break
+		}
+		if b.Len() > maxLength {
+			b.Release()
+			continue
 		}
 		target := &w.Target
 		if b.UDP != nil {
@@ -122,14 +133,24 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	return nil
 }
 
+// writePacket writes the datagram in one Write, its header and payload in one
+// buffer, which a long payload with its header would overflow if regular.
 func (w *PacketWriter) writePacket(payload []byte, dest net.Destination) (int, error) {
+	if len(payload) > buf.Size-maxPacketHeader {
+		buffer := buf.NewWithSize(int32(maxPacketHeader + len(payload)))
+		defer buffer.Release()
+		return w.writePacketTo(buffer, payload, dest)
+	}
 	buffer := buf.StackNew()
 	defer buffer.Release()
+	return w.writePacketTo(&buffer, payload, dest)
+}
 
+func (w *PacketWriter) writePacketTo(buffer *buf.Buffer, payload []byte, dest net.Destination) (int, error) {
 	length := len(payload)
 	lengthBuf := [2]byte{}
 	binary.BigEndian.PutUint16(lengthBuf[:], uint16(length))
-	if err := addrParser.WriteAddressPort(&buffer, dest.Address, dest.Port); err != nil {
+	if err := addrParser.WriteAddressPort(buffer, dest.Address, dest.Port); err != nil {
 		return 0, err
 	}
 	if _, err := buffer.Write(lengthBuf[:]); err != nil {
@@ -216,7 +237,9 @@ type PacketReader struct {
 	io.Reader
 }
 
-// ReadMultiBuffer implements buf.Reader
+// ReadMultiBuffer implements buf.Reader. It returns the next datagram whole,
+// in a buffer of its own: a peer may send one above maxLength, which the
+// writer does not, and the outbound sends it as it came.
 func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	addr, port, err := addrParser.ReadAddressPort(nil, r)
 	if err != nil {
@@ -228,35 +251,21 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		return nil, errors.New("failed to read payload length").Base(err)
 	}
 
-	remain := int(binary.BigEndian.Uint16(lengthBuf[:]))
-	if remain > maxLength {
-		return nil, errors.New("oversize payload")
-	}
+	length := int32(binary.BigEndian.Uint16(lengthBuf[:]))
 
 	var crlf [2]byte
 	if _, err := io.ReadFull(r, crlf[:]); err != nil {
 		return nil, errors.New("failed to read crlf").Base(err)
 	}
 
-	dest := net.UDPDestination(addr, port)
-	var mb buf.MultiBuffer
-	for remain > 0 {
-		length := buf.Size
-		if remain < length {
-			length = remain
-		}
-
-		b := buf.New()
-		b.UDP = &dest
-		mb = append(mb, b)
-		n, err := b.ReadFullFrom(r, int32(length))
-		if err != nil {
-			buf.ReleaseMulti(mb)
-			return nil, errors.New("failed to read payload").Base(err)
-		}
-
-		remain -= int(n)
+	if length == 0 {
+		return nil, nil
 	}
-
-	return mb, nil
+	b, err := buf.ReadDatagram(r, length)
+	if err != nil {
+		return nil, errors.New("failed to read payload").Base(err)
+	}
+	dest := net.UDPDestination(addr, port)
+	b.UDP = &dest
+	return buf.MultiBuffer{b}, nil
 }
