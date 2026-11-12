@@ -102,6 +102,10 @@ func TestDatagramConnectionReadDropsDatagramsLongerThanTheBuffer(t *testing.T) {
 			}
 			sent = append(sent, []byte("pong"), long)
 			connection := NewConnection(ConnectionOutputMultiUDP(&datagramLink{datagrams: sent, perRead: perRead}))
+			// a read into no buffer returns at once and drops nothing
+			if n, err := connection.Read(nil); n != 0 || err != nil {
+				t.Fatalf("read %d bytes and %v into no buffer", n, err)
+			}
 			p := make([]byte, buf.Size)
 			for _, want := range [][]byte{full, []byte("pong")} {
 				n, err := connection.Read(p)

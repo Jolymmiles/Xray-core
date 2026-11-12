@@ -112,6 +112,10 @@ func (c *Connection) Read(b []byte) (int, error) {
 	if !c.datagrams {
 		return c.reader.Read(b)
 	}
+	if len(b) == 0 {
+		// no datagram but an empty one fits: drop none for such a read
+		return 0, nil
+	}
 	// A read without bytes or an error only dropped datagrams.
 	for {
 		if n, err := c.reader.Read(b); n > 0 || err != nil {
