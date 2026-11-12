@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"net/url"
 
 	"github.com/xtls/xray-core/common"
 )
@@ -165,6 +166,12 @@ func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 	var infoHash, peerID bool
 	for _, param := range bytes.Split(query, []byte("&")) {
 		name, _, _ := bytes.Cut(param, []byte("="))
+		// Trackers decode the names, so info%5Fhash is info_hash too.
+		if bytes.IndexByte(name, '%') >= 0 {
+			if decoded, err := url.QueryUnescape(string(name)); err == nil {
+				name = []byte(decoded)
+			}
+		}
 		switch string(name) {
 		case "info_hash":
 			infoHash = true

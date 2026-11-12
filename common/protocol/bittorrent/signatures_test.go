@@ -21,6 +21,7 @@ func TestSniffHTTPTracker(t *testing.T) {
 		"TorrentPier":         "GET /bt/announce.php?uk=abc&info_hash=%9a%81&peer_id=-qB4630-k8hj0wgej6ch HTTP/1.1\r\nHost: bt.example.org\r\n\r\n",
 		"root path":           "GET /?info_hash=%9a%81&peer_id=-qB4630-k8hj0wgej6ch&port=6881 HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
 		"scrape.php":          "GET /scrape.php?info_hash=%9a%81 HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
+		"escaped names":       "GET /announce?info%5Fhash=%9a%81&peer%5fid=-qB4630-k8hj0wgej6ch HTTP/1.1\r\nHost: t.example.org\r\n\r\n",
 	} {
 		if _, err := SniffHTTPTracker([]byte(request)); err != nil {
 			t.Errorf("%s: %v", name, err)
