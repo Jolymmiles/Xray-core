@@ -339,7 +339,11 @@ guard it.
   the buffer and returns the next, where upstream's copies the start of the
   datagram without a sign, so that a UDP mask or a QUIC transport over the
   link (`FakePacketConn`) no longer takes the start of a packet for a whole
-  one; `common/net/cnc/BASELINE.md` has its cost.
+  one; `common/net/cnc/BASELINE.md` has its cost. The packet connection of
+  `core.DialUDP` (`udp.DialDispatcher`) dispatches a datagram above 8192
+  bytes in one buffer, where upstream's dispatches its first 8192 bytes as a
+  whole one and reports a short write without an error, and drops a reply
+  longer than the read, where upstream's copies its start.
   Covered by `TestIsMessageTooLong`, `TestIsTruncated` and, on Windows,
   `TestIsMessageTooLongOnWindows` (`common/net`),
   `TestDatagramConnectionWritesEachPacketAsOneBuffer` and
@@ -348,8 +352,11 @@ guard it.
   `TestDatagramReaderDropsDatagramsLongerThanABuffer` (`common/buf`),
   `TestHubDropsDatagramsLongerThanItsBuffer`,
   `TestMaskedHubDropsDatagramsLongerThanItsBuffer`,
-  `TestHubServesOnAfterAReadOfATooLongDatagram` and
-  `TestHubStopsServingOnOtherReadErrors` (`transport/internet/udp`),
+  `TestHubServesOnAfterAReadOfATooLongDatagram`,
+  `TestHubStopsServingOnOtherReadErrors`,
+  `TestDispatcherConnWritesDatagramsWhole` and
+  `TestDispatcherConnDropsRepliesLongerThanTheRead`
+  (`transport/internet/udp`),
   `TestTempUDPConnDropsDatagramsLongerThanTheRead` and
   `TestUDPReaderDropsPacketsLongerThanARead` (`proxy/socks`),
   `TestUDPReaderDropsPacketsLongerThanARead` (`proxy/shadowsocks`),
