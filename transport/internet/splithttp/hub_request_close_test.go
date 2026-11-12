@@ -48,6 +48,13 @@ func TestSplitHTTPGetClosesConnWhenRequestContextEnds(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("addConn was not called for the GET request")
 	}
+	select {
+	case err := <-readErr:
+		t.Fatalf("Read returned before the GET request ended: %v", err)
+	case <-served:
+		t.Fatal("ServeHTTP returned before the GET request ended")
+	case <-time.After(100 * time.Millisecond):
+	}
 	// The client, or a proxy in front of the server, ends the GET.
 	cancel()
 

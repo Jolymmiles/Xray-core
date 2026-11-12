@@ -157,8 +157,9 @@ guard it.
   `addConn`); upstream needs no such hook. Without it a packet-up session
   whose client went away kept its upload queue read blocked, and a Mux.Cool
   session that held an XUDP flow never went idle, so the handler and the
-  session's goroutines stayed until the process exited. Covered by
-  `TestSplitHTTPGetClosesConnWhenRequestContextEnds`.
+  session's goroutines stayed until the process exited. The blocked read is
+  covered by `TestSplitHTTPGetClosesConnWhenRequestContextEnds`; no test runs
+  a Mux.Cool session with an XUDP flow through the hook.
 - Outbound `mux.maxReuseTimes` sets how many sessions one Mux.Cool
   connection of the main pool admits over its lifetime before new sessions
   open another connection. The main pool also carries UDP when
