@@ -2,6 +2,7 @@ package httpupgrade_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	stdnet "net"
 	"testing"
@@ -26,6 +27,7 @@ func TestDialUnsafeFingerprintEndsWithTheContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	hello := make(chan struct{}, 1)
 	closed := make(chan struct{}, 1)
 	go func() {
 		conn, err := listener.Accept()
@@ -33,7 +35,11 @@ func TestDialUnsafeFingerprintEndsWithTheContext(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		io.Copy(io.Discard, conn) // take the ClientHello, answer nothing
+		// take the ClientHello, answer nothing
+		if n, _ := conn.Read(make([]byte, 4096)); n > 0 {
+			hello <- struct{}{}
+		}
+		io.Copy(io.Discard, conn)
 		closed <- struct{}{}
 	}()
 
@@ -52,6 +58,7 @@ func TestDialUnsafeFingerprintEndsWithTheContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
+	start := time.Now()
 	done := make(chan error, 1)
 	go func() {
 		conn, err := Dial(ctx, net.TCPDestination(net.DomainAddress("localhost"), port), streamSettings)
@@ -64,6 +71,14 @@ func TestDialUnsafeFingerprintEndsWithTheContext(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("dial through a silent TLS server succeeded")
+		}
+		select {
+		case <-hello:
+		default:
+			t.Fatalf("dial failed before its ClientHello reached the server: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed < 450*time.Millisecond || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("dial failed after %v with %v; want it ended by its 500ms context", elapsed.Round(time.Millisecond), err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("dial still runs 5s after its 500ms context ended")
