@@ -72,7 +72,13 @@ func dialhttpUpgrade(ctx context.Context, dest net.Destination, streamSettings *
 			}
 			conn = uConn
 		} else {
-			conn = tls.Client(pconn, tlsConfig)
+			// crypto/tls would run the handshake on the first write, outside ctx.
+			tlsConn := tls.Client(pconn, tlsConfig).(*tls.Conn)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				tlsConn.Close()
+				return nil, err
+			}
+			conn = tlsConn
 		}
 		requestURL.Scheme = "https"
 	} else {
