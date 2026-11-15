@@ -25,17 +25,7 @@ func startUDPEchoIPv6(t *testing.T, count int) []*net.UDPAddr {
 		if err != nil {
 			t.Fatalf("IPv6 loopback UDP echo: %v", err)
 		}
-		t.Cleanup(func() { _ = connection.Close() })
-		go func() {
-			payload := make([]byte, 65535)
-			for {
-				n, address, err := connection.ReadFromUDP(payload)
-				if err != nil {
-					return
-				}
-				_, _ = connection.WriteToUDP(payload[:n], address)
-			}
-		}()
+		serveUDPEcho(t, connection)
 		echoes = append(echoes, connection.LocalAddr().(*net.UDPAddr))
 	}
 	return echoes

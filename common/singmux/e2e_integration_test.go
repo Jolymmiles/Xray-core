@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -778,18 +779,47 @@ func startUDPEcho(t *testing.T) net.Addr {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	serveUDPEcho(t, connection)
+	return connection.LocalAddr()
+}
+
+// serveUDPEcho sends every datagram back to its sender until the test ends,
+// then closes the socket. A read or reply that fails before cleanup closes
+// the socket fails the test with the echo's address, instead of surfacing
+// later as a timeout or a lost packet.
+func serveUDPEcho(t testing.TB, connection *net.UDPConn) {
+	t.Helper()
+	var failure atomic.Pointer[string]
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		payload := make([]byte, 65535)
 		for {
 			n, address, err := connection.ReadFromUDP(payload)
 			if err != nil {
+				if !errors.Is(err, net.ErrClosed) {
+					message := fmt.Sprintf("read: %v", err)
+					failure.CompareAndSwap(nil, &message)
+				}
 				return
 			}
-			_, _ = connection.WriteToUDP(payload[:n], address)
+			if _, err := connection.WriteToUDP(payload[:n], address); err != nil && !errors.Is(err, net.ErrClosed) {
+				message := fmt.Sprintf("reply to %s: %v", address, err)
+				failure.CompareAndSwap(nil, &message)
+			}
 		}
 	}()
-	return connection.LocalAddr()
+	t.Cleanup(func() {
+		_ = connection.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("UDP echo %s did not stop within 5s of closing", connection.LocalAddr())
+		}
+		if message := failure.Load(); message != nil {
+			t.Errorf("UDP echo %s failed: %s", connection.LocalAddr(), *message)
+		}
+	})
 }
 
 func testSOCKSTCP(t *testing.T, socksPort int, destination *net.TCPAddr, callbacks ...func()) {

@@ -34,6 +34,9 @@ const (
 	// hysteriaUDPLoadWindow bounds the datagrams in flight, so the load is a
 	// closed loop that measures throughput instead of queue drops.
 	hysteriaUDPLoadWindow = 32
+	// hysteriaUDPLoadDeadline bounds one sample: at about 80,000 packets per
+	// second the default sample takes under three seconds.
+	hysteriaUDPLoadDeadline = 2 * time.Minute
 )
 
 // TestHysteriaUDPPerformanceAgainstBaseline sends small UDP packets through an
@@ -49,12 +52,15 @@ func TestHysteriaUDPPerformanceAgainstBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidateBinary := buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray-candidate"), xrayRoot, "./main", "-trimpath", "-buildvcs=false")
+	// Both servers carry the release tags whatever GOFLAGS says: a go test
+	// -tags flag does not reach the go build commands the test runs.
+	releaseBuild := []string{"-trimpath", "-buildvcs=false", "-tags", "http2legacy"}
+	candidateBinary := buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray-candidate"), xrayRoot, "./main", releaseBuild...)
 	revision := hysteriaUDPPerformanceRevision
 	if override := os.Getenv("XRAY_HYSTERIA_UDP_BASELINE"); override != "" {
 		revision = override
 	}
-	baselineBinary := buildXrayRevision(t, workDir, hysteriaUDPPerformanceLabel, revision)
+	baselineBinary := buildXrayRevision(t, workDir, hysteriaUDPPerformanceLabel, revision, "-tags", "http2legacy")
 	binaries := e2eBinaries{xray: candidateBinary}
 	certificate, privateKey := generateCertificate(t, workDir)
 	tcpEcho := startTCPEcho(t).(*net.TCPAddr)
@@ -88,8 +94,9 @@ func TestHysteriaUDPPerformanceAgainstBaseline(t *testing.T) {
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			// Warm both paths up outside the timed rounds.
-			runHysteriaUDPLoad(t, baseline, mode.targets, packets/4)
-			runHysteriaUDPLoad(t, candidate, mode.targets, packets/4)
+			warmup := max(packets/4, 1)
+			runHysteriaUDPLoad(t, baseline, mode.targets, warmup)
+			runHysteriaUDPLoad(t, candidate, mode.targets, warmup)
 
 			var baselineSamples, candidateSamples []hysteriaUDPLoadResult
 			for round := range performanceRounds {
@@ -186,6 +193,12 @@ func runHysteriaUDPLoad(t *testing.T, topology *stressTopology, targets []*net.U
 	var received atomic.Int64
 	var lastReceive atomic.Int64
 	receiverDone := make(chan struct{})
+	// Closing the socket ends the receiver on every exit path, t.Fatal
+	// included; it is joined before the function returns.
+	defer func() {
+		_ = association.udp.Close()
+		<-receiverDone
+	}()
 	go func() {
 		defer close(receiverDone)
 		buffer := make([]byte, 2048)
@@ -205,23 +218,37 @@ func runHysteriaUDPLoad(t *testing.T, topology *stressTopology, targets []*net.U
 
 	cpuBefore := processCPUTime(t, topology.server.command.Process.Pid)
 	started := time.Now()
+	deadline := started.Add(hysteriaUDPLoadDeadline)
 	stall := time.NewTimer(time.Hour)
 	defer stall.Stop()
 	for index := range packets {
 		select {
 		case <-tokens:
+		case <-receiverDone:
+			// The receiver stops early only when replies stopped for a
+			// second; waiting out the remaining packets would take hours.
+			t.Fatalf("UDP replies stopped after %d of %d sent packets (%d received)", index, packets, received.Load())
 		default:
+			if time.Now().After(deadline) {
+				t.Fatalf("UDP sample exceeded %s after %d of %d packets (%d received)", hysteriaUDPLoadDeadline, index, packets, received.Load())
+			}
 			stall.Reset(200 * time.Millisecond)
 			select {
 			case <-tokens:
 			case <-stall.C:
+			case <-receiverDone:
+				t.Fatalf("UDP replies stopped after %d of %d sent packets (%d received)", index, packets, received.Load())
 			}
 		}
 		if _, err := association.udp.WriteToUDP(datagrams[index%len(datagrams)], association.relay); err != nil {
 			t.Fatalf("send packet %d: %v", index, err)
 		}
 	}
-	<-receiverDone
+	select {
+	case <-receiverDone:
+	case <-time.After(time.Until(deadline) + 2*time.Second):
+		t.Fatalf("UDP sample exceeded %s waiting for replies (%d of %d received)", hysteriaUDPLoadDeadline, received.Load(), packets)
+	}
 	cpuAfter := processCPUTime(t, topology.server.command.Process.Pid)
 	result := hysteriaUDPLoadResult{
 		sent:      packets,
