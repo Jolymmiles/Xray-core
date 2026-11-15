@@ -246,25 +246,34 @@ func (b *Buffer) SetManagedUDPDomain(domain string, port net.Port) {
 }
 
 // ManagedUDPIPv4 returns inline IPv4 packet metadata without going through
-// the Address interface. The result is available only after SetManagedUDPIPv4.
+// the Address interface. It succeeds only after SetManagedUDPIPv4, and only
+// while b.UDP and its address still point at that metadata: an override that
+// replaces either must not leave the old address readable here.
 func (b *Buffer) ManagedUDPIPv4() ([4]byte, net.Port, bool) {
-	if !b.slab {
+	if !b.slab || b.UDP == nil {
 		return [4]byte{}, 0, false
 	}
 	slab := managedBufferFromStorage(b.v)
-	if !slab.udpIsIPv4 {
+	if !slab.udpIsIPv4 || b.UDP != &slab.udp {
+		return [4]byte{}, 0, false
+	}
+	if address, ok := slab.udp.Address.(*bufferIPv4Address); !ok || address != &slab.udpIPv4 {
 		return [4]byte{}, 0, false
 	}
 	return [4]byte(slab.udpIPv4), slab.udp.Port, true
 }
 
 // ManagedUDPDomain returns inline domain metadata without going through the
-// generic Address interface. It succeeds only after SetManagedUDPDomain.
+// generic Address interface. It succeeds only after SetManagedUDPDomain, and
+// only while b.UDP and its address still point at that metadata.
 func (b *Buffer) ManagedUDPDomain() (string, net.Port, bool) {
 	if !b.slab || b.UDP == nil {
 		return "", 0, false
 	}
 	slab := managedBufferFromStorage(b.v)
+	if b.UDP != &slab.udp {
+		return "", 0, false
+	}
 	address, ok := slab.udp.Address.(*bufferDomainAddress)
 	if !ok || address != &slab.udpDomain {
 		return "", 0, false

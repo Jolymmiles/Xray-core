@@ -113,6 +113,39 @@ func BenchmarkSetManagedUDPIPv6(b *testing.B) {
 	}
 }
 
+// The inline accessors describe the slab only while the packet still points
+// at it: an override that replaces b.UDP.Address, or code that replaces b.UDP,
+// must not leave them returning the old address.
+func TestManagedUDPAccessorsFollowReplacedDestination(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		set     func(*Buffer)
+		replace func(*Buffer)
+	}{
+		{name: "ipv4/address", set: func(b *Buffer) { b.SetManagedUDPIPv4([4]byte{192, 0, 2, 1}, 443) }, replace: func(b *Buffer) { b.UDP.Address = X.DomainAddress("sniffed.example") }},
+		{name: "ipv4/destination", set: func(b *Buffer) { b.SetManagedUDPIPv4([4]byte{192, 0, 2, 1}, 443) }, replace: func(b *Buffer) {
+			b.UDP = &X.Destination{Network: X.Network_UDP, Address: X.DomainAddress("sniffed.example"), Port: 443}
+		}},
+		{name: "domain/address", set: func(b *Buffer) { b.SetManagedUDPDomain("original.example", 443) }, replace: func(b *Buffer) { b.UDP.Address = X.DomainAddress("sniffed.example") }},
+		{name: "domain/destination", set: func(b *Buffer) { b.SetManagedUDPDomain("original.example", 443) }, replace: func(b *Buffer) {
+			b.UDP = &X.Destination{Network: X.Network_UDP, Address: X.DomainAddress("sniffed.example"), Port: 443}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			buffer := New()
+			defer buffer.Release()
+			test.set(buffer)
+			test.replace(buffer)
+			if ip, port, ok := buffer.ManagedUDPIPv4(); ok {
+				t.Fatalf("ManagedUDPIPv4 = %v:%d after the destination became %v", ip, port, buffer.UDP)
+			}
+			if domain, port, ok := buffer.ManagedUDPDomain(); ok {
+				t.Fatalf("ManagedUDPDomain = %s:%d after the destination became %v", domain, port, buffer.UDP)
+			}
+		})
+	}
+}
+
 type releasingMultiBufferWriter struct{}
 
 func (releasingMultiBufferWriter) WriteMultiBuffer(mb MultiBuffer) error {

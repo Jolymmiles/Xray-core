@@ -1,6 +1,7 @@
 package hysteria
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
@@ -525,6 +526,42 @@ func TestUDPReaderPacketsFollowSniffedTargetOverride(t *testing.T) {
 			}
 			if got := mb[0].UDP; got.NetAddr() != "sniffed.example:443" {
 				t.Fatalf("packet destination = %v (%T), want sniffed.example:443", got, got.Address)
+			}
+		})
+	}
+}
+
+// A packet from a Hysteria inbound whose target sniffing replaced, sent on
+// through a Hysteria outbound, must carry the sniffed target on the wire:
+// UDPWriter reads the packet's inline address fast paths first.
+func TestUDPWriterSendsSniffedTargetOverride(t *testing.T) {
+	for _, address := range []string{"192.0.2.1:443", "[2001:db8::1]:443", "Example.COM:443"} {
+		t.Run(address, func(t *testing.T) {
+			reader := &UDPReader{reader: repeatedDatagramReader(hysteriaUDPWire(address, []byte("quic")))}
+			packet, packetDestination, err := reader.readBufferPacket()
+			if err != nil {
+				t.Fatal(err)
+			}
+			override := &buf.EndpointOverrideReader{
+				Reader:       &oneShotMultiBufferReader{buf.MultiBuffer{packet}},
+				Dest:         net.DomainAddress("sniffed.example"),
+				OriginalDest: packetDestination.Destination().Address,
+			}
+			mb, err := override.ReadMultiBuffer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire bytes.Buffer
+			writer := &UDPWriter{writer: &wire, addr: "fallback.example:443"}
+			if err := writer.WriteMultiBuffer(mb); err != nil {
+				t.Fatal(err)
+			}
+			message, err := ParseUDPMessage(wire.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message.Addr != "sniffed.example:443" {
+				t.Fatalf("outbound wire address = %q, want sniffed.example:443", message.Addr)
 			}
 		})
 	}

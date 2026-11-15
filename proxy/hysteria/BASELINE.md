@@ -144,7 +144,7 @@ This is a regression gate, not proof of the reader change; AGENTS.md
 allocation counts above, on which the decision rests.
 
 - Against the original reader, the IPv6 ranges do not overlap, and the
-  medians are 750–1000 ns lower. That is far more than the reader's ~50 ns,
+  medians are 760–1020 ns lower. That is far more than the reader's ~50 ns,
   on a metric of about 32 µs per packet that runtime spinning dominates. Two
   fewer allocations per packet mean less garbage collection, but this run
   does not separate that from noise. The unchanged IPv4 control also sits
