@@ -4,7 +4,9 @@ package singmux_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -160,8 +163,12 @@ func startHysteriaPerformanceTopology(t *testing.T, workDir string, binaries e2e
 }
 
 // runHysteriaUDPLoad sends packets through one SOCKS UDP association, cycling
-// through targets, with at most hysteriaUDPLoadWindow replies outstanding. A
-// window slot whose reply does not come back within 200 ms is given up as lost.
+// through targets, with at most hysteriaUDPLoadWindow packets awaiting a reply.
+// Each reply frees one slot. A lost reply never frees its slot, so losses
+// shrink the window; when no slot frees within 200 ms the next packet goes out
+// anyway, and its reply restores one slot. A run with losses therefore
+// measures a smaller window and includes the stalls in its elapsed time, which
+// is why reportHysteriaUDPLoad fails a mode that loses more than 1%.
 func runHysteriaUDPLoad(t *testing.T, topology *stressTopology, targets []*net.UDPAddr, packets int) hysteriaUDPLoadResult {
 	t.Helper()
 	association := openSOCKSUDPAssociation(t, topology.socksPort)
@@ -242,18 +249,26 @@ func processCPUTime(t *testing.T, pid int) time.Duration {
 	var total time.Duration
 	for _, task := range tasks {
 		content, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/schedstat", pid, task.Name()))
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
 			continue // the thread exited
+		}
+		if err != nil {
+			t.Fatalf("read schedstat of thread %s of %d: %v", task.Name(), pid, err)
 		}
 		fields := strings.Fields(string(content))
 		if len(fields) == 0 {
-			continue
+			t.Fatalf("empty schedstat of thread %s of %d", task.Name(), pid)
 		}
 		nanoseconds, err := strconv.ParseInt(fields[0], 10, 64)
 		if err != nil {
 			t.Fatalf("parse schedstat of thread %s: %v", task.Name(), err)
 		}
 		total += time.Duration(nanoseconds)
+	}
+	// A kernel without CONFIG_SCHED_INFO reports nothing here; a zero would
+	// make the CPU ratio NaN and pass the budget check unmeasured.
+	if total <= 0 {
+		t.Fatalf("no CPU time for process %d in /proc/%d/task/*/schedstat", pid, pid)
 	}
 	return total
 }

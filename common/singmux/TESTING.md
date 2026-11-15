@@ -383,11 +383,16 @@ baseline and a candidate Xray server; it is a diagnostic, not part of
 64-byte packets through one SOCKS UDP association, at most 32 in flight, to an
 IPv4 echo, one IPv6 echo, and four and sixteen IPv6 echoes in turn. It runs
 nine alternating rounds of 200,000 packets (`XRAY_HYSTERIA_UDP_PACKETS`) after
-a full-size settling load. It reports delivered packets per second and server CPU time per
-packet, summed from `/proc/<pid>/task/*/schedstat`. The baseline is
-`7795bd6c` (`XRAY_HYSTERIA_UDP_BASELINE` overrides it); losses above 1% fail
-the run, and with `XRAY_NATIVE_LINUX_RELEASE=1` so does a regression above 10%.
+a full-size settling load. It reports delivered packets per second and server
+CPU time per packet, summed from `/proc/<pid>/task/*/schedstat`; it fails if
+that file yields no CPU time. Losses above 1% fail the run, and with
+`XRAY_NATIVE_LINUX_RELEASE=1` so does a regression above 10%.
 `proxy/hysteria/BASELINE.md` records its results.
+
+The baseline is `7795bd6c`, the Hysteria 2.14.0 quic-go bump of PR #85;
+`XRAY_HYSTERIA_UDP_BASELINE` overrides it. The test builds it with `git
+archive`, so the commit must stay reachable: PR #85 has to be merged with a
+merge commit, or the constant moved to a commit on `main`.
 
 ```sh
 go test -tags 'integration stress performance http2legacy' ./common/singmux \

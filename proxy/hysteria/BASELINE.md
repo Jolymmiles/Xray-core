@@ -60,8 +60,8 @@ Four variants of `proxy/hysteria/client.go`:
 | --- | --- |
 | Before | `7795bd6c` |
 | Cache | `0449b536`, the four-entry cache |
-| Parser and cache | parser, with the cache kept for the other addresses |
-| Parser (adopted) | parser only |
+| Parser and cache | `45ef7a59` with the cache of `0449b536` kept for the addresses the parser declines; built from a working tree, never committed |
+| Parser (adopted) | `45ef7a59` |
 
 Each variant was built with `go test -c ./proxy/hysteria`. Nine rounds ran
 each variant once with:
@@ -72,7 +72,9 @@ each variant once with:
 ```
 
 `ZZManyIPv6` was a throwaway copy of `BenchmarkUDPReaderReadMultiBufferManyIPv6`
-that compiles against every variant. Medians in ns/op with the range, and
+that compiles against every variant; it is not in the tree. On the adopted
+tree, `-test.bench` with `UDPReaderReadMultiBufferManyIPv6` in its place runs
+the same benchmark. Medians in ns/op with the range, and
 allocations per operation:
 
 | Benchmark | Before | Cache | Parser and cache | Parser |
@@ -89,8 +91,9 @@ allocations per operation:
 | `ReadFromIPv6` | 157.0 (156–160), 3 | 73.0 (71–74), 1 | 130.8 (128–137), 2 | 131.3 (128–133), 2 |
 
 The allocation left in `ReadMultiBuffer` is the packet's `buf.Buffer`, which
-IPv4 pays too. `ReadFrom` has no production caller in the package; its second
-allocation, like IPv4's, is the returned destination.
+IPv4 pays too; the address itself costs no allocation. `ReadFrom` has no
+production caller in the package; its second allocation, like IPv4's, is the
+returned destination.
 
 Parsing the IPv6 text costs 30–60 ns depending on its length. A cache hit is
 cheaper, which makes the cache 55 ns faster per packet for one to four
@@ -106,36 +109,53 @@ runs a baseline and a candidate server behind the same candidate Xray
 Hysteria client. The client sends 64-byte packets through one SOCKS UDP
 association, at most 32 in flight, to UDP echoes. There were nine
 alternating rounds of 200,000 packets after a full-size settling load, with
-no losses. Server CPU time per packet, medians with the range, in ns:
+no losses. The candidate was the production code of `45ef7a59`. The two
+runs, one after the other on an idle host:
 
-| Targets | Before (`7795bd6c`) | Parser | Change |
-| --- | ---: | ---: | ---: |
-| IPv4 (control) | 32513 (32490–32825) | 32223 (32106–32590) | −0.9% |
-| One IPv6 | 33519 (33348–33634) | 32761 (32647–32892) | −2.3% |
-| Four IPv6 in turn | 32498 (32251–32943) | 31474 (31216–31562) | −3.2% |
-| Sixteen IPv6 in turn | 32725 (32656–32915) | 31747 (31557–31936) | −3.0% |
+```sh
+go test -tags 'integration stress performance http2legacy' ./common/singmux \
+  -run '^TestHysteriaUDPPerformanceAgainstBaseline$' -count=1 -timeout 40m -v
+XRAY_HYSTERIA_UDP_BASELINE=912cf6d8 go test -tags 'integration stress performance http2legacy' ./common/singmux \
+  -run '^TestHysteriaUDPPerformanceAgainstBaseline$' -count=1 -timeout 40m -v
+```
 
-| Targets | Cache (`912cf6d8`) | Parser | Change |
-| --- | ---: | ---: | ---: |
-| IPv4 (control) | 32582 (32464–32777) | 32374 (32132–32510) | −0.6% |
-| One IPv6 | 33015 (32834–33279) | 32730 (32472–32847) | −0.9% |
-| Four IPv6 in turn | 31814 (31712–32150) | 31502 (31263–31754) | −1.0% |
-| Sixteen IPv6 in turn | 32784 (32527–32965) | 31528 (31363–31695) | −3.8% |
+Server CPU time per packet, medians with the range, in ns, and median
+delivered packets per second:
+
+| Targets | Before (`7795bd6c`) | Parser | Change | pps before / after |
+| --- | ---: | ---: | ---: | ---: |
+| IPv4 (control) | 32513 (32490–32825) | 32223 (32106–32590) | −0.9% | 84816 / 85802 |
+| One IPv6 | 33519 (33348–33634) | 32761 (32647–32892) | −2.3% | 83222 / 85264 |
+| Four IPv6 in turn | 32498 (32251–32943) | 31474 (31216–31562) | −3.2% | 79865 / 82024 |
+| Sixteen IPv6 in turn | 32725 (32656–32915) | 31747 (31557–31936) | −3.0% | 76889 / 78442 |
+
+| Targets | Cache (`912cf6d8`) | Parser | Change | pps before / after |
+| --- | ---: | ---: | ---: | ---: |
+| IPv4 (control) | 32582 (32464–32777) | 32374 (32132–32510) | −0.6% | 84833 / 85914 |
+| One IPv6 | 33015 (32834–33279) | 32730 (32472–32847) | −0.9% | 83733 / 84775 |
+| Four IPv6 in turn | 31814 (31712–32150) | 31502 (31263–31754) | −1.0% | 80965 / 81813 |
+| Sixteen IPv6 in turn | 32784 (32527–32965) | 31528 (31363–31695) | −3.8% | 77073 / 79163 |
 
 Server CPU per packet covers the whole round trip: QUIC, the upload reader,
 the download writer, the runtime, and its idle spinning in this closed loop.
 
-- Against the original reader, IPv6 gains 2–3% with non-overlapping ranges.
-  That is more than the reader's ~50 ns: two fewer allocations per packet
-  also mean less garbage collection, which this run does not separate.
-- Against the cache, one or four targets differ by about 1%, with overlapping
-  ranges. The candidate runs 0.6–0.9% below the baseline even on the
-  unchanged IPv4 path, so the 55 ns microbenchmark difference does not show.
-- Sixteen targets, where the cache misses, gain 3.8% with non-overlapping
-  ranges.
+This is a regression gate, not proof of the reader change; AGENTS.md
+"Performance workflow" keeps that role for the microbenchmarks and the
+allocation counts above, on which the decision rests.
 
-Delivered pps moved within 1–3% in every mode, because the closed loop is
-bounded by the whole path, client included.
+- Against the original reader, the IPv6 ranges do not overlap, and the
+  medians are 750–1000 ns lower. That is far more than the reader's ~50 ns,
+  on a metric of about 32 µs per packet that runtime spinning dominates. Two
+  fewer allocations per packet mean less garbage collection, but this run
+  does not separate that from noise. The unchanged IPv4 control also sits
+  0.6–0.9% lower for the candidate, so about a percent of each change is
+  drift between the two server processes.
+- Against the cache, one or four targets differ by about 1%, the same as
+  that drift, so the 55 ns microbenchmark difference does not show. Sixteen
+  targets, where the cache misses, sit 3.8% lower with non-overlapping
+  ranges.
+- No mode regresses. Delivered pps moved within 1–3% in every mode, because
+  the closed loop is bounded by the whole path, client included.
 
 ### Limitations
 
