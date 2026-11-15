@@ -2,7 +2,9 @@ package hysteria
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -398,6 +400,81 @@ func TestParseIPv6UDPAddressAcceptsEveryHexForm(t *testing.T) {
 	} {
 		if _, _, ok := parseIPv6UDPAddress([]byte(address)); ok {
 			t.Fatalf("parseIPv6UDPAddress accepted %q", address)
+		}
+	}
+}
+
+// ipv6Spellings writes ip in the hexadecimal spellings RFC 4291 allows: the
+// canonical RFC 5952 form netip prints, all eight groups with and without
+// leading zeros, upper case, and "::" in place of every run of zero groups,
+// not only the longest one.
+func ipv6Spellings(ip [16]byte) []string {
+	var groups [8]uint16
+	for index := range groups {
+		groups[index] = uint16(ip[2*index])<<8 | uint16(ip[2*index+1])
+	}
+	join := func(format string, from, to int) string {
+		parts := make([]string, 0, 8)
+		for _, group := range groups[from:to] {
+			parts = append(parts, fmt.Sprintf(format, group))
+		}
+		return strings.Join(parts, ":")
+	}
+	spellings := []string{
+		netip.AddrFrom16(ip).WithZone("").StringExpanded(),
+		join("%x", 0, 8),
+		join("%04x", 0, 8),
+		join("%04X", 0, 8),
+		strings.ToUpper(join("%x", 0, 8)),
+	}
+	if !netip.AddrFrom16(ip).Is4In6() {
+		spellings = append(spellings, netip.AddrFrom16(ip).String())
+	}
+	for start := 0; start < 8; start++ {
+		if groups[start] != 0 {
+			continue
+		}
+		for end := start + 1; end <= 8 && groups[end-1] == 0; end++ {
+			spellings = append(spellings,
+				join("%x", 0, start)+"::"+join("%x", end, 8),
+				join("%04X", 0, start)+"::"+join("%04X", end, 8))
+		}
+	}
+	return spellings
+}
+
+// Every hexadecimal spelling of an IPv6 address takes the fast path and gives
+// the slow parser's destination; only the spellings it leaves alone (a dotted
+// IPv4 tail, a zone) fall back to parseUDPDestination.
+func TestParseIPv6UDPAddressAcceptsEverySpelling(t *testing.T) {
+	random := rand.New(rand.NewPCG(1, 2))
+	addresses := [][16]byte{{}, {15: 1}, {10: 0xff, 11: 0xff, 12: 192, 14: 2, 15: 1}}
+	for range 4000 {
+		var ip [16]byte
+		for index := range ip {
+			// Mostly zero bytes, so zero groups and runs of them are common.
+			if random.IntN(3) == 0 {
+				ip[index] = byte(random.Uint32())
+			}
+		}
+		addresses = append(addresses, ip)
+	}
+	for _, ip := range addresses {
+		for _, spelling := range ipv6Spellings(ip) {
+			port := net.Port(random.IntN(65536))
+			address := fmt.Sprintf("[%s]:%d", spelling, port)
+			gotIP, gotPort, ok := parseIPv6UDPAddress([]byte(address))
+			if !ok || gotIP != ip || gotPort != port {
+				t.Fatalf("parseIPv6UDPAddress(%q) = %x, %d, %v; want %x, %d", address, gotIP, gotPort, ok, ip, port)
+			}
+			want, err := parseUDPDestination(address)
+			if err != nil {
+				t.Fatalf("slow parser rejected %q: %v", address, err)
+			}
+			wantIP, _ := net.AddressToNetIPAddr(want.Address)
+			if wantIP.Unmap() != netip.AddrFrom16(ip).Unmap() || want.Port != port {
+				t.Fatalf("slow parser gave %v for %q", want, address)
+			}
 		}
 	}
 }
