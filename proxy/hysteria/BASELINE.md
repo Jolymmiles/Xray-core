@@ -7,23 +7,27 @@ and caches the last known-domain address. Any other address (an IPv6 literal,
 an IPv4-mapped IPv6 literal, a domain the known-domain parser declines) went
 through `parseUDPDestination(string(address))` on every packet: a string
 allocation, `net.SplitHostPort` and `net.ParseAddress`. `UDPReader` now keeps
-the last such address and its parsed destination, and a packet to the same
-address reuses them, as Hysteria 2.14.0 reuses the address of the previous UDP
-message (`ParseUDPMessageReuseAddr`, apernet/hysteria `c2b181e0`). The cached
-string and destination own their memory; nothing aliases the packet buffer.
+the last four such addresses with their parsed destinations, replaced first in
+first out, and a packet to one of them reuses its destination. Hysteria 2.14.0
+reuses only the address of the previous UDP message
+(`ParseUDPMessageReuseAddr`, apernet/hysteria `c2b181e0`), and keeps it per
+QUIC connection, so concurrent UDP sessions of one client displace it; the
+`UDPReader` cache belongs to one UDP session. The cached strings and
+destinations own their memory; nothing aliases the packet buffer.
 
-Guarded by `udp_reader_address_cache_test.go`: a repeated general address
-allocates no more than a repeated IPv4 address on `ReadMultiBuffer` and
-`readFromPacket`, destinations follow address and port changes across the IPv4,
-domain and general paths, and a malformed address neither poisons the cache
-nor stops the reader.
+Guarded by `udp_reader_address_cache_test.go`: a repeated general address, and
+a session cycling through two to four IPv6 targets, allocate no more than a
+repeated IPv4 address; destinations follow address and port changes across the
+IPv4, domain and general paths and across evictions; a malformed address
+neither poisons the cache nor stops the reader.
 
 ### Conditions
 
-- Baseline: `def50474` with `proxy/hysteria/client.go` at `HEAD` and the new
-  test file; candidate: the same tree with the cache. Both on branch
-  `chore/sync-hysteria-2.14.0`, which also bumps apernet/quic-go (not on this
-  path).
+- Single-address measurement: baseline `def50474` with
+  `proxy/hysteria/client.go` at `HEAD` and the new test file; candidate: the
+  same tree with a one-entry cache, the first version of this change. Both on
+  branch `chore/sync-hysteria-2.14.0`, which also bumps apernet/quic-go (not
+  on this path).
 - Go 1.27.3, linux/amd64, `GOFLAGS=-tags=http2legacy`.
 - AMD Ryzen 7 5700X, 16 logical CPUs, WSL2 kernel 6.18.58.1 (no cpufreq
   governor exposed). No builds, tests or other benchmarks ran during the
@@ -53,12 +57,50 @@ Medians of ten samples, with the range.
 The allocation left in `ReadMultiBuffer` is the packet's `buf.Buffer`, which
 every address family pays.
 
+### Several addresses per session
+
+A one-entry cache misses on every packet when one session sends to several
+IPv6 peers in turn (STUN/ICE, games, a full-cone socket with a few peers).
+`BenchmarkUDPReaderReadMultiBufferIPv6Alternating` cycles one session through
+`targets` IPv6 destinations with 64-byte payloads. Variants: no cache (`HEAD`
+before this change), one entry, four entries first in first out (adopted),
+eight entries, and four entries checking the last hit first. Test binaries
+built with `go test -c ./proxy/hysteria`, run in rounds that execute each
+variant once with the command above and
+`-test.bench '^BenchmarkUDPReader(ReadMultiBuffer(IPv6|IPv6Small)?|ReadMultiBufferIPv6Alternating)$'`.
+Same host and conditions; load average 0.06–0.08.
+
+Nine rounds, one entry against four (adopted) and four checking the last hit
+first; medians in ns/op with the range, allocations per operation:
+
+| Benchmark | One entry | Four entries | Four, last hit first |
+| --- | ---: | ---: | ---: |
+| `ReadMultiBuffer` (IPv4) | 102.8 (101–105), 1 | 104.0 (102–106), 1 | 102.5 (100–104), 1 |
+| `ReadMultiBufferIPv6` | 90.7 (89–121), 1 | 89.5 (88–95), 1 | 90.9 (90–111), 1 |
+| `ReadMultiBufferIPv6Small` | 79.5 (79–81), 1 | 81.5 (80–84), 1 | 80.8 (80–82), 1 |
+| `IPv6Alternating/targets=1` | 80.5 (79–81), 1 | 81.4 (80–84), 1 | 82.3 (82–84), 1 |
+| `IPv6Alternating/targets=2` | 198.6 (195–203), 3 | 82.0 (80–84), 1 | 83.7 (82–85), 1 |
+| `IPv6Alternating/targets=3` | 197.7 (194–200), 3 | 81.4 (81–83), 1 | 83.0 (82–85), 1 |
+| `IPv6Alternating/targets=4` | 194.1 (192–200), 3 | 81.7 (81–84), 1 | 83.1 (81–85), 1 |
+| `IPv6Alternating/targets=8` | 195.7 (193–206), 3 | 197.7 (197–200), 3 | 203.3 (200–213), 3 |
+
+An earlier seven-round run of the same binaries plus no cache and eight
+entries gave, for `targets=1/2/4/8`: no cache 194.1/194.2/186.0/188.0 ns (3
+allocations each), eight entries 80.6/80.8/80.7/81.7 ns (1 allocation each).
+
+Four entries remove the allocations and halve the time for two to four
+targets. With one target they cost 1–2 ns on 64-byte packets, within
+overlapping ranges, and nothing on 1100-byte packets. Checking the last hit
+first did not recover that cost and was dropped. Eight entries cover more
+peers at the same single-target cost, but a cycle longer than the cache pays
+a comparison per entry on every miss; four was kept as the smaller bound.
+
 ### Limitations
 
-- These are isolated microbenchmarks of the reader with a single repeated
-  address. A flow that alternates between two general addresses on one
-  Hysteria UDP session misses the cache every packet and costs what it did
-  before, plus one string comparison.
+- These are isolated microbenchmarks of the reader. A session cycling through
+  more general addresses than the cache holds misses on every packet and
+  costs a few percent more than without a cache (the comparisons with every
+  entry); a DHT or another socket talking to dozens of peers gets no benefit.
 - Process gate: `TestHysteriaProcessClientMatrix` (plain/Gecko × Xray,
   sing-box, Mihomo, three runs) passed 18/18 with the change, but its UDP echo
   is an IPv4 target, so no process cell sends UDP to an IPv6 address.

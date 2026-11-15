@@ -427,31 +427,44 @@ type UDPReader struct {
 	lastDomain     string
 	lastDomainPort net.Port
 	lastAddress    string
-	// lastGeneralAddress is the last address that took neither the IPv4 nor
-	// the known-domain path, such as an IPv6 literal, and
-	// lastGeneralDestination is what it parsed to. Empty means none: a valid
-	// message never carries an empty address.
-	lastGeneralAddress     string
-	lastGeneralDestination net.Destination
+	// generalDestinations remembers the last addresses that took neither the
+	// IPv4 nor the known-domain path, such as IPv6 literals, with what they
+	// parsed to. nextGeneralDestination is the entry the next miss replaces.
+	generalDestinations    [udpGeneralDestinationCacheSize]udpGeneralDestination
+	nextGeneralDestination int
 	buf                    [hysteria.MaxDatagramFrameSize]byte
 	message                UDPMessage
 }
 
+// udpGeneralDestinationCacheSize is how many general addresses one UDP session
+// remembers, for a socket that sends to several peers in turn.
+const udpGeneralDestinationCacheSize = 4
+
+// udpGeneralDestination is a parsed general address. An empty address marks an
+// unused entry: a valid message never carries an empty address.
+type udpGeneralDestination struct {
+	address     string
+	destination net.Destination
+}
+
 // parseGeneralUDPDestination parses an address that the IPv4 and known-domain
-// paths do not take. A packet to the same address as the previous such packet
-// reuses its destination instead of allocating and parsing it again, as
-// Hysteria 2.14.0 reuses the address of the previous UDP message.
+// paths do not take. A packet to one of the last few such addresses reuses its
+// destination instead of allocating and parsing it again, as Hysteria 2.14.0
+// reuses the address of the previous UDP message.
 func (r *UDPReader) parseGeneralUDPDestination(address []byte) (net.Destination, error) {
-	if len(r.lastGeneralAddress) != 0 && string(address) == r.lastGeneralAddress {
-		return r.lastGeneralDestination, nil
+	for index := range r.generalDestinations {
+		entry := &r.generalDestinations[index]
+		if entry.address == string(address) {
+			return entry.destination, nil
+		}
 	}
 	owned := string(address)
 	destination, err := parseUDPDestination(owned)
 	if err != nil {
 		return net.Destination{}, err
 	}
-	r.lastGeneralAddress = owned
-	r.lastGeneralDestination = destination
+	r.generalDestinations[r.nextGeneralDestination] = udpGeneralDestination{address: owned, destination: destination}
+	r.nextGeneralDestination = (r.nextGeneralDestination + 1) % udpGeneralDestinationCacheSize
 	return destination, nil
 }
 

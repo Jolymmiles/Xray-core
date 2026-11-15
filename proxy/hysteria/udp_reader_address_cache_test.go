@@ -1,6 +1,7 @@
 package hysteria
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -110,6 +111,71 @@ func TestUDPReaderGeneralAddressCacheTracksAddressAndPort(t *testing.T) {
 	}
 }
 
+// A session that sends to several IPv6 peers in turn, up to the cache size,
+// allocates no more per packet than one that sends to a single IPv4 address.
+func TestUDPReaderAlternatingGeneralAddressAllocationBudget(t *testing.T) {
+	ipv4MultiBuffer, _ := udpReaderAllocations(t, "127.0.0.1:443")
+	for n := 2; n <= udpGeneralDestinationCacheSize; n++ {
+		t.Run(fmt.Sprintf("targets=%d", n), func(t *testing.T) {
+			messages := make([][]byte, n)
+			for index := range messages {
+				messages[index] = hysteriaUDPWire(udpReaderIPv6Targets[index], make([]byte, 64))
+			}
+			reader := &UDPReader{reader: &cyclingDatagramReader{messages: messages}}
+			// AllocsPerRun's warm-up run reads only one packet, so the first
+			// pass over the targets fills the cache here.
+			for range messages {
+				mb, err := reader.ReadMultiBuffer()
+				if err != nil {
+					t.Fatal(err)
+				}
+				buf.ReleaseMulti(mb)
+			}
+			allocations := testing.AllocsPerRun(1000, func() {
+				mb, err := reader.ReadMultiBuffer()
+				if err != nil {
+					t.Fatal(err)
+				}
+				buf.ReleaseMulti(mb)
+			})
+			if allocations > ipv4MultiBuffer {
+				t.Fatalf("ReadMultiBuffer allocations cycling through %d IPv6 targets = %.0f, want at most %.0f as for IPv4", n, allocations, ipv4MultiBuffer)
+			}
+		})
+	}
+}
+
+// Cycling through more targets than the cache holds evicts entries; every
+// packet must still carry its own destination.
+func TestUDPReaderGeneralAddressCacheEviction(t *testing.T) {
+	targets := udpReaderIPv6Targets[:udpGeneralDestinationCacheSize+2]
+	var addresses []string
+	for range 3 {
+		addresses = append(addresses, targets...)
+	}
+	addresses = append(addresses, targets[len(targets)-1], targets[0], targets[len(targets)-1])
+	messages := make([][]byte, len(addresses))
+	for index, address := range addresses {
+		messages[index] = hysteriaUDPWire(address, []byte("payload"))
+	}
+	reader := &UDPReader{reader: &sequentialDatagramReader{messages: messages}}
+	for index, address := range addresses {
+		want, err := parseUDPDestination(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mb, err := reader.ReadMultiBuffer()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(mb) != 1 || mb[0].UDP == nil || mb[0].UDP.NetAddr() != want.NetAddr() {
+			buf.ReleaseMulti(mb)
+			t.Fatalf("packet %d destination = %v, want %v", index, mb, want)
+		}
+		buf.ReleaseMulti(mb)
+	}
+}
+
 func TestUDPReaderGeneralAddressCacheRejectsMalformedAddress(t *testing.T) {
 	messages := [][]byte{
 		hysteriaUDPWire("[2001:db8::1]:443", []byte("first")),
@@ -179,5 +245,57 @@ func BenchmarkUDPReaderReadFromIPv6(b *testing.B) {
 			b.Fatalf("payload length = %d, want 1100", n)
 		}
 		udpDestinationSink = destination
+	}
+}
+
+// cyclingDatagramReader returns its messages in turn, forever.
+type cyclingDatagramReader struct {
+	messages [][]byte
+	index    int
+}
+
+func (r *cyclingDatagramReader) Read(payload []byte) (int, error) {
+	message := r.messages[r.index]
+	r.index++
+	if r.index == len(r.messages) {
+		r.index = 0
+	}
+	return copy(payload, message), nil
+}
+
+// udpReaderIPv6Targets are IPv6 destinations one UDP session might send to in
+// turn, such as a full-cone socket talking to several peers.
+var udpReaderIPv6Targets = []string{
+	"[2001:db8:85a3::8a2e:370:7334]:443",
+	"[2a00:1450:4001:82f::200e]:443",
+	"[2606:4700:4700::1111]:53",
+	"[2001:db8::1]:3478",
+	"[2a03:2880:f12f:83:face:b00c:0:25de]:443",
+	"[2001:db8:1234:5678::9]:51413",
+	"[2620:fe::fe]:53",
+	"[2001:db8:ffff::42]:6881",
+}
+
+// BenchmarkUDPReaderReadMultiBufferIPv6Alternating reads packets that cycle
+// through n IPv6 destinations of one session, so each packet's address differs
+// from the previous one unless n is 1.
+func BenchmarkUDPReaderReadMultiBufferIPv6Alternating(b *testing.B) {
+	for _, n := range []int{1, 2, 3, 4, 8} {
+		b.Run(fmt.Sprintf("targets=%d", n), func(b *testing.B) {
+			messages := make([][]byte, n)
+			for index := range messages {
+				messages[index] = hysteriaUDPWire(udpReaderIPv6Targets[index], make([]byte, 64))
+			}
+			reader := &UDPReader{reader: &cyclingDatagramReader{messages: messages}}
+			b.ReportAllocs()
+			for b.Loop() {
+				mb, err := reader.ReadMultiBuffer()
+				if err != nil {
+					b.Fatal(err)
+				}
+				udpMultiBufferSink = mb
+				buf.ReleaseMulti(mb)
+			}
+		})
 	}
 }
