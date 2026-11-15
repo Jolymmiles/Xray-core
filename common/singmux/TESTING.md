@@ -381,11 +381,11 @@ record diagnostics only and cannot satisfy the release gate.
 baseline and a candidate Xray server; it is a diagnostic, not part of
 `structural_presence.sh`. An identical candidate Xray Hysteria client sends
 64-byte packets through one SOCKS UDP association, at most 32 in flight, to an
-IPv4 echo, one IPv6 echo and four IPv6 echoes in turn. It runs nine alternating
-rounds of 200,000 packets (`XRAY_HYSTERIA_UDP_PACKETS`) after a full-size
-settling load. It reports delivered packets per second and server CPU time per
+IPv4 echo, one IPv6 echo, and four and sixteen IPv6 echoes in turn. It runs
+nine alternating rounds of 200,000 packets (`XRAY_HYSTERIA_UDP_PACKETS`) after
+a full-size settling load. It reports delivered packets per second and server CPU time per
 packet, summed from `/proc/<pid>/task/*/schedstat`. The baseline is
-`e50daf2e` (`XRAY_HYSTERIA_UDP_BASELINE` overrides it); losses above 1% fail
+`7795bd6c` (`XRAY_HYSTERIA_UDP_BASELINE` overrides it); losses above 1% fail
 the run, and with `XRAY_NATIVE_LINUX_RELEASE=1` so does a regression above 10%.
 `proxy/hysteria/BASELINE.md` records its results.
 

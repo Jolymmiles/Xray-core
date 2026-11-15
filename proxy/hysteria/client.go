@@ -427,45 +427,8 @@ type UDPReader struct {
 	lastDomain     string
 	lastDomainPort net.Port
 	lastAddress    string
-	// generalDestinations remembers the last addresses that took neither the
-	// IPv4 nor the known-domain path, such as IPv6 literals, with what they
-	// parsed to. nextGeneralDestination is the entry the next miss replaces.
-	generalDestinations    [udpGeneralDestinationCacheSize]udpGeneralDestination
-	nextGeneralDestination int
-	buf                    [hysteria.MaxDatagramFrameSize]byte
-	message                UDPMessage
-}
-
-// udpGeneralDestinationCacheSize is how many general addresses one UDP session
-// remembers, for a socket that sends to several peers in turn.
-const udpGeneralDestinationCacheSize = 4
-
-// udpGeneralDestination is a parsed general address. An empty address marks an
-// unused entry: a valid message never carries an empty address.
-type udpGeneralDestination struct {
-	address     string
-	destination net.Destination
-}
-
-// parseGeneralUDPDestination parses an address that the IPv4 and known-domain
-// paths do not take. A packet to one of the last few such addresses reuses its
-// destination instead of allocating and parsing it again, as Hysteria 2.14.0
-// reuses the address of the previous UDP message.
-func (r *UDPReader) parseGeneralUDPDestination(address []byte) (net.Destination, error) {
-	for index := range r.generalDestinations {
-		entry := &r.generalDestinations[index]
-		if entry.address == string(address) {
-			return entry.destination, nil
-		}
-	}
-	owned := string(address)
-	destination, err := parseUDPDestination(owned)
-	if err != nil {
-		return net.Destination{}, err
-	}
-	r.generalDestinations[r.nextGeneralDestination] = udpGeneralDestination{address: owned, destination: destination}
-	r.nextGeneralDestination = (r.nextGeneralDestination + 1) % udpGeneralDestinationCacheSize
-	return destination, nil
+	buf            [hysteria.MaxDatagramFrameSize]byte
+	message        UDPMessage
 }
 
 func (r *UDPReader) serverPacketDestination(destination udpPacketDestination) net.Destination {
@@ -497,17 +460,35 @@ func (r *UDPReader) readFromDestination(p []byte) (n int, destination net.Destin
 
 type udpPacketDestination struct {
 	destination net.Destination
+	ipv6        [16]byte
 	ipv4        [4]byte
 	domain      string
 	port        net.Port
 	isIPv4      bool
+	isIPv6      bool
 	isDomain    bool
 	managed     bool
+}
+
+// setIPv6 stores an IPv6 literal parsed by parseIPv6UDPAddress. An
+// IPv4-mapped address becomes an IPv4 destination, as net.IPAddress makes it.
+func (d *udpPacketDestination) setIPv6(ip [16]byte, port net.Port) {
+	if isIPv4MappedIPv6(ip) {
+		d.ipv4 = [4]byte(ip[12:])
+		d.isIPv4 = true
+	} else {
+		d.ipv6 = ip
+		d.isIPv6 = true
+	}
+	d.port = port
 }
 
 func (d udpPacketDestination) Destination() net.Destination {
 	if d.isIPv4 {
 		return net.UDPDestination(net.IPv4Address(d.ipv4), d.port)
+	}
+	if d.isIPv6 {
+		return net.UDPDestination(net.IPv6Address(d.ipv6), d.port)
 	}
 	if d.isDomain {
 		return net.UDPDestination(net.DomainAddress(d.domain), d.port)
@@ -521,6 +502,10 @@ func (d udpPacketDestination) SetBufferDestination(buffer *buf.Buffer) {
 	}
 	if d.isIPv4 {
 		buffer.SetManagedUDPIPv4(d.ipv4, d.port)
+		return
+	}
+	if d.isIPv6 {
+		buffer.SetManagedUDPIPv6(d.ipv6, d.port)
 		return
 	}
 	if d.isDomain {
@@ -568,8 +553,10 @@ func (r *UDPReader) readFromPacket(p []byte) (n int, data []byte, packetDestinat
 				destination.ipv4 = ip
 				destination.port = port
 				destination.isIPv4 = true
+			} else if ip, port, ok := parseIPv6UDPAddress(address); ok {
+				destination.setIPv6(ip, port)
 			} else {
-				destination.destination, err = r.parseGeneralUDPDestination(address)
+				destination.destination, err = parseUDPDestination(string(address))
 			}
 		}
 		if err != nil {
@@ -694,6 +681,134 @@ func parseIPv4UDPDestination(address []byte) (net.Destination, bool) {
 		return net.Destination{}, false
 	}
 	return net.UDPDestination(net.IPv4Address(ip), port), true
+}
+
+// parseIPv6UDPAddress parses a bracketed IPv6 literal and port, such as
+// "[2001:db8::1]:443", straight from the message bytes, as parseIPv4UDPAddress
+// does for IPv4. It takes hexadecimal groups with at most one "::" and a
+// decimal port of up to five digits. A dotted IPv4 tail, a zone, a longer port
+// or anything else is left to parseUDPDestination, which gives every address
+// this function accepts the same destination.
+func parseIPv6UDPAddress(address []byte) ([16]byte, net.Port, bool) {
+	if len(address) < len("[::]:0") || address[0] != '[' {
+		return [16]byte{}, 0, false
+	}
+	closing := 1
+	for closing < len(address) && address[closing] != ']' {
+		closing++
+	}
+	if closing+1 >= len(address) || address[closing+1] != ':' {
+		return [16]byte{}, 0, false
+	}
+	port, ok := parseUDPPortDigits(address[closing+2:])
+	if !ok {
+		return [16]byte{}, 0, false
+	}
+	ip, ok := parseIPv6Hex(address[1:closing])
+	if !ok {
+		return [16]byte{}, 0, false
+	}
+	return ip, port, true
+}
+
+// parseUDPPortDigits parses one to five decimal digits up to 65535.
+func parseUDPPortDigits(digits []byte) (net.Port, bool) {
+	if len(digits) == 0 || len(digits) > 5 {
+		return 0, false
+	}
+	value := 0
+	for _, character := range digits {
+		digit := character - '0'
+		if digit > 9 {
+			return 0, false
+		}
+		value = value*10 + int(digit)
+	}
+	if value > 65535 {
+		return 0, false
+	}
+	return net.Port(value), true
+}
+
+// parseIPv6Hex parses IPv6 text made of up to eight groups of one to four
+// hexadecimal digits, with at most one "::" standing for one or more zero
+// groups.
+func parseIPv6Hex(text []byte) ([16]byte, bool) {
+	var ip [16]byte
+	ellipsis := -1 // byte offset in ip where "::" stands
+	filled := 0
+	position := 0
+	if len(text) >= 2 && text[0] == ':' && text[1] == ':' {
+		ellipsis = 0
+		position = 2
+	} else if len(text) != 0 && text[0] == ':' {
+		return [16]byte{}, false
+	}
+	for position < len(text) {
+		if filled == len(ip) {
+			return [16]byte{}, false
+		}
+		value, digits := 0, 0
+		for position < len(text) && digits < 4 {
+			digit, ok := hexDigitValue(text[position])
+			if !ok {
+				break
+			}
+			value = value<<4 | digit
+			position++
+			digits++
+		}
+		if digits == 0 {
+			return [16]byte{}, false
+		}
+		ip[filled], ip[filled+1] = byte(value>>8), byte(value)
+		filled += 2
+		if position == len(text) {
+			break
+		}
+		if text[position] != ':' {
+			return [16]byte{}, false // a fifth digit, a dotted tail or a zone
+		}
+		position++
+		if position == len(text) {
+			return [16]byte{}, false // a trailing single colon
+		}
+		if text[position] == ':' {
+			if ellipsis >= 0 {
+				return [16]byte{}, false
+			}
+			ellipsis = filled
+			position++
+		}
+	}
+	if ellipsis < 0 {
+		return ip, filled == len(ip)
+	}
+	if filled == len(ip) {
+		return [16]byte{}, false // "::" must stand for at least one group
+	}
+	tail := filled - ellipsis
+	copy(ip[len(ip)-tail:], ip[ellipsis:filled])
+	clear(ip[ellipsis : len(ip)-tail])
+	return ip, true
+}
+
+func hexDigitValue(character byte) (int, bool) {
+	switch {
+	case character >= '0' && character <= '9':
+		return int(character - '0'), true
+	case character >= 'a' && character <= 'f':
+		return int(character-'a') + 10, true
+	case character >= 'A' && character <= 'F':
+		return int(character-'A') + 10, true
+	}
+	return 0, false
+}
+
+// isIPv4MappedIPv6 reports whether ip is ::ffff:a.b.c.d, which net.IPAddress
+// turns into an IPv4 address.
+func isIPv4MappedIPv6(ip [16]byte) bool {
+	return ip[0]|ip[1]|ip[2]|ip[3]|ip[4]|ip[5]|ip[6]|ip[7]|ip[8]|ip[9] == 0 && ip[10] == 0xff && ip[11] == 0xff
 }
 
 func parseIPv4UDPAddress(address []byte) ([4]byte, net.Port, bool) {
@@ -906,7 +1021,7 @@ func (r *UDPReader) readBufferPacket() (*buf.Buffer, udpPacketDestination, error
 					destination.port = port
 					destination.isIPv4 = true
 				} else {
-					destination.destination, err = r.parseGeneralUDPDestination(address)
+					destination.destination, err = parseUDPDestination(string(address))
 					if err != nil {
 						continue
 					}
@@ -926,13 +1041,15 @@ func (r *UDPReader) readBufferPacket() (*buf.Buffer, udpPacketDestination, error
 					destination.isDomain = true
 					destination.managed = true
 				} else {
-					destination.destination, err = r.parseGeneralUDPDestination(address)
+					destination.destination, err = parseUDPDestination(string(address))
 					if err != nil {
 						continue
 					}
 				}
+			} else if ip, port, ok := parseIPv6UDPAddress(address); ok {
+				destination.setIPv6(ip, port)
 			} else {
-				destination.destination, err = r.parseGeneralUDPDestination(address)
+				destination.destination, err = parseUDPDestination(string(address))
 				if err != nil {
 					continue
 				}
@@ -966,6 +1083,11 @@ func (r *UDPReader) parseFragmentDestination(address []byte) (udpPacketDestinati
 			return udpPacketDestination{domain: domain, port: port, isDomain: true}, nil
 		}
 	}
-	destination, err := r.parseGeneralUDPDestination(address)
+	if ip, port, ok := parseIPv6UDPAddress(address); ok {
+		var destination udpPacketDestination
+		destination.setIPv6(ip, port)
+		return destination, nil
+	}
+	destination, err := parseUDPDestination(string(address))
 	return udpPacketDestination{destination: destination}, err
 }

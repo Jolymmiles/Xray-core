@@ -29,6 +29,7 @@ var (
 type managedBuffer struct {
 	udp       net.Destination
 	udpIPv4   bufferIPv4Address
+	udpIPv6   bufferIPv6Address
 	udpDomain bufferDomainAddress
 	udpIsIPv4 bool
 	single    [1]*Buffer
@@ -132,6 +133,7 @@ func (b *Buffer) Release() {
 			*b = Buffer{}
 			slab.udp = net.Destination{}
 			slab.udpIPv4 = bufferIPv4Address{}
+			slab.udpIPv6 = bufferIPv6Address{}
 			slab.udpDomain = bufferDomainAddress{}
 			slab.udpIsIPv4 = false
 			slab.single[0] = nil
@@ -184,6 +186,14 @@ func (a *bufferIPv4Address) String() string          { return a.IP().String() }
 func (a *bufferIPv4Address) NetIPAddr() netip.Addr   { return netip.AddrFrom4([4]byte(*a)) }
 func (a *bufferIPv4Address) RawIPv4() [4]byte        { return [4]byte(*a) }
 
+type bufferIPv6Address [16]byte
+
+func (a *bufferIPv6Address) IP() stdnet.IP           { return stdnet.IP(a[:]) }
+func (*bufferIPv6Address) Domain() string            { panic("Calling Domain() on an IPv6Address.") }
+func (*bufferIPv6Address) Family() net.AddressFamily { return net.AddressFamilyIPv6 }
+func (a *bufferIPv6Address) String() string          { return "[" + a.IP().String() + "]" }
+func (a *bufferIPv6Address) NetIPAddr() netip.Addr   { return netip.AddrFrom16([16]byte(*a)) }
+
 type bufferDomainAddress struct {
 	domain string
 }
@@ -204,6 +214,21 @@ func (b *Buffer) SetManagedUDPIPv4(ip [4]byte, port net.Port) {
 	slab.udpDomain.domain = ""
 	slab.udp = net.UDPDestination(&slab.udpIPv4, port)
 	slab.udpIsIPv4 = true
+	b.UDP = &slab.udp
+}
+
+// SetManagedUDPIPv6 stores an IPv6 packet destination entirely in the managed
+// slab, including the Address interface target. The caller passes an address
+// that is not IPv4-mapped; net.IPAddress turns those into IPv4 addresses.
+func (b *Buffer) SetManagedUDPIPv6(ip [16]byte, port net.Port) {
+	if !b.slab {
+		panic("SetManagedUDPIPv6 called on unmanaged buffer")
+	}
+	slab := managedBufferFromStorage(b.v)
+	slab.udpIPv6 = bufferIPv6Address(ip)
+	slab.udpDomain.domain = ""
+	slab.udp = net.UDPDestination(&slab.udpIPv6, port)
+	slab.udpIsIPv4 = false
 	b.UDP = &slab.udp
 }
 

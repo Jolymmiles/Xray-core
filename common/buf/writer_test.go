@@ -59,6 +59,60 @@ func TestManagedUDPIPv4Metadata(t *testing.T) {
 	}
 }
 
+func TestManagedUDPIPv6Metadata(t *testing.T) {
+	buffer := New()
+	wantIP := [16]byte{0x20, 0x01, 0x0d, 0xb8, 15: 1}
+	buffer.SetManagedUDPIPv6(wantIP, 443)
+	if buffer.UDP == nil || buffer.UDP.Network != X.Network_UDP || buffer.UDP.Port != 443 {
+		t.Fatalf("managed IPv6 destination = %v", buffer.UDP)
+	}
+	if !buffer.UDP.Address.Family().IsIPv6() || buffer.UDP.NetAddr() != "[2001:db8::1]:443" {
+		t.Fatalf("managed IPv6 destination = %v (%v)", buffer.UDP, buffer.UDP.Address.Family())
+	}
+	if got := buffer.UDP.Address.IP(); !got.Equal(net.IP(wantIP[:])) {
+		t.Fatalf("managed IPv6 IP = %v", got)
+	}
+	if ip, ok := X.AddressToNetIPAddr(buffer.UDP.Address); !ok || ip.As16() != wantIP {
+		t.Fatalf("managed IPv6 netip = %v, ok=%v", ip, ok)
+	}
+	if udpAddr, ok := buffer.UDP.RawNetAddr().(*net.UDPAddr); !ok || !udpAddr.IP.Equal(net.IP(wantIP[:])) || udpAddr.Port != 443 {
+		t.Fatalf("managed IPv6 net.Addr = %v", buffer.UDP.RawNetAddr())
+	}
+	if _, _, ok := buffer.ManagedUDPIPv4(); ok {
+		t.Fatal("IPv6 destination reported managed IPv4 metadata")
+	}
+	if _, _, ok := buffer.ManagedUDPDomain(); ok {
+		t.Fatal("IPv6 destination reported managed domain metadata")
+	}
+	buffer.SetManagedUDPIPv4([4]byte{192, 0, 2, 1}, 53)
+	if buffer.UDP.NetAddr() != "192.0.2.1:53" {
+		t.Fatalf("IPv4 after IPv6 = %v", buffer.UDP)
+	}
+	buffer.Release()
+
+	// A pooled slab comes back without the previous owner's destination.
+	for range 64 {
+		reused := New()
+		if reused.UDP != nil {
+			t.Fatalf("reused buffer kept destination %v", reused.UDP)
+		}
+		if _, _, ok := reused.ManagedUDPIPv4(); ok {
+			t.Fatal("reused buffer kept managed IPv4 metadata")
+		}
+		reused.Release()
+	}
+}
+
+func BenchmarkSetManagedUDPIPv6(b *testing.B) {
+	buffer := New()
+	defer buffer.Release()
+	ip := [16]byte{0x20, 0x01, 0x0d, 0xb8, 15: 1}
+	b.ReportAllocs()
+	for b.Loop() {
+		buffer.SetManagedUDPIPv6(ip, 443)
+	}
+}
+
 type releasingMultiBufferWriter struct{}
 
 func (releasingMultiBufferWriter) WriteMultiBuffer(mb MultiBuffer) error {

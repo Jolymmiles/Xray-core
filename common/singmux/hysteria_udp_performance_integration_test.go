@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	// hysteriaUDPPerformanceRevision is the server before the IPv6 UDP
-	// destination cache: the Hysteria 2.14.0 quic-go bump alone.
-	hysteriaUDPPerformanceRevision = "e50daf2e7b6e83fe88e9d1a407d952e6892456ad"
+	// hysteriaUDPPerformanceRevision is the server before IPv6 UDP addresses
+	// were parsed from the message bytes: the Hysteria 2.14.0 quic-go bump
+	// alone.
+	hysteriaUDPPerformanceRevision = "7795bd6c1a1679f8d8b88363856753282786b62a"
 	hysteriaUDPPerformanceLabel    = "hysteria-udp-baseline"
 
 	// hysteriaUDPLoadPackets is the packets of one sample;
@@ -55,7 +56,7 @@ func TestHysteriaUDPPerformanceAgainstBaseline(t *testing.T) {
 	certificate, privateKey := generateCertificate(t, workDir)
 	tcpEcho := startTCPEcho(t).(*net.TCPAddr)
 	ipv4Echo := startUDPEcho(t).(*net.UDPAddr)
-	ipv6Echoes := startUDPEchoIPv6(t, 4)
+	ipv6Echoes := startUDPEchoIPv6(t, 16)
 
 	packets := hysteriaUDPLoadPackets
 	if override := os.Getenv("XRAY_HYSTERIA_UDP_PACKETS"); override != "" {
@@ -78,7 +79,8 @@ func TestHysteriaUDPPerformanceAgainstBaseline(t *testing.T) {
 	}{
 		{name: "ipv4", targets: []*net.UDPAddr{ipv4Echo}},
 		{name: "ipv6-one", targets: ipv6Echoes[:1]},
-		{name: "ipv6-four", targets: ipv6Echoes},
+		{name: "ipv6-four", targets: ipv6Echoes[:4]},
+		{name: "ipv6-sixteen", targets: ipv6Echoes},
 	}
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {

@@ -13,8 +13,7 @@ import (
 )
 
 // hysteriaIPv6EchoCount is how many IPv6 echo targets a Hysteria cell sends
-// UDP to: more than the server's UDPReader caches per session (four), so a
-// full cycle evicts entries.
+// UDP to in turn through one UDP session.
 const hysteriaIPv6EchoCount = 6
 
 // startUDPEchoIPv6 starts UDP echo servers on the IPv6 loopback address.
@@ -150,12 +149,13 @@ func (a *socksUDPAssociation) exchange(destination *net.UDPAddr, payload []byte)
 
 // testSOCKSUDPIPv6Targets sends UDP through one SOCKS association, so one
 // Hysteria UDP session, to IPv6 targets: one target repeated, three in turn
-// (within the server's per-session destination cache) and every target in
-// turn (more than it holds). Each reply must come from its own target.
+// and every target in turn, so the server must take each packet's destination
+// from that packet rather than an earlier one. Each reply must come from its
+// own target.
 func testSOCKSUDPIPv6Targets(t *testing.T, socksPort int, targets []*net.UDPAddr) {
 	t.Helper()
-	if len(targets) <= 4 {
-		t.Fatalf("%d IPv6 targets do not exceed the four cached destinations", len(targets))
+	if len(targets) < 4 {
+		t.Fatalf("%d IPv6 targets are too few to cycle through", len(targets))
 	}
 	association := openSOCKSUDPAssociation(t, socksPort)
 	phases := []struct {
@@ -165,7 +165,7 @@ func testSOCKSUDPIPv6Targets(t *testing.T, socksPort int, targets []*net.UDPAddr
 	}{
 		{name: "repeated", targets: targets[:1], rounds: 3},
 		{name: "alternating", targets: targets[:3], rounds: 3},
-		{name: "evicting", targets: targets, rounds: 3},
+		{name: "cycling", targets: targets, rounds: 3},
 	}
 	for _, phase := range phases {
 		for round := range phase.rounds {
