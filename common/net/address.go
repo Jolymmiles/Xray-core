@@ -169,6 +169,27 @@ func AddressToNetIPAddr(address Address) (netip.Addr, bool) {
 	}
 }
 
+// AddressEqual reports whether a and b are the same address, whatever types
+// hold them. Packet buffers keep UDP addresses in their own types, which never
+// compare equal with == to the values this package creates.
+func AddressEqual(a, b Address) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Family() != b.Family() {
+		return false
+	}
+	if a.Family().IsDomain() {
+		return a.Domain() == b.Domain()
+	}
+	if ipA, ok := AddressToNetIPAddr(a); ok {
+		if ipB, ok := AddressToNetIPAddr(b); ok {
+			return ipA == ipB
+		}
+	}
+	return a.IP().Equal(b.IP())
+}
+
 // DomainAddress creates an Address with given domain.
 // This is an internal function that forcibly converts a string to domain.
 // It's mainly used in test files and mux.

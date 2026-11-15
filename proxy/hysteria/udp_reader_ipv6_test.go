@@ -496,3 +496,36 @@ func BenchmarkUDPReaderReadMultiBufferManyIPv6(b *testing.B) {
 		buf.ReleaseMulti(mb)
 	}
 }
+
+type oneShotMultiBufferReader struct{ mb buf.MultiBuffer }
+
+func (r *oneShotMultiBufferReader) ReadMultiBuffer() (buf.MultiBuffer, error) { return r.mb, nil }
+
+// When sniffing replaces a UDP target with a domain, the outbound handler
+// wraps the link in EndpointOverrideReader with the session's routing address
+// as the original. Packets the reader stores in buffer-owned address types
+// must still be recognized and get the sniffed domain.
+func TestUDPReaderPacketsFollowSniffedTargetOverride(t *testing.T) {
+	for _, address := range []string{"[2001:db8::1]:443", "192.0.2.1:443", "Example.COM:443"} {
+		t.Run(address, func(t *testing.T) {
+			reader := &UDPReader{reader: repeatedDatagramReader(hysteriaUDPWire(address, []byte("quic")))}
+			packet, packetDestination, err := reader.readBufferPacket()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer packet.Release()
+			override := &buf.EndpointOverrideReader{
+				Reader:       &oneShotMultiBufferReader{buf.MultiBuffer{packet}},
+				Dest:         net.DomainAddress("sniffed.example"),
+				OriginalDest: packetDestination.Destination().Address,
+			}
+			mb, err := override.ReadMultiBuffer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := mb[0].UDP; got.NetAddr() != "sniffed.example:443" {
+				t.Fatalf("packet destination = %v (%T), want sniffed.example:443", got, got.Address)
+			}
+		})
+	}
+}
