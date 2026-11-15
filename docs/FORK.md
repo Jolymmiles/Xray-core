@@ -223,9 +223,9 @@ guard it.
   a dial that was already canceled. A rejected authentication closes the
   QUIC connection with H3_GENERAL_PROTOCOL_ERROR (0x101) before it closes
   the response body and the HTTP/3 transport, as the official Hysteria
-  client (v2.13.0) closes it; upstream closes the transport first, which
-  ends the connection with code 0, after closing the unread body, which can
-  send a stream cancellation first. Covered by
+  client (v2.13.0, unchanged in v2.14.0) closes it; upstream closes the
+  transport first, which ends the connection with code 0, after closing the
+  unread body, which can send a stream cancellation first. Covered by
   `TestCanceledDialGetsNoConnection` and
   `TestRejectedAuthenticationClosesWithProtocolError` in
   `transport/internet/hysteria/dial_cancel_test.go`.
