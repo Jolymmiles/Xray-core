@@ -46,3 +46,22 @@ func TestAddressEqual(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnedAddress(t *testing.T) {
+	ipv6 := [16]byte{0x20, 0x01, 0x0d, 0xb8, 15: 1}
+	for _, plain := range []Address{IPv4Address([4]byte{192, 0, 2, 1}), IPv6Address(ipv6), DomainAddress("example.com"), nil} {
+		if got := OwnedAddress(plain); got != plain {
+			t.Fatalf("OwnedAddress(%v) = %v, want the same value", plain, got)
+		}
+	}
+
+	shared := customIPv6Address(ipv6)
+	owned := OwnedAddress(&shared)
+	shared[15] = 2 // the pooled storage is reused
+	if !owned.Family().IsIPv6() || owned.String() != "[2001:db8::1]" {
+		t.Fatalf("owned copy = %v (%v), want [2001:db8::1]", owned, owned.Family())
+	}
+	if _, isCustom := owned.(*customIPv6Address); isCustom {
+		t.Fatal("OwnedAddress returned the shared type")
+	}
+}

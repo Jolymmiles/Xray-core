@@ -229,6 +229,27 @@ guard it.
   `TestCanceledDialGetsNoConnection` and
   `TestRejectedAuthenticationClosesWithProtocolError` in
   `transport/internet/hysteria/dial_cancel_test.go`.
+- Packet buffers keep a UDP packet's address in their own pooled slab
+  (`buf.SetManagedUDPIPv4`, `SetManagedUDPIPv6`, `SetManagedUDPDomain`; since
+  `5e7bb42e`). Only the Hysteria UDP reader stores them, which saves an
+  allocation per packet. Upstream has no such types. A slab address is a
+  pointer into memory the next packet reuses, so code handling `b.UDP` must:
+  - compare addresses with `net.AddressEqual`, not `==`
+    (`buf.EndpointOverrideReader`/`Writer`);
+  - key maps by value, such as `netip.AddrPort`, not by `net.Destination`
+    (dokodemo's TPROXY `PacketWriter`);
+  - copy an address that outlives the packet with `net.OwnedAddress`
+    (`transport/internet/udp` dispatcher's `dest`).
+
+  `ManagedUDPIPv4` and `ManagedUDPDomain` answer only while `b.UDP` still
+  points at the slab. Keep this when syncing upstream code that touches
+  `b.UDP`. Covered by:
+  - `TestEndpointOverrideMatchesManagedAddresses` (`common/buf/override_test.go`);
+  - `TestManagedUDPAccessorsFollowReplacedDestination` (`common/buf/writer_test.go`);
+  - `TestPacketWriterReusesTargetSocketForSlabAddresses` (`proxy/dokodemo`);
+  - `TestDispatcherSourceOutlivesPacketBuffer` (`transport/internet/udp`);
+  - `TestUDPReaderPacketsFollowSniffedTargetOverride` and
+    `TestUDPWriterSendsSniffedTargetOverride` (`proxy/hysteria`).
 - The dispatcher gives an outbound link's reader a timeout
   (`buf.TimeoutWrapperReader`) only where sniffing or user uplink stats need
   one (`aa7aaf17`); upstream's `WrapLink` always does. Upstream code that

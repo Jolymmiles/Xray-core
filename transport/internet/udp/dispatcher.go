@@ -124,7 +124,20 @@ func (v *Dispatcher) Dispatch(ctx context.Context, destination net.Destination, 
 	}
 }
 
+// sameUDPSource reports whether two destinations name the same source.
+func sameUDPSource(a, b net.Destination) bool {
+	return a.Network == b.Network && a.Port == b.Port && net.AddressEqual(a.Address, b.Address)
+}
+
+// ownedDestination returns a copy of destination that shares no memory with
+// the packet buffer it may come from.
+func ownedDestination(destination net.Destination) net.Destination {
+	destination.Address = net.OwnedAddress(destination.Address)
+	return destination
+}
+
 func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, callback ResponseCallback, callClose func() error) {
+	dest = ownedDestination(dest)
 	defer func() {
 		conn.Close()
 		if callClose != nil {
@@ -151,8 +164,12 @@ func handleInput(ctx context.Context, conn *connEntry, dest net.Destination, cal
 		}
 		timer.Update()
 		for _, b := range mb {
-			if b.UDP != nil {
-				dest = *b.UDP
+			// dest outlives b: a later packet without an address takes it, and
+			// a callback may keep Source. b.UDP can point into b's pooled
+			// metadata, which the next packet reuses, so dest holds an owned
+			// copy, made only when the source changes.
+			if b.UDP != nil && !sameUDPSource(dest, *b.UDP) {
+				dest = ownedDestination(*b.UDP)
 			}
 			callback(ctx, &udp.Packet{
 				Payload: b,
