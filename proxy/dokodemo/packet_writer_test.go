@@ -58,6 +58,10 @@ func TestPacketWriterReusesTargetSocketForSlabAddresses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			target := &recordingPacketConn{}
 			writer := NewPacketWriter(target, &test.target, 0, &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1), Port: 9}).(*PacketWriter)
+			// A reply whose address yields no key takes writer.conn; keeping
+			// that apart from the target's socket makes such a reply visible.
+			fallback := &recordingPacketConn{}
+			writer.conn = fallback
 			mb := make(buf.MultiBuffer, 0, 3)
 			for range 3 {
 				reply := buf.New()
@@ -68,8 +72,8 @@ func TestPacketWriterReusesTargetSocketForSlabAddresses(t *testing.T) {
 			if err := writer.WriteMultiBuffer(mb); err != nil {
 				t.Fatal(err)
 			}
-			if target.writes != 3 || len(writer.conns) != 1 {
-				t.Fatalf("target socket got %d of 3 replies; writer holds %d sockets, want 1", target.writes, len(writer.conns))
+			if target.writes != 3 || fallback.writes != 0 || len(writer.conns) != 1 {
+				t.Fatalf("target socket got %d of 3 replies, fallback %d; writer holds %d sockets, want 1", target.writes, fallback.writes, len(writer.conns))
 			}
 			if err := writer.Close(); err != nil {
 				t.Fatal(err)

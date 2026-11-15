@@ -52,8 +52,8 @@ func TestHysteriaUDPPerformanceAgainstBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both servers carry the release tags whatever GOFLAGS says: a go test
-	// -tags flag does not reach the go build commands the test runs.
+	// Both servers carry the release tags whatever GOFLAGS says: the tags
+	// given to go test do not reach the go build commands the test runs.
 	releaseBuild := []string{"-trimpath", "-buildvcs=false", "-tags", "http2legacy"}
 	candidateBinary := buildE2EBinary(t, "XRAY_E2E_BIN", filepath.Join(workDir, "xray-candidate"), xrayRoot, "./main", releaseBuild...)
 	revision := hysteriaUDPPerformanceRevision
@@ -222,6 +222,11 @@ func runHysteriaUDPLoad(t *testing.T, topology *stressTopology, targets []*net.U
 	stall := time.NewTimer(time.Hour)
 	defer stall.Stop()
 	for index := range packets {
+		// Checked before every packet: replies that keep arriving just under
+		// the stall timeout would otherwise never reach the deadline.
+		if time.Now().After(deadline) {
+			t.Fatalf("UDP sample exceeded %s after %d of %d packets (%d received)", hysteriaUDPLoadDeadline, index, packets, received.Load())
+		}
 		select {
 		case <-tokens:
 		case <-receiverDone:
@@ -229,9 +234,6 @@ func runHysteriaUDPLoad(t *testing.T, topology *stressTopology, targets []*net.U
 			// second; waiting out the remaining packets would take hours.
 			t.Fatalf("UDP replies stopped after %d of %d sent packets (%d received)", index, packets, received.Load())
 		default:
-			if time.Now().After(deadline) {
-				t.Fatalf("UDP sample exceeded %s after %d of %d packets (%d received)", hysteriaUDPLoadDeadline, index, packets, received.Load())
-			}
 			stall.Reset(200 * time.Millisecond)
 			select {
 			case <-tokens:
