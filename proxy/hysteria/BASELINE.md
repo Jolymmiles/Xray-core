@@ -9,7 +9,8 @@ change an IPv6 literal went through `parseUDPDestination(string(address))` on
 every packet: a string allocation, `net.SplitHostPort` and `net.ParseAddress`,
 three allocations in all.
 
-IPv6 now takes the same path as IPv4:
+IPv6 now gets the same treatment as IPv4, with its own parser and slab field;
+it stays an IPv6 destination:
 
 - `parseIPv6UDPAddress` reads `[h:h::h]:port` from the message bytes into a
   `[16]byte`. It takes hexadecimal groups with at most one `::` and a decimal
