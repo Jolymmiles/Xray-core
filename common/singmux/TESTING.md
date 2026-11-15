@@ -377,6 +377,23 @@ fails if either server holds more file descriptors than the 128 concurrent
 streams, which would mean the mux is no longer sharing carriers. Other hosts
 record diagnostics only and cannot satisfy the release gate.
 
+`TestHysteriaUDPPerformanceAgainstBaseline` compares Hysteria UDP between a
+baseline and a candidate Xray server; it is a diagnostic, not part of
+`structural_presence.sh`. An identical candidate Xray Hysteria client sends
+64-byte packets through one SOCKS UDP association, at most 32 in flight, to an
+IPv4 echo, one IPv6 echo and four IPv6 echoes in turn. It runs nine alternating
+rounds of 200,000 packets (`XRAY_HYSTERIA_UDP_PACKETS`) after a full-size
+settling load. It reports delivered packets per second and server CPU time per
+packet, summed from `/proc/<pid>/task/*/schedstat`. The baseline is
+`e50daf2e` (`XRAY_HYSTERIA_UDP_BASELINE` overrides it); losses above 1% fail
+the run, and with `XRAY_NATIVE_LINUX_RELEASE=1` so does a regression above 10%.
+`proxy/hysteria/BASELINE.md` records its results.
+
+```sh
+go test -tags 'integration stress performance http2legacy' ./common/singmux \
+  -run '^TestHysteriaUDPPerformanceAgainstBaseline$' -count=1 -timeout 40m -v
+```
+
 `XRAY_E2E_BIN`, `SING_BOX_E2E_BIN`, and `MIHOMO_E2E_BIN` may point to existing
 binaries. `XRAY_SMUX_STRESS_CYCLES` controls reconnect cycles.
 

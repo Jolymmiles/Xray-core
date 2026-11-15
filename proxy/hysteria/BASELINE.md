@@ -95,14 +95,45 @@ first did not recover that cost and was dropped. Eight entries cover more
 peers at the same single-target cost, but a cycle longer than the cache pays
 a comparison per entry on every miss; four was kept as the smaller bound.
 
+### Process level
+
+`TestHysteriaUDPPerformanceAgainstBaseline` (`common/singmux/TESTING.md`)
+compares baseline server `e50daf2e` with candidate `261e3e8c`. Both run behind
+the same candidate Xray Hysteria client, which sends 64-byte packets through
+one SOCKS UDP association, at most 32 in flight, to UDP echoes. There were
+nine alternating rounds of 200,000 packets after a full-size settling load,
+with no losses. Same host as above; the test builds both servers with `go
+build -trimpath -buildvcs=false` and `GOFLAGS=-tags=http2legacy`. Medians with
+the range:
+
+| Targets | Server CPU ns/packet before | After | Change | pps before | After |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| IPv4 (control, unchanged path) | 32781 (32680–32917) | 32730 (32517–32878) | −0.2% | 83934 | 83767 |
+| One IPv6 | 33864 (33389–34693) | 32954 (32832–33312) | −2.7% | 80545 | 83407 |
+| Four IPv6 in turn | 32354 (32109–32504) | 31679 (31520–31921) | −2.1% | 80994 | 81343 |
+
+Server CPU per packet covers the whole round trip: QUIC, the upload reader,
+the download writer, the runtime, and its idle spinning in this closed loop.
+The IPv6 ranges do not overlap, and an earlier run with the same samples gave
+−1.4% (one target) and −2.1% (four), while the IPv4 control stayed within
+noise. The saving, 700–900 ns per packet, is larger than the
+reader's 100 ns because two fewer allocations per packet also mean less
+garbage collection; the run does not separate the two. Delivered pps moves
+within noise: the closed loop is bounded by the whole path, client included,
+so server CPU per packet is the figure this change affects. A first attempt
+with 40,000-packet samples and no settling load swung by a factor of 2.7 in
+pps on identical code and is not used.
+
 ### Limitations
 
-- These are isolated microbenchmarks of the reader. A session cycling through
-  more general addresses than the cache holds misses on every packet and
-  costs a few percent more than without a cache (the comparisons with every
-  entry); a DHT or another socket talking to dozens of peers gets no benefit.
-- Process gate: `TestHysteriaProcessClientMatrix` (plain/Gecko × Xray,
-  sing-box, Mihomo, three runs) passed 18/18 with the change, but its UDP echo
-  is an IPv4 target, so no process cell sends UDP to an IPv6 address.
-- WSL2 is not a Linux server host; no process-level throughput comparison was
-  run, so no packets-per-second claim is made.
+- A session cycling through more general addresses than the cache holds misses
+  on every packet and costs a few percent more than without a cache (the
+  comparisons with every entry), in the microbenchmark; a DHT or another
+  socket talking to dozens of peers gets no benefit.
+- `TestHysteriaProcessClientMatrix` (plain/Gecko × Xray, sing-box, Mihomo)
+  sends UDP to six IPv6 echoes per cell: one repeated, three in turn and all
+  six in turn, past the four cached entries. It checks that each reply comes
+  from its own target.
+- The process numbers come from WSL2 on a desktop CPU: a Linux kernel, but a
+  virtualized one on a host that is not a server. They show the relative
+  change; they are not server capacity figures.
