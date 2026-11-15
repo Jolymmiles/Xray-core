@@ -427,8 +427,32 @@ type UDPReader struct {
 	lastDomain     string
 	lastDomainPort net.Port
 	lastAddress    string
-	buf            [hysteria.MaxDatagramFrameSize]byte
-	message        UDPMessage
+	// lastGeneralAddress is the last address that took neither the IPv4 nor
+	// the known-domain path, such as an IPv6 literal, and
+	// lastGeneralDestination is what it parsed to. Empty means none: a valid
+	// message never carries an empty address.
+	lastGeneralAddress     string
+	lastGeneralDestination net.Destination
+	buf                    [hysteria.MaxDatagramFrameSize]byte
+	message                UDPMessage
+}
+
+// parseGeneralUDPDestination parses an address that the IPv4 and known-domain
+// paths do not take. A packet to the same address as the previous such packet
+// reuses its destination instead of allocating and parsing it again, as
+// Hysteria 2.14.0 reuses the address of the previous UDP message.
+func (r *UDPReader) parseGeneralUDPDestination(address []byte) (net.Destination, error) {
+	if len(r.lastGeneralAddress) != 0 && string(address) == r.lastGeneralAddress {
+		return r.lastGeneralDestination, nil
+	}
+	owned := string(address)
+	destination, err := parseUDPDestination(owned)
+	if err != nil {
+		return net.Destination{}, err
+	}
+	r.lastGeneralAddress = owned
+	r.lastGeneralDestination = destination
+	return destination, nil
 }
 
 func (r *UDPReader) serverPacketDestination(destination udpPacketDestination) net.Destination {
@@ -532,7 +556,7 @@ func (r *UDPReader) readFromPacket(p []byte) (n int, data []byte, packetDestinat
 				destination.port = port
 				destination.isIPv4 = true
 			} else {
-				destination.destination, err = parseUDPDestination(string(address))
+				destination.destination, err = r.parseGeneralUDPDestination(address)
 			}
 		}
 		if err != nil {
@@ -869,7 +893,7 @@ func (r *UDPReader) readBufferPacket() (*buf.Buffer, udpPacketDestination, error
 					destination.port = port
 					destination.isIPv4 = true
 				} else {
-					destination.destination, err = parseUDPDestination(string(address))
+					destination.destination, err = r.parseGeneralUDPDestination(address)
 					if err != nil {
 						continue
 					}
@@ -889,13 +913,13 @@ func (r *UDPReader) readBufferPacket() (*buf.Buffer, udpPacketDestination, error
 					destination.isDomain = true
 					destination.managed = true
 				} else {
-					destination.destination, err = parseUDPDestination(string(address))
+					destination.destination, err = r.parseGeneralUDPDestination(address)
 					if err != nil {
 						continue
 					}
 				}
 			} else {
-				destination.destination, err = parseUDPDestination(string(address))
+				destination.destination, err = r.parseGeneralUDPDestination(address)
 				if err != nil {
 					continue
 				}
@@ -929,6 +953,6 @@ func (r *UDPReader) parseFragmentDestination(address []byte) (udpPacketDestinati
 			return udpPacketDestination{domain: domain, port: port, isDomain: true}, nil
 		}
 	}
-	destination, err := parseUDPDestination(string(address))
+	destination, err := r.parseGeneralUDPDestination(address)
 	return udpPacketDestination{destination: destination}, err
 }
