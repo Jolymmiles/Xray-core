@@ -147,9 +147,18 @@ while True:
 // opensslTarget serves TLS with OpenSSL, as nginx does.
 func opensslTarget(t *testing.T, args ...string) string {
 	t.Helper()
-	bin, err := exec.LookPath("python3")
+	bin, err := exec.LookPath("python")
 	if err != nil {
-		t.Skip("python3 is not installed")
+		bin, err = exec.LookPath("python3")
+		if err != nil {
+			t.Skip("Python is not installed")
+		}
+	}
+	if output, err := exec.Command(bin, "-c", "try:\n import ssl\nexcept ImportError:\n raise SystemExit(77)").CombinedOutput(); err != nil {
+		if status, ok := err.(*exec.ExitError); ok && status.ExitCode() == 77 {
+			t.Skip("Python has no ssl module")
+		}
+		t.Fatalf("Python ssl availability check: %v: %s", err, output)
 	}
 	dir := t.TempDir()
 	certPEM, keyPEM := testCertificate(t)
@@ -161,6 +170,12 @@ func opensslTarget(t *testing.T, args ...string) string {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(bin, append([]string{"-c", opensslServerPy, certFile, keyFile}, args...)...)
+	stderr, err := os.Create(filepath.Join(dir, "stderr.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +189,8 @@ func opensslTarget(t *testing.T, args ...string) string {
 	})
 	var port int
 	if _, err := fmt.Fscan(stdout, &port); err != nil {
-		t.Skip("python3 has no ssl module: ", err)
+		output, _ := os.ReadFile(stderr.Name())
+		t.Fatalf("OpenSSL fixture did not report a port: %v: %s", err, output)
 	}
 	return "127.0.0.1:" + strconv.Itoa(port)
 }
@@ -640,14 +656,16 @@ func TestBrowserWithFingerprintThatDoesNotResume(t *testing.T) {
 	}
 }
 
-var decryptErrorAlert = []byte{21, 3, 3, 0, 2, 2, 51}
-
-// A censor that saw a ticket on the wire offers it with a binder it cannot
-// compute. A server that issued the ticket refuses it with decrypt_error,
-// as the target refuses its own; REALITY did a full handshake, through the
-// target that does not know the ticket.
+// Both refusal paths must return the target's TLS alert. The description
+// can differ across the OpenSSL versions used by Python.
 func TestTicketWithWrongBinderIsRefused(t *testing.T) {
-	server := startRealityServer(t, opensslTarget(t))
+	target := opensslTarget(t)
+	server := startRealityServer(t, target)
+	shape := reality.LoadTicketShape(target + " " + testServerName + " 2")
+	if shape == nil || !shape.RefusesBadBinder || len(shape.BadBinder) == 0 {
+		t.Fatal("the OpenSSL target did not return a TLS alert")
+	}
+	want := shape.BadBinder
 	dialReality(t, server, "auto")
 	key := testTicketKey(server)
 
@@ -677,8 +695,8 @@ func TestTicketWithWrongBinderIsRefused(t *testing.T) {
 	} else {
 		t.Logf("client: %v", err)
 	}
-	if got := capture.received(); !bytes.Equal(got, decryptErrorAlert) {
-		t.Fatalf("authenticated, the server answers % x, want decrypt_error", got)
+	if got := capture.received(); !bytes.Equal(got, want) {
+		t.Fatalf("authenticated, the server answers % x, want % x", got, want)
 	}
 
 	// The ticket in a ClientHello of the censor's own.
@@ -697,22 +715,33 @@ func TestTicketWithWrongBinderIsRefused(t *testing.T) {
 		utls.HelloGolang)
 	uConn.SetDeadline(time.Now().Add(5 * time.Second))
 	uConn.Handshake()
-	if got := probe.received(); !bytes.Equal(got, decryptErrorAlert) {
-		t.Fatalf("not authenticated, the server answers % x, want decrypt_error", got[:min(len(got), 16)])
+	if got := probe.received(); !bytes.Equal(got, want) {
+		t.Fatalf("not authenticated, the server answers % x, want % x", got[:min(len(got), 16)], want)
 	}
 }
 
 // Chromium verifies a server's certificate once in 30 minutes; meanwhile
 // full handshakes take no time for it.
 func TestVerifyDelayOncePerServer(t *testing.T) {
-	delay := verifyDelay(utls.HelloChrome_Auto, "verify-once")
+	key := t.Name()
+	verifications.Lock()
+	delete(verifications.at, key)
+	verifications.Unlock()
+	t.Cleanup(func() {
+		verifications.Lock()
+		delete(verifications.at, key)
+		verifications.Unlock()
+	})
+	delay := verifyDelay(utls.HelloChrome_Auto, key)
 	if d := delay(); d < 15*time.Millisecond {
 		t.Fatalf("the first verification takes %v", d)
 	}
 	if d := delay(); d > time.Millisecond {
 		t.Fatalf("a cached one takes %v", d)
 	}
-	verifications.at["verify-once"] = time.Now().Add(-verifyCacheTTL - time.Second)
+	verifications.Lock()
+	verifications.at[key] = time.Now().Add(-verifyCacheTTL - time.Second)
+	verifications.Unlock()
 	if d := delay(); d < 15*time.Millisecond {
 		t.Fatalf("after 30 minutes the certificate is verified again: %v", d)
 	}
@@ -794,14 +823,25 @@ func TestExpiredTicketLeavesTheFullClientHello(t *testing.T) {
 	if len(expired) == 0 {
 		t.Fatal("no tickets")
 	}
-	for _, session := range expired {
-		tickets.push(key, session)
-	}
-	again := dialRealityAs(t, server, "auto", "firefox")
-	if again.conn.ConnectionState().DidResume || slices.Contains(again.hello, 41) {
-		t.Fatal("an expired ticket is not offered")
-	}
-	if !slices.Equal(again.hello, full.hello) || !slices.Equal(again.helloLens, full.helloLens) {
-		t.Fatalf("the full ClientHello %v %v, want Firefox's %v %v", again.hello, again.helloLens, full.hello, full.helloLens)
+	for _, name := range []string{"rejected by cache", "dropped by uTLS"} {
+		t.Run(name, func(t *testing.T) {
+			for tickets.pop(key) != nil {
+			}
+			for _, session := range expired {
+				tickets.push(key, session)
+			}
+			if name == "dropped by uTLS" {
+				previous := usableTicket
+				usableTicket = func(*utls.ClientSessionState) bool { return true }
+				t.Cleanup(func() { usableTicket = previous })
+			}
+			again := dialRealityAs(t, server, "auto", "firefox")
+			if again.conn.ConnectionState().DidResume || slices.Contains(again.hello, 41) {
+				t.Fatal("an expired ticket was offered")
+			}
+			if !slices.Equal(again.hello, full.hello) || !slices.Equal(again.helloLens, full.helloLens) {
+				t.Fatalf("the full ClientHello %v %v, want Firefox's %v %v", again.hello, again.helloLens, full.hello, full.helloLens)
+			}
+		})
 	}
 }

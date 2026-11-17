@@ -193,6 +193,11 @@ func newUConn(c net.Conn, config *Config, dest net.Destination, fingerprint utls
 	if uConn.UConn, err = tls.NewUClient(c, utlsConfig, fingerprint, options...); err != nil {
 		return nil, errors.New("REALITY: failed to build the ClientHello").Base(err)
 	}
+	if len(options) > 0 && offeredPSK(uConn.UConn) == nil {
+		if uConn.UConn, err = tls.NewUClient(c, utlsConfig, fingerprint); err != nil {
+			return nil, errors.New("REALITY: failed to rebuild the full ClientHello").Base(err)
+		}
+	}
 	return uConn, nil
 }
 
