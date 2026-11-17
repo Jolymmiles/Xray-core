@@ -34,8 +34,12 @@ Debian packages unpacked under `root/` (`install.sh`), Google Chrome stable,
 Caddy checked against its release checksums, a copy of tcpdump (the system
 one has an AppArmor profile that refuses signals and writes to hidden
 directories), a test CA, and `xray-new`/`xray-old` built from the two refs.
-Firefox comes from the system. Angie and Envoy are included when their
-binaries are on the stand's PATH.
+Native runs use the system Firefox for the `firefox` scenario. Before
+running the full `browsers` group, install Edge under
+`$STAND_WORK/root/opt/microsoft/msedge/` and extract Firefox 156.0.1 and
+160.0 under `$STAND_WORK/root/opt/firefox-156.0.1/` and
+`$STAND_WORK/root/opt/firefox-160.0/`, respectively. Angie and Envoy are
+included when their binaries are on the stand's PATH.
 
 ### Docker Desktop
 
@@ -103,6 +107,8 @@ pasta --config-net -q -- unshare -m python3 stand.py real www.microsoft.com ya.r
 for Chrome, which shuffles them, the order for Firefox), PSK identity length,
 and the server records of full and resumed handshakes by type and length
 (CertificateVerify within 2 bytes).
+The HTTP/2 comparison reports an incomplete capture if tshark cannot
+associate SETTINGS or its ACK with a single TLS record in a packet.
 
 ## XHTTP startup records
 
@@ -113,6 +119,11 @@ probes. Ticket and HTTP/2 startup probes are enabled by the inbound
 option. On an enabled inbound, a client without browser mode follows
 the original per-connection path, including the original post-handshake
 records and HTTP/2 startup.
+
+The enabled inbound makes background TLS probes for each target, server
+name and ALPN profile. For HTTP/2 it also measures startup with a
+`GET /` request. See the [resumed ClientHello replay limitation](#known-limitation-replay-of-a-resumed-clienthello)
+before enabling this option.
 
 The updated uTLS dependency also changes several ClientHello presets.
 Those preset changes apply independently of the `browser` setting.

@@ -228,14 +228,17 @@ class Capture:
     stopped by its own pid, so that it really stops."""
 
     def __init__(self, path):
-        self.p = subprocess.Popen(["ip", "netns", "exec", "cli", "tcpdump", "-Z", "root", "-i", "vc", "-U",
-                                   "-w", "-", "tcp port 443"], env=ENV, stdout=open(path, "wb"),
-                                  stderr=subprocess.DEVNULL)
+        self.path = path
+        self.log = path + ".stderr"
+        with open(path, "wb") as output, open(self.log, "wb") as errors:
+            self.p = subprocess.Popen(["ip", "netns", "exec", "cli", "tcpdump", "-Z", "root", "-i", "vc", "-U",
+                                       "-w", "-", "tcp port 443"], env=ENV, stdout=output, stderr=errors)
         captures.append(self.p)
         time.sleep(1)
 
     def close(self):
         time.sleep(1)
+        stopped_early = self.p.poll() is not None
         self.p.terminate()
         try:
             self.p.wait(5)
@@ -243,6 +246,15 @@ class Capture:
             self.p.kill()
             self.p.wait()
         captures.remove(self.p)
+        if stopped_early or self.p.returncode not in (0, -signal.SIGTERM) or os.path.getsize(self.path) <= 24:
+            with open(self.log, errors="replace") as errors:
+                raise RuntimeError(f"tcpdump did not produce a complete capture: {self.path}: {errors.read()}")
+
+
+def require_browser_capture(directory):
+    keylog = f"{directory}/keylog"
+    if not os.path.isfile(keylog) or not os.path.getsize(keylog):
+        raise RuntimeError(f"browser TLS key log is missing or empty: {keylog}")
 
 
 def scenario_dir(run, name):
@@ -304,7 +316,8 @@ def xray_traffic(run, name, server_ip, target, fingerprint, browser, config=None
         raise RuntimeError(f"{name}: {', '.join(failed)}")
 
 
-def xray_client(run, name, binary, server_ip, target, fingerprint, browser, dials, pause=1.0, pauses=None):
+def xray_client(run, name, binary, server_ip, target, fingerprint, browser, dials, pause=1.0, pauses=None,
+                *, allowed_failures=0):
     """dials connections through an Xray client, each a new REALITY connection."""
     d = scenario_dir(run, name)
     keylog = f"{d}/keylog"
@@ -313,12 +326,14 @@ def xray_client(run, name, binary, server_ip, target, fingerprint, browser, dial
     cap = Capture(f"{d}/capture.pcap")
     client = start(f"client-{name}", f"ip netns exec cli {binary} run -c {d}/client.json", f"{d}/client.log")
     wait_port("cli", "127.0.0.1", 1080)
-    results = []
+    results, failures = [], []
     for i in range(dials):
         r = subprocess.run(f"ip netns exec cli curl -s -o /dev/null -w '%{{http_code}}' --max-time 10 "
                            f"--socks5-hostname 127.0.0.1:1080 http://{HTTP}/index.html?{i}",
                            shell=True, env=ENV, capture_output=True, text=True)
         results.append(r.stdout)
+        if r.returncode or r.stdout != "200":
+            failures.append(f"request {i}: curl={r.returncode}, HTTP={r.stdout!r}: {r.stderr.strip()}")
         time.sleep(pauses[i] if pauses else pause)
     stop(client)
     procs.remove((f"client-{name}", client))
@@ -327,6 +342,8 @@ def xray_client(run, name, binary, server_ip, target, fingerprint, browser, dial
             "fingerprint": fingerprint, "browser": browser, "http": results}
     with open(f"{d}/meta.json", "w") as f:
         json.dump(meta, f, indent=1)
+    if len(failures) > allowed_failures:
+        raise RuntimeError(f"{name}: {', '.join(failures)}")
     return meta
 
 
@@ -353,8 +370,7 @@ def chrome(run, name, target, binary=None):
     stop(p)
     procs.remove((f"chrome-{name}", p))
     cap.close()
-    if os.path.getsize(f"{d}/capture.pcap") <= 24 or not os.path.getsize(f"{d}/keylog"):
-        raise RuntimeError(f"{name} did not capture a browser TLS session")
+    require_browser_capture(d)
     with open(f"{d}/meta.json", "w") as f:
         json.dump({"kind": "chrome", "binary": binary, "target": target}, f, indent=1)
 
@@ -384,6 +400,7 @@ def firefox(run, name, target, binary="firefox"):
     stop(p)
     procs.remove((f"firefox-{name}", p))
     cap.close()
+    require_browser_capture(d)
     with open(f"{d}/meta.json", "w") as f:
         json.dump({"kind": "firefox", "binary": binary, "target": target}, f, indent=1)
 
@@ -423,13 +440,14 @@ def replay_probe(run, name, source):
         source = f"{run}/edge-replay-source"
         xray_client(run, "edge-replay-source", "xray-new", NEW_SERVER["nginx"], "nginx", "chrome", "auto", 2)
     out = subprocess.run(f"tshark -r {source}/capture.pcap -Y 'tls.handshake.extensions.psk.identities.length' "
-                         f"-T fields -e tcp.stream", shell=True, env=ENV, capture_output=True, text=True).stdout.split()
+                         f"-T fields -e tcp.stream", shell=True, env=ENV, capture_output=True, text=True,
+                         check=True).stdout.split()
     if not out:
         with open(f"{d}/meta.json", "w") as f:
             json.dump({"kind": "replay", "error": "no ClientHello with a ticket"}, f)
-        return
+        raise RuntimeError(f"{name}: no ClientHello with a ticket in {source}")
     raw = subprocess.run(f"tshark -r {source}/capture.pcap -q -z follow,tcp,raw,{out[0]}", shell=True, env=ENV,
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True, check=True).stdout
     client = b"".join(bytes.fromhex(l.strip()) for l in raw.splitlines()
                       if l and not l.startswith(("	", "=", "Follow", "Filter", "Node")) and all(c in "0123456789abcdef" for c in l.strip()))
     n = 5 + int.from_bytes(client[3:5], "big")
@@ -441,8 +459,10 @@ def replay_probe(run, name, source):
     r = subprocess.run(f"ip netns exec cli python3 {d}/replay.py {d}/hello.bin {NEW_SERVER['nginx']} {TARGETS['nginx']}",
                        shell=True, env=ENV, capture_output=True, text=True)
     cap.close()
+    if r.returncode:
+        raise RuntimeError(f"{name} failed ({r.returncode}): {r.stderr[-500:]}")
     with open(f"{d}/meta.json", "w") as f:
-        json.dump({"kind": "replay", "answers": json.loads(r.stdout or "{}"), "stderr": r.stderr[-500:]}, f, indent=1)
+        json.dump({"kind": "replay", "answers": json.loads(r.stdout), "stderr": r.stderr[-500:]}, f, indent=1)
 
 
 TICKET_PROBE = r"""
@@ -533,7 +553,7 @@ def ticket_probe(run):
     if browser is None or ours is None:
         with open(f"{d}/meta.json", "w") as f:
             json.dump({"kind": "probe", "error": "no resumed ClientHello"}, f)
-        return
+        raise RuntimeError("stub-ticket-probe did not capture a resumed ClientHello")
     for name, data in (("browser.bin", browser), ("ours.bin", ours), ("probe.py", TICKET_PROBE.encode())):
         with open(f"{d}/{name}", "wb") as f:
             f.write(data)
@@ -541,8 +561,10 @@ def ticket_probe(run):
     r = subprocess.run(f"ip netns exec cli python3 {d}/probe.py {STUB} {d}/browser.bin {d}/ours.bin",
                        shell=True, env=ENV, capture_output=True, text=True)
     cap.close()
+    if r.returncode:
+        raise RuntimeError(f"stub-ticket-probe failed ({r.returncode}): {r.stderr[-800:]}")
     with open(f"{d}/meta.json", "w") as f:
-        json.dump({"kind": "probe", "answers": json.loads(r.stdout or "{}"), "stderr": r.stderr[-800:]}, f, indent=1)
+        json.dump({"kind": "probe", "answers": json.loads(r.stdout), "stderr": r.stderr[-800:]}, f, indent=1)
 
 
 # Real sites as targets: `pasta --config-net -- unshare -m python3 stand.py
@@ -596,6 +618,7 @@ def chrome_revisits(run, name, site, server_ip, binary=None, visits=4, cache_bus
     stop(p)
     procs.remove((f"chrome-{name}", p))
     cap.close()
+    require_browser_capture(d)
     with open(f"{d}/meta.json", "w") as f:
         json.dump({"kind": "chrome", "binary": binary, "target": site}, f, indent=1)
 
@@ -666,6 +689,7 @@ def firefox_revisits(run, name, url, server_ip, binary, visits=4):
     stop(p)
     procs.remove((f"firefox-{name}", p))
     cap.close()
+    require_browser_capture(d)
     with open(f"{d}/meta.json", "w") as f:
         json.dump({"kind": "firefox", "binary": binary, "target": url}, f, indent=1)
 
@@ -801,7 +825,8 @@ def main():
                         pauses=[1, 10, 1, 1])
             lb = start("lb", f"ip netns exec srv haproxy -f {S}/conf/lb.cfg", f"{run}/lb.log")
             wait_port("srv", LB, 443)
-            xray_client(run, "edge-mixed-cluster", "xray-new", LB, "nginx", "chrome", "auto", 8)
+            xray_client(run, "edge-mixed-cluster", "xray-new", LB, "nginx", "chrome", "auto", 8,
+                        allowed_failures=1)
             stop(lb)
             procs.remove(("lb", lb))
             replay_probe(run, "edge-replay", f"{run}/xray-chrome-nginx" if os.path.isdir(f"{run}/xray-chrome-nginx") else None)

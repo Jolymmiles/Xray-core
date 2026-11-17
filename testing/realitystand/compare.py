@@ -29,10 +29,12 @@ HANDSHAKE_TAGS = {"SH", "CCS", "EE", "Cert", "CV", "Fin", "NST"}
 
 def load(run, name):
     path = f"{run}/{name}/analysis.json"
+    has_capture = os.path.isfile(f"{run}/{name}/capture.pcap")
     if os.path.exists(path):
         with open(path) as f:
             data = json.load(f)
         if all("server_psk_selected" in stream and "h2_startup" in stream
+               and ("h2_started" in stream or not has_capture)
                and (not stream["h2_startup"] or "before" in stream["h2_startup"]) for stream in data):
             return data
     subprocess.run([sys.executable, f"{CODE}/analyze.py", run, name], stdout=subprocess.DEVNULL, check=True)
@@ -131,28 +133,52 @@ def fmt(shape):
     return " ".join(f"{t}:{l}" for t, l in shape)
 
 
+def compare_handshakes(label, reference, candidates, browser):
+    expected = []
+    for stream in reference:
+        shape = server_shape(stream)
+        if any("Fin" in tag.split("+") for tag, _ in shape):
+            expected.append((stream["ch"], shape))
+    if not expected or not candidates:
+        return [(label, False, f"handshakes: complete ref {len(expected)}, ours {len(candidates)}")]
+    if label == "full":
+        # A reference connection can close before its tickets arrive.
+        issued = max(tickets(shape) for _, shape in expected)
+        expected = [(ch, shape) for ch, shape in expected if tickets(shape) == issued]
+
+    ordered = browser == "firefox"
+    skip = RANDOM_LEN.get(browser, ())
+    checks = []
+    for candidate in candidates:
+        hello = candidate["ch"]
+        shape = server_shape(candidate)
+        differences = []
+        for ref_hello, ref_shape in expected:
+            errors = hello_diff(ref_hello, hello, skip)
+            if ext_key(ref_hello["exts"], ordered) != ext_key(hello["exts"], ordered):
+                errors.append(f"extensions: ref {ref_hello['exts']} ours {hello['exts']}")
+            if ref_hello["psk_identities"] != hello["psk_identities"]:
+                errors.append(f"PSK lengths: ref {ref_hello['psk_identities']} ours {hello['psk_identities']}")
+            if not same_shape(ref_shape, shape):
+                errors.append(f"records: ref {fmt(ref_shape)} ours {fmt(shape)}")
+            if not errors:
+                break
+            differences.append(errors)
+        else:
+            checks.append((label, False, f"stream {candidate['stream']}: " + "; ".join(min(differences, key=len))))
+    return checks or [(label, True, "")]
+
+
 def compare(ref_run, our_run, browser, target, ref_name=None):
     ref = load(ref_run, f"{ref_name or browser}-{target}")
     ours = load(our_run, f"xray-{browser}-{target}")
     rf, rr = split(ref)
     of, orr = split(ours)
-    ordered = browser == "firefox"
-    checks = []
+    checks = compare_handshakes("full", rf, of, browser)
 
     def check(name, ok, detail):
         checks.append((name, ok, detail))
 
-    if rf and of:
-        a, b = ext_key(rf[0]["ch"]["exts"], ordered), ext_key(of[0]["ch"]["exts"], ordered)
-        check("hello full", a == b, f"ref {a}\n             ours {b}" if a != b else "")
-        d = hello_diff(rf[0]["ch"], of[0]["ch"], RANDOM_LEN.get(browser, ()))
-        check("hello content", not d, "\n             ".join(d))
-        a, b = server_shape(rf[0]), server_shape(of[0])
-        # the reference's first connection may end before its tickets came
-        full_ref = max((server_shape(s) for s in rf), key=tickets)
-        check("full", same_shape(full_ref, b), f"ref  {fmt(full_ref)}\n             ours {fmt(b)}")
-    else:
-        check("full", False, "no full handshake")
     for t in RANDOM_LEN.get(browser, ()):
         seen = []
         # all of the browser's connections in the reference run, any target
@@ -181,17 +207,8 @@ def compare(ref_run, our_run, browser, target, ref_name=None):
         # for a real chain here), later ones are not: ours only has to fall
         # in the range.
         check("verify delay", min(a) - 10 <= min(b) and max(b) <= max(a) + 10, f"ref {a} ours {b} ms")
-    if rr and orr:
-        a, b = ext_key(rr[0]["ch"]["exts"], ordered), ext_key(orr[0]["ch"]["exts"], ordered)
-        check("hello resumed", a == b, f"ref {a}\n             ours {b}" if a != b else "")
-        d = hello_diff(rr[0]["ch"], orr[0]["ch"], RANDOM_LEN.get(browser, ()))
-        check("hello res cont", not d, "\n             ".join(d))
-        a, b = rr[0]["ch"]["psk_identities"], orr[0]["ch"]["psk_identities"]
-        check("psk", a == b, f"ref {a} ours {b}")
-        a, b = server_shape(rr[0]), server_shape(orr[0])
-        check("resumed", same_shape(a, b), f"ref  {fmt(a)}\n             ours {fmt(b)}")
-    elif rr or orr:
-        check("resumed", False, f"reference resumed {len(rr)}, ours {len(orr)}")
+    if rr or orr:
+        checks.extend(compare_handshakes("resumed", rr, orr, browser))
     else:
         check("resumed", True, "neither resumes")  # a target that refuses its tickets
     return checks
@@ -221,6 +238,10 @@ def compare_h2(ref, ours, off=False):
             continue
         if label == "resumed" and not reference and not candidate:
             continue
+        incomplete = [s["stream"] for s in candidate if not s["h2_startup"]
+                      and (s.get("h2_started") or "client_fin" in s.get("timing", {}))]
+        if incomplete:
+            checks.append((f"H2 {label}", False, f"incomplete or ambiguous startups in streams {incomplete}"))
         if not expected or not observed:
             checks.append((f"H2 {label}", False, f"complete H2 startups: ref {len(expected)}, ours {len(observed)}"))
             continue
@@ -276,6 +297,12 @@ def main():
                     targets.add(d[len(prefix) + 1:])
     checked = 0
     for target in sorted(targets):
+        for browser in {browser for browser, _ in PAIRS}:
+            if os.path.isdir(f"{our_run}/xray-{browser}-{target}") and not any(
+                os.path.isdir(f"{ref_run}/{name}-{target}") for fp, name in PAIRS if fp == browser
+            ):
+                failed += 1
+                print(f"  DIFF {'capture':14s} no {browser} reference for {target} in {ref_run}")
         for browser, ref_name in PAIRS:
             if not os.path.isdir(f"{ref_run}/{ref_name}-{target}"):
                 continue

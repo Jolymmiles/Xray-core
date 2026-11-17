@@ -20,6 +20,7 @@ done
 echo "downloading:$missing"
 [ -z "$missing" ] || apt-get download $missing
 for d in *.deb; do
+  [ -f "$d" ] || continue
   dpkg-deb -x "$d" "$PREFIX"
 done
 echo "unpacked into $PREFIX"

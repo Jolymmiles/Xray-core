@@ -78,7 +78,9 @@ def h2_startup(chunks):
         if not controls and "SETTINGS" not in frames:
             before.extend(records)
             continue
-        if not records:
+        # JSON exposes TLS and HTTP/2 as separate layers. With several
+        # records in this packet it cannot locate either startup boundary.
+        if not records or (len(records) != 1 and ("SETTINGS" in frames or "ACK" in frames)):
             return None
         lengths.extend(records)
         controls.extend(frame for frame in frames if frame in ("SETTINGS", "WINDOW_UPDATE", "ACK"))
@@ -151,7 +153,9 @@ def analyze(scenario_dir):
             st["h2_chunks"].append((h2_records, list(h2_frames(layers.get("http2")))))
     for st in streams.values():
         st["timing"] = timing(st["records"])
-        st["h2_startup"] = h2_startup(st.pop("h2_chunks"))
+        chunks = st.pop("h2_chunks")
+        st["h2_started"] = any("SETTINGS" in frames for _, frames in chunks)
+        st["h2_startup"] = h2_startup(chunks)
     result = [streams[k] for k in sorted(streams)]
     with open(f"{scenario_dir}/analysis.json", "w") as f:
         json.dump(result, f, indent=1)
