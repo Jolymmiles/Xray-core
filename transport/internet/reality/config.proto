@@ -29,6 +29,9 @@ message Config {
   bytes mldsa65_verify = 25;
   string spider_x = 26;
   repeated int64 spider_y = 27;
+  // browser is "auto" to resume sessions the way the browser of the
+  // fingerprint does, or empty for the full handshake every time.
+  string browser = 28;
 
   string master_key_log = 31;
 

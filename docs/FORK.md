@@ -74,21 +74,29 @@ guard it.
   `transport/internet/reality/uclient_test.go`,
   `transport/internet/reality/randomized_test.go` and
   `transport/internet/grpc/dial_test.go`.
-- uTLS comes from the fork `github.com/Jolymmiles/utls`, branch
-  `fix/keep-secondary-key-shares-a13c59f` (a `replace` in `go.mod`; the
-  module path stays `github.com/refraction-networking/utls`): upstream
-  `a13c59ffe98b`, the commit upstream Xray pins since v26.11.9, plus the
-  changes listed in the fork's `FORK.md`. It keeps the private keys of the
+- uTLS comes from `github.com/Medium1992/utls` at `18007aed8773` (a
+  `replace` in `go.mod`; the module path stays
+  `github.com/refraction-networking/utls`). This revision descends from
+  Joly's `fix/keep-secondary-key-shares-a13c59f` and updates the Firefox,
+  Edge, and iOS presets and Chromium extension shuffling. These preset
+  changes also apply to TLS and REALITY connections with browser mode off.
+  The fork keeps the private keys of the
   classical key shares after the first and uses the one the server selected,
   so `firefox` and the `hellofirefox_*` forms, which send key shares for
   X25519 and P-256, complete a handshake with a server that selects P-256;
   upstream fails it with "tls: invalid server key share"
   (refraction-networking/utls#402), right after the ServerHello and in
   cleartext, where Firefox goes on. The ClientHello is unchanged. It is a
-  backport of refraction-networking/utls#416; drop the fork once upstream
-  ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
+  backport of refraction-networking/utls#416. Covered by
+  `transport/internet/tls/fingerprint_health_test.go`,
   the ClientHello snapshot tests and the fork's
   `TestSecondaryKeyShareSelectedByServer`.
+- REALITY browser mode requires `"browser": "auto"` on the inbound and
+  outbound. The default disables the new target probes, session-ticket
+  behavior and XHTTP startup shaping. A client with browser mode off
+  keeps the legacy server connection path even on an enabled inbound.
+  The comparisons and passive-observation limits are documented in
+  `testing/realitystand/README.md`.
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`
   (`proxy/vision_buffers.go`), which checks the field types and caches their
   offsets per connection type and fails closed on any other layout; upstream

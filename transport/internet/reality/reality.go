@@ -71,6 +71,7 @@ type UConn struct {
 	ServerName          string
 	AuthKey             []byte
 	Verified            bool
+	browserTickets      *connTickets
 	suppressCloseNotify atomic.Bool
 }
 
@@ -100,6 +101,10 @@ func (c *UConn) HandshakeAddress() net.Address {
 // certificates already parsed. Do not call ConnectionState from it: the
 // handshake holds the lock that takes.
 func (c *UConn) VerifyConnection(state utls.ConnectionState) error {
+	if state.DidResume && c.browserTickets != nil && offeredPSK(c.UConn) != nil {
+		c.Verified = true
+		return nil
+	}
 	if c.Config.Show {
 		localAddr := c.LocalAddr().String()
 		fmt.Printf("REALITY localAddr: %v\tis using X25519MLKEM768 for TLS' communication: %v\n", localAddr, c.HandshakeState.ServerHello.ServerShare.Group == utls.X25519MLKEM768)
@@ -159,8 +164,33 @@ func newUConn(c net.Conn, config *Config, dest net.Destination, fingerprint utls
 		utlsConfig.ServerName = dest.Address.String()
 	}
 	uConn.ServerName = utlsConfig.ServerName
+	var options []tls.UClientOption
+	if config.Browser == "auto" && resumesSessions(fingerprint) {
+		key := ticketKey(config, dest, utlsConfig.ServerName)
+		cache := &connTickets{key: key, conn: uConn, session: tickets.offer(key)}
+		uConn.browserTickets = cache
+		utlsConfig.SessionTicketsDisabled = false
+		utlsConfig.ClientSessionCache = cache
+		utlsConfig.OmitEmptyPsk = true
+		utlsConfig.AlwaysIncludePSK = true
+		utlsConfig.InsecureSkipTimeVerify = true
+		if delay := verifyDelay(fingerprint, key); delay != nil {
+			utlsConfig.VerifyConnection = func(state utls.ConnectionState) error {
+				err := uConn.VerifyConnection(state)
+				if err == nil && uConn.Verified && !state.DidResume {
+					time.Sleep(delay())
+				}
+				return err
+			}
+		}
+		if cache.session != nil {
+			if spec := resumptionSpec(fingerprint, cache.session); spec != nil {
+				options = append(options, tls.WithClientHelloSpec(spec))
+			}
+		}
+	}
 	var err error
-	if uConn.UConn, err = tls.NewUClient(c, utlsConfig, fingerprint); err != nil {
+	if uConn.UConn, err = tls.NewUClient(c, utlsConfig, fingerprint, options...); err != nil {
 		return nil, errors.New("REALITY: failed to build the ClientHello").Base(err)
 	}
 	return uConn, nil
@@ -184,6 +214,9 @@ func (c *UConn) seal() error {
 	hello.SessionId[1] = core.Version_y
 	hello.SessionId[2] = core.Version_z
 	hello.SessionId[3] = 0 // reserved
+	if c.browserTickets != nil {
+		hello.SessionId[3] = realityTicketsFlag
+	}
 	binary.BigEndian.PutUint32(hello.SessionId[4:], uint32(time.Now().Unix()))
 	copy(hello.SessionId[8:], config.ShortId)
 	if config.Show {
@@ -210,8 +243,18 @@ func (c *UConn) seal() error {
 	if config.Show {
 		fmt.Printf("REALITY localAddr: %v\tuConn.AuthKey[:16]: %v\tAEAD: %T\n", localAddr, c.AuthKey[:16], aead)
 	}
-	aead.Seal(hello.SessionId[:0], hello.Random[20:], hello.SessionId[:16], hello.Raw)
+	aad := hello.Raw
+	psk := offeredPSK(c.UConn)
+	if psk != nil {
+		aad = pskAAD(hello.Raw, psk.Binders)
+	}
+	aead.Seal(hello.SessionId[:0], hello.Random[20:], hello.SessionId[:16], aad)
 	copy(hello.Raw[39:], hello.SessionId)
+	if psk != nil {
+		if err := psk.PatchBuiltHello(hello); err != nil && err != io.EOF {
+			return errors.New("REALITY: failed to bind the ticket").Base(err)
+		}
+	}
 	return nil
 }
 
@@ -222,6 +265,14 @@ func (c *UConn) seal() error {
 // keeps open.
 var spiderLease = func() time.Duration {
 	return time.Duration(crypto.RandBetween(660, 720)) * time.Second
+}
+
+func (c *Config) UsesBrowserProfile() bool {
+	if c == nil || c.Browser != "auto" {
+		return false
+	}
+	fingerprint := tls.GetFingerprint(c.Fingerprint)
+	return fingerprint != nil && resumesSessions(*fingerprint)
 }
 
 // UClient dials REALITY over c. It owns c: on failure c is closed, except
@@ -241,8 +292,19 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 		if err := uConn.seal(); err != nil {
 			return nil, err
 		}
+		offered := uConn.browserTickets != nil && offeredPSK(uConn.UConn) != nil
 		if err := uConn.HandshakeContext(ctx); err != nil {
+			if offered {
+				tickets.fail(uConn.browserTickets.key)
+			}
 			return nil, err
+		}
+		if cache := uConn.browserTickets; cache != nil && !uConn.Verified {
+			if offered {
+				tickets.fail(cache.key)
+			} else {
+				tickets.clear(cache.key)
+			}
 		}
 		return uConn, nil
 	}()

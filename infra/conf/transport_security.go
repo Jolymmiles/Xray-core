@@ -71,12 +71,20 @@ type REALITYConfig struct {
 	ShortId       string `json:"shortId"`
 	Mldsa65Verify string `json:"mldsa65Verify"`
 	SpiderX       string `json:"spiderX"`
+	Browser       string `json:"browser"`
 }
 
 func (c *REALITYConfig) Build() (proto.Message, error) {
 	config := new(reality.Config)
 	config.MasterKeyLog = c.MasterKeyLog
 	config.Show = c.Show
+	switch strings.ToLower(c.Browser) {
+	case "", "off":
+	case "auto":
+		config.Browser = "auto"
+	default:
+		return nil, errors.New(`invalid "browser": `, c.Browser)
+	}
 	var err error
 	if c.Target != nil {
 		c.Dest = c.Target

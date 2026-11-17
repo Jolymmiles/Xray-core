@@ -21,6 +21,14 @@ Keep this list complete; everything else must match upstream byte for byte.
   without an X25519MLKEM768 key share is rejected, as upstream does. Xray's
   `realitySettings.requireMlkem` sets it; it is off by default. Covered by the
   same test.
+- `ticket_detect.go`, `reality_ticket.go`, and their integration with
+  `common.go`, `conn.go`, `handshake_server_tls13.go`, `record_detect.go`
+  and `tls.go` implement opt-in REALITY session tickets and destination
+  profiling. `h2_detect.go` measures the destination's HTTP/2 greeting for
+  XHTTP. The extension is disabled by default. The module tests cover
+  the ticket cache and both probe paths. The module uses `x/net/http2/hpack`
+  for the H2 probe, with the related `x/crypto` and `x/sys` versions
+  recorded in `go.mod`.
 
 ## Updating
 

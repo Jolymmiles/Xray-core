@@ -1,0 +1,24 @@
+user root root;
+worker_processes 1;
+pid @WORK@/runs/angie/angie.pid;
+error_log stderr warn;
+events { worker_connections 256; }
+http {
+  access_log off;
+  client_body_temp_path @WORK@/runs/angie/body;
+  proxy_temp_path @WORK@/runs/angie/proxy;
+  fastcgi_temp_path @WORK@/runs/angie/fastcgi;
+  uwsgi_temp_path @WORK@/runs/angie/uwsgi;
+  scgi_temp_path @WORK@/runs/angie/scgi;
+  keepalive_timeout 2s;
+  server {
+    listen 10.9.0.15:443 ssl;
+    http2 on;
+    server_name angie.example.test;
+    ssl_certificate @WORK@/certs/real/rsa-chain.pem;
+    ssl_certificate_key @WORK@/certs/real/rsa.key;
+    location / {
+      proxy_pass http://10.9.0.50;
+    }
+  }
+}

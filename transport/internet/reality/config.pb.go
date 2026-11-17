@@ -7,11 +7,12 @@
 package reality
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -43,7 +44,10 @@ type Config struct {
 	Mldsa65Verify         []byte                 `protobuf:"bytes,25,opt,name=mldsa65_verify,json=mldsa65Verify,proto3" json:"mldsa65_verify,omitempty"`
 	SpiderX               string                 `protobuf:"bytes,26,opt,name=spider_x,json=spiderX,proto3" json:"spider_x,omitempty"`
 	SpiderY               []int64                `protobuf:"varint,27,rep,packed,name=spider_y,json=spiderY,proto3" json:"spider_y,omitempty"`
-	MasterKeyLog          string                 `protobuf:"bytes,31,opt,name=master_key_log,json=masterKeyLog,proto3" json:"master_key_log,omitempty"`
+	// browser is "auto" to resume sessions the way the browser of the
+	// fingerprint does, or empty for the full handshake every time.
+	Browser      string `protobuf:"bytes,28,opt,name=browser,proto3" json:"browser,omitempty"`
+	MasterKeyLog string `protobuf:"bytes,31,opt,name=master_key_log,json=masterKeyLog,proto3" json:"master_key_log,omitempty"`
 	// Fork-owned, outside the blocks upstream numbers: 1-13 for the server,
 	// 21-27 for the client, 31.
 	RequireMlkem  bool `protobuf:"varint,100,opt,name=require_mlkem,json=requireMlkem,proto3" json:"require_mlkem,omitempty"`
@@ -221,6 +225,13 @@ func (x *Config) GetSpiderY() []int64 {
 	return nil
 }
 
+func (x *Config) GetBrowser() string {
+	if x != nil {
+		return x.Browser
+	}
+	return ""
+}
+
 func (x *Config) GetMasterKeyLog() string {
 	if x != nil {
 		return x.MasterKeyLog
@@ -299,7 +310,7 @@ var File_transport_internet_reality_config_proto protoreflect.FileDescriptor
 
 const file_transport_internet_reality_config_proto_rawDesc = "" +
 	"\n" +
-	"'transport/internet/reality/config.proto\x12\x1fxray.transport.internet.reality\"\xbd\x06\n" +
+	"'transport/internet/reality/config.proto\x12\x1fxray.transport.internet.reality\"\xd7\x06\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04show\x18\x01 \x01(\bR\x04show\x12\x12\n" +
 	"\x04dest\x18\x02 \x01(\tR\x04dest\x12\x12\n" +
@@ -324,7 +335,8 @@ const file_transport_internet_reality_config_proto_rawDesc = "" +
 	"\bshort_id\x18\x18 \x01(\fR\ashortId\x12%\n" +
 	"\x0emldsa65_verify\x18\x19 \x01(\fR\rmldsa65Verify\x12\x19\n" +
 	"\bspider_x\x18\x1a \x01(\tR\aspiderX\x12\x19\n" +
-	"\bspider_y\x18\x1b \x03(\x03R\aspiderY\x12$\n" +
+	"\bspider_y\x18\x1b \x03(\x03R\aspiderY\x12\x18\n" +
+	"\abrowser\x18\x1c \x01(\tR\abrowser\x12$\n" +
 	"\x0emaster_key_log\x18\x1f \x01(\tR\fmasterKeyLog\x12#\n" +
 	"\rrequire_mlkem\x18d \x01(\bR\frequireMlkem\"\x83\x01\n" +
 	"\rLimitFallback\x12\x1f\n" +
@@ -346,11 +358,14 @@ func file_transport_internet_reality_config_proto_rawDescGZIP() []byte {
 	return file_transport_internet_reality_config_proto_rawDescData
 }
 
-var file_transport_internet_reality_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_transport_internet_reality_config_proto_goTypes = []any{
-	(*Config)(nil),        // 0: xray.transport.internet.reality.Config
-	(*LimitFallback)(nil), // 1: xray.transport.internet.reality.LimitFallback
-}
+var (
+	file_transport_internet_reality_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+	file_transport_internet_reality_config_proto_goTypes  = []any{
+		(*Config)(nil),        // 0: xray.transport.internet.reality.Config
+		(*LimitFallback)(nil), // 1: xray.transport.internet.reality.LimitFallback
+	}
+)
+
 var file_transport_internet_reality_config_proto_depIdxs = []int32{
 	1, // 0: xray.transport.internet.reality.Config.limit_fallback_upload:type_name -> xray.transport.internet.reality.LimitFallback
 	1, // 1: xray.transport.internet.reality.Config.limit_fallback_download:type_name -> xray.transport.internet.reality.LimitFallback

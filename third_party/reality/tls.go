@@ -260,13 +260,20 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				plainText := make([]byte, 32)
 				copy(ciphertext, hs.clientHello.sessionId)
 				copy(hs.clientHello.sessionId, plainText) // hs.clientHello.sessionId points to hs.clientHello.raw[39:]
-				if _, err = aead.Open(plainText[:0], hs.clientHello.random[20:], ciphertext, hs.clientHello.original); err != nil {
+				_, err = aead.Open(plainText[:0], hs.clientHello.random[20:], ciphertext, hs.clientHello.original)
+				if err != nil && len(hs.clientHello.pskBinders) != 0 {
+					// A client that offers a ticket seals its session id over the ClientHello without the binders, which cover the session id.
+					_, err = aead.Open(plainText[:0], hs.clientHello.random[20:], ciphertext, pskAAD(hs.clientHello.original, hs.clientHello.pskBinders))
+				}
+				if err != nil {
+					copy(hs.clientHello.sessionId, ciphertext)
 					break
 				}
 				copy(hs.clientHello.sessionId, ciphertext)
 				copy(hs.c.ClientVer[:], plainText)
 				hs.c.ClientTime = time.Unix(int64(binary.BigEndian.Uint32(plainText[4:])), 0)
 				copy(hs.c.ClientShortId[:], plainText[8:])
+				hs.c.realityTickets = config.BrowserMode && plainText[3]&realityTicketsFlag != 0
 				if config.Show {
 					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientVer: %v\n", remoteAddr, hs.c.ClientVer)
 					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientTime: %v\n", remoteAddr, hs.c.ClientTime)
@@ -285,7 +292,33 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			}
 			break
 		}
+		if config.BrowserMode && hs.clientHello != nil && hs.c.vers == VersionTLS13 && config.ServerNames[hs.clientHello.serverName] {
+			hs.refusal = hs.ticketRefusal()
+		}
 		mutex.Unlock()
+		if hs.refusal != nil {
+			// One of REALITY's tickets with a wrong binder: refuse it as
+			// the target refuses its own, whoever sends it, after as long.
+			if config.Show {
+				fmt.Printf("REALITY remoteAddr: %v\trefused a ticket with a wrong binder: % x after %v\n", remoteAddr, hs.refusal.BadBinder, hs.refusal.BadBinderDelay)
+			}
+			target.Close()
+			if hs.refusal.BadBinderDelay > 0 {
+				conn.SetReadDeadline(time.Now().Add(hs.refusal.BadBinderDelay))
+				io.Copy(io.Discard, underlying) // until then, or until the client goes
+				conn.SetReadDeadline(time.Time{})
+			}
+			// Close as a server that sends an alert does: FIN after it,
+			// then whatever the client still sends, so that no reset
+			// takes the alert with it.
+			conn.Write(hs.refusal.BadBinder)
+			underlying.CloseWrite()
+			conn.SetReadDeadline(time.Now().Add(time.Second))
+			io.Copy(io.Discard, underlying)
+			conn.Close()
+			waitGroup.Done()
+			return
+		}
 		if hs.c.conn != conn {
 			if config.Show && hs.clientHello != nil {
 				fmt.Printf("REALITY remoteAddr: %v\tforwarded SNI: %v\n", remoteAddr, hs.clientHello.serverName)
@@ -315,13 +348,23 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			n, err := target.Read(buf)
 			if n == 0 {
 				if err != nil {
-					conn.Close()
+					mutex.Lock()
+					refused := hs.refusal != nil // the other side answers the client then
+					mutex.Unlock()
+					if !refused {
+						conn.Close()
+					}
 					waitGroup.Done()
 					return
 				}
 				continue
 			}
 			mutex.Lock()
+			if hs.refusal != nil {
+				mutex.Unlock()
+				waitGroup.Done()
+				return
+			}
 			s2cSaved = append(s2cSaved, buf[:n]...)
 			if hs.c.conn != conn {
 				copying = true // if the target already sent some data, just start bidirectional direct forwarding
@@ -411,17 +454,27 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				break
 			}
 			for {
-				key := config.Dest + " " + hs.clientHello.serverName
-				if len(hs.clientHello.alpnProtocols) == 0 {
-					key += " 0"
-				} else if hs.clientHello.alpnProtocols[0] == "h2" {
-					key += " 2"
-				} else {
-					key += " 1"
-				}
+				key, alpn := recordsKey(config, hs.clientHello)
 				if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
 					if postHandshakeRecordsLens, ok := val.([]int); ok {
-						for _, length := range postHandshakeRecordsLens {
+						if hs.c.realityTickets && config.AppRecords && alpn == 2 {
+							hs.c.h2Startup = detectH2Startup(config, key, hs.clientHello.serverName).
+								records(hs.usingPSK, hasFirefoxH2Fingerprint(hs.clientHello))
+						}
+						lens, tickets := hs.postHandshakeRecords(postHandshakeRecordsLens)
+						for i, length := range lens {
+							if len(hs.c.h2Startup) != 0 && tickets[i] == 0 {
+								continue
+							}
+							if tickets[i] > 0 {
+								if msgs := hs.c.ticketMsgs(hs.ticketShape, length, tickets[i]); msgs != nil {
+									hs.c.writeTicketRecord(msgs, length)
+									if config.Show {
+										fmt.Printf("REALITY remoteAddr: %v\tlen(NewSessionTicket record): %v\n", remoteAddr, length)
+									}
+									continue
+								}
+							}
 							plainText := make([]byte, length-16)
 							plainText[0] = 23
 							plainText[1] = 3

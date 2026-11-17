@@ -69,4 +69,4 @@ tool (
 
 replace github.com/xtls/reality => ./third_party/reality
 
-replace github.com/refraction-networking/utls => github.com/Jolymmiles/utls v0.0.0-20261110112850-6906384432de
+replace github.com/refraction-networking/utls => github.com/Medium1992/utls v1.8.3-xray-a13c59f-ff156.0.20261116230501-18007aed8773
