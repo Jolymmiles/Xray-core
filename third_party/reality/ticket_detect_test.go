@@ -2,7 +2,7 @@ package reality
 
 import (
 	"bytes"
-	"fmt"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,8 +10,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,9 +235,80 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 			}()
 		}
 	}()
-	shape, err := probeTicketShape(&Config{Type: "tcp", Dest: ln.Addr().String()}, "example.com", 0)
-	if err == nil || shape != nil {
+	config := &Config{Type: "tcp", Dest: ln.Addr().String()}
+	shape, err := probeTicketShape(config, "example.com", 0)
+	if !errors.Is(err, errNoTargetTickets) || shape != nil {
 		t.Fatalf("a target without tickets has no shape: %+v", shape)
+	}
+	key := config.Dest + " no tickets"
+	old := time.Now().Add(-2 * ticketShapeRefresh)
+	GlobalTicketShapes.Store(key, &TicketShape{Issues: true, probed: old, measured: old})
+	t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+	RefreshTicketShape(config, key, "example.com", 0)
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		value, _ := GlobalTicketShapes.Load(key)
+		if fresh := value.(*TicketShape); fresh.probed.After(old) {
+			if LoadTicketShape(key) != nil {
+				t.Fatal("refresh retained a ticket shape after a successful no-ticket handshake")
+			}
+			return
+		}
+	}
+	t.Fatal("ticket shape refresh did not finish")
+}
+
+func TestEmptyProbeCloseIsNotATimeout(t *testing.T) {
+	config := &Config{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		client, peer := net.Pipe()
+		go func() {
+			defer peer.Close()
+			header := make([]byte, recordHeaderLen)
+			if _, err := io.ReadFull(peer, header); err == nil {
+				length := int(header[3])<<8 | int(header[4])
+				io.CopyN(io.Discard, peer, int64(length))
+			}
+		}()
+		return client, nil
+	}}
+	if answer, delay, ok := probeBadBinder(config, "example.com", 0, nil); ok {
+		t.Fatalf("an early empty close was recorded as a response: %x after %v", answer, delay)
+	}
+}
+
+func TestTicketShapeExpiresAfterFailedRefresh(t *testing.T) {
+	config := &Config{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, net.ErrClosed
+	}}
+	for _, tc := range []struct {
+		name  string
+		age   time.Duration
+		keeps bool
+	}{
+		{"recent", 2 * ticketShapeRefresh, true},
+		{"expired", ticketShapeMaxAge + time.Minute, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := t.Name()
+			t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+			old := time.Now().Add(-tc.age)
+			GlobalTicketShapes.Store(key, &TicketShape{Issues: true, probed: old, measured: old})
+			if (LoadTicketShape(key) != nil) != tc.keeps {
+				t.Fatal("unexpected profile availability before refresh")
+			}
+			RefreshTicketShape(config, key, "example.com", 0)
+			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+				value, _ := GlobalTicketShapes.Load(key)
+				fresh := value.(*TicketShape)
+				if fresh.probed.Equal(old) {
+					continue
+				}
+				if fresh.Issues != tc.keeps || (tc.keeps && fresh.measured != old) {
+					t.Fatalf("failed refresh changed the profile incorrectly: %+v", fresh)
+				}
+				return
+			}
+			t.Fatal("ticket shape refresh did not finish")
+		})
 	}
 }
 
@@ -255,7 +329,7 @@ func TestTicketShapeIsProbedAgain(t *testing.T) {
 	}
 	old := waitShape(time.Time{})
 	RefreshTicketShape(config, key, "example.com", 2)
-	if val, _ := GlobalTicketShapes.Load(key); val != old {
+	if val, _ := GlobalTicketShapes.Load(key); val.(*TicketShape).probed != old.probed {
 		t.Fatal("a fresh shape is not probed again")
 	}
 	stale := *old

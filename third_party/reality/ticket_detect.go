@@ -89,6 +89,7 @@ type TicketShape struct {
 	BadBinderDelay   time.Duration
 
 	probed           time.Time
+	measured         time.Time
 	badBinderSession *utls.ClientSessionState
 }
 
@@ -96,6 +97,7 @@ type TicketShape struct {
 // a wrong binder, which may take long, and stores the shape again with it.
 func storeTicketShape(config *Config, key, sni string, alpn int, shape *TicketShape) {
 	shape.probed = time.Now()
+	shape.measured = shape.probed
 	GlobalTicketShapes.Store(key, shape)
 	if !shape.Resumes || shape.badBinderSession == nil {
 		return
@@ -141,12 +143,15 @@ func DetectTicketShape(config *Config, key, sni string, alpn int) {
 // ticketShapeRefresh is how often the target is probed again: a target
 // that restarts may get a new ticket key, and its tickets a new prefix.
 const ticketShapeRefresh = time.Hour
+const ticketShapeMaxAge = 3 * ticketShapeRefresh
+
+var errNoTargetTickets = errors.New("reality: the target issues no tickets")
 
 var refreshingTicketShapes sync.Map
 
 // RefreshTicketShape probes the target again for key once the shape is
-// older than ticketShapeRefresh. The old shape stays in use until then,
-// and when the probe fails.
+// older than ticketShapeRefresh. A transient failure keeps the old shape
+// until ticketShapeMaxAge.
 func RefreshTicketShape(config *Config, key, sni string, alpn int) {
 	val, _ := GlobalTicketShapes.Load(key)
 	shape, ok := val.(*TicketShape)
@@ -156,26 +161,37 @@ func RefreshTicketShape(config *Config, key, sni string, alpn int) {
 	if _, busy := refreshingTicketShapes.LoadOrStore(key, struct{}{}); busy {
 		return
 	}
+	// The preceding refresh may have finished since the first load.
+	if current, _ := GlobalTicketShapes.Load(key); current != shape {
+		refreshingTicketShapes.Delete(key)
+		return
+	}
 	go func() {
 		defer refreshingTicketShapes.Delete(key)
-		fresh, _ := probeTicketShape(config, sni, alpn)
-		if fresh == nil {
-			again := *shape
-			fresh = &again
+		fresh, err := probeTicketShape(config, sni, alpn)
+		if err == nil {
+			storeTicketShape(config, key, sni, alpn, fresh)
+			return
 		}
-		storeTicketShape(config, key, sni, alpn, fresh)
+		if errors.Is(err, errNoTargetTickets) || time.Since(shape.measured) >= ticketShapeMaxAge {
+			GlobalTicketShapes.Store(key, &TicketShape{probed: time.Now()})
+			return
+		}
+		again := *shape
+		again.probed = time.Now()
+		GlobalTicketShapes.Store(key, &again)
 	}()
 }
 
 // LoadTicketShape returns the shape probed for key, or nil while the probe
-// runs or when the target issues no tickets.
+// runs, when the target issues no tickets, or when the profile expired.
 func LoadTicketShape(key string) *TicketShape {
 	val, ok := GlobalTicketShapes.Load(key)
 	if !ok {
 		return nil
 	}
 	shape, ok := val.(*TicketShape)
-	if !ok || !shape.Issues {
+	if !ok || !shape.Issues || time.Since(shape.measured) >= ticketShapeMaxAge {
 		return nil
 	}
 	return shape
@@ -215,9 +231,10 @@ func (r *ticketRecorder) take() []*utls.ClientSessionState {
 // probeCaptureConn records what the target sends.
 type probeCaptureConn struct {
 	net.Conn
-	mu        sync.Mutex
-	in        []byte
-	firstByte time.Time
+	mu          sync.Mutex
+	in          []byte
+	firstByte   time.Time
+	readTimeout bool
 }
 
 func (c *probeCaptureConn) Read(b []byte) (int, error) {
@@ -226,6 +243,8 @@ func (c *probeCaptureConn) Read(b []byte) (int, error) {
 	if n > 0 && c.firstByte.IsZero() {
 		c.firstByte = time.Now()
 	}
+	var timeout net.Error
+	c.readTimeout = errors.As(err, &timeout) && timeout.Timeout()
 	c.in = append(c.in, b[:n]...)
 	c.mu.Unlock()
 	return n, err
@@ -314,8 +333,15 @@ func probeOnce(config *Config, sni string, alpn int, replay *utls.ClientSessionS
 		return nil, err
 	}
 	// Tickets are processed as they are read.
-	target.SetReadDeadline(time.Now().Add(ticketProbeWait))
-	io.Copy(io.Discard, uConn)
+	if err := target.SetReadDeadline(time.Now().Add(ticketProbeWait)); err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(io.Discard, uConn); err != nil {
+		var readErr net.Error
+		if !errors.As(err, &readErr) || !readErr.Timeout() {
+			return nil, err
+		}
+	}
 
 	records := splitRecords(capture.received())
 	if len(records) < 2 || records[0].typ != byte(recordTypeHandshake) {
@@ -342,7 +368,7 @@ func probeTicketShape(config *Config, sni string, alpn int) (*TicketShape, error
 		return nil, err
 	}
 	if len(full.sessions) == 0 {
-		return nil, errors.New("reality: the target issues no tickets")
+		return nil, errNoTargetTickets
 	}
 	shape := &TicketShape{
 		Tickets:     len(full.sessions),
@@ -593,7 +619,9 @@ func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSe
 		nextProtos = []string{"h2", "http/1.1"}
 	}
 	start := time.Now()
-	target.SetDeadline(start.Add(badBinderWait))
+	if err := target.SetDeadline(start.Add(badBinderWait)); err != nil {
+		return nil, 0, false
+	}
 	uConn := utls.UClient(&binderSpoiler{Conn: capture}, &utls.Config{
 		ServerName:         sni,
 		InsecureSkipVerify: true,
@@ -604,7 +632,10 @@ func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSe
 	delay = capture.firstByte.Sub(start)
 	answer = capture.received()
 	if len(answer) == 0 {
-		return nil, badBinderWait, true
+		if capture.readTimeout && time.Since(start) >= badBinderWait {
+			return nil, badBinderWait, true
+		}
+		return nil, 0, false
 	}
 	records := splitRecords(answer)
 	n := 0

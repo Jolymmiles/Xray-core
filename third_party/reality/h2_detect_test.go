@@ -187,6 +187,26 @@ func TestProbeH2MeasuresReplyInStartupRecord(t *testing.T) {
 	}
 }
 
+func TestH2StartupPartialRefresh(t *testing.T) {
+	old := h2StartupProfiles{
+		full:    []H2StartupRecord{{Length: 31}},
+		resumed: []H2StartupRecord{{Length: 44}},
+	}
+	full := []H2StartupRecord{{Length: 55}}
+	resumed := []H2StartupRecord{{Length: 66}}
+	for _, test := range []struct {
+		measured h2StartupProfiles
+		want     h2StartupProfiles
+	}{
+		{h2StartupProfiles{full: full}, h2StartupProfiles{full: full, resumed: old.resumed}},
+		{h2StartupProfiles{resumed: resumed}, h2StartupProfiles{full: old.full, resumed: resumed}},
+	} {
+		if got := test.measured.withPrevious(old); !reflect.DeepEqual(got, test.want) {
+			t.Fatalf("merged startup profiles %+v, want %+v", got, test.want)
+		}
+	}
+}
+
 func TestH2StartupRefreshKeepsLastProfileOnFailure(t *testing.T) {
 	key := t.Name()
 	t.Cleanup(func() { h2StartupRecords.Delete(key) })

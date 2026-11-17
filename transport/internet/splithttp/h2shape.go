@@ -80,6 +80,10 @@ type h2StartupConn interface {
 	WritePaddedAppRecord([]byte, int) (int, error)
 }
 
+func (c *shapeConn) NetConn() net.Conn {
+	return c.Conn
+}
+
 // recordOverhead is what a TLS 1.3 record adds to its content: the header,
 // the content type and the AEAD tag.
 const recordOverhead = 5 + 1 + 16

@@ -468,7 +468,13 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 							}
 							if tickets[i] > 0 {
 								if msgs := hs.c.ticketMsgs(hs.ticketShape, length, tickets[i]); msgs != nil {
-									hs.c.writeTicketRecord(msgs, length)
+									if err := hs.c.writeTicketRecord(msgs, length); err != nil {
+										mutex.Unlock()
+										conn.Close()
+										target.Close()
+										waitGroup.Done()
+										return
+									}
 									if config.Show {
 										fmt.Printf("REALITY remoteAddr: %v\tlen(NewSessionTicket record): %v\n", remoteAddr, length)
 									}

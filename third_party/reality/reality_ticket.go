@@ -193,7 +193,7 @@ func (hs *serverHandshakeStateTLS13) realityResume(shape *TicketShape) bool {
 		len(ch.pskIdentities) != len(ch.pskBinders) {
 		return false
 	}
-	if !shape.Resumes {
+	if !shape.Resumes || shape.HelloDelta != 6 {
 		return false
 	}
 	// The target's live answer has the flight its probe had.
@@ -240,8 +240,11 @@ func (hs *serverHandshakeStateTLS13) realityResume(shape *TicketShape) bool {
 	c.out.handshakeLen[2] = ee
 	c.out.handshakeLen[3] = 0
 	c.out.handshakeLen[4] = 0
-	if c.out.handshakeLen[6] != 0 && shape.FlightRecords == 4 && len(shape.ResRecords) > 2 {
-		c.out.handshakeLen[6] = shape.ResRecords[2]
+	if c.out.handshakeLen[6] != 0 {
+		c.out.handshakeLen[6] = 0
+		if shape.FlightRecords == 4 && shape.ResTickets > 0 && len(shape.ResRecords) > 2 {
+			c.out.handshakeLen[6] = shape.ResRecords[2]
+		}
 	}
 	return true
 }

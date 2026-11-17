@@ -44,6 +44,20 @@ type h2StartupProfiles struct {
 	resumedWithReply []H2StartupRecord
 }
 
+func (p h2StartupProfiles) withPrevious(previous h2StartupProfiles) h2StartupProfiles {
+	if len(p.full) == 0 && len(p.fullDelayedReply) == 0 && len(p.firefoxFull) == 0 {
+		p.full = previous.full
+		p.fullDelayedReply = previous.fullDelayedReply
+		p.firefoxFull = previous.firefoxFull
+	}
+	if len(p.resumed) == 0 && len(p.resumedDelayed) == 0 && len(p.resumedWithReply) == 0 {
+		p.resumed = previous.resumed
+		p.resumedDelayed = previous.resumedDelayed
+		p.resumedWithReply = previous.resumedWithReply
+	}
+	return p
+}
+
 func (p h2StartupProfiles) records(resumed, firefox bool) []H2StartupRecord {
 	if firefox {
 		if resumed && len(p.resumedWithReply) != 0 {
@@ -106,10 +120,7 @@ func detectH2Startup(config *Config, key, sni string) h2StartupProfiles {
 		}
 	}
 	go func() {
-		profiles := measureH2Startup(config, sni)
-		if len(profiles.full) == 0 && len(profiles.resumed) == 0 {
-			profiles = pending.profiles
-		}
+		profiles := measureH2Startup(config, sni).withPrevious(pending.profiles)
 		h2StartupRecords.Store(key, &h2StartupSnapshot{profiles: profiles, probed: time.Now()})
 	}()
 	return pending.profiles
