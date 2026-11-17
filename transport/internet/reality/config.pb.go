@@ -7,12 +7,11 @@
 package reality
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -358,14 +357,11 @@ func file_transport_internet_reality_config_proto_rawDescGZIP() []byte {
 	return file_transport_internet_reality_config_proto_rawDescData
 }
 
-var (
-	file_transport_internet_reality_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-	file_transport_internet_reality_config_proto_goTypes  = []any{
-		(*Config)(nil),        // 0: xray.transport.internet.reality.Config
-		(*LimitFallback)(nil), // 1: xray.transport.internet.reality.LimitFallback
-	}
-)
-
+var file_transport_internet_reality_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_transport_internet_reality_config_proto_goTypes = []any{
+	(*Config)(nil),        // 0: xray.transport.internet.reality.Config
+	(*LimitFallback)(nil), // 1: xray.transport.internet.reality.LimitFallback
+}
 var file_transport_internet_reality_config_proto_depIdxs = []int32{
 	1, // 0: xray.transport.internet.reality.Config.limit_fallback_upload:type_name -> xray.transport.internet.reality.LimitFallback
 	1, // 1: xray.transport.internet.reality.Config.limit_fallback_download:type_name -> xray.transport.internet.reality.LimitFallback
