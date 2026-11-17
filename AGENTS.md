@@ -298,8 +298,8 @@ every other rule in this file still applies to it.
 
 | Role | Model | Tool |
 | --- | --- | --- |
-| `second-opinion` | GPT-6.1-Sol | T3 `delegate_task` |
-| `code-reviewer` | GPT-6.1-Sol | T3 `delegate_task` with `"role": "review"` |
+| `second-opinion` | GPT-6.2-Sol | T3 `delegate_task` |
+| `code-reviewer` | GPT-6.2-Sol | T3 `delegate_task` with `"role": "review"` |
 | `explorer` | Claude Haiku 5.5 | Agent tool `explorer` |
 
 Dispatch both GPT roles with these `delegate_task` parameters:
@@ -308,7 +308,7 @@ Dispatch both GPT roles with these `delegate_task` parameters:
 {
   "target": {
     "providerInstanceId": "codex",
-    "model": "gpt-6.1-sol",
+    "model": "gpt-6.2-sol",
     "options": {"reasoningEffort": "high"}
   },
   "mode": "wait",
