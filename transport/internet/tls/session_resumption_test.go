@@ -333,3 +333,74 @@ func startTLSServer(t *testing.T, connections int, version uint16) (stdnet.Liste
 
 	return listener, serverErrors
 }
+
+// TestNewUClientKeepsFirefoxOnFullHandshakes covers a caller that hands
+// NewUClient a uTLS config with a session cache of its own. The Firefox 156
+// exception holds there too: no connection resumes and no hello carries a
+// ticket or a pre_shared_key.
+func TestNewUClientKeepsFirefoxOnFullHandshakes(t *testing.T) {
+	for versionName, version := range map[string]uint16{
+		"TLS12": gotls.VersionTLS12,
+		"TLS13": gotls.VersionTLS13,
+	} {
+		t.Run(versionName, func(t *testing.T) {
+			t.Parallel()
+
+			const connections = 3
+			listener, serverErrors := startTLSServer(t, connections, version)
+			defer listener.Close()
+			config := &utls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         fmt.Sprintf("session-%d.test", sessionResumptionTestID.Add(1)),
+				ClientSessionCache: utls.NewLRUClientSessionCache(1),
+			}
+
+			var first hellotest.Snapshot
+			for i := range connections {
+				tcpConn, err := stdnet.DialTimeout("tcp", listener.Addr().String(), 3*time.Second)
+				if err != nil {
+					t.Fatalf("dial TLS server for connection %d: %v", i+1, err)
+				}
+				defer tcpConn.Close()
+				if err := tcpConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				rawConn := &firstWriteConn{Conn: tcpConn}
+				clientConn, err := xraytls.NewUClient(rawConn, config, utls.HelloFirefox_Auto)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := clientConn.Handshake(); err != nil {
+					t.Fatalf("handshake TLS connection %d: %v", i+1, err)
+				}
+				var marker [1]byte
+				if _, err := io.ReadFull(clientConn, marker[:]); err != nil {
+					t.Fatalf("read TLS marker on connection %d: %v", i+1, err)
+				}
+				if clientConn.ConnectionState().DidResume {
+					t.Fatalf("TLS connection %d resumed under a Firefox fingerprint", i+1)
+				}
+				hello, err := hellotest.Summarize(rawConn.first)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 {
+					first = hello
+				}
+				if hello.Length != first.Length || !slices.Equal(hello.Extensions, first.Extensions) {
+					t.Fatalf("ClientHello %d differs from the first: %d bytes, extensions %v; first %d bytes, extensions %v",
+						i+1, hello.Length, hello.Extensions, first.Length, first.Extensions)
+				}
+				if _, err := clientConn.Write([]byte{byte(i)}); err != nil {
+					t.Fatalf("acknowledge TLS marker on connection %d: %v", i+1, err)
+				}
+				if err := clientConn.Close(); err != nil {
+					t.Fatalf("close TLS connection %d: %v", i+1, err)
+				}
+			}
+			if err := <-serverErrors; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

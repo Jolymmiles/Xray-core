@@ -100,9 +100,11 @@ guard it.
     per hello, which reaches at most 2^31-1 of the 17! orders, and leaves
     each extension in its source slot in about 11% of hellos.
   - `firefox` never resumes a TLS session (`resumesWithAnotherHello` in
-    `transport/internet/tls/resumption.go`). A preset resumes here when its
-    template carries session_ticket and psk_key_exchange_modes, and Firefox
-    156's does, but a Firefox that resumes over TLS 1.3 drops session_ticket
+    `transport/internet/tls/resumption.go`), whether the cache comes from
+    Xray's TLS settings or from a uTLS config given to `NewUClient`. A
+    preset resumes here when its template carries session_ticket and
+    psk_key_exchange_modes, and Firefox 156's does, but a Firefox that
+    resumes over TLS 1.3 drops session_ticket
     and sends a longer GREASE ECH (570 bytes against 282 in the fork's
     captures), so the template plus pre_shared_key would be a hello Firefox
     does not send. A `firefox` client that takes a full handshake every
@@ -113,6 +115,7 @@ guard it.
 
   Covered by `transport/internet/tls/fingerprint_health_test.go`, the
   ClientHello snapshot tests, `TestUClientSessionResumptionSkippedForFirefox`,
+  `TestNewUClientKeepsFirefoxOnFullHandshakes`,
   `TestResumptionDeclinesFirefox156`, `TestFirefoxHelloIgnoresSessionCache`,
   `TestREALITYRequireMlkemAcceptsEdge` and the fork's capture and key-share
   tests.
