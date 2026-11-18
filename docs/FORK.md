@@ -178,6 +178,17 @@ guard it.
   client's SETTINGS with and without the tag) and
   `testing/release/build_contract_test.go` (release builds pass the tag). No
   test pins the redial pacing.
+- The XHTTP client bounds its TLS and REALITY handshake to 10 s
+  (`handshakeTimeout` in `transport/internet/splithttp/dialer.go`), over
+  HTTP/1.1 and HTTP/2; HTTP/3 keeps quic-go's own timeouts. Upstream closed
+  XTLS/Xray-core#7379 unmerged, and its dialer passes the dial's context,
+  which has no deadline, so a handshake blackholed after ClientHello held
+  every request queued behind that dial for good. The crypto/tls branch
+  (`fingerprint: "unsafe"`) now runs its handshake in the dial as the uTLS
+  and REALITY branches do, instead of on the first write. A timeout reaches
+  the log as `XHTTP: TLS handshake did not finish in 10s`. Keep the bound
+  when an upstream sync rewrites `dialContext`. Covered by
+  `Test_DialBlackholedHandshake` (one case per branch).
 - XHTTP inbounds accept Mux.Cool TCP sessions; upstream (XTLS/Xray-core#4128)
   limits them to pure XUDP. In packet-up and stream-up the server can poke an
   idle downlink with a Mux.Cool KeepAlive (`xhttpSettings.muxKeepAliveSecs`
@@ -300,6 +311,16 @@ guard it.
   plain reader. Covered by `TestHTTPOutboundServerFirst`
   (`testing/scenarios/http_test.go`) and
   `proxy/vless/outbound/first_payload_test.go`.
+- The dispatcher stops sniffing a flow when a sniffer asks for more data
+  (`protocol.ErrProtoNeedMoreData`) while the cache already holds bytes past
+  the 32 KiB it shows a sniffer: further reads cannot change its answer.
+  Upstream reads on for the whole 200 ms sniffing budget, and since each read
+  drains the link, it caches everything the client uploads meanwhile, past
+  the pipe's limit: from a crafted TLS ClientHello, about a gigabyte of
+  cache per connection in-process, and hundreds of megabytes of peak memory
+  on a loopback server with 16 such connections. The flow is routed as after
+  a sniffing timeout, without waiting it out. Covered by
+  `app/dispatcher/sniff_cache_bound_test.go`.
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
   allocation-free picker, not `PickRoute`. A routing `script` (upstream
   XTLS/Xray-core#6823) decides in both, and `NeedsSniffingAttributes` reports

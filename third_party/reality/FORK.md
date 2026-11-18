@@ -33,6 +33,14 @@ Keep this list complete; everything else must match upstream byte for byte.
   for the H2 probe, with the related `x/crypto` and `x/sys` versions
   recorded in `go.mod`.
 
+- `Server` (`tls.go`), the fallback copy from the target to the client: when
+  the copy ends with an error, such as a reset from the target, the client
+  connection is closed instead of half-closed. A client that stayed silent
+  otherwise held `Server` and its goroutines until its own socket timed out.
+  This is upstream's `8530a57` ("Try pass RST"), which upstream's main does
+  not carry; drop this entry once an update brings it. Covered by
+  `transport/internet/reality/fallback_close_test.go`.
+
 ## Updating
 
 1. `go mod download -json github.com/xtls/reality@<version>` and copy the

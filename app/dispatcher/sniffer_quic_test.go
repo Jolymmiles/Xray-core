@@ -69,6 +69,7 @@ func TestDefaultSniffersLeaveBorrowedPayloadIntact(t *testing.T) {
 		"utp":                       vUTPSYN(),
 		"dht":                       vDHTGetPeers(),
 		"udp tracker":               vUDPTrackerConnect(),
+		"stun":                      stunBinding(),
 		"quic, whole ClientHello":   readQUICCorpus(t, "quic-ngtcp2-1.11", 1)[0],
 		"quic, part of ClientHello": readQUICCorpus(t, "quic-chrome153", 1)[0],
 	}
