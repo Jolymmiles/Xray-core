@@ -9,7 +9,9 @@
 #   refuses signals and writes to hidden directories;
 # - certificate chains shaped like Let's Encrypt's (certs.sh);
 # - xray-new and xray-old built from the two refs.
-# Firefox comes from the system.
+# Firefox comes from the system. The full `browsers` group also needs Edge
+# and Firefox 156.0.1 and 160.0 under $STAND_WORK/root/opt; README.md says
+# where each goes. setup.sh does not download them.
 set -eu
 xray=$1 new=$2 old=$3
 here=$(cd "$(dirname "$0")" && pwd)

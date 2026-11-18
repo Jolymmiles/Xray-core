@@ -255,6 +255,16 @@ def require_browser_capture(directory):
     keylog = f"{directory}/keylog"
     if not os.path.isfile(keylog) or not os.path.getsize(keylog):
         raise RuntimeError(f"browser TLS key log is missing or empty: {keylog}")
+    pcap = f"{directory}/capture.pcap"
+    # a pcap file header is 24 bytes; a usable capture holds packets after it
+    if not os.path.isfile(pcap) or os.path.getsize(pcap) <= 24:
+        raise RuntimeError(f"browser capture is missing or empty: {pcap}")
+
+
+def require_running(name, p):
+    """fails a reference run whose browser exited before it was stopped."""
+    if p.poll() is not None:
+        raise RuntimeError(f"{name} exited early with status {p.returncode}; see its log")
 
 
 def scenario_dir(run, name):
@@ -367,6 +377,7 @@ def chrome(run, name, target, binary=None):
     subprocess.run(["ip", "netns", "exec", "cli", "curl", "-fsS", "-X", "PUT",
                     f"http://127.0.0.1:9222/json/new?{url}"], env=ENV, stdout=subprocess.DEVNULL, check=True)
     time.sleep(18)
+    require_running(f"chrome-{name}", p)
     stop(p)
     procs.remove((f"chrome-{name}", p))
     cap.close()
@@ -397,6 +408,7 @@ def firefox(run, name, target, binary="firefox"):
               f"{binary} --headless --no-remote --profile {profile} https://{PAGE_HOSTS[target]}{PAGE_PATH.get(target, '/page.html')}",
               f"{d}/firefox.log")
     time.sleep(19)
+    require_running(f"firefox-{name}", p)
     stop(p)
     procs.remove((f"firefox-{name}", p))
     cap.close()
@@ -615,6 +627,7 @@ def chrome_revisits(run, name, site, server_ip, binary=None, visits=4, cache_bus
         url = f"https://{site}/" + (f"?visit={visit}" if cache_bust else "")
         sh(f"ip netns exec cli curl -s -X PUT 'http://127.0.0.1:9222/json/new?{url}' >/dev/null", check=False)
         time.sleep(7)
+    require_running(f"chrome-{name}", p)
     stop(p)
     procs.remove((f"chrome-{name}", p))
     cap.close()
@@ -686,6 +699,7 @@ def firefox_revisits(run, name, url, server_ip, binary, visits=4):
               f"{binary} --headless --no-remote --marionette --profile {profile}", f"{d}/firefox.log")
     subprocess.run(["ip", "netns", "exec", "cli", "python3", f"{d}/marionette.py",
                     url, server_ip, str(visits)], env=ENV, check=True)
+    require_running(f"firefox-{name}", p)
     stop(p)
     procs.remove((f"firefox-{name}", p))
     cap.close()
