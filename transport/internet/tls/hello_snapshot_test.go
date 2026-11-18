@@ -220,7 +220,12 @@ func TestHelloOffersALPSOnlyForItsALPN(t *testing.T) {
 					t.Errorf("%s/%s: ALPS for %q, ALPN %q", path.name, name, protocol, hello.ALPN)
 				}
 			}
-			if len(hello.ALPS) > 0 {
+			// Both codepoints: 17513 until Chrome 131, 17613 since.
+			sent := slices.Contains(hello.Extensions, 17513) || slices.Contains(hello.Extensions, 17613)
+			if sent && len(hello.ALPS) == 0 {
+				t.Errorf("%s/%s: an ALPS extension without a protocol, ALPN %q", path.name, name, hello.ALPN)
+			}
+			if sent {
 				withALPS[path.name]++
 			}
 		}
