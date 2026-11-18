@@ -607,6 +607,18 @@ def topology_real(sites):
     return real_ips, servers
 
 
+def kill_sockets(server_ip):
+    """closes the client's TCP connections to server_ip, so the next visit
+    opens a new one; fails when one survives."""
+    killed = subprocess.run(["ip", "netns", "exec", "cli", "ss", "-K", "dst", server_ip],
+                            env=ENV, capture_output=True, text=True)
+    left = subprocess.run(["ip", "netns", "exec", "cli", "ss", "-Htn", "state", "established", "dst", server_ip],
+                          env=ENV, capture_output=True, text=True, check=True).stdout.strip()
+    if left:
+        raise RuntimeError(f"ss -K left connections to {server_ip} (status {killed.returncode}, "
+                           f"{killed.stderr.strip()}): {left}")
+
+
 def chrome_revisits(run, name, site, server_ip, binary=None, visits=4, cache_bust=False):
     """Chrome visits a real site, then again over new connections: its
     sockets are killed in between and a new tab opened by DevTools."""
@@ -622,10 +634,10 @@ def chrome_revisits(run, name, site, server_ip, binary=None, visits=4, cache_bus
               f"--remote-debugging-port=9222 --user-data-dir={home}/profile https://{site}/", f"{d}/chrome.log")
     time.sleep(8)
     for visit in range(1, visits):
-        sh(f"ip netns exec cli ss -K dst {server_ip} >/dev/null 2>&1", check=False)
+        kill_sockets(server_ip)
         time.sleep(1)
         url = f"https://{site}/" + (f"?visit={visit}" if cache_bust else "")
-        sh(f"ip netns exec cli curl -s -X PUT 'http://127.0.0.1:9222/json/new?{url}' >/dev/null", check=False)
+        sh(f"ip netns exec cli curl -fsS -X PUT 'http://127.0.0.1:9222/json/new?{url}' >/dev/null")
         time.sleep(7)
     require_running(f"chrome-{name}", p)
     stop(p)
@@ -669,8 +681,12 @@ send(s, f, 2, "WebDriver:SetTimeouts", {"pageLoad": 3000})
 url, server_ip, visits = sys.argv[1:]
 for i in range(int(visits)):
     if i:
-        subprocess.run(["ss", "-K", "dst", server_ip], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        killed = subprocess.run(["ss", "-K", "dst", server_ip], capture_output=True, text=True)
+        left = subprocess.run(["ss", "-Htn", "state", "established", "dst", server_ip],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        if left:
+            raise RuntimeError(f"ss -K left connections (status {killed.returncode}, "
+                               f"{killed.stderr.strip()}): {left}")
         time.sleep(1)
     send(s, f, i + 3, "WebDriver:Navigate", {"url": f"{url}?visit={i}"})
     time.sleep(7)

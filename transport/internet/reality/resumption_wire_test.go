@@ -4,6 +4,7 @@ import (
 	"context"
 	gotls "crypto/tls"
 	"encoding/binary"
+	"errors"
 	"io"
 	gonet "net"
 	"net/http"
@@ -23,18 +24,26 @@ type wireRecord struct {
 	body []byte
 }
 
-// readRecords reads what peer sends until it stops for wait or closes.
+// readRecords reads what peer sends until it stops for wait or closes. Any
+// other read error, or a record cut short, fails the test.
 func readRecords(t *testing.T, peer gonet.Conn, wait time.Duration) []wireRecord {
 	t.Helper()
 	var in []byte
 	buf := make([]byte, 16<<10)
 	for {
-		peer.SetReadDeadline(time.Now().Add(wait))
+		if err := peer.SetReadDeadline(time.Now().Add(wait)); err != nil {
+			t.Fatal(err)
+		}
 		n, err := peer.Read(buf)
 		in = append(in, buf[:n]...)
-		if err != nil {
-			break
+		if err == nil {
+			continue
 		}
+		var timeout gonet.Error
+		if !errors.Is(err, io.EOF) && (!errors.As(err, &timeout) || !timeout.Timeout()) {
+			t.Fatalf("reading the answer: %v", err)
+		}
+		break
 	}
 	var records []wireRecord
 	for len(in) >= 5 {
@@ -44,6 +53,9 @@ func readRecords(t *testing.T, peer gonet.Conn, wait time.Duration) []wireRecord
 		}
 		records = append(records, wireRecord{typ: in[0], body: in[5:n]})
 		in = in[n:]
+	}
+	if len(in) != 0 {
+		t.Fatalf("the answer ends with %d bytes of an incomplete record", len(in))
 	}
 	return records
 }
@@ -56,11 +68,21 @@ func serverHelloExtensions(t *testing.T, record wireRecord) []uint16 {
 		t.Fatalf("not a ServerHello: type %d, % x", record.typ, b[:min(len(b), 8)])
 	}
 	p := 4 + 2 + 32
-	p += 1 + int(b[p]) + 2 + 1
+	p += 1 + int(b[p]) + 2 + 1 // session id, cipher suite, compression
+	if p+2 > len(b) {
+		t.Fatalf("short ServerHello: % x", b)
+	}
 	end := p + 2 + int(binary.BigEndian.Uint16(b[p:]))
+	if end != len(b) {
+		t.Fatalf("ServerHello extensions end at %d of %d bytes", end, len(b))
+	}
 	var types []uint16
-	for p += 2; p+4 <= end; p += 4 + int(binary.BigEndian.Uint16(b[p+2:])) {
+	for p += 2; p < end; {
+		if p+4 > end || p+4+int(binary.BigEndian.Uint16(b[p+2:])) > end {
+			t.Fatalf("malformed ServerHello extension at %d: % x", p, b)
+		}
 		types = append(types, binary.BigEndian.Uint16(b[p:]))
+		p += 4 + int(binary.BigEndian.Uint16(b[p+2:]))
 	}
 	return types
 }
@@ -147,7 +169,11 @@ func TestNoResumptionWhenTheServerHelloDeltaIsUnknown(t *testing.T) {
 	shape.HelloDelta = 10
 	reality.GlobalTicketShapes.Store(key, &shape)
 	t.Cleanup(func() { reality.GlobalTicketShapes.Store(key, original) })
-	if c := dialReality(t, server, "auto"); c.conn.ConnectionState().DidResume {
+	c := dialReality(t, server, "auto")
+	if !slices.Contains(c.hello, 41) {
+		t.Fatal("the client offered no ticket, so the test shows nothing")
+	}
+	if c.conn.ConnectionState().DidResume {
 		t.Fatalf("resumed with a ServerHello delta of %d: records %v", shape.HelloDelta, c.records)
 	}
 }
