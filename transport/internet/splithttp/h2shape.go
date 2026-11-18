@@ -405,11 +405,17 @@ type ackConn struct {
 	held        []byte // the start of a frame header not yet written
 	payload     int
 	done        bool
+	// err ends the wrapper: after a failed write its frame boundaries no
+	// longer match what the peer received.
+	err error
 }
 
 func (c *ackConn) Write(b []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.err != nil {
+		return 0, c.err
+	}
 	if c.done {
 		return c.Conn.Write(b)
 	}
@@ -461,6 +467,7 @@ func (c *ackConn) Write(b []byte) (int, error) {
 			err = io.ErrShortWrite
 		}
 		if err != nil {
+			c.err = err
 			return max(0, written-held), err
 		}
 	}

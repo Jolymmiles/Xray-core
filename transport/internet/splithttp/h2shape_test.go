@@ -438,3 +438,35 @@ func TestShapeConnClosesWhenTheDeferredFlushFails(t *testing.T) {
 		t.Fatal("a later write did not return the startup error")
 	}
 }
+
+type failAfterConn struct {
+	writesConn
+	failing bool
+}
+
+func (c *failAfterConn) Write(b []byte) (int, error) {
+	if c.failing {
+		return 0, net.ErrClosed
+	}
+	return c.writesConn.Write(b)
+}
+
+// After a failed write the wrapper's view of the frame boundaries no longer
+// matches what the peer received: every later write fails.
+func TestAckConnWriteErrorIsTerminal(t *testing.T) {
+	under := &failAfterConn{}
+	c := &ackConn{Conn: under}
+	ack := frame(frameSettings, 1, 0, nil)
+	wu := frame(frameWindowUpd, 0, 0, []byte{0, 0, 0, 1})
+	if n, err := c.Write(ack[:4]); n != 4 || err != nil {
+		t.Fatalf("held header write %d, %v", n, err)
+	}
+	under.failing = true
+	if n, err := c.Write(append(bytes.Clone(ack[4:]), wu...)); err == nil || n != 0 {
+		t.Fatalf("failed write reported %d bytes, %v", n, err)
+	}
+	under.failing = false
+	if n, err := c.Write(ack[4:]); err == nil || n != 0 || len(under.writes) != 0 {
+		t.Fatalf("retry after a failed write: %d, %v, writes %x", n, err, under.writes)
+	}
+}
