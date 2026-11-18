@@ -436,7 +436,8 @@ func TestRefreshRefusal(t *testing.T) {
 		{"measured_alert", "target", recent, time.Time{}, true, decryptErrorAlert},
 		{"measured_no_refusal", "accepting", recent, time.Time{}, true, nil},
 		{"stale_refusal", "", stale, time.Time{}, false, nil},
-		{"expired_profile", "", stale, stale, false, nil},
+		// fresh refusal, expired profile: pins the profile's own expiry
+		{"expired_profile", "", recent, stale, false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dest := goTarget(t)

@@ -456,7 +456,9 @@ func (hs *serverHandshakeStateTLS13) inspectTicketHello() (refusal *TicketShape,
 	if _, ok := checkBinder(suite, session, ch); ok {
 		return nil, true, false
 	}
-	if shape.RefusesBadBinder {
+	// A refusal measured more than ticketShapeMaxAge ago no longer says
+	// how the target answers: the hello goes to the target.
+	if shape.RefusesBadBinder && time.Since(shape.refusalAt) < ticketShapeMaxAge {
 		return shape, false, true
 	}
 	return nil, false, true
