@@ -277,11 +277,12 @@ guard it.
   `proxy/vless/outbound/first_payload_test.go`.
 - The dispatcher stops sniffing a flow when a sniffer asks for more data
   (`protocol.ErrProtoNeedMoreData`) while the cache already holds bytes past
-  the 32 KiB it shows a sniffer: further reads cannot change its answer. Upstream reads on for the whole
-  200 ms sniffing budget, and since each read drains the link, it caches
-  everything the client uploads meanwhile, past the pipe's limit: hundreds of
-  megabytes per connection from a crafted TLS ClientHello. The flow is routed
-  as after a sniffing timeout, without waiting it out. Covered by
+  the 32 KiB it shows a sniffer: further reads cannot change its answer.
+  Upstream reads on for the whole 200 ms sniffing budget, and since each read
+  drains the link, it caches everything the client uploads meanwhile, past
+  the pipe's limit: from a crafted TLS ClientHello, tens of megabytes per
+  connection on a loopback server, hundreds in-process. The flow is routed as
+  after a sniffing timeout, without waiting it out. Covered by
   `app/dispatcher/sniff_cache_bound_test.go`.
 - The dispatcher routes through `Router.PickRouteTag`, the fork's
   allocation-free picker, not `PickRoute`. A routing `script` (upstream

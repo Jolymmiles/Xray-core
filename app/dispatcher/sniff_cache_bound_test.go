@@ -198,6 +198,9 @@ func TestSniffReadsUntilTheViewIsFull(t *testing.T) {
 func boundClientHello(t *testing.T) []byte {
 	t.Helper()
 	client, server := stdnet.Pipe()
+	deadline := time.Now().Add(5 * time.Second)
+	_ = client.SetDeadline(deadline)
+	_ = server.SetDeadline(deadline)
 	captured := make(chan []byte, 1)
 	go func() {
 		defer server.Close()
