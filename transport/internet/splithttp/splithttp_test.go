@@ -3,6 +3,7 @@ package splithttp_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -21,9 +22,11 @@ import (
 	"github.com/xtls/xray-core/testing/servers/tcp"
 	"github.com/xtls/xray-core/testing/servers/udp"
 	"github.com/xtls/xray-core/transport/internet"
+	"github.com/xtls/xray-core/transport/internet/reality"
 	. "github.com/xtls/xray-core/transport/internet/splithttp"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
+	"google.golang.org/protobuf/proto"
 )
 
 func Test_ListenXHAndDial(t *testing.T) {
@@ -187,6 +190,7 @@ func testListenXHAndDialTLS(t *testing.T, fingerprint string) {
 
 	conn, err := Dial(context.Background(), net.TCPDestination(net.DomainAddress("localhost"), listenPort), streamSettings)
 	common.Must(err)
+	defer conn.Close()
 
 	_, err = conn.Write([]byte("Test connection 1"))
 	common.Must(err)
@@ -621,16 +625,42 @@ func Test_ServerMaxHeaderBytes(t *testing.T) {
 }
 
 func Test_DialBlackholedHandshake(t *testing.T) {
+	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
+	tlsSettings := func(fingerprint string) *tls.Config {
+		return &tls.Config{
+			Certificate:          []*tls.Certificate{tls.ParseCertificate(ct)},
+			PinnedPeerCertSha256: [][]byte{ctHash[:]},
+			Fingerprint:          fingerprint,
+		}
+	}
+	realityKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	common.Must(err)
 	// "" takes the default uTLS fingerprint; "unsafe" takes Go's crypto/tls,
-	// whose handshake would otherwise wait for the first write.
-	for _, fingerprint := range []string{"", "unsafe"} {
-		t.Run("fingerprint "+strconv.Quote(fingerprint), func(t *testing.T) {
-			testDialBlackholedHandshake(t, fingerprint)
+	// whose handshake would otherwise wait for the first write; REALITY
+	// hands the bound to reality.UClient.
+	for _, security := range []struct {
+		name     string
+		kind     string
+		settings proto.Message
+	}{
+		{`tls fingerprint ""`, "tls", tlsSettings("")},
+		{`tls fingerprint "unsafe"`, "tls", tlsSettings("unsafe")},
+		{"reality", "reality", &reality.Config{
+			ServerName:  "localhost",
+			Fingerprint: "chrome",
+			PublicKey:   realityKey.PublicKey().Bytes(),
+			ShortId:     make([]byte, 8),
+			SpiderY:     make([]int64, 10),
+		}},
+	} {
+		t.Run(security.name, func(t *testing.T) {
+			t.Parallel()
+			testDialBlackholedHandshake(t, security.kind, security.settings)
 		})
 	}
 }
 
-func testDialBlackholedHandshake(t *testing.T, fingerprint string) {
+func testDialBlackholedHandshake(t *testing.T, securityType string, securitySettings proto.Message) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	common.Must(err)
 	defer listener.Close()
@@ -654,16 +684,11 @@ func testDialBlackholedHandshake(t *testing.T, fingerprint string) {
 		}
 	}()
 
-	ct, ctHash := cert.MustGenerate(nil, cert.CommonName("localhost"))
 	streamSettings := &internet.MemoryStreamConfig{
 		ProtocolName:     "splithttp",
 		ProtocolSettings: &Config{Path: "shs"},
-		SecurityType:     "tls",
-		SecuritySettings: &tls.Config{
-			Certificate:          []*tls.Certificate{tls.ParseCertificate(ct)},
-			PinnedPeerCertSha256: [][]byte{ctHash[:]},
-			Fingerprint:          fingerprint,
-		},
+		SecurityType:     securityType,
+		SecuritySettings: securitySettings,
 	}
 	port := net.Port(listener.Addr().(*net.TCPAddr).Port)
 
