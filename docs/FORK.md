@@ -74,12 +74,10 @@ guard it.
   `transport/internet/reality/uclient_test.go`,
   `transport/internet/reality/randomized_test.go` and
   `transport/internet/grpc/dial_test.go`.
-- uTLS comes from `github.com/Medium1992/utls` at `18007aed8773` (a
+- uTLS comes from `github.com/Jolymmiles/utls` at `6906384432de` (a
   `replace` in `go.mod`; the module path stays
-  `github.com/refraction-networking/utls`). This revision descends from
-  Joly's `fix/keep-secondary-key-shares-a13c59f` and updates the Firefox,
-  Edge, and iOS presets and Chromium extension shuffling. These preset
-  changes also apply to TLS and REALITY connections with browser mode off.
+  `github.com/refraction-networking/utls`). Browser preset updates have
+  their own review in the uTLS repository.
   The fork keeps the private keys of the
   classical key shares after the first and uses the one the server selected,
   so `firefox` and the `hellofirefox_*` forms, which send key shares for
@@ -95,6 +93,17 @@ guard it.
   outbound. The default disables the new target probes, session-ticket
   behavior and XHTTP startup shaping. A client with browser mode off
   keeps the legacy server connection path even on an enabled inbound.
+  Field 101 (`browser`) is fork-owned. Binary protobuf configurations
+  from the review revision that used field 28 must be regenerated from
+  their JSON source.
+  An observer on the server-to-destination path can see the probe
+  connections. Per destination and server name, the baseline starts six
+  TLS probes across the three ALPN modes. Browser mode adds two to four
+  per viable ALPN, plus a confirmation when a refusal probe sees silence.
+  HTTP/2 startup measurement can add up to eleven connections with a
+  SETTINGS exchange and, for a named target, a request to `/`. Profiles
+  refresh once per hour when used, with one-minute retries for an empty H2
+  profile. Counts depend on the destination's TLS and ALPN support.
   The comparisons and passive-observation limits are documented in
   `testing/realitystand/README.md`.
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`

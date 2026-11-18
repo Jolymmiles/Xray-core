@@ -1,7 +1,5 @@
 github.com/Jolymmiles/utls v0.0.0-20261110112850-6906384432de h1:ztlcksdaKC58z8P+4krNVmXK1yzSBW6NCDcOr6lUAEM=
 github.com/Jolymmiles/utls v0.0.0-20261110112850-6906384432de/go.mod h1:rc/ctWeKlh9LSk5k90KlSPcwF7P6D31mn/9GI2NAfBI=
-github.com/Medium1992/utls v1.8.3-xray-a13c59f-ff156.0.20261116230501-18007aed8773 h1:u4PcpyYP4ibvjp6EBZIwPWzDB0ZqtFWMguNpmPTZLF4=
-github.com/Medium1992/utls v1.8.3-xray-a13c59f-ff156.0.20261116230501-18007aed8773/go.mod h1:rc/ctWeKlh9LSk5k90KlSPcwF7P6D31mn/9GI2NAfBI=
 github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=
 github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c/go.mod h1:J7UZVOMF2M1LiE3iiUZWPuy8YCPAcLJOwVURrfJCvc0=
 github.com/bufbuild/protocompile v0.14.1 h1:iA73zAf/fyljNjQKwYzUHD6AD4R8KMasmwa/FBatYVw=

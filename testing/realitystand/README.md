@@ -125,8 +125,10 @@ name and ALPN profile. For HTTP/2 it also measures startup with a
 `GET /` request. See [replay protection and ticket refusal](#replay-protection-and-ticket-refusal)
 for its scope.
 
-The updated uTLS dependency also changes several ClientHello presets.
-Those preset changes apply independently of the `browser` setting.
+Xray in this branch uses Joly's baseline uTLS presets. The modern
+browser captures also serve as reference data for the separate uTLS
+preset update. In particular, the baseline Firefox preset uses full
+handshakes when it cannot offer a ticket.
 
 Capture Chrome and Firefox navigating to the target URL used for the
 probes. The Chrome references also include a page that performs
