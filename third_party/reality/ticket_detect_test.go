@@ -236,6 +236,28 @@ func TestProbeTicketShapeGoTarget(t *testing.T) {
 	}
 }
 
+func TestTicketProbeVerifiesDestinationName(t *testing.T) {
+	config := &Config{Type: "tcp", Dest: goTarget(t)}
+	if _, err := probeOnce(config, "different.example", 2, nil); err == nil {
+		t.Fatal("ticket probe accepted a certificate for a different server name")
+	}
+}
+
+type probeBytesConn struct {
+	net.Conn
+	io.Reader
+}
+
+func (c probeBytesConn) Read(b []byte) (int, error) { return c.Reader.Read(b) }
+
+func TestProbeCaptureByteLimit(t *testing.T) {
+	capture := &probeCaptureConn{Conn: probeBytesConn{Reader: bytes.NewReader(make([]byte, maxProbeBytes+512))}}
+	n, err := io.Copy(io.Discard, capture)
+	if n != maxProbeBytes || !errors.Is(err, errProbeLimit) || len(capture.received()) != maxProbeBytes {
+		t.Fatalf("read %d bytes with error %v, want limit at %d", n, err, maxProbeBytes)
+	}
+}
+
 func TestProbeTicketShapeOpenSSLTarget(t *testing.T) {
 	config := &Config{Type: "tcp", Dest: opensslTarget(t)}
 	shape, err := probeTicketShape(config, "example.com", 2)
@@ -249,8 +271,11 @@ func TestProbeTicketShapeOpenSSLTarget(t *testing.T) {
 	if shape.HelloDelta != 6 {
 		t.Fatalf("ServerHello delta %d", shape.HelloDelta)
 	}
-	if reply := probeBadBinder(config, "example.com", 2, shape.badBinderSession); reply.kind != alertRefusal || reply.delay != 0 || !bytes.Equal(reply.alerts, decryptErrorAlert) {
-		t.Fatalf("OpenSSL refuses a wrong binder with decrypt_error at once: %+v", reply)
+	reply := probeBadBinder(config, "example.com", 2, shape.badBinderSession)
+	illegalParameter := []byte{21, 3, 3, 0, 2, 2, 47}
+	if reply.kind != alertRefusal || reply.delay != 0 ||
+		(!bytes.Equal(reply.alerts, decryptErrorAlert) && !bytes.Equal(reply.alerts, illegalParameter)) {
+		t.Fatalf("OpenSSL must refuse a wrong binder with an immediate fatal alert: %+v", reply)
 	}
 	if len(shape.Prefix) < 16 {
 		t.Fatalf("OpenSSL tickets start with a 16-byte key name, prefix %x", shape.Prefix)

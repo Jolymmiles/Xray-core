@@ -247,6 +247,19 @@ func TestShapeConnPassesOtherProtocols(t *testing.T) {
 	}
 }
 
+func TestShapeConnCloseStopsStartupTimer(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	c := &shapeConn{Conn: local, state: 1, timer: time.NewTimer(time.Hour)}
+	defer c.timer.Stop()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if c.state != 2 || c.timer.Stop() {
+		t.Fatal("closing a connection must stop its startup timer")
+	}
+}
+
 func TestAckConnWritesTheAcknowledgementAlone(t *testing.T) {
 	under := &writesConn{}
 	c := &ackConn{Conn: under}

@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -236,7 +237,7 @@ type realityServer struct {
 
 // startRealityServer runs a REALITY server for target that echoes what
 // verified clients send, once it knows the target's records and tickets.
-func startRealityServer(t *testing.T, target string) *realityServer {
+func startRealityServer(t *testing.T, target string, handlers ...func(gonet.Conn, *reality.Config) (*reality.Conn, error)) *realityServer {
 	t.Helper()
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -283,6 +284,12 @@ func startRealityServer(t *testing.T, target string) *realityServer {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	serve := func(conn gonet.Conn, config *reality.Config) (*reality.Conn, error) {
+		return reality.Server(context.Background(), conn, config)
+	}
+	if len(handlers) > 0 {
+		serve = handlers[0]
+	}
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -290,7 +297,7 @@ func startRealityServer(t *testing.T, target string) *realityServer {
 				return
 			}
 			go func() {
-				server, err := reality.Server(context.Background(), conn, config)
+				server, err := serve(conn, config)
 				if err != nil {
 					return
 				}
@@ -376,6 +383,12 @@ func (c *recordCapture) records() []int {
 		b = b[n:]
 	}
 	return lens
+}
+
+func (c *recordCapture) sent() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return bytes.Clone(c.out)
 }
 
 type dialResult struct {
@@ -800,6 +813,139 @@ func TestTicketWithWrongBinderIsRefused(t *testing.T) {
 	uConn.Handshake()
 	if got := probe.received(); !bytes.Equal(got, want) {
 		t.Fatalf("not authenticated, the server answers % x, want % x", got[:min(len(got), 16)], want)
+	}
+}
+
+type ticketWriteFault struct {
+	*gonet.TCPConn
+	length int
+	hit    bool
+}
+
+func (c *ticketWriteFault) Write(p []byte) (int, error) {
+	if len(p) == c.length && p[0] == 23 {
+		c.hit = true
+		return 0, errors.New("test session ticket write failed")
+	}
+	return c.TCPConn.Write(p)
+}
+
+func TestFailedTicketWriteAbortsREALITYHandshake(t *testing.T) {
+	target := opensslTarget(t)
+	result := make(chan error, 1)
+	server := startRealityServer(t, target, func(conn gonet.Conn, config *reality.Config) (*reality.Conn, error) {
+		key := target + " " + testServerName + " 2"
+		profile := reality.LoadTicketShape(key)
+		measured, _ := reality.GlobalPostHandshakeRecordsLens.Load(key)
+		records, _ := measured.([]int)
+		if profile == nil || profile.Tickets == 0 || len(records) == 0 {
+			result <- errors.New("missing target ticket record")
+			conn.Close()
+			return nil, gonet.ErrClosed
+		}
+		fault := &ticketWriteFault{TCPConn: conn.(*gonet.TCPConn), length: records[0]}
+		client, err := reality.Server(context.Background(), fault, config)
+		switch {
+		case !fault.hit:
+			result <- errors.New("did not hit the ticket write")
+		case err == nil:
+			result <- errors.New("server accepted the connection after the ticket write failed")
+		default:
+			result <- nil
+		}
+		return client, err
+	})
+	raw, err := gonet.DialTimeout("tcp", server.addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, _ = UClient(raw, &Config{
+		Fingerprint: "chrome", ServerName: testServerName, PublicKey: server.public,
+		ShortId: make([]byte, 8), Browser: "auto",
+	}, ctx, net.TCPDestination(net.ParseAddress("127.0.0.1"), net.Port(raw.RemoteAddr().(*gonet.TCPAddr).Port)))
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("server did not finish after the ticket write failed")
+	}
+}
+
+type coverCapture struct {
+	*recordCapture
+	raw *gonet.TCPConn
+}
+
+func (c *coverCapture) CloseWrite() error { return c.raw.CloseWrite() }
+
+func TestKnownBadBinderReachesCoverWithoutRefusalProfile(t *testing.T) {
+	target := opensslTarget(t)
+	forwarded := make(chan *recordCapture, 1)
+	errs := make(chan error, 1)
+	server := startRealityServer(t, target, func(conn gonet.Conn, config *reality.Config) (*reality.Conn, error) {
+		config = config.Clone()
+		config.DialContext = func(ctx context.Context, network, address string) (gonet.Conn, error) {
+			raw, err := new(gonet.Dialer).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			capture := &recordCapture{Conn: raw}
+			forwarded <- capture
+			return &coverCapture{recordCapture: capture, raw: raw.(*gonet.TCPConn)}, nil
+		}
+		client, err := reality.Server(context.Background(), conn, config)
+		errs <- err
+		return client, err
+	})
+	dialReality(t, server, "auto")
+	<-forwarded
+	<-errs
+	profileKey := target + " " + testServerName + " 2"
+	original := reality.LoadTicketShape(profileKey)
+	if original == nil {
+		t.Fatal("missing target profile")
+	}
+	profile := *original
+	profile.RefusesBadBinder = false
+	reality.GlobalTicketShapes.Store(profileKey, &profile)
+	t.Cleanup(func() { reality.GlobalTicketShapes.Store(profileKey, original) })
+
+	raw, err := gonet.DialTimeout("tcp", server.addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	capture := &recordCapture{Conn: raw, spoilBinder: true}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, port, _ := gonet.SplitHostPort(server.addr)
+	number, _ := strconv.Atoi(port)
+	_, _ = UClient(capture, &Config{
+		Fingerprint: "chrome", ServerName: testServerName, PublicKey: server.public,
+		ShortId: make([]byte, 8), Browser: "auto", SpiderY: make([]int64, 10),
+	}, ctx, net.TCPDestination(net.ParseAddress("127.0.0.1"), net.Port(number)))
+	raw.Close()
+	select {
+	case err := <-errs:
+		if err == nil || !strings.Contains(err.Error(), "authentication failed or validation criteria not met") {
+			t.Fatalf("wrong binder did not select the cover path: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("server did not finish forwarding to the cover")
+	}
+	cover := <-forwarded
+	sent, received := capture.sent(), cover.sent()
+	if len(sent) < 5 {
+		t.Fatal("test client did not send a ClientHello")
+	}
+	length := 5 + int(binary.BigEndian.Uint16(sent[3:5]))
+	if len(sent) < length || len(received) < length || !bytes.Equal(received[:length], sent[:length]) {
+		t.Fatal("cover did not receive the original ClientHello")
 	}
 }
 

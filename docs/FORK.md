@@ -93,6 +93,9 @@ guard it.
   outbound. The default disables the new target probes, session-ticket
   behavior and XHTTP startup shaping. A client with browser mode off
   keeps the legacy server connection path even on an enabled inbound.
+  Ticket encryption and the stateful cache are scoped to the server's
+  X25519 and configured ML-DSA private keys. Adding, rotating, or removing
+  the ML-DSA key invalidates existing tickets.
   Field 101 (`browser`) is fork-owned. Binary protobuf configurations
   from the review revision that used field 28 must be regenerated from
   their JSON source.
