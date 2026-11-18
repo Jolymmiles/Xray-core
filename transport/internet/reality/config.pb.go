@@ -43,13 +43,12 @@ type Config struct {
 	Mldsa65Verify         []byte                 `protobuf:"bytes,25,opt,name=mldsa65_verify,json=mldsa65Verify,proto3" json:"mldsa65_verify,omitempty"`
 	SpiderX               string                 `protobuf:"bytes,26,opt,name=spider_x,json=spiderX,proto3" json:"spider_x,omitempty"`
 	SpiderY               []int64                `protobuf:"varint,27,rep,packed,name=spider_y,json=spiderY,proto3" json:"spider_y,omitempty"`
-	// browser is "auto" to resume sessions the way the browser of the
-	// fingerprint does, or empty for the full handshake every time.
-	Browser      string `protobuf:"bytes,28,opt,name=browser,proto3" json:"browser,omitempty"`
-	MasterKeyLog string `protobuf:"bytes,31,opt,name=master_key_log,json=masterKeyLog,proto3" json:"master_key_log,omitempty"`
+	MasterKeyLog          string                 `protobuf:"bytes,31,opt,name=master_key_log,json=masterKeyLog,proto3" json:"master_key_log,omitempty"`
 	// Fork-owned, outside the blocks upstream numbers: 1-13 for the server,
 	// 21-27 for the client, 31.
-	RequireMlkem  bool `protobuf:"varint,100,opt,name=require_mlkem,json=requireMlkem,proto3" json:"require_mlkem,omitempty"`
+	RequireMlkem bool `protobuf:"varint,100,opt,name=require_mlkem,json=requireMlkem,proto3" json:"require_mlkem,omitempty"`
+	// browser is "auto" to resume sessions using the client's fingerprint.
+	Browser       string `protobuf:"bytes,101,opt,name=browser,proto3" json:"browser,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -224,13 +223,6 @@ func (x *Config) GetSpiderY() []int64 {
 	return nil
 }
 
-func (x *Config) GetBrowser() string {
-	if x != nil {
-		return x.Browser
-	}
-	return ""
-}
-
 func (x *Config) GetMasterKeyLog() string {
 	if x != nil {
 		return x.MasterKeyLog
@@ -243,6 +235,13 @@ func (x *Config) GetRequireMlkem() bool {
 		return x.RequireMlkem
 	}
 	return false
+}
+
+func (x *Config) GetBrowser() string {
+	if x != nil {
+		return x.Browser
+	}
+	return ""
 }
 
 type LimitFallback struct {
@@ -334,10 +333,10 @@ const file_transport_internet_reality_config_proto_rawDesc = "" +
 	"\bshort_id\x18\x18 \x01(\fR\ashortId\x12%\n" +
 	"\x0emldsa65_verify\x18\x19 \x01(\fR\rmldsa65Verify\x12\x19\n" +
 	"\bspider_x\x18\x1a \x01(\tR\aspiderX\x12\x19\n" +
-	"\bspider_y\x18\x1b \x03(\x03R\aspiderY\x12\x18\n" +
-	"\abrowser\x18\x1c \x01(\tR\abrowser\x12$\n" +
+	"\bspider_y\x18\x1b \x03(\x03R\aspiderY\x12$\n" +
 	"\x0emaster_key_log\x18\x1f \x01(\tR\fmasterKeyLog\x12#\n" +
-	"\rrequire_mlkem\x18d \x01(\bR\frequireMlkem\"\x83\x01\n" +
+	"\rrequire_mlkem\x18d \x01(\bR\frequireMlkem\x12\x18\n" +
+	"\abrowser\x18e \x01(\tR\abrowser\"\x83\x01\n" +
 	"\rLimitFallback\x12\x1f\n" +
 	"\vafter_bytes\x18\x01 \x01(\x04R\n" +
 	"afterBytes\x12\"\n" +
