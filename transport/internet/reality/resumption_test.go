@@ -147,6 +147,19 @@ while True:
     threading.Thread(target=serve, args=(c,), daemon=True).start()
 `
 
+// pythonSSLCheck exits 77 when the interpreter cannot run opensslServerPy:
+// Python 2, no ssl module, or an OpenSSL without TLS 1.3 or ALPN.
+const pythonSSLCheck = `import sys
+if sys.version_info[0] < 3:
+    raise SystemExit(77)
+try:
+    import ssl
+except ImportError:
+    raise SystemExit(77)
+if not getattr(ssl, "HAS_TLSv1_3", False) or not getattr(ssl, "HAS_ALPN", False):
+    raise SystemExit(77)
+`
+
 func pythonWithSSL(t *testing.T) string {
 	t.Helper()
 	var failure string
@@ -156,7 +169,7 @@ func pythonWithSSL(t *testing.T) string {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		output, err := exec.CommandContext(ctx, bin, "-c", "try:\n import ssl\nexcept ImportError:\n raise SystemExit(77)").CombinedOutput()
+		output, err := exec.CommandContext(ctx, bin, "-c", pythonSSLCheck).CombinedOutput()
 		cancel()
 		if err == nil {
 			return bin
