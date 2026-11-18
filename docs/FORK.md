@@ -113,10 +113,10 @@ guard it.
     each connection, for the TLS transports and for REALITY alike, by rules
     measured on Firefox 156.0.1 and 160.0 (340 ClientHellos; five are kept
     in `transport/internet/tls/testdata/firefox`):
-    - the GREASE ECH payload is `roundup32(117 + max(server name, 100) +
-      pre_shared_key) + 16` bytes, so the extension grows from 282 bytes
-      once the server name passes 107 bytes, where the preset has 282 at
-      any length;
+    - the GREASE ECH payload is 16 bytes more than the sum of 117, the
+      server name padded to 100 and the `pre_shared_key` extension, rounded
+      up to 32, so the extension grows from 282 bytes once the server name
+      passes 107 bytes, where the preset has 282 at any length;
     - its encapsulated key is 32 random bytes, as in NSS, where uTLS puts
       an X25519 public key, whose last byte never has its top bit set;
     - with a TLS 1.3 ticket it leaves `session_ticket` out and offers the
