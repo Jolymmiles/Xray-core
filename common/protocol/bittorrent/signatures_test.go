@@ -123,6 +123,7 @@ func TestSniffUTPHandshake(t *testing.T) {
 func TestSniffHTTPTrackerParameterNames(t *testing.T) {
 	for name, request := range map[string]string{
 		"bad escape":    "GET /announce?info%zzhash=x&peer_id=y HTTP/1.1\r\n",
+		"not hex":       "GET /announce?info%<Fhash=x&peer_id=y HTTP/1.1\r\n",
 		"longer name":   "GET /announce?info_hash%41=x&peer_id=y HTTP/1.1\r\n",
 		"cut escape":    "GET /announce?info_hash=x&peer_i%6 HTTP/1.1\r\n",
 		"plus is space": "GET /announce?info+hash=x&peer_id=y HTTP/1.1\r\n",
@@ -134,5 +135,12 @@ func TestSniffHTTPTrackerParameterNames(t *testing.T) {
 	request := []byte("GET /search?q=go&lang=en&page=2&sort=new&ref=home&utm_source=x&id=42 HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	if n := testing.AllocsPerRun(100, func() { _, _ = SniffHTTPTracker(request) }); n != 0 {
 		t.Errorf("a GET with seven parameters: %v allocations, want 0", n)
+	}
+	escaped := []byte("GET /ann?info%5Fhash=x&peer%5fid=y HTTP/1.1\r\n")
+	if _, err := SniffHTTPTracker(escaped); err != nil {
+		t.Fatalf("an announce with escaped names: %v", err)
+	}
+	if n := testing.AllocsPerRun(100, func() { _, _ = SniffHTTPTracker(escaped) }); n != 0 {
+		t.Errorf("an announce with escaped names: %v allocations, want 0", n)
 	}
 }

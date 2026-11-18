@@ -115,16 +115,17 @@ func TestSniffLSDKeepsDatagramBoundaries(t *testing.T) {
 }
 
 // A tracker request whose Host comes in a later read waits for it rather
-// than being routed without its domain.
+// than being routed without its domain: the sniff loop reads again and
+// routes it by the Host.
 func TestSniffHTTPTrackerWaitsForItsHost(t *testing.T) {
 	ctx := snifferContext()
-	sniffer := NewSniffer(ctx)
-	line := "GET /announce?info_hash=x&peer_id=y HTTP/1.1\r\n"
-	if result, err := sniffer.Sniff(ctx, []byte(line), net.Network_TCP); err == nil {
-		t.Fatalf("request line alone: protocol %q domain %q, want a wait for the Host", result.Protocol(), result.Domain())
-	}
-	result, err := sniffer.Sniff(ctx, []byte(line+"Host: tracker.example.com\r\n\r\n"), net.Network_TCP)
+	link := &countingReader{datagramReader: datagramReader{datagrams: [][]byte{
+		[]byte("GET /announce?info_hash=x&peer_id=y HTTP/1.1\r\n"),
+		[]byte("Host: tracker.example.com\r\n\r\n"),
+	}}}
+	reader := newTestCachedReader(t, link)
+	result, err := sniff(ctx, reader, false, net.Network_TCP, newSniffer(ctx))
 	if err != nil || result.Protocol() != "bittorrent" || result.Domain() != "tracker.example.com" {
-		t.Fatalf("with the Host: %v, %v; want bittorrent for tracker.example.com", result, err)
+		t.Fatalf("reads=%d result=%v err=%v; want bittorrent for tracker.example.com", link.reads, result, err)
 	}
 }

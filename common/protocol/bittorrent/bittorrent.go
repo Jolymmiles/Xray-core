@@ -257,9 +257,11 @@ func isDNSQuery(b []byte) bool {
 	if len(b) < 12 || b[2]&0x80 != 0 || b[3]&0x4F != 0 || binary.BigEndian.Uint16(b[4:6]) == 0 {
 		return false
 	}
-	// Twenty bytes hold one question and no record.
-	if len(b) == 20 && (binary.BigEndian.Uint16(b[4:6]) != 1 || binary.BigEndian.Uint16(b[6:8]) != 0 ||
-		binary.BigEndian.Uint16(b[8:10]) != 0 || binary.BigEndian.Uint16(b[10:12]) != 0) {
+	// The counts must fit: every question takes at least 5 bytes (the root
+	// name, type and class) and every record at least 11.
+	questions := int(binary.BigEndian.Uint16(b[4:6]))
+	records := int(binary.BigEndian.Uint16(b[6:8])) + int(binary.BigEndian.Uint16(b[8:10])) + int(binary.BigEndian.Uint16(b[10:12]))
+	if 12+5*questions+11*records > len(b) {
 		return false
 	}
 	offset := 12
