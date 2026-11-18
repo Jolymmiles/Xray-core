@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	stdnet "net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
 	xraytls "github.com/xtls/xray-core/transport/internet/tls"
+	"github.com/xtls/xray-core/transport/internet/tls/hellotest"
 )
 
 var sessionResumptionTestID atomic.Uint64
@@ -25,6 +27,9 @@ func TestUClientSessionResumptionEnabled(t *testing.T) {
 	fingerprints := map[string]*utls.ClientHelloID{
 		"chrome": &utls.HelloChrome_Auto,
 		"edge":   &utls.HelloEdge_Auto,
+		// The Firefox 156 exception must not reach the older Firefox
+		// presets, which resumed before it existed.
+		"hellofirefox_120": &utls.HelloFirefox_120,
 	}
 	versions := map[string]uint16{
 		"TLS12": gotls.VersionTLS12,
@@ -61,25 +66,57 @@ func TestUClientSessionResumptionEnabled(t *testing.T) {
 	}
 }
 
-// TestUClientSessionResumptionSkippedForIneligibleFingerprint pins the safe
-// outcome for a preset that cannot resume without being rewritten: the
-// connection still works, it simply performs a full handshake every time
-// instead of shipping a forged ClientHello.
-func TestUClientSessionResumptionSkippedForIneligibleFingerprint(t *testing.T) {
-	if xraytls.SupportsSessionResumption(utls.HelloFirefox_148) {
-		t.Skip("Firefox 148 now advertises the prerequisite extensions upstream")
+// TestUClientSessionResumptionSkippedForFirefox pins full handshakes for
+// Firefox 156, which the firefox aliases select. Its template carries
+// session_ticket and psk_key_exchange_modes, but a Firefox that resumes over
+// TLS 1.3 drops session_ticket and sends a longer GREASE ECH, which the
+// template plus pre_shared_key does not reproduce. Every connection still
+// works, and every ClientHello after the first has the first one's shape: no
+// ticket and no pre_shared_key.
+func TestUClientSessionResumptionSkippedForFirefox(t *testing.T) {
+	versions := map[string]uint16{
+		"TLS12": gotls.VersionTLS12,
+		"TLS13": gotls.VersionTLS13,
 	}
 
-	states := runUClientHandshakes(
-		t,
-		[]*utls.ClientHelloID{&utls.HelloFirefox_148, &utls.HelloFirefox_148, &utls.HelloFirefox_148},
-		gotls.VersionTLS13,
-		false,
-	)
+	for versionName, version := range versions {
+		for _, fingerprintName := range []string{"firefox", "hellofirefox_auto"} {
+			t.Run(versionName+"/"+fingerprintName, func(t *testing.T) {
+				t.Parallel()
 
-	for i, state := range states {
-		if state.DidResume {
-			t.Fatalf("TLS connection %d resumed under a fingerprint that cannot carry a PSK", i+1)
+				fingerprint := xraytls.GetFingerprint(fingerprintName)
+				if fingerprint == nil || *fingerprint != utls.HelloFirefox_156 {
+					t.Fatalf("%s no longer selects Firefox 156; review the resumption rule for what it selects now", fingerprintName)
+				}
+				if xraytls.SupportsSessionResumption(*fingerprint) {
+					t.Fatalf("%s qualifies for session resumption", fingerprintName)
+				}
+
+				states, hellos := runRecordedUClientHandshakes(
+					t,
+					[]*utls.ClientHelloID{fingerprint, fingerprint, fingerprint},
+					version,
+					false,
+				)
+
+				first, err := hellotest.Summarize(hellos[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, state := range states {
+					if state.DidResume {
+						t.Fatalf("TLS connection %d resumed under a Firefox fingerprint", i+1)
+					}
+					hello, err := hellotest.Summarize(hellos[i])
+					if err != nil {
+						t.Fatal(err)
+					}
+					if hello.Length != first.Length || !slices.Equal(hello.Extensions, first.Extensions) {
+						t.Fatalf("ClientHello %d differs from the first: %d bytes, extensions %v; first %d bytes, extensions %v",
+							i+1, hello.Length, hello.Extensions, first.Length, first.Extensions)
+					}
+				}
+			})
 		}
 	}
 }
@@ -138,6 +175,32 @@ func runUClientHandshakes(
 	sessionTicketsDisabled bool,
 ) []utls.ConnectionState {
 	t.Helper()
+	states, _ := runRecordedUClientHandshakes(t, fingerprints, version, sessionTicketsDisabled)
+	return states
+}
+
+// firstWriteConn keeps what the client writes first: its ClientHello record.
+type firstWriteConn struct {
+	stdnet.Conn
+	first []byte
+}
+
+func (c *firstWriteConn) Write(b []byte) (int, error) {
+	if c.first == nil {
+		c.first = append([]byte{}, b...)
+	}
+	return c.Conn.Write(b)
+}
+
+// runRecordedUClientHandshakes is runUClientHandshakes that also returns the
+// ClientHello record of every connection.
+func runRecordedUClientHandshakes(
+	t *testing.T,
+	fingerprints []*utls.ClientHelloID,
+	version uint16,
+	sessionTicketsDisabled bool,
+) ([]utls.ConnectionState, [][]byte) {
+	t.Helper()
 
 	listener, serverErrors := startTLSServer(t, len(fingerprints), version)
 	defer listener.Close()
@@ -149,12 +212,14 @@ func runUClientHandshakes(
 		SessionTicketsDisabled: sessionTicketsDisabled,
 	}
 	states := make([]utls.ConnectionState, 0, len(fingerprints))
+	hellos := make([][]byte, 0, len(fingerprints))
 
 	for i, fingerprint := range fingerprints {
-		rawConn, err := stdnet.DialTimeout("tcp", listener.Addr().String(), 3*time.Second)
+		tcpConn, err := stdnet.DialTimeout("tcp", listener.Addr().String(), 3*time.Second)
 		if err != nil {
 			t.Fatalf("dial TLS server for connection %d: %v", i+1, err)
 		}
+		rawConn := &firstWriteConn{Conn: tcpConn}
 		if err := rawConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 			rawConn.Close()
 			t.Fatalf("set client deadline for connection %d: %v", i+1, err)
@@ -176,6 +241,7 @@ func runUClientHandshakes(
 		}
 
 		states = append(states, clientConn.UConn.ConnectionState())
+		hellos = append(hellos, rawConn.first)
 		if _, err := clientConn.Write([]byte{byte(i)}); err != nil {
 			clientConn.Close()
 			t.Fatalf("acknowledge TLS marker on connection %d: %v", i+1, err)
@@ -188,7 +254,7 @@ func runUClientHandshakes(
 	if err := <-serverErrors; err != nil {
 		t.Fatal(err)
 	}
-	return states
+	return states, hellos
 }
 
 func startTLSServer(t *testing.T, connections int, version uint16) (stdnet.Listener, <-chan error) {

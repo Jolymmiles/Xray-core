@@ -4,7 +4,9 @@ import (
 	"context"
 	gotls "crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
+	"os"
 	"reflect"
 	"sort"
 	"testing"
@@ -167,4 +169,27 @@ func TestClientHelloSnapshot(t *testing.T) {
 	}
 
 	hellotest.Compare(t, helloSnapshotFile, got, *updateHelloSnapshot)
+}
+
+// TestFirefoxHelloIgnoresSessionCache pins that a configured session cache
+// leaves the first ClientHello of the firefox aliases as it is without one.
+// Firefox 156 never resumes here, and TestClientHelloSnapshot holds every row
+// of the golden file to what Xray sends.
+func TestFirefoxHelloIgnoresSessionCache(t *testing.T) {
+	data, err := os.ReadFile(helloSnapshotFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden map[string]hellotest.Snapshot
+	if err := json.Unmarshal(data, &golden); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"firefox", "hellofirefox_auto"} {
+		for _, paths := range [][2]string{{"stock", "resumption"}, {"http11", "http11-resumption"}} {
+			without, with := golden[paths[0]+"/"+name], golden[paths[1]+"/"+name]
+			if without.SHA256 == "" || !reflect.DeepEqual(without, with) {
+				t.Errorf("%s: %s and %s differ or are missing:\n%+v\n%+v", name, paths[0], paths[1], without, with)
+			}
+		}
+	}
 }
