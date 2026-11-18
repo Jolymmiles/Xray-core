@@ -61,10 +61,11 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUDPTracker(b) }, network: net.Network_UDP},
 	{
 		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return stun.SniffSTUN(b) },
-		// A STUN message over UDP is its first datagram. Without the
-		// datagrams (an empty cache, or one whose first buffer is longer
-		// than the scratch) there is no first datagram to read whole, and
-		// a stream reader would take a datagram that only starts with one.
+		// A STUN message over UDP is its first datagram. An empty list of
+		// datagrams (the cache's first buffer is longer than the scratch)
+		// has no first datagram to read whole, and a stream reader would
+		// take a datagram that only starts with one. A nil list (an empty
+		// cache) goes to the stream reader, as for every sniffer.
 		datagramSniffer: func(_ context.Context, _ []byte, datagrams [][]byte) (SniffResult, error) {
 			if len(datagrams) == 0 {
 				return nil, errUnknownContent
