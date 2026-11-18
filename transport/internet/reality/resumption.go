@@ -193,8 +193,8 @@ func (c *connTickets) Put(_ string, session *utls.ClientSessionState) {
 // fingerprint plus pre_shared_key, as with Chrome. Firefox drops the empty
 // session_ticket extension, and sizes its GREASE ECH payload as if the
 // inner ClientHello held the pre_shared_key too. For Firefox 156 the tls
-// package builds that ClientHello to the byte (tls.BuildsFirefoxClientHello);
-// this is the approximation left for the older Firefox presets and for a
+// package builds that ClientHello by the measured rule
+// (tls.BuildsFirefoxClientHello); this is the approximation left for the older Firefox presets and for a
 // connection without a server name: the payload grows by the size of
 // pre_shared_key rounded up to 32 bytes.
 func resumptionSpec(fingerprint utls.ClientHelloID, session *utls.ClientSessionState) *utls.ClientHelloSpec {
