@@ -201,10 +201,15 @@ REALITY also sends a `GET /` with the preface, advertises the browsers'
 64 KiB HPACK table, and stops reading once the server's SETTINGS ACK
 arrives. If the target
 combines startup controls and response headers, XHTTP can use that record
-for its controls and as much of its own response as fits. Chromium full
-handshakes use a delayed preface sample to capture SETTINGS arriving
-before the combined ACK and response. Firefox can use a sample that
-combines the greeting into one record, with or without a response.
+for its controls and as much of its own response as fits. For a full
+Chromium handshake the grouping follows the client's arrival, as the
+target's does: once its tickets are out, REALITY checks whether client
+data already waits (on Linux, also in the kernel). If it does, the
+combined sample is used; otherwise the delayed one, with SETTINGS first.
+Chrome sends its first data 0.25-1.2 ms after its Finished, so the REALITY
+client keeps such a gap for Chrome and Edge; nginx gave Chrome 157 both
+groupings within one run. Firefox can use a sample that combines the
+greeting into one record, with or without a response.
 Resumed Chromium prefers the
 immediate control-only sample. If the response does not arrive in time,
 XHTTP releases the controls. The response portion of a record can vary
@@ -215,6 +220,24 @@ through.
 Individual browser connections to a target can use either grouping. Compare each
 handshake type using the selected PSK identity in ServerHello. An offer
 in ClientHello also appears when the target declines to resume.
+
+## Findings (2026-11-18, this PR's uTLS pin)
+
+The 2026-11-16 findings below used the Firefox 156, Edge 157 and Safari
+26.3 presets that are now proposed in Jolymmiles/utls#1. This PR keeps the
+pinned uTLS until that lands, and Firefox and Edge depend on it.
+
+- XHTTP, Chrome, through REALITY, against Chrome 157 straight to the
+  target. nginx at RTT 0 and 60 ms: full and resumed startups match.
+  nginx at 150 ms: only the response bytes in the second record differ
+  (146 against 148). Caddy and HAProxy at 60 ms: match. nginx gave Chrome
+  `[62, 146]`, `[188]` and `[62, 31]` within one run, which is why the
+  grouping follows the client's arrival.
+- XHTTP, Firefox: the pinned Firefox 148 preset sends neither
+  `session_ticket` nor `psk_key_exchange_modes`. The client therefore does
+  not ask for tickets, and the server answers it on the legacy path,
+  without HTTP/2 shaping. Every target differs from Firefox 160 until the
+  uTLS update.
 
 ## Findings (2026-11-16)
 
