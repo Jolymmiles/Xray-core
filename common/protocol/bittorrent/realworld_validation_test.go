@@ -582,3 +582,15 @@ func TestIsDNSQueryNameLimit(t *testing.T) {
 		t.Error("a 256-octet name is read as a DNS query")
 	}
 }
+
+// A 20-byte datagram holds one question and nothing else, so a SYN whose
+// timestamp reads as other counts is no DNS query, whatever its window.
+func TestSniffUTPTakesSYNsWithImpossibleDNSCounts(t *testing.T) {
+	// Connection id 0x0100, window 0x3000 and sequence 0x0123 read as a
+	// root-name DNSKEY question; the timestamp reads as QDCOUNT 31037 and
+	// ANCOUNT 15766.
+	syn := []byte{0x41, 0x00, 0x01, 0x00, 0x79, 0x3d, 0x3d, 0x96, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, 0x01, 0x23, 0x00, 0x00}
+	if _, err := SniffUTP(syn); err != nil {
+		t.Errorf("SYN % x: %v", syn, err)
+	}
+}

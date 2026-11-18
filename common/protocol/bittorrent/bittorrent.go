@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"net/url"
 
 	"github.com/xtls/xray-core/common"
 )
@@ -164,20 +163,12 @@ func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 	}
 	request := path[bytes.LastIndexByte(path, '/')+1:]
 	var infoHash, peerID bool
-	for _, param := range bytes.Split(query, []byte("&")) {
+	for len(query) > 0 {
+		var param []byte
+		param, query, _ = bytes.Cut(query, []byte("&"))
 		name, _, _ := bytes.Cut(param, []byte("="))
-		// Trackers decode the names, so info%5Fhash is info_hash too.
-		if bytes.IndexByte(name, '%') >= 0 {
-			if decoded, err := url.QueryUnescape(string(name)); err == nil {
-				name = []byte(decoded)
-			}
-		}
-		switch string(name) {
-		case "info_hash":
-			infoHash = true
-		case "peer_id":
-			peerID = true
-		}
+		infoHash = infoHash || paramIs(name, "info_hash")
+		peerID = peerID || paramIs(name, "peer_id")
 	}
 	switch {
 	case infoHash && peerID,
@@ -185,6 +176,42 @@ func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
 		return &SniffHeader{}, nil
 	}
 	return nil, errNotBittorrent
+}
+
+// paramIs reports whether a query parameter name reads as want once it is
+// decoded, as trackers decode it: info%5Fhash is info_hash too.
+func paramIs(name []byte, want string) bool {
+	for i := 0; i < len(want); i++ {
+		if len(name) == 0 {
+			return false
+		}
+		c, n := name[0], 1
+		switch {
+		case c == '+':
+			c = ' '
+		case c == '%' && len(name) >= 3 && isHex(name[1]) && isHex(name[2]):
+			c, n = unhex(name[1])<<4|unhex(name[2]), 3
+		}
+		if c != want[i] {
+			return false
+		}
+		name = name[n:]
+	}
+	return len(name) == 0
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c <= '9':
+		return c - '0'
+	case c <= 'F':
+		return c - 'A' + 10
+	}
+	return c - 'a' + 10
 }
 
 // SniffLSD takes BitTorrent local service discovery (BEP 14), which a TUN
@@ -203,6 +230,16 @@ func SniffLSD(b []byte) (*SniffHeader, error) {
 	return &SniffHeader{}, nil
 }
 
+// SniffLSDDatagram is SniffLSD for a whole datagram: a prefix of the
+// request line is no announce, and no later datagram makes it one.
+func SniffLSDDatagram(d []byte) (*SniffHeader, error) {
+	h, err := SniffLSD(d)
+	if err == common.ErrNoClue {
+		return nil, errNotBittorrent
+	}
+	return h, err
+}
+
 // SniffUTPDatagram is SniffUTP for a whole datagram: one too short for the
 // header is no SYN, and no later datagram makes it one.
 func SniffUTPDatagram(d []byte) (*SniffHeader, error) {
@@ -218,6 +255,11 @@ func SniffUTPDatagram(d []byte) (*SniffHeader, error) {
 // and its receive window as the start of the question, which rarely fit both.
 func isDNSQuery(b []byte) bool {
 	if len(b) < 12 || b[2]&0x80 != 0 || b[3]&0x4F != 0 || binary.BigEndian.Uint16(b[4:6]) == 0 {
+		return false
+	}
+	// Twenty bytes hold one question and no record.
+	if len(b) == 20 && (binary.BigEndian.Uint16(b[4:6]) != 1 || binary.BigEndian.Uint16(b[6:8]) != 0 ||
+		binary.BigEndian.Uint16(b[8:10]) != 0 || binary.BigEndian.Uint16(b[10:12]) != 0) {
 		return false
 	}
 	offset := 12

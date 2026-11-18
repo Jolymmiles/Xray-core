@@ -84,7 +84,18 @@ var defaultProtocolSniffers = [...]protocolSnifferWithMetadata{
 		},
 		network: net.Network_UDP,
 	},
-	{protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffLSD(b) }, network: net.Network_UDP},
+	{
+		protocolSniffer: func(_ context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffLSD(b) },
+		// An announce is a whole datagram: read the first one, and turn down
+		// an empty list rather than read a batch as one.
+		datagramSniffer: func(_ context.Context, _ []byte, datagrams [][]byte) (SniffResult, error) {
+			if len(datagrams) == 0 {
+				return nil, errUnknownContent
+			}
+			return bittorrent.SniffLSDDatagram(datagrams[0])
+		},
+		network: net.Network_UDP,
+	},
 }
 
 // sniffHTTPOrTracker is SniffHTTP but for an HTTP tracker request, which is

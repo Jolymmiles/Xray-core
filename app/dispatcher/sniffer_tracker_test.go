@@ -87,3 +87,44 @@ func TestSniffUTPKeepsDatagramBoundaries(t *testing.T) {
 		t.Error("uTP handshake assembled from two datagrams")
 	}
 }
+
+// An LSD announce is a whole datagram: a request line assembled from two is
+// none, and a datagram that is only a prefix of it is turned down without a
+// second read.
+func TestSniffLSDKeepsDatagramBoundaries(t *testing.T) {
+	ctx := snifferContext()
+	split := [][]byte{[]byte("BT-SEARCH * HTTP/1.1"), []byte("\r\n")}
+	result, err := NewSniffer(ctx).SniffDatagrams(ctx, bytes.Join(split, nil), split, net.Network_UDP)
+	if err == nil && result.Protocol() == "bittorrent" {
+		t.Error("LSD request line assembled from two datagrams")
+	}
+	lsd := []byte("BT-SEARCH * HTTP/1.1\r\nHost: 239.192.152.143:6771\r\nPort: 6881\r\nInfohash: 9a813bef8f10a1c9e61ac4e9b70742cf338c2be2\r\n\r\n\r\n")
+	whole := [][]byte{lsd, []byte("second datagram")}
+	if result, err := NewSniffer(ctx).SniffDatagrams(ctx, bytes.Join(whole, nil), whole, net.Network_UDP); err != nil || result.Protocol() != "bittorrent" {
+		t.Errorf("LSD announce, then a second datagram: %v, %v; want bittorrent", result, err)
+	}
+	for _, d := range [][]byte{[]byte("B"), []byte("BT-SEARCH * HTTP/1.1")} {
+		ctx := snifferContext()
+		link := &countingReader{datagramReader: datagramReader{datagrams: [][]byte{d}}}
+		reader := newTestCachedReader(t, link)
+		_, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
+		if link.reads != 1 {
+			t.Errorf("%q: %d reads (%v), want 1", d, link.reads, err)
+		}
+	}
+}
+
+// A tracker request whose Host comes in a later read waits for it rather
+// than being routed without its domain.
+func TestSniffHTTPTrackerWaitsForItsHost(t *testing.T) {
+	ctx := snifferContext()
+	sniffer := NewSniffer(ctx)
+	line := "GET /announce?info_hash=x&peer_id=y HTTP/1.1\r\n"
+	if result, err := sniffer.Sniff(ctx, []byte(line), net.Network_TCP); err == nil {
+		t.Fatalf("request line alone: protocol %q domain %q, want a wait for the Host", result.Protocol(), result.Domain())
+	}
+	result, err := sniffer.Sniff(ctx, []byte(line+"Host: tracker.example.com\r\n\r\n"), net.Network_TCP)
+	if err != nil || result.Protocol() != "bittorrent" || result.Domain() != "tracker.example.com" {
+		t.Fatalf("with the Host: %v, %v; want bittorrent for tracker.example.com", result, err)
+	}
+}
