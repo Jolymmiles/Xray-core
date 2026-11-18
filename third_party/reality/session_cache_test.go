@@ -79,6 +79,30 @@ func testConfig(t *testing.T) *Config {
 	return &Config{PrivateKey: priv}
 }
 
+func TestRealityTicketRejectsMalformedLabels(t *testing.T) {
+	config := testConfig(t)
+	prefix := []byte{1, 2, 3, 4}
+	shape := &TicketShape{Prefix: prefix, Lifetime: 60}
+	invalidState, err := config.encryptTicket([]byte{0xff}, config.realityTicketKeys())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, label := range map[string][]byte{
+		"empty":         nil,
+		"prefix only":   prefix,
+		"short prefix":  prefix[:2],
+		"short payload": append(bytes.Clone(prefix), 5),
+		"invalid state": append(bytes.Clone(prefix), invalidState...),
+		"unknown label": make([]byte, 192),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if config.realityTicketSession(shape, label, false) != nil {
+				t.Fatal("a malformed label selected a resumable session")
+			}
+		})
+	}
+}
+
 // A ticket that is an id belongs to the private key that issued it: a
 // server with another key does not find it, even with the same id.
 func TestSessionCacheIsScopedToTheKey(t *testing.T) {
