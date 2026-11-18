@@ -176,9 +176,16 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 				errors.LogInfoInner(ctx, errP, "failed to handler mux client connection")
 			}
 		}
+		// The carrier is gone, and only it wrote the downlink. Closing its
+		// end lets fetchOutput deliver what the carrier had written and
+		// then finish the worker, which ends the sessions. A carrier that
+		// failed leaves that end open; fetchOutput then waits on it for
+		// good and the sessions stay open and silent. Interrupting the
+		// link here instead would drop a response already received.
+		common.Close(downlinkWriter)
 		common.Must(c.Close())
 		cancel()
-	}(f.Proxy, f.Dialer, c)
+	}(f.Proxy, f.Dialer, c.done)
 
 	return c, nil
 }
