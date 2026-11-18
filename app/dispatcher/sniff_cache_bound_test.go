@@ -102,7 +102,11 @@ func sniffDuringUpload(t *testing.T, network net.Network, sniffer Sniffer, first
 	cached.Unlock()
 	close(stop)
 	reader.Interrupt()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client kept writing after the pipe was interrupted")
+	}
 	return result, err, size
 }
 
