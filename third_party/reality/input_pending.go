@@ -25,8 +25,11 @@ func (c *Conn) inputPending() bool {
 			Splice() bool
 		}: // a FinalMask wrapper
 			if !inner.Splice() {
-				// It re-encodes the stream: the socket's bytes are not the
-				// client's data, so only what was read counts.
+				// It may re-encode the stream (Sudoku), so the socket's
+				// bytes need not be the client's data and only what was
+				// read counts. The server-side fragment mask also lands
+				// here: it reports false for its writes, though its reads
+				// pass through.
 				return false
 			}
 			conn = inner.RawConn()

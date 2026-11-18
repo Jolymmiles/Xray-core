@@ -204,7 +204,9 @@ combines startup controls and response headers, XHTTP can use that record
 for its controls and as much of its own response as fits. For a full
 Chromium handshake the grouping follows the client's arrival, as the
 target's does: once its tickets are out, REALITY checks whether client
-data already waits (on Linux, also in the kernel). If it does, the
+data already waits (on Linux, also in the kernel, unless a FinalMask
+wrapper reports `Splice()` false, as Sudoku and the server-side fragment
+mask do; then only bytes already read count). If it does, the
 combined sample is used; otherwise the delayed one, with SETTINGS first.
 Chrome sends its first data 0.25-1.2 ms after its Finished, so the REALITY
 client schedules its first data that long after its handshake for Chrome
