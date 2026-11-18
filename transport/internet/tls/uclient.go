@@ -109,12 +109,21 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 	}
 
 	var uConn *utls.UConn
-	if settings.spec != nil {
+	switch {
+	case settings.spec != nil:
 		uConn = utls.UClient(c, config, utls.HelloCustom)
 		if err := uConn.ApplyPreset(settings.spec); err != nil {
 			return nil, err
 		}
-	} else {
+	case BuildsFirefoxClientHello(fingerprint, config.ServerName):
+		if resumption.source != nil {
+			config.ClientSessionCache = resumption.sessionCache(fingerprint)
+		}
+		var err error
+		if uConn, err = newFirefoxClient(c, config, fingerprint); err != nil {
+			return nil, err
+		}
+	default:
 		uConn = resumption.client(c, config, fingerprint)
 	}
 	if err := uConn.BuildHandshakeState(); err != nil {

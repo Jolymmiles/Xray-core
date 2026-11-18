@@ -200,7 +200,8 @@ func newUConn(c net.Conn, config *Config, dest net.Destination, fingerprint utls
 				return err
 			}
 		}
-		if cache.session != nil {
+		// tls builds Firefox 156's ClientHello from the ticket in the cache.
+		if cache.session != nil && !tls.BuildsFirefoxClientHello(fingerprint, utlsConfig.ServerName) {
 			if spec := resumptionSpec(fingerprint, cache.session); spec != nil {
 				options = append(options, tls.WithClientHelloSpec(spec))
 			}

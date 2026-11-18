@@ -103,7 +103,7 @@
     ]
   },
   "firefox": {
-    "sha256": "2e983f7ae31c8cf9222e7dec88908a0560a85956ff638bd6047dd11cd05e46a0",
+    "sha256": "a41ff06b4e96ba22327a67c916eaccbdea81ea678b708bde5295e0cf781661c2",
     "length": 1889,
     "extensions": [
       0,
@@ -1352,7 +1352,7 @@
     ]
   },
   "hellofirefox_auto": {
-    "sha256": "2e983f7ae31c8cf9222e7dec88908a0560a85956ff638bd6047dd11cd05e46a0",
+    "sha256": "a41ff06b4e96ba22327a67c916eaccbdea81ea678b708bde5295e0cf781661c2",
     "length": 1889,
     "extensions": [
       0,
