@@ -763,7 +763,7 @@ func classifyBinderRefusal(capture *probeCaptureConn, start time.Time) binderRef
 		n += r.len()
 	}
 	if n != len(answer) {
-		return binderRefusal{}
+		return inconclusiveRefusal // the read ended inside an alert
 	}
 	return binderRefusal{kind: alertRefusal, alerts: answer, delay: refusalDelay(capture.firstByte.Sub(start))}
 }

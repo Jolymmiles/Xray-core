@@ -1,6 +1,7 @@
 package reality
 
 import (
+	"bytes"
 	"container/list"
 	"crypto/sha256"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -98,6 +100,34 @@ func TestClassifyEmptyBinderRefusal(t *testing.T) {
 			reply := classifyBinderRefusal(capture, now)
 			if reply.kind != tc.kind || reply.delay != tc.delay || len(reply.alerts) != 0 {
 				t.Fatalf("got %+v, want kind %v after %v", reply, tc.kind, tc.delay)
+			}
+		})
+	}
+}
+
+// A read cut short inside an alert measured nothing: it must not clear a
+// refusal measured before. A complete record that is not an alert is a
+// measurement that the destination does not refuse.
+func TestClassifyTruncatedBinderAnswer(t *testing.T) {
+	now := time.Now()
+	alert := []byte{21, 3, 3, 0, 2, 2, 51}
+	for _, tc := range []struct {
+		name         string
+		in           []byte
+		err          error
+		kind         refusalKind
+		inconclusive bool
+	}{
+		{"partial alert, reset", alert[:4], syscall.ECONNRESET, noRefusal, true},
+		{"alert then partial alert", append(bytes.Clone(alert), alert[:3]...), io.EOF, noRefusal, true},
+		{"complete alert", alert, io.EOF, alertRefusal, false},
+		{"handshake record", []byte{22, 3, 3, 0, 1, 2}, io.EOF, noRefusal, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := &probeCaptureConn{in: tc.in, readErr: tc.err, readEnd: now, firstByte: now}
+			reply := classifyBinderRefusal(capture, now)
+			if reply.kind != tc.kind || reply.inconclusive != tc.inconclusive {
+				t.Fatalf("got %+v, want kind %v, inconclusive %v", reply, tc.kind, tc.inconclusive)
 			}
 		})
 	}
