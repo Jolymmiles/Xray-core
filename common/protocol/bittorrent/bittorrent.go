@@ -1,6 +1,7 @@
 package bittorrent
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 
@@ -24,7 +25,7 @@ func SniffBittorrent(b []byte) (*SniffHeader, error) {
 		return nil, common.ErrNoClue
 	}
 
-	if b[0] == 19 && string(b[1:20]) == "BitTorrent protocol" {
+	if bytes.HasPrefix(b, btHandshake) {
 		return &SniffHeader{}, nil
 	}
 
@@ -54,6 +55,9 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 		return nil, common.ErrNoClue
 	}
 
+	if b[0] == 0x01 {
+		return sniffUTPHandshake(b)
+	}
 	if b[0] != 0x41 {
 		return nil, errNotBittorrent
 	}
@@ -79,39 +83,161 @@ func SniffUTP(b []byte) (*SniffHeader, error) {
 		return nil, errNotBittorrent
 	}
 
-	// Walk the extension chain: selective ack (1) and extension bits (2),
-	// which µTorrent sends in its ST_SYN.
+	// A SYN carries no data: its extensions end the datagram.
+	if offset, ok := utpExtensionsEnd(b); !ok || offset != len(b) {
+		return nil, errNotBittorrent
+	}
+
+	return &SniffHeader{}, nil
+}
+
+// utpExtensionsEnd walks the extension chain after the 20-byte header:
+// selective ack (1) and extension bits (2), which µTorrent sends in its
+// ST_SYN. It returns where the chain ends.
+func utpExtensionsEnd(b []byte) (int, bool) {
 	extension, offset := b[1], 20
 	for extension != 0 {
 		if len(b) < offset+2 {
-			return nil, errNotBittorrent
+			return 0, false
 		}
 		length := int(b[offset+1])
 		switch extension {
 		case 1:
 			if length < 4 || length%4 != 0 {
-				return nil, errNotBittorrent
+				return 0, false
 			}
 		case 2:
 			if length != 8 {
-				return nil, errNotBittorrent
+				return 0, false
 			}
 		default:
-			return nil, errNotBittorrent
+			return 0, false
 		}
 		if len(b) < offset+2+length {
-			return nil, errNotBittorrent
+			return 0, false
 		}
 		extension = b[offset]
 		offset += 2 + length
 	}
+	return offset, true
+}
 
-	// A SYN carries no data: its extensions end the datagram.
-	if len(b) != offset {
+// btHandshake opens the peer protocol of BEP 3, over TCP and in uTP alike.
+var btHandshake = []byte("\x13BitTorrent protocol")
+
+// sniffUTPHandshake takes a uTP ST_DATA (type 0, version 1) whose data
+// opens with the BitTorrent handshake: the first data of a uTP flow, as a
+// flow sniffed after its SYN carries it.
+func sniffUTPHandshake(b []byte) (*SniffHeader, error) {
+	offset, ok := utpExtensionsEnd(b)
+	if !ok || !bytes.HasPrefix(b[offset:], btHandshake) {
 		return nil, errNotBittorrent
 	}
-
 	return &SniffHeader{}, nil
+}
+
+// SniffHTTPTracker takes an HTTP tracker request (BEP 3, BEP 48): a GET
+// with info_hash and peer_id parameters, an announce whatever its path
+// (RuTracker's is /ann), or a GET of a scrape, whose last path segment starts
+// with scrape, with info_hash. The parameters are whole names in the query.
+// It runs before the HTTP sniffer, which would otherwise take the flow as
+// HTTP.
+func SniffHTTPTracker(b []byte) (*SniffHeader, error) {
+	const get = "GET /"
+	if len(b) < len(get) {
+		if bytes.HasPrefix([]byte(get), b) {
+			return nil, common.ErrNoClue
+		}
+		return nil, errNotBittorrent
+	}
+	if !bytes.HasPrefix(b, []byte(get)) {
+		return nil, errNotBittorrent
+	}
+	target := b[len("GET "):]
+	if i := bytes.IndexAny(target, " \r\n"); i >= 0 {
+		target = target[:i]
+	}
+	path, query, ok := bytes.Cut(target, []byte("?"))
+	if !ok {
+		return nil, errNotBittorrent
+	}
+	request := path[bytes.LastIndexByte(path, '/')+1:]
+	var infoHash, peerID bool
+	for len(query) > 0 {
+		var param []byte
+		param, query, _ = bytes.Cut(query, []byte("&"))
+		name, _, _ := bytes.Cut(param, []byte("="))
+		infoHash = infoHash || paramIs(name, "info_hash")
+		peerID = peerID || paramIs(name, "peer_id")
+	}
+	switch {
+	case infoHash && peerID,
+		bytes.HasPrefix(request, []byte("scrape")) && infoHash:
+		return &SniffHeader{}, nil
+	}
+	return nil, errNotBittorrent
+}
+
+// paramIs reports whether a query parameter name reads as want once it is
+// decoded, as trackers decode it: info%5Fhash is info_hash too.
+func paramIs(name []byte, want string) bool {
+	for i := 0; i < len(want); i++ {
+		if len(name) == 0 {
+			return false
+		}
+		c, n := name[0], 1
+		switch {
+		case c == '+':
+			c = ' '
+		case c == '%' && len(name) >= 3 && isHex(name[1]) && isHex(name[2]):
+			c, n = unhex(name[1])<<4|unhex(name[2]), 3
+		}
+		if c != want[i] {
+			return false
+		}
+		name = name[n:]
+	}
+	return len(name) == 0
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c <= '9':
+		return c - '0'
+	case c <= 'F':
+		return c - 'A' + 10
+	}
+	return c - 'a' + 10
+}
+
+// SniffLSD takes BitTorrent local service discovery (BEP 14), which a TUN
+// client may send into the tunnel with the rest of its multicast.
+func SniffLSD(b []byte) (*SniffHeader, error) {
+	const search = "BT-SEARCH * HTTP/1.1\r\n"
+	if len(b) < len(search) {
+		if bytes.HasPrefix([]byte(search), b) {
+			return nil, common.ErrNoClue
+		}
+		return nil, errNotBittorrent
+	}
+	if !bytes.HasPrefix(b, []byte(search)) {
+		return nil, errNotBittorrent
+	}
+	return &SniffHeader{}, nil
+}
+
+// SniffLSDDatagram is SniffLSD for a whole datagram: a prefix of the
+// request line is no announce, and no later datagram makes it one.
+func SniffLSDDatagram(d []byte) (*SniffHeader, error) {
+	h, err := SniffLSD(d)
+	if err == common.ErrNoClue {
+		return nil, errNotBittorrent
+	}
+	return h, err
 }
 
 // SniffUTPDatagram is SniffUTP for a whole datagram: one too short for the
@@ -129,6 +255,13 @@ func SniffUTPDatagram(d []byte) (*SniffHeader, error) {
 // and its receive window as the start of the question, which rarely fit both.
 func isDNSQuery(b []byte) bool {
 	if len(b) < 12 || b[2]&0x80 != 0 || b[3]&0x4F != 0 || binary.BigEndian.Uint16(b[4:6]) == 0 {
+		return false
+	}
+	// The counts must fit: every question takes at least 5 bytes (the root
+	// name, type and class) and every record at least 11.
+	questions := int(binary.BigEndian.Uint16(b[4:6]))
+	records := int(binary.BigEndian.Uint16(b[6:8])) + int(binary.BigEndian.Uint16(b[8:10])) + int(binary.BigEndian.Uint16(b[10:12]))
+	if 12+5*questions+11*records > len(b) {
 		return false
 	}
 	offset := 12
