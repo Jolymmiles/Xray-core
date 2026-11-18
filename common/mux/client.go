@@ -178,7 +178,7 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		}
 		common.Must(c.Close())
 		cancel()
-	}(f.Proxy, f.Dialer, c.done)
+	}(f.Proxy, f.Dialer, c)
 
 	return c, nil
 }
