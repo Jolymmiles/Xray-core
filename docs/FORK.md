@@ -275,9 +275,9 @@ guard it.
   plain reader. Covered by `TestHTTPOutboundServerFirst`
   (`testing/scenarios/http_test.go`) and
   `proxy/vless/outbound/first_payload_test.go`.
-- The dispatcher stops sniffing a flow once a sniffer that asks for more data
-  (`protocol.ErrProtoNeedMoreData`) has seen all the cache shows it (32 KiB):
-  further reads cannot change its answer. Upstream reads on for the whole
+- The dispatcher stops sniffing a flow when a sniffer asks for more data
+  (`protocol.ErrProtoNeedMoreData`) while the cache already holds bytes past
+  the 32 KiB it shows a sniffer: further reads cannot change its answer. Upstream reads on for the whole
   200 ms sniffing budget, and since each read drains the link, it caches
   everything the client uploads meanwhile, past the pipe's limit: hundreds of
   megabytes per connection from a crafted TLS ClientHello. The flow is routed

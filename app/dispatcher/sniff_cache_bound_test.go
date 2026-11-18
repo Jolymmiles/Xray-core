@@ -106,17 +106,19 @@ func sniffDuringUpload(t *testing.T, network net.Network, sniffer Sniffer, first
 	return result, err, size
 }
 
-// craftedTLSRecords is a ClientHello of 32000 bytes in records of 16384: it
-// is whole only past the bytes a sniffer sees, so the TLS sniffer asks for
-// more data for as long as it is asked.
+// craftedTLSRecords is a ClientHello of 32000 bytes in records of 4000: the
+// first record is whole in the first read, as in an inbound's 8 KiB read, but
+// the message is whole only in the ninth record, which ends past the bytes a
+// sniffer sees. The TLS sniffer thus asks for more data for as long as it is
+// asked.
 func craftedTLSRecords() []byte {
-	const helloLen = 32000
-	message := make([]byte, 2*16384)
+	const helloLen, recordLen, records = 32000, 4000, 9
+	message := make([]byte, records*recordLen)
 	message[0], message[1], message[2], message[3] = 0x01, byte(helloLen>>16), byte(helloLen>>8), byte(helloLen&0xff)
 	var out []byte
-	for i := 0; i < 2; i++ {
-		out = append(out, 0x16, 0x03, 0x01, 0x40, 0x00)
-		out = append(out, message[i*16384:(i+1)*16384]...)
+	for i := 0; i < records; i++ {
+		out = append(out, 0x16, 0x03, 0x01, byte(recordLen>>8), byte(recordLen&0xff))
+		out = append(out, message[i*recordLen:(i+1)*recordLen]...)
 	}
 	return out
 }
