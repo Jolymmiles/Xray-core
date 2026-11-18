@@ -464,9 +464,11 @@ func TestFirstDataGapOnTheWire(t *testing.T) {
 			t.Fatalf("browser mode: first data %v after Finished, want at least 250µs", d)
 		}
 	}
+	// Without browser mode nothing waits; the gap is the scheduler's alone
+	// and has no bound worth checking.
 	d, conn := gap("")
-	if !conn.firstData.IsZero() || d >= 250*time.Microsecond {
-		t.Fatalf("without browser mode the first data waited %v", d)
+	if !conn.firstData.IsZero() {
+		t.Fatalf("without browser mode the first data was scheduled, %v after Finished", d)
 	}
 	t.Logf("without browser mode the first data went %v after Finished", d)
 }

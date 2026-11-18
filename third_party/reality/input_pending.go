@@ -20,7 +20,15 @@ func (c *Conn) inputPending() bool {
 		case interface{ Raw() net.Conn }: // a PROXY protocol connection
 			conn = inner.Raw()
 			continue
-		case interface{ RawConn() net.Conn }: // a FinalMask wrapper
+		case interface {
+			RawConn() net.Conn
+			Splice() bool
+		}: // a FinalMask wrapper
+			if !inner.Splice() {
+				// It re-encodes the stream: the socket's bytes are not the
+				// client's data, so only what was read counts.
+				return false
+			}
 			conn = inner.RawConn()
 			continue
 		}

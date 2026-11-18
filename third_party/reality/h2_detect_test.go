@@ -229,6 +229,39 @@ func TestInputPendingKernel(t *testing.T) {
 	}
 }
 
+// maskConn stands for a FinalMask TCP wrapper; splice tells whether it
+// passes the stream through unchanged.
+type maskConn struct {
+	net.Conn
+	splice bool
+}
+
+func (c maskConn) RawConn() net.Conn { return c.Conn }
+func (c maskConn) Splice() bool      { return c.splice }
+
+// Under a mask that re-encodes the stream the socket's bytes are not the
+// client's data, so only a mask that passes the stream through is unwrapped.
+func TestInputPendingThroughMasks(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the kernel's count is read on Linux only")
+	}
+	client, server := tcpPair(t)
+	if _, err := client.Write([]byte{23, 3, 3, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); !(&Conn{conn: server}).inputPending(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the kernel's bytes were not seen")
+		}
+	}
+	if !(&Conn{conn: maskConn{server, true}}).inputPending() {
+		t.Fatal("a pass-through mask hid the socket's bytes")
+	}
+	if (&Conn{conn: maskConn{server, false}}).inputPending() {
+		t.Fatal("bytes under a transforming mask counted as client data")
+	}
+}
+
 func TestProbeH2MeasuresReplyInStartupRecord(t *testing.T) {
 	listener := h2ProbeListener(t)
 	serverErr := make(chan error, 1)
