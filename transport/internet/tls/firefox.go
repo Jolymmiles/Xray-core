@@ -2,6 +2,7 @@ package tls
 
 import (
 	"crypto/rand"
+	"math"
 	"net"
 	"strings"
 
@@ -85,9 +86,10 @@ func firefoxClientHello(fingerprint utls.ClientHelloID, serverName string, sessi
 
 // nssInnerHelloPaddedLen is the length of the inner ClientHello NSS would
 // encrypt, padded to 32 bytes: what the GREASE ECH payload holds before its
-// AEAD tag.
+// AEAD tag. A ticket too long for the length field gives the largest value,
+// and a ClientHello that does not fit, which newFirefoxClient turns down.
 func nssInnerHelloPaddedLen(serverNameLen, pskLen int) uint16 {
-	return uint16((nssInnerHelloLen + max(serverNameLen, nssServerNamePad) + pskLen + 31) / 32 * 32)
+	return uint16(min((nssInnerHelloLen+max(serverNameLen, nssServerNamePad)+pskLen+31)/32*32, math.MaxUint16/32*32))
 }
 
 // preSharedKeyLen is the size of the pre_shared_key extension that offers
@@ -175,14 +177,32 @@ func newFirefoxClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHe
 		if err := uConn.BuildHandshakeState(); err != nil {
 			return nil, err
 		}
-		offersTicket := session != nil && session.Vers() == utls.VersionTLS13
-		if !offersTicket || offersPreSharedKey(uConn) {
+		if session == nil {
 			return uConn, nil
 		}
-		// uTLS turned the ticket down (expired, another certificate chain),
-		// so the hello above lacks both session_ticket and pre_shared_key.
+		// A server chooses the size of its ticket, and Firefox's ClientHello
+		// carries a TLS 1.3 ticket's length twice, in pre_shared_key and in
+		// the GREASE ECH: past some 31 KB the extensions outgrow their
+		// two-byte length and uTLS writes a hello no server can parse.
+		offered := session.Vers() != utls.VersionTLS13 || offersPreSharedKey(uConn)
+		if offered && extensionsFit(uConn) {
+			return uConn, nil
+		}
+		// Otherwise uTLS turned the ticket down (expired, another
+		// certificate chain), and the hello above lacks both session_ticket
+		// and pre_shared_key. Either way the connection starts afresh.
 		session = nil
 	}
+}
+
+// extensionsFit reports whether the extensions of the built ClientHello fit
+// the two-byte length that precedes them.
+func extensionsFit(uConn *utls.UConn) bool {
+	total := 0
+	for _, extension := range uConn.Extensions {
+		total += extension.Len()
+	}
+	return total <= math.MaxUint16
 }
 
 // sessionCacheKey is the key uTLS looks a session up by.

@@ -216,3 +216,33 @@ func TestFirefoxGREASEECHCountsTheTicketItOffers(t *testing.T) {
 		}
 	}
 }
+
+// TestFirefoxTicketTooLongForTheHello covers a server that issues a ticket
+// Firefox's ClientHello cannot carry: its length goes into pre_shared_key and
+// into the GREASE ECH, and past some 31 KB the extensions no longer fit their
+// two-byte length. The ticket is dropped and the hello is that of a first
+// connection, in TLS 1.3 and in TLS 1.2, where the ticket fills
+// session_ticket.
+func TestFirefoxTicketTooLongForTheHello(t *testing.T) {
+	want := helloExtensions(t, firefoxHello(t, "example.com", nil))
+	for version, ticketLen := range map[uint16]int{
+		gotls.VersionTLS13: 32768, gotls.VersionTLS12: 65000,
+	} {
+		hello := firefoxHello(t, "example.com", sessionOf(t, version, ticketLen))
+		got := helloExtensions(t, hello)
+		if len(got) != len(want) {
+			t.Fatalf("TLS %#04x: %d extensions, want %d as in a first hello", version, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].id != want[i].id || len(got[i].body) != len(want[i].body) {
+				t.Errorf("TLS %#04x: extension %d of %d bytes, want %d of %d bytes",
+					version, got[i].id, len(got[i].body), want[i].id, len(want[i].body))
+			}
+		}
+	}
+	// The largest ticket that fits is still offered.
+	hello := firefoxHello(t, "example.com", sessionOf(t, gotls.VersionTLS13, 31000))
+	if extensions := helloExtensions(t, hello); extensions[len(extensions)-1].id != 41 {
+		t.Error("a ticket of 31000 bytes fits the hello and was not offered")
+	}
+}

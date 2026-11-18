@@ -96,6 +96,8 @@ func sessionOf(t *testing.T, version uint16, ticketLen int) *utls.ClientSessionS
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Also on a failure below, so that the server's copy ends.
+	defer raw.Close()
 	if err := raw.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
