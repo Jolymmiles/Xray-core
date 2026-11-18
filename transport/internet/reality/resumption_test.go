@@ -330,17 +330,23 @@ type recordCapture struct {
 	out []byte
 	// spoilBinder flips the last byte of the ClientHello: its binder.
 	spoilBinder bool
+	spoiled     bool
 }
 
+// Write keeps what the socket accepted, not what it was asked to send.
 func (c *recordCapture) Write(b []byte) (int, error) {
 	c.mu.Lock()
-	if c.spoilBinder && len(c.out) == 0 {
+	if c.spoilBinder && !c.spoiled {
+		c.spoiled = true
 		b = bytes.Clone(b)
 		b[len(b)-1] ^= 1
 	}
-	c.out = append(c.out, b...)
 	c.mu.Unlock()
-	return c.Conn.Write(b)
+	n, err := c.Conn.Write(b)
+	c.mu.Lock()
+	c.out = append(c.out, b[:n]...)
+	c.mu.Unlock()
+	return n, err
 }
 
 func (c *recordCapture) received() []byte {
@@ -747,6 +753,34 @@ func TestNoTicketOfferedForAWhileAfterOneFailed(t *testing.T) {
 	store.failed["k"] = time.Now().Add(-ticketBackoff - time.Second)
 	if store.offer("k") == nil {
 		t.Fatal("tickets are offered again after the backoff, and those collected meanwhile kept")
+	}
+}
+
+// The backoff markers are bounded. Expired ones go first; when every marker
+// is active, the evicted server loses its tickets too, so it is not offered
+// one again before its backoff would have ended.
+func TestTicketBackoffEvictionKeepsTicketsIneligible(t *testing.T) {
+	defer func(f func(*utls.ClientSessionState) bool) { usableTicket = f }(usableTicket)
+	usableTicket = func(*utls.ClientSessionState) bool { return true }
+	store := &ticketStore{sessions: make(map[string][]*utls.ClientSessionState)}
+	now := time.Now()
+	store.failed = make(map[string]time.Time)
+	for i := range ticketServers {
+		store.failed[strconv.Itoa(i)] = now.Add(-time.Duration(ticketServers-i) * time.Second)
+	}
+	store.failed["0"] = now.Add(-ticketBackoff - time.Minute) // expired
+	store.push("1", &utls.ClientSessionState{})
+	store.fail("new")
+	if _, kept := store.failed["1"]; !kept {
+		t.Fatal("an active marker was evicted while an expired one remained")
+	}
+	if store.offer("1") != nil {
+		t.Fatal("a ticket was offered during its backoff")
+	}
+	store.push("1", &utls.ClientSessionState{})
+	store.fail("newer")
+	if store.offer("1") != nil {
+		t.Fatal("the evicted server was offered a ticket before its backoff ended")
 	}
 }
 

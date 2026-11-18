@@ -98,7 +98,17 @@ func (s *ticketStore) fail(key string) {
 	if s.failed == nil {
 		s.failed = make(map[string]time.Time)
 	}
+	now := time.Now()
 	if _, exists := s.failed[key]; !exists && len(s.failed) >= ticketServers {
+		for name, failedAt := range s.failed {
+			if now.Sub(failedAt) >= ticketBackoff {
+				delete(s.failed, name)
+			}
+		}
+	}
+	if _, exists := s.failed[key]; !exists && len(s.failed) >= ticketServers {
+		// Every marker is active: the oldest goes, and its server's tickets
+		// with it, so none is offered there before its backoff would end.
 		var oldest string
 		var earliest time.Time
 		for name, failedAt := range s.failed {
@@ -107,8 +117,9 @@ func (s *ticketStore) fail(key string) {
 			}
 		}
 		delete(s.failed, oldest)
+		delete(s.sessions, oldest)
 	}
-	s.failed[key] = time.Now()
+	s.failed[key] = now
 }
 
 func (s *ticketStore) pop(key string) *utls.ClientSessionState {
