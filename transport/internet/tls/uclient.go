@@ -101,6 +101,12 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 	// Read before the hello is built: applying a fingerprint replaces
 	// config.NextProtos with the fingerprint's own ALPN.
 	alpn := http11ALPN(config.NextProtos)
+	if len(config.EncryptedClientHelloConfigList) > 0 {
+		// A ticket belongs in the inner hello, where uTLS cannot put it: it
+		// fails to build a hello that offers one next to real ECH.
+		resumption = clientSessionResumption{}
+		config.ClientSessionCache = nil
+	}
 
 	var uConn *utls.UConn
 	if settings.spec != nil {

@@ -62,6 +62,10 @@ guard it.
   answers with a HelloRetryRequest uTLS cannot follow, or that breaks RFC
   8446, Section 4.2.8; the P-256 key share upstream may add is dropped, as
   Chrome sends none. The raw `hellorandomized*` forms keep uTLS's behavior. The
+  With a real ECH config list no fingerprint offers a session ticket: the
+  ticket belongs in the inner hello, uTLS cannot put it there, and it
+  refuses to build a hello that offers one, which failed the dial once a
+  ticket was cached (`TestRealECHOffersNoTicket`). The
   REALITY client builds its hello the same way, returns an error instead of
   panicking for a fingerprint whose hello cannot carry the session ID (the
   `*_psk` forms), reads the server's certificates through `VerifyConnection`
