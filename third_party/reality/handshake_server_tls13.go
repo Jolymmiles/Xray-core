@@ -212,7 +212,17 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 	if _, err := c.flush(); err != nil {
 		return err
 	}
-	// Server handles the client's Finished and marks the handshake complete.
+	return nil
+
+	if err := hs.readClientCertificate(); err != nil {
+		return err
+	}
+	if err := hs.readClientFinished(); err != nil {
+		return err
+	}
+
+	c.isHandshakeComplete.Store(true)
+
 	return nil
 }
 

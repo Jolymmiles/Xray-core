@@ -99,8 +99,21 @@ guard it.
   Field 101 (`browser`) is fork-owned. Binary protobuf configurations
   from the review revision that used field 28 must be regenerated from
   their JSON source.
+  An authenticated resumed ClientHello is accepted once: the server
+  records it before the handshake, and a repeat goes to the destination,
+  which answers it with a full handshake. A stock TLS server resumes a
+  repeat of its own resumed ClientHello again (crypto/tls and OpenSSL both
+  answer `[43 51 41]` twice), so a censor who replays one sees REALITY
+  answer `[43 51 41]`, then `[43 51]`. The history is one process-wide
+  cache of 40,000 entries: after 40,000 newer resumed hellos, after a
+  restart, and on another replica the same ClientHello is resumed again.
+  Covered by `TestReplayedResumedHelloReachesTheTarget`
+  (`transport/internet/reality/resumption_wire_test.go`).
   An observer on the server-to-destination path can see the probe
-  connections. Per destination and server name, the baseline starts six
+  connections. The probes start when an inbound with browser mode opens
+  its listener, before any client connects, the bad-binder refusal
+  measurement included; outbound opt-in only decides how each connection
+  is answered. Per destination and server name, the baseline starts six
   TLS probes across the three ALPN modes. Browser mode adds two to four
   per viable ALPN, plus a confirmation when a refusal probe sees silence.
   HTTP/2 startup measurement can add up to eleven connections with a
