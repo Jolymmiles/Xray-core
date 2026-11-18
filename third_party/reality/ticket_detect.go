@@ -95,23 +95,37 @@ type TicketShape struct {
 
 // storeTicketShape stores shape for key, then probes how the target refuses
 // a wrong binder, which may take long, and stores the shape again with it.
-func storeTicketShape(config *Config, key, sni string, alpn int, shape *TicketShape) {
+// Until then the refusal of previous, the shape shape replaces, stands.
+func storeTicketShape(config *Config, key, sni string, alpn int, shape, previous *TicketShape) {
 	shape.probed = time.Now()
-	GlobalTicketShapes.Store(key, shape)
+	published := shape
+	if previous != nil && previous.RefusesBadBinder && shape.Resumes {
+		carried := *shape
+		carried.copyRefusal(previous)
+		published = &carried
+	}
+	GlobalTicketShapes.Store(key, published)
 	if !shape.Resumes || shape.badBinderSession == nil {
 		return
 	}
 	reply := confirmBinderRefusal(func() binderRefusal {
 		return probeBadBinder(config, sni, alpn, shape.badBinderSession)
 	})
-	if reply.kind == noRefusal {
+	if reply.kind == noRefusal && published == shape {
 		return
 	}
-	refusing := *shape
-	refusing.RefusesBadBinder = true
-	refusing.BadBinder, refusing.BadBinderDelay, refusing.badBinderClose = reply.alerts, reply.delay, reply.kind
-	refusing.badBinderSession = nil
-	GlobalTicketShapes.CompareAndSwap(key, shape, &refusing)
+	final := *shape
+	final.badBinderSession = nil
+	if reply.kind != noRefusal {
+		final.RefusesBadBinder = true
+		final.BadBinder, final.BadBinderDelay, final.badBinderClose = reply.alerts, reply.delay, reply.kind
+	}
+	GlobalTicketShapes.CompareAndSwap(key, published, &final)
+}
+
+func (shape *TicketShape) copyRefusal(from *TicketShape) {
+	shape.RefusesBadBinder = from.RefusesBadBinder
+	shape.BadBinder, shape.BadBinderDelay, shape.badBinderClose = from.BadBinder, from.BadBinderDelay, from.badBinderClose
 }
 
 // ticketRecordOverhead is what a TLS 1.3 record holding a NewSessionTicket
@@ -138,7 +152,7 @@ func DetectTicketShape(config *Config, key, sni string, alpn int) {
 		if shape == nil {
 			shape = &TicketShape{noTickets: errors.Is(err, errNoTargetTickets)}
 		}
-		storeTicketShape(config, key, sni, alpn, shape)
+		storeTicketShape(config, key, sni, alpn, shape, nil)
 	}()
 }
 
@@ -174,12 +188,15 @@ func RefreshTicketShape(config *Config, key, sni string, alpn int) {
 		defer refreshingTicketShapes.Delete(key)
 		fresh, err := probeTicketShape(config, sni, alpn)
 		if err == nil {
-			storeTicketShape(config, key, sni, alpn, fresh)
+			storeTicketShape(config, key, sni, alpn, fresh, shape)
 			return
 		}
 		now := time.Now()
 		noTickets := errors.Is(err, errNoTargetTickets)
-		if noTickets || shape.expired(now) {
+		// A probe reads for ticketProbeWait only, and a destination may send
+		// its tickets later: one that issued tickets has not shown it stopped,
+		// so that refresh failed and the profile ages until it expires.
+		if (noTickets && !shape.Issues) || shape.expired(now) {
 			GlobalTicketShapes.Store(key, &TicketShape{probed: now, noTickets: noTickets})
 			return
 		}
@@ -624,8 +641,11 @@ func serverHelloExtensionTypes(msg []byte) ([]uint16, error) {
 	return types, err
 }
 
-// binderSpoiler flips the last byte of the first record it writes: the end
-// of the binders of a ClientHello that offers a ticket.
+// binderSpoiler flips the last byte of the first record it writes when that
+// record is a ClientHello offering a ticket: the end of its binders. Without
+// pre_shared_key the byte belongs to another extension, and the answer would
+// say nothing about how the destination refuses a wrong binder, so sentAt
+// stays zero.
 type binderSpoiler struct {
 	net.Conn
 	done   bool
@@ -635,6 +655,9 @@ type binderSpoiler struct {
 func (c *binderSpoiler) Write(b []byte) (int, error) {
 	if !c.done && len(b) > 0 && b[0] == byte(recordTypeHandshake) {
 		c.done = true
+		if !offersTicket(b) {
+			return c.Conn.Write(b)
+		}
 		b = bytes.Clone(b)
 		b[len(b)-1] ^= 1
 		n, err := c.Conn.Write(b)
@@ -648,6 +671,16 @@ func (c *binderSpoiler) Write(b []byte) (int, error) {
 		return n, err
 	}
 	return c.Conn.Write(b)
+}
+
+// offersTicket reports whether record is a single TLS record holding a
+// ClientHello that ends with pre_shared_key.
+func offersTicket(record []byte) bool {
+	if len(record) < recordHeaderLen || recordHeaderLen+int(binary.BigEndian.Uint16(record[3:5])) != len(record) {
+		return false
+	}
+	var hello clientHelloMsg
+	return hello.unmarshal(record[recordHeaderLen:]) && len(hello.pskIdentities) != 0
 }
 
 // badBinderWait is how long the probe of a wrong binder waits for the

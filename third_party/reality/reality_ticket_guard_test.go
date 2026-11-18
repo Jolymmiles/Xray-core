@@ -113,7 +113,11 @@ func TestBinderSilenceNeedsTwoMeasurements(t *testing.T) {
 			}
 			return binderRefusal{kind: second}
 		})
-		if count != 2 || (reply.kind == silentRefusal) != (second == silentRefusal) {
+		want := noRefusal
+		if second == silentRefusal {
+			want = silentRefusal
+		}
+		if count != 2 || reply.kind != want {
 			t.Fatalf("second measurement %v: got %v after %d probes", second, reply.kind, count)
 		}
 	}
