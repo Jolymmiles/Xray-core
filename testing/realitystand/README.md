@@ -243,6 +243,14 @@ pinned uTLS until that lands, and Firefox and Edge depend on it.
   without HTTP/2 shaping. Every target differs from Firefox 160 until the
   uTLS update.
 
+The pin moved to `f03e50a18427` afterwards (Jolymmiles/utls#1 and #2), which
+carries the Firefox 156 and Edge 157 presets. `firefox` now sends both
+extensions and asks for tickets, and
+`transport/internet/reality/resumption_test.go` passes for it. The stand was
+not rerun on that pin, so the findings of this section stand for the old one.
+`ios` is still iOS 14 in that uTLS: the `ios` change the 2026-11-16 findings
+mention is not part of it.
+
 ## Findings (2026-11-16)
 
 References: Chrome 157, Edge 157, Firefox 156.0.1 and 160.0 (Firefox 153 ESR
