@@ -99,7 +99,7 @@ type TicketShape struct {
 func storeTicketShape(config *Config, key, sni string, alpn int, shape, previous *TicketShape) {
 	shape.probed = time.Now()
 	published := shape
-	if previous != nil && previous.RefusesBadBinder && shape.Resumes {
+	if previous != nil && previous.RefusesBadBinder && !previous.expired(shape.probed) && shape.Resumes {
 		carried := *shape
 		carried.copyRefusal(previous)
 		published = &carried

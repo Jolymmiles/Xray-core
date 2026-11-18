@@ -105,8 +105,11 @@ guard it.
   repeat of its own resumed ClientHello again (crypto/tls and OpenSSL both
   answer `[43 51 41]` twice), so a censor who replays one sees REALITY
   answer `[43 51 41]`, then `[43 51]`. The history is one process-wide
-  cache of 40,000 entries: after 40,000 newer resumed hellos, after a
-  restart, and on another replica the same ClientHello is resumed again.
+  cache of 40,000 entries: after 40,000 newer resumed hellos the same
+  ClientHello is resumed again. After a restart or on another replica
+  that holds only for encrypted tickets; tickets that are ids of a
+  session kept in memory are forgotten on restart and unknown to other
+  replicas, so their repeat gets a full handshake.
   Covered by `TestReplayedResumedHelloReachesTheTarget`
   (`transport/internet/reality/resumption_wire_test.go`).
   An observer on the server-to-destination path can see the probe

@@ -456,6 +456,40 @@ const (
 	helloWithTicket
 )
 
+// A refusal measured more than ticketShapeMaxAge ago, in a profile that
+// expired, is not carried into the fresh one.
+func TestRefreshDropsAnExpiredRefusal(t *testing.T) {
+	dest := goTarget(t)
+	release := make(chan struct{})
+	var dials atomic.Int32
+	config := &Config{Type: "tcp", Dest: dest, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		if dials.Add(1) <= 2 {
+			return new(net.Dialer).DialContext(ctx, network, address)
+		}
+		<-release
+		return nil, net.ErrClosed
+	}}
+	key := dest + " expired refusal"
+	t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+	old := time.Now().Add(-2 * ticketShapeRefresh)
+	GlobalTicketShapes.Store(key, &TicketShape{
+		Issues: true, Resumes: true, probed: old, failedSince: time.Now().Add(-ticketShapeMaxAge - time.Minute),
+		RefusesBadBinder: true, BadBinder: []byte{21, 3, 3, 0, 2, 2, 40}, badBinderClose: alertRefusal,
+	})
+	RefreshTicketShape(config, key, "example.com", 0)
+	for deadline := time.Now().Add(15 * time.Second); dials.Load() < 3; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			close(release)
+			t.Fatal("the refresh did not start its bad-binder probe")
+		}
+	}
+	value, _ := GlobalTicketShapes.Load(key)
+	close(release)
+	if fresh := value.(*TicketShape); fresh.RefusesBadBinder {
+		t.Fatalf("the fresh shape carries a refusal from an expired profile: %+v", fresh)
+	}
+}
+
 // eofAfterHello accepts one connection, reads one TLS record and closes,
 // reporting what that record was.
 func eofAfterHello(t *testing.T) (dest string, offered <-chan int) {

@@ -769,10 +769,16 @@ func TestTicketBackoffEvictionKeepsTicketsIneligible(t *testing.T) {
 		store.failed[strconv.Itoa(i)] = now.Add(-time.Duration(ticketServers-i) * time.Second)
 	}
 	store.failed["0"] = now.Add(-ticketBackoff - time.Minute) // expired
+	store.push("0", &utls.ClientSessionState{})
 	store.push("1", &utls.ClientSessionState{})
 	store.fail("new")
 	if _, kept := store.failed["1"]; !kept {
 		t.Fatal("an active marker was evicted while an expired one remained")
+	}
+	// The expired marker goes by the sweep, which keeps its server's
+	// tickets: its backoff is over.
+	if store.offer("0") == nil {
+		t.Fatal("an expired backoff took its server's tickets with it")
 	}
 	if store.offer("1") != nil {
 		t.Fatal("a ticket was offered during its backoff")
