@@ -377,7 +377,9 @@ func TestFitSettingsKeepsASmallHeaderTable(t *testing.T) {
 
 type failingStartupConn struct {
 	startupWritesConn
-	closed chan struct{}
+	shape     *shapeConn
+	socket    *closeRecorder
+	tlsClosed bool
 }
 
 func (c *failingStartupConn) WritePaddedAppRecord([]byte, int) (int, error) {
@@ -386,26 +388,53 @@ func (c *failingStartupConn) WritePaddedAppRecord([]byte, int) (int, error) {
 
 func (c *failingStartupConn) Write([]byte) (int, error) { return 0, net.ErrClosed }
 
+// Close would write a TLS close_notify, which a blocked socket delays.
 func (c *failingStartupConn) Close() error {
+	c.tlsClosed = true
+	return nil
+}
+
+func (c *failingStartupConn) NetConn() net.Conn { return c.socket }
+
+type closeRecorder struct {
+	net.Conn
+	shape    *shapeConn
+	closed   chan struct{}
+	unlocked bool
+}
+
+func (c *closeRecorder) Close() error {
+	if c.shape.mu.TryLock() {
+		c.unlocked = true
+		c.shape.mu.Unlock()
+	}
 	close(c.closed)
 	return nil
 }
 
 // When the deferred flush of SETTINGS fails, nothing else may write: the
-// connection must close rather than leave the peer waiting.
+// socket must close rather than leave the peer waiting, without another TLS
+// record and without holding the lock later writes need for the error.
 func TestShapeConnClosesWhenTheDeferredFlushFails(t *testing.T) {
-	under := &failingStartupConn{closed: make(chan struct{})}
+	under := &failingStartupConn{}
 	c := &shapeConn{Conn: under, writer: under, profile: []reality.H2StartupRecord{
 		{Length: 62, Frames: []reality.H2StartupFrame{reality.H2Settings, reality.H2WindowUpdate}},
 		{Length: 31, Frames: []reality.H2StartupFrame{reality.H2SettingsAck}},
 	}}
+	under.socket = &closeRecorder{shape: c, closed: make(chan struct{})}
 	// SETTINGS waits for its WINDOW_UPDATE, which never comes.
 	if _, err := c.Write(settings(0x5, 0x3, 0x4)); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case <-under.closed:
+	case <-under.socket.closed:
 	case <-time.After(10 * shapeWait):
 		t.Fatal("the connection stayed open after the deferred flush failed")
+	}
+	if !under.socket.unlocked || under.tlsClosed {
+		t.Fatalf("closed under the lock %v, with a TLS close %v", !under.socket.unlocked, under.tlsClosed)
+	}
+	if _, err := c.Write([]byte("x")); err == nil {
+		t.Fatal("a later write did not return the startup error")
 	}
 }

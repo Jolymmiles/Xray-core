@@ -146,15 +146,28 @@ func (c *shapeConn) waitForStartup() {
 	}
 	c.timer = time.AfterFunc(wait, func() {
 		c.mu.Lock()
-		defer c.mu.Unlock()
+		failed := false
 		if c.state == 1 {
-			// No write follows that could return the error: close, so the
+			c.err = c.writeStartup(nil, true)
+			failed = c.err != nil
+		}
+		c.mu.Unlock()
+		if failed {
+			// No write follows that could return the error: abort, so the
 			// peer does not wait for the rest of a partial record.
-			if c.err = c.writeStartup(nil, true); c.err != nil {
-				c.Conn.Close()
-			}
+			abortTransport(c.Conn)
 		}
 	})
+}
+
+// abortTransport closes the socket under conn without writing to it: after
+// a failed write, a TLS close_notify would wait for the write deadline.
+func abortTransport(conn net.Conn) {
+	if inner, ok := conn.(interface{ NetConn() net.Conn }); ok {
+		inner.NetConn().Close()
+		return
+	}
+	conn.Close()
 }
 
 // writeStartup collects the local control frames and emits each target record
