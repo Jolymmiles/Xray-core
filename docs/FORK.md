@@ -21,9 +21,9 @@ guard it.
   strips the hybrid group whatever the fingerprint; Mihomo v1.19.32 with
   default options, where by its source only `chrome` with
   `reality-opts.support-x25519mlkem768: true` keeps it (not run); Xray
-  `edge`, `ios`, `qq` and the older `hello*` forms. Xray `chrome`, `firefox`,
-  `safari`, their current `hello*` forms, `randomized` and
-  `randomizednoalpn` pass. Xray `random` depends on the fingerprint drawn at
+  `ios`, `qq` and the older `hello*` forms, `helloedge_85` and
+  `helloedge_106` among them. Xray `chrome`, `firefox`, `safari`, `edge`,
+  their current `hello*` forms, `randomized` and `randomizednoalpn` pass. Xray `random` depends on the fingerprint drawn at
   process start and passes on some starts only. `android` and `360` have no TLS 1.3
   and work in neither mode. Field 100 (`require_mlkem`) of the REALITY
   `Config` message is fork-owned and outside upstream's blocks (1-13 server,
@@ -75,20 +75,47 @@ guard it.
   `transport/internet/reality/randomized_test.go` and
   `transport/internet/grpc/dial_test.go`.
 - uTLS comes from the fork `github.com/Jolymmiles/utls`, branch
-  `fix/keep-secondary-key-shares-a13c59f` (a `replace` in `go.mod`; the
-  module path stays `github.com/refraction-networking/utls`): upstream
-  `a13c59ffe98b`, the commit upstream Xray pins since v26.11.9, plus the
-  changes listed in the fork's `FORK.md`. It keeps the private keys of the
-  classical key shares after the first and uses the one the server selected,
-  so `firefox` and the `hellofirefox_*` forms, which send key shares for
-  X25519 and P-256, complete a handshake with a server that selects P-256;
-  upstream fails it with "tls: invalid server key share"
-  (refraction-networking/utls#402), right after the ServerHello and in
-  cleartext, where Firefox goes on. The ClientHello is unchanged. It is a
-  backport of refraction-networking/utls#416; drop the fork once upstream
-  ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
-  the ClientHello snapshot tests and the fork's
-  `TestSecondaryKeyShareSelectedByServer`.
+  `fix/keep-secondary-key-shares-a13c59f` at `f03e50a18427` (a `replace` in
+  `go.mod`; the module path stays `github.com/refraction-networking/utls`):
+  upstream `a13c59ffe98b`, the commit upstream Xray pins since v26.11.9,
+  plus the changes listed in the fork's `FORK.md`:
+  - It keeps the private keys of the classical key shares after the first
+    and uses the one the server selected, so `firefox` and the
+    `hellofirefox_*` forms, which send key shares for X25519 and P-256,
+    complete a handshake with a server that selects P-256; upstream fails it
+    with "tls: invalid server key share" (refraction-networking/utls#402),
+    right after the ServerHello and in cleartext, where Firefox goes on.
+    This change leaves the ClientHello as it is. It is a backport of
+    refraction-networking/utls#416; drop it once upstream ships the fix.
+  - `firefox` and `hellofirefox_auto` select `HelloFirefox_156`, and `edge`
+    and `helloedge_auto` select `HelloEdge_157`; upstream's are Firefox 148
+    and Edge 85. The fork compares both, and `safari`'s preset, with a raw
+    ClientHello captured from the browser. Edge 157 sends about 1 800 bytes
+    with an X25519MLKEM768 key share, GREASE ECH and ALPS, and offers TLS
+    1.2 and 1.3 only; Edge 85 sent 517 bytes and offered TLS 1.0 and 1.1 as
+    well. `hellofirefox_148`, `helloedge_85` and `helloedge_106` select the
+    older presets as before.
+  - The Chrome presets draw every swap of their extension shuffle from
+    `crypto/rand`, as BoringSSL does. Upstream seeds one `math/rand` source
+    per hello, which reaches at most 2^31-1 of the 17! orders, and leaves
+    each extension in its source slot in about 11% of hellos.
+  - `firefox` never resumes a TLS session (`resumesWithAnotherHello` in
+    `transport/internet/tls/resumption.go`). A preset resumes here when its
+    template carries session_ticket and psk_key_exchange_modes, and Firefox
+    156's does, but a Firefox that resumes over TLS 1.3 drops session_ticket
+    and sends a longer GREASE ECH (570 bytes against 282 in the fork's
+    captures), so the template plus pre_shared_key would be a hello Firefox
+    does not send. A `firefox` client that takes a full handshake every
+    time against a server that issues tickets can still be told from a
+    browser over several connections, as it could with Firefox 148. The
+    older `hellofirefox_*` presets resume as before. The fork's `FORK.md`
+    lists two more limits of the Firefox preset's GREASE ECH.
+
+  Covered by `transport/internet/tls/fingerprint_health_test.go`, the
+  ClientHello snapshot tests, `TestUClientSessionResumptionSkippedForFirefox`,
+  `TestResumptionDeclinesFirefox156`, `TestFirefoxHelloIgnoresSessionCache`,
+  `TestREALITYRequireMlkemAcceptsEdge` and the fork's capture and key-share
+  tests.
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`
   (`proxy/vision_buffers.go`), which checks the field types and caches their
   offsets per connection type and fails closed on any other layout; upstream
