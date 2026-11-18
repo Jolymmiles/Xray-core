@@ -252,8 +252,9 @@ part of it.
 
 The stand was rerun on that pin on 2026-11-18 (`8ff8d448`, `RTT_MS=0`
 because the host had no netem, the `browsers`, `xray` and `xhttp` groups,
-twice), and once more on the build before the pin moved (`c6a33f2a`), all
-against one browsers run:
+twice), and once more on the build before the pin moved (`c6a33f2a`). The
+nginx, Caddy and HAProxy comparisons use one browsers run; the stub's use
+the browsers captured in each run:
 
 - RAW through REALITY: `chrome`, `edge` and `firefox` match their browsers
   in the full and the resumed handshake on nginx, Caddy and HAProxy in both

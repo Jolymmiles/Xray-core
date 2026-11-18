@@ -61,11 +61,15 @@ guard it.
   with a hello that REALITY rejects, that a post-quantum-preferring server
   answers with a HelloRetryRequest uTLS cannot follow, or that breaks RFC
   8446, Section 4.2.8; the P-256 key share upstream may add is dropped, as
-  Chrome sends none. The raw `hellorandomized*` forms keep uTLS's behavior. The
+  Chrome sends none. The raw `hellorandomized*` forms keep uTLS's behavior.
   With a real ECH config list no fingerprint offers a session ticket: the
-  ticket belongs in the inner hello, uTLS cannot put it there, and it
-  refuses to build a hello that offers one, which failed the dial once a
-  ticket was cached (`TestRealECHOffersNoTicket`). The
+  ticket belongs in the inner hello, uTLS cannot put it there for a
+  fingerprint, and it refuses to build a hello that offers one. That failed
+  the dial when the cache held a ticket from a connection made without
+  ECH; a Go server answering ECH issued no ticket in the tests, so two ECH
+  connections in a row did not show it. `hellogolang`, Go's own client,
+  keeps its cache (`TestRealECHOffersNoTicket`,
+  `TestRealECHKeepsGoClientSessionCache`). The
   REALITY client builds its hello the same way, returns an error instead of
   panicking for a fingerprint whose hello cannot carry the session ID (the
   `*_psk` forms), reads the server's certificates through `VerifyConnection`
@@ -125,20 +129,25 @@ guard it.
 
     So `firefox` resumes sessions where the TLS settings allow it, which
     the preset plus `pre_shared_key` could not do without sending a hello
-    Firefox does not send. The ticket is taken from the cache before the
-    hello is built, because the hello depends on it. Limits: Firefox also
+    Firefox does not send. The ticket is taken out of the cache before
+    the hello is built, because the hello depends on it, and is offered
+    once, as Firefox does. Limits: Firefox also
     sends `early_data` when a ticket allows it, and Xray, which sends no
     early data, does not, as Firefox with `security.tls.enable_0rtt_data`
     off: an observer of a server that allows early data sees neither
     extension 42 nor early records, and at some sizes a GREASE ECH 32 bytes
-    shorter; a connection to an IP address, which carries no server name, was
-    not measured and sends the preset without resuming; the older
+    shorter; a connection to an IP address, which carries no server name,
+    was not measured: over the TLS transports it sends the preset without
+    resuming, and in REALITY's browser mode it resumes with the
+    approximation of `transport/internet/reality/resumption.go`; a ticket
+    too long for the hello to carry is dropped; the older
     `hellofirefox_*` presets keep their templates and the rule of
     `resumptionSpec`.
 
   Covered by `transport/internet/tls/fingerprint_health_test.go`, the
   ClientHello snapshot tests, `TestFirefoxClientHelloFollowsCaptures`,
   `TestFirefoxGREASEECHFields`, `TestFirefoxGREASEECHCountsTheTicketItOffers`,
+  `TestFirefoxOffersATicketOnce`, `TestFirefoxTicketTooLongForTheHello`,
   `TestUClientSessionResumptionFirefox`,
   `TestFirefoxResumptionHelloCountsALongServerName`,
   `TestFirefox156ResumesOnlyWithItsOwnHello`,

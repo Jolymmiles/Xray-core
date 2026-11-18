@@ -27,10 +27,13 @@ length of each, the record length, and every extension body except the key
 shares, the tickets and the GREASE ECH.
 
 The rule in `firefox.go` was fitted to 340 ClientHellos of Firefox 156.0.1
-and 160.0, of which these are five: server names from 6 to 200 bytes, tickets
-of three sizes from nginx, OpenSSL and Go's `crypto/tls`. In 267 first
-hellos the top bit of the encapsulated key's last byte was set 128 times, and
-the AEAD was AES-128-GCM 115 times and ChaCha20-Poly1305 152 times.
+and 160.0, of which these are five: server names from 6 to 200 bytes, and
+TLS 1.3 tickets with identities of seven lengths from 32 to 336 bytes, from
+nginx, OpenSSL and Go's `crypto/tls`. It fits the 323 that carry no
+`early_data`; with two more bytes counted for that extension it fits all
+340. In the 262 first hellos the top bit of the encapsulated key's last
+byte was set 128 times, and the AEAD was AES-128-GCM 113 times and
+ChaCha20-Poly1305 149 times.
 
 Not modelled: a ticket that allows early data. Firefox then also sends
 `early_data` (extension 42) after `key_share`, and its GREASE ECH counts two

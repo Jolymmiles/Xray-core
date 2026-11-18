@@ -13,7 +13,8 @@ import (
 // GREASE ECH from the inner ClientHello it would encrypt, so the extension
 // grows with the server name and with a pre_shared_key, and a Firefox that
 // offers a TLS 1.3 ticket leaves session_ticket out. The rules below are
-// measured on Firefox 156.0.1 and 160.0 (340 ClientHellos, testdata/firefox):
+// measured on Firefox 156.0.1 and 160.0 (the 323 of 340 ClientHellos that
+// carry no early_data, see testdata/firefox):
 //
 //	payload   = roundup32(117 + max(server name, 100) + pre_shared_key) + 16
 //	extension = 42 + payload
@@ -158,7 +159,7 @@ func newFirefoxClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHe
 	var session *utls.ClientSessionState
 	store := config.ClientSessionCache
 	if store != nil && !config.SessionTicketsDisabled {
-		session, _ = store.Get(sessionCacheKey(c, config))
+		session = takeSession(store, sessionCacheKey(c, config))
 	}
 	// A ticket uTLS does not offer leaves pre_shared_key out.
 	config.OmitEmptyPsk = true
@@ -203,6 +204,21 @@ func extensionsFit(uConn *utls.UConn) bool {
 		total += extension.Len()
 	}
 	return total <= math.MaxUint16
+}
+
+// takeSession takes the session under key out of store, for one connection
+// to offer: Firefox uses a ticket once. Xray's caches give a ticket up when
+// asked for it; a cache that still returns it afterwards, as uTLS's own LRU
+// does, has it removed.
+func takeSession(store utls.ClientSessionCache, key string) *utls.ClientSessionState {
+	session, ok := store.Get(key)
+	if !ok || session == nil {
+		return nil
+	}
+	if again, ok := store.Get(key); ok && again == session {
+		store.Put(key, nil)
+	}
+	return session
 }
 
 // sessionCacheKey is the key uTLS looks a session up by.

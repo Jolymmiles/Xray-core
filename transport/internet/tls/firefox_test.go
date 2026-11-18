@@ -154,9 +154,11 @@ func TestFirefoxClientHelloOnlyWhereMeasured(t *testing.T) {
 			t.Errorf("%s is built as Firefox 156", name)
 		}
 	}
-	// A trailing dot is not sent, so it does not count.
-	if a, b := firefoxHello(t, strings.Repeat("a", 60)+"."+strings.Repeat("b", 47), nil), firefoxHello(t, strings.Repeat("a", 60)+"."+strings.Repeat("b", 47)+".", nil); len(a) != len(b) {
-		t.Errorf("a trailing dot changed the hello from %d to %d bytes", len(a), len(b))
+	// A trailing dot is not sent, so it does not count: a name of 107 bytes
+	// keeps the 282-byte GREASE ECH, which 108 bytes would outgrow.
+	name := strings.Repeat("a", 60) + "." + strings.Repeat("b", 46)
+	if a, b := firefoxHello(t, name, nil), firefoxHello(t, name+".", nil); len(name) != 107 || len(a) != len(b) {
+		t.Errorf("a trailing dot after %d bytes changed the hello from %d to %d bytes", len(name), len(a), len(b))
 	}
 }
 
@@ -244,5 +246,48 @@ func TestFirefoxTicketTooLongForTheHello(t *testing.T) {
 	hello := firefoxHello(t, "example.com", sessionOf(t, gotls.VersionTLS13, 31000))
 	if extensions := helloExtensions(t, hello); extensions[len(extensions)-1].id != 41 {
 		t.Error("a ticket of 31000 bytes fits the hello and was not offered")
+	}
+}
+
+// TestFirefoxOffersATicketOnce covers a session cache that keeps a ticket
+// after handing it out, as uTLS's own LRU does. Firefox uses a ticket once,
+// so a second connection made before the first has stored a new ticket
+// offers none.
+func TestFirefoxOffersATicketOnce(t *testing.T) {
+	cache := utls.NewLRUClientSessionCache(1)
+	cache.Put("example.com", sessionOf(t, gotls.VersionTLS13, 224))
+	for connection, offers := range []bool{true, false} {
+		config := &utls.Config{ServerName: "example.com", InsecureSkipVerify: true, ClientSessionCache: cache}
+		uConn, err := newUClient(&hellotest.Capture{}, config, utls.HelloFirefox_Auto, clientSessionResumption{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		psk := helloExtension{id: 41}.of(helloExtensions(t, uConn.HandshakeState.Hello.Raw))
+		if (psk != nil) != offers {
+			t.Fatalf("connection %d offers a ticket: %v, want %v", connection+1, psk != nil, offers)
+		}
+	}
+}
+
+// missingSession is a cache whose Get reports a miss and returns a session
+// all the same.
+type missingSession struct{ session *utls.ClientSessionState }
+
+func (m missingSession) Get(string) (*utls.ClientSessionState, bool) { return m.session, false }
+func (missingSession) Put(string, *utls.ClientSessionState)          {}
+
+// TestFirefoxHonoursACacheMiss pins that a session a cache returns next to a
+// miss is not offered.
+func TestFirefoxHonoursACacheMiss(t *testing.T) {
+	config := &utls.Config{
+		ServerName: "example.com", InsecureSkipVerify: true,
+		ClientSessionCache: missingSession{sessionOf(t, gotls.VersionTLS13, 224)},
+	}
+	uConn, err := newUClient(&hellotest.Capture{}, config, utls.HelloFirefox_Auto, clientSessionResumption{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if psk := (helloExtension{id: 41}).of(helloExtensions(t, uConn.HandshakeState.Hello.Raw)); psk != nil {
+		t.Fatal("a session the cache reported as missing was offered")
 	}
 }
