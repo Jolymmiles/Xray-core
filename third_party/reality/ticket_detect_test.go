@@ -177,8 +177,8 @@ func TestProbeTicketShapeGoTarget(t *testing.T) {
 	if !shape.Resumes || shape.Tickets != 1 || shape.ResTickets != 1 {
 		t.Fatalf("crypto/tls issues one ticket per handshake: %+v", shape)
 	}
-	if answer, delay, ok := probeBadBinder(config, "example.com", 2, shape.badBinderSession); !ok || delay != 0 || !bytes.Equal(answer, decryptErrorAlert) {
-		t.Fatalf("crypto/tls refuses a wrong binder with decrypt_error at once: %x after %v", answer, delay)
+	if reply := probeBadBinder(config, "example.com", 2, shape.badBinderSession); reply.kind != alertRefusal || reply.delay != 0 || !bytes.Equal(reply.alerts, decryptErrorAlert) {
+		t.Fatalf("crypto/tls refuses a wrong binder with decrypt_error at once: %+v", reply)
 	}
 	if shape.HelloDelta != 6 || shape.Lifetime != 7*24*3600 {
 		t.Fatalf("ServerHello delta %d, lifetime %d", shape.HelloDelta, shape.Lifetime)
@@ -201,8 +201,8 @@ func TestProbeTicketShapeOpenSSLTarget(t *testing.T) {
 	if shape.HelloDelta != 6 {
 		t.Fatalf("ServerHello delta %d", shape.HelloDelta)
 	}
-	if answer, delay, ok := probeBadBinder(config, "example.com", 2, shape.badBinderSession); !ok || delay != 0 || !bytes.Equal(answer, decryptErrorAlert) {
-		t.Fatalf("OpenSSL refuses a wrong binder with decrypt_error at once: %x after %v", answer, delay)
+	if reply := probeBadBinder(config, "example.com", 2, shape.badBinderSession); reply.kind != alertRefusal || reply.delay != 0 || !bytes.Equal(reply.alerts, decryptErrorAlert) {
+		t.Fatalf("OpenSSL refuses a wrong binder with decrypt_error at once: %+v", reply)
 	}
 	if len(shape.Prefix) < 16 {
 		t.Fatalf("OpenSSL tickets start with a 16-byte key name, prefix %x", shape.Prefix)
@@ -257,21 +257,42 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 	t.Fatal("ticket shape refresh did not finish")
 }
 
-func TestEmptyProbeCloseIsNotATimeout(t *testing.T) {
-	config := &Config{DialContext: func(context.Context, string, string) (net.Conn, error) {
-		client, peer := net.Pipe()
-		go func() {
-			defer peer.Close()
-			header := make([]byte, recordHeaderLen)
-			if _, err := io.ReadFull(peer, header); err == nil {
-				length := int(header[3])<<8 | int(header[4])
-				io.CopyN(io.Discard, peer, int64(length))
-			}
-		}()
-		return client, nil
-	}}
-	if answer, delay, ok := probeBadBinder(config, "example.com", 0, nil); ok {
-		t.Fatalf("an early empty close was recorded as a response: %x after %v", answer, delay)
+func TestProbePeerEOFIsFIN(t *testing.T) {
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := listener.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	peerErr := make(chan error, 1)
+	go func() {
+		peer, err := listener.AcceptTCP()
+		if err != nil {
+			peerErr <- err
+			return
+		}
+		defer peer.Close()
+		if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			peerErr <- err
+			return
+		}
+		var header [recordHeaderLen]byte
+		if _, err := io.ReadFull(peer, header[:]); err != nil {
+			peerErr <- err
+			return
+		}
+		length := int(header[3])<<8 | int(header[4])
+		_, err = io.CopyN(io.Discard, peer, int64(length))
+		peerErr <- err
+	}()
+	config := &Config{Type: "tcp4", Dest: listener.Addr().String()}
+	if reply := probeBadBinder(config, "example.com", 0, nil); reply.kind != finRefusal || len(reply.alerts) != 0 || reply.delay >= time.Second {
+		t.Fatalf("early EOF classified as %+v, want FIN within a second", reply)
+	}
+	if err := <-peerErr; err != nil {
+		t.Fatal(err)
 	}
 }
 

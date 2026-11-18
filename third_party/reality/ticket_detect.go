@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -78,15 +80,12 @@ type TicketShape struct {
 	ResRecords []int
 	// ResTickets is the number of tickets after a resumed handshake.
 	ResTickets int
-	// BadBinder is what the target sends back to one of its tickets
-	// offered with a wrong binder, alerts such as decrypt_error, after
-	// BadBinderDelay (CloudFront waits about 25 s; nothing at all when
-	// BadBinder is empty and the delay set). RefusesBadBinder is false when
-	// the target does not refuse so, or until its probe, which runs after
-	// the rest, ends.
+	// BadBinder contains any TLS alerts from the refusal. A refusal can
+	// also close the connection without TLS records.
 	RefusesBadBinder bool
 	BadBinder        []byte
 	BadBinderDelay   time.Duration
+	badBinderClose   refusalKind
 
 	probed           time.Time
 	measured         time.Time
@@ -102,12 +101,15 @@ func storeTicketShape(config *Config, key, sni string, alpn int, shape *TicketSh
 	if !shape.Resumes || shape.badBinderSession == nil {
 		return
 	}
-	answer, delay, ok := probeBadBinder(config, sni, alpn, shape.badBinderSession)
-	if !ok {
+	reply := confirmBinderRefusal(func() binderRefusal {
+		return probeBadBinder(config, sni, alpn, shape.badBinderSession)
+	})
+	if reply.kind == noRefusal {
 		return
 	}
 	refusing := *shape
-	refusing.RefusesBadBinder, refusing.BadBinder, refusing.BadBinderDelay = true, answer, delay
+	refusing.RefusesBadBinder = true
+	refusing.BadBinder, refusing.BadBinderDelay, refusing.badBinderClose = reply.alerts, reply.delay, reply.kind
 	refusing.badBinderSession = nil
 	GlobalTicketShapes.CompareAndSwap(key, shape, &refusing)
 }
@@ -231,10 +233,11 @@ func (r *ticketRecorder) take() []*utls.ClientSessionState {
 // probeCaptureConn records what the target sends.
 type probeCaptureConn struct {
 	net.Conn
-	mu          sync.Mutex
-	in          []byte
-	firstByte   time.Time
-	readTimeout bool
+	mu        sync.Mutex
+	in        []byte
+	firstByte time.Time
+	readErr   error
+	readEnd   time.Time
 }
 
 func (c *probeCaptureConn) Read(b []byte) (int, error) {
@@ -243,8 +246,10 @@ func (c *probeCaptureConn) Read(b []byte) (int, error) {
 	if n > 0 && c.firstByte.IsZero() {
 		c.firstByte = time.Now()
 	}
-	var timeout net.Error
-	c.readTimeout = errors.As(err, &timeout) && timeout.Timeout()
+	if err != nil {
+		c.readErr = err
+		c.readEnd = time.Now()
+	}
 	c.in = append(c.in, b[:n]...)
 	c.mu.Unlock()
 	return n, err
@@ -573,7 +578,8 @@ func serverHelloExtensionTypes(msg []byte) ([]uint16, error) {
 // of the binders of a ClientHello that offers a ticket.
 type binderSpoiler struct {
 	net.Conn
-	done bool
+	done   bool
+	sentAt time.Time
 }
 
 func (c *binderSpoiler) Write(b []byte) (int, error) {
@@ -581,6 +587,15 @@ func (c *binderSpoiler) Write(b []byte) (int, error) {
 		c.done = true
 		b = bytes.Clone(b)
 		b[len(b)-1] ^= 1
+		n, err := c.Conn.Write(b)
+		if n == len(b) && err == nil {
+			sentAt := time.Now()
+			if err := c.SetReadDeadline(sentAt.Add(badBinderWait)); err != nil {
+				return n, err
+			}
+			c.sentAt = sentAt
+		}
+		return n, err
 	}
 	return c.Conn.Write(b)
 }
@@ -589,11 +604,75 @@ func (c *binderSpoiler) Write(b []byte) (int, error) {
 // target's answer.
 const badBinderWait = 40 * time.Second
 
-// probeBadBinder offers the target its own ticket with a wrong binder and
-// returns what it sends back and after how long, if that is alerts or
-// nothing at all, as a server that issued the ticket answers; ok is false
-// when the target goes on with the handshake instead.
-func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSessionState) (answer []byte, delay time.Duration, ok bool) {
+type refusalKind uint8
+
+const (
+	noRefusal refusalKind = iota
+	alertRefusal
+	finRefusal
+	resetRefusal
+	silentRefusal
+)
+
+type binderRefusal struct {
+	kind   refusalKind
+	alerts []byte
+	delay  time.Duration
+}
+
+func confirmBinderRefusal(probe func() binderRefusal) binderRefusal {
+	reply := probe()
+	if reply.kind == silentRefusal && probe().kind != silentRefusal {
+		return binderRefusal{}
+	}
+	return reply
+}
+
+func connectionWasReset(err error) bool {
+	// net.OpError wraps the Winsock errno on Windows.
+	const wsaConnectionReset = syscall.Errno(10054)
+	return errors.Is(err, syscall.ECONNRESET) ||
+		(runtime.GOOS == "windows" && errors.Is(err, wsaConnectionReset))
+}
+
+func classifyBinderRefusal(capture *probeCaptureConn, start time.Time) binderRefusal {
+	answer := capture.received()
+	if len(answer) == 0 {
+		delay := capture.readEnd.Sub(start)
+		switch err := capture.readErr; {
+		case errors.Is(err, io.EOF):
+			return binderRefusal{kind: finRefusal, delay: delay}
+		case connectionWasReset(err):
+			return binderRefusal{kind: resetRefusal, delay: delay}
+		}
+		var timeout net.Error
+		if errors.As(capture.readErr, &timeout) && timeout.Timeout() && capture.readEnd.Sub(start) >= badBinderWait {
+			return binderRefusal{kind: silentRefusal, delay: badBinderWait}
+		}
+		return binderRefusal{}
+	}
+	n := 0
+	for _, r := range splitRecords(answer) {
+		if r.typ != byte(recordTypeAlert) {
+			return binderRefusal{}
+		}
+		n += r.len()
+	}
+	if n != len(answer) {
+		return binderRefusal{}
+	}
+	return binderRefusal{kind: alertRefusal, alerts: answer, delay: refusalDelay(capture.firstByte.Sub(start))}
+}
+
+func refusalDelay(delay time.Duration) time.Duration {
+	if delay < time.Second {
+		return 0 // treat round-trip latency as an immediate refusal
+	}
+	return delay
+}
+
+// probeBadBinder measures the target's response after a complete write.
+func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSessionState) binderRefusal {
 	dial := config.DialContext
 	if dial == nil {
 		dial = new(net.Dialer).DialContext
@@ -602,12 +681,15 @@ func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSe
 	defer cancel()
 	target, err := dial(ctx, config.Type, config.Dest)
 	if err != nil {
-		return nil, 0, false
+		return binderRefusal{}
 	}
 	defer target.Close()
+	if err := target.SetDeadline(time.Now().Add(ticketProbeTimeout)); err != nil {
+		return binderRefusal{}
+	}
 	if config.Xver == 1 || config.Xver == 2 {
 		if _, err = proxyproto.HeaderProxyFromAddrs(config.Xver, target.LocalAddr(), target.RemoteAddr()).WriteTo(target); err != nil {
-			return nil, 0, false
+			return binderRefusal{}
 		}
 	}
 	capture := &probeCaptureConn{Conn: target}
@@ -618,37 +700,17 @@ func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSe
 	case 2:
 		nextProtos = []string{"h2", "http/1.1"}
 	}
-	start := time.Now()
-	if err := target.SetDeadline(start.Add(badBinderWait)); err != nil {
-		return nil, 0, false
-	}
-	uConn := utls.UClient(&binderSpoiler{Conn: capture}, &utls.Config{
+	spoiler := &binderSpoiler{Conn: capture}
+	uConn := utls.UClient(spoiler, &utls.Config{
 		ServerName:         sni,
 		InsecureSkipVerify: true,
 		NextProtos:         nextProtos,
 		ClientSessionCache: &ticketRecorder{replay: session},
 	}, utls.HelloGolang)
-	uConn.Handshake()
-	delay = capture.firstByte.Sub(start)
-	answer = capture.received()
-	if len(answer) == 0 {
-		if capture.readTimeout && time.Since(start) >= badBinderWait {
-			return nil, badBinderWait, true
-		}
-		return nil, 0, false
+	if err := uConn.Handshake(); err == nil || spoiler.sentAt.IsZero() {
+		return binderRefusal{}
 	}
-	records := splitRecords(answer)
-	n := 0
-	for _, r := range records {
-		if r.typ != byte(recordTypeAlert) {
-			return nil, 0, false
-		}
-		n += r.len()
-	}
-	if delay < time.Second {
-		delay = 0 // an answer right away, but for the round trip
-	}
-	return answer[:n], delay, n > 0
+	return classifyBinderRefusal(capture, spoiler.sentAt)
 }
 
 // probeClient returns the client of a probe: Chrome's ClientHello for the

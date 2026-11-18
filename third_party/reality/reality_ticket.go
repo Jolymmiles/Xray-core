@@ -31,6 +31,61 @@ import (
 // a client asks for tickets.
 const realityTicketsFlag = 1
 
+// Keep the authenticated ClientHello keys in acceptance order. A duplicate
+// refreshes neither the expiration nor the position of the entry.
+type seenTicketHello struct {
+	key     [32]byte
+	expires time.Time
+}
+
+type ticketHelloCache struct {
+	sync.Mutex
+	size    int
+	entries map[[32]byte]*list.Element
+	order   list.List
+}
+
+var ticketHellos = ticketHelloCache{
+	size:    sessionCacheSize,
+	entries: make(map[[32]byte]*list.Element),
+}
+
+func (s *ticketHelloCache) accept(key [32]byte, now, expires time.Time, remember bool) bool {
+	s.Lock()
+	defer s.Unlock()
+	if entry := s.entries[key]; entry != nil {
+		if now.Before(entry.Value.(seenTicketHello).expires) {
+			return false
+		}
+		s.order.Remove(entry)
+		delete(s.entries, key)
+	}
+	if !remember {
+		return true
+	}
+	if s.order.Len() == s.size {
+		oldest := s.order.Front()
+		delete(s.entries, oldest.Value.(seenTicketHello).key)
+		s.order.Remove(oldest)
+	}
+	s.entries[key] = s.order.PushBack(seenTicketHello{key: key, expires: expires})
+	return true
+}
+
+func (s *ticketHelloCache) acceptClientHello(hs *serverHandshakeStateTLS13, now time.Time, validBinder bool) bool {
+	if !hs.c.realityTickets || len(hs.clientHello.pskBinders) == 0 {
+		return true
+	}
+	// Hash the same transcript the selected binder covers, including the
+	// restored session ID. Changing unselected binders cannot create a
+	// new entry. Only a verified offer can add an entry.
+	transcript, err := hs.clientHello.marshalWithoutBinders()
+	if err != nil {
+		return false
+	}
+	return s.accept(sha256.Sum256(transcript), now, now.Add(maxSessionTicketLifetime+time.Minute), validBinder)
+}
+
 // recordsKey is the key of GlobalPostHandshakeRecordsLens and
 // GlobalTicketShapes for this ClientHello.
 func recordsKey(config *Config, hello *clientHelloMsg) (key string, alpn int) {
@@ -329,7 +384,7 @@ func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take boo
 		return nil
 	}
 	age := c.time().Sub(time.Unix(int64(session.createdAt), 0))
-	if age < -time.Minute || age > time.Duration(shape.Lifetime)*time.Second {
+	if age < -time.Minute || age > min(time.Duration(shape.Lifetime)*time.Second, maxSessionTicketLifetime) {
 		return nil
 	}
 	return session
@@ -348,35 +403,35 @@ func checkBinder(suite *cipherSuiteTLS13, session *SessionState, ch *clientHello
 	return earlySecret, hmac.Equal(ch.pskBinders[0], suite.finishedHash(earlySecret.ResumptionBinderKey(), transcript))
 }
 
-// ticketRefusal returns what the target sends back to one of its own
-// tickets offered with a wrong binder, if the ClientHello offers one of
-// REALITY's tickets so, authenticated or not. A censor that saw the ticket
-// on the wire cannot compute its binder; a server that issued the ticket
-// refuses it, where the target, which does not know it, would go on with a
-// full handshake.
-func (hs *serverHandshakeStateTLS13) ticketRefusal() *TicketShape {
+// inspectTicketHello checks whether the offer authenticates a ticket we
+// issued. For a known ticket with an invalid binder, it returns the
+// target's measured refusal, when available.
+func (hs *serverHandshakeStateTLS13) inspectTicketHello() (refusal *TicketShape, validBinder bool) {
 	ch := hs.clientHello
 	if len(ch.pskIdentities) == 0 || len(ch.pskIdentities) != len(ch.pskBinders) ||
 		!slices.Contains(ch.pskModes, pskModeDHE) {
-		return nil
+		return nil, false
 	}
 	key, _ := recordsKey(hs.c.config, ch)
 	shape := LoadTicketShape(key)
-	if shape == nil || !shape.Resumes || !shape.RefusesBadBinder {
-		return nil
+	if shape == nil || !shape.Resumes {
+		return nil, false
 	}
 	session := hs.c.config.realityTicketSession(shape, ch.pskIdentities[0].label, false)
 	if session == nil {
-		return nil
+		return nil, false
 	}
 	suite := cipherSuiteTLS13ByID(session.cipherSuite)
 	if suite == nil {
-		return nil
+		return nil, false
 	}
 	if _, ok := checkBinder(suite, session, ch); ok {
-		return nil
+		return nil, true
 	}
-	return shape
+	if shape.RefusesBadBinder {
+		return shape, false
+	}
+	return nil, false
 }
 
 // statefulTicket returns a ticket of ticketLen bytes that is only an id of

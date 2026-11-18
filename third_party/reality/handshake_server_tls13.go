@@ -70,9 +70,10 @@ type serverHandshakeStateTLS13 struct {
 	echContext      *echServerContext
 
 	// [REALITY] SECTION: session tickets
-	ticketShape    *TicketShape // set when the client asked for tickets and the target's are known
-	ticketInFlight bool         // a ticket went with the server's flight
-	refusal        *TicketShape // set when a ticket came with a wrong binder: how the target refuses it
+	ticketShape         *TicketShape // set when the client asked for tickets and the target's are known
+	ticketInFlight      bool         // a ticket went with the server's flight
+	refusal             *TicketShape // set when a ticket came with a wrong binder: how the target refuses it
+	ticketHelloAccepted bool         // a known PSK offer with a valid binder, reserved before the handshake
 	// [REALITY] SECTION END
 }
 
@@ -141,7 +142,7 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 		RefreshTicketShape(c.config, key, hs.clientHello.serverName, alpn)
 		if hs.ticketShape = LoadTicketShape(key); hs.ticketShape == nil {
 			DetectTicketShape(c.config, key, hs.clientHello.serverName, alpn)
-		} else {
+		} else if hs.ticketHelloAccepted {
 			hs.realityResume(hs.ticketShape)
 		}
 	}
@@ -211,17 +212,7 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 	if _, err := c.flush(); err != nil {
 		return err
 	}
-	return nil
-
-	if err := hs.readClientCertificate(); err != nil {
-		return err
-	}
-	if err := hs.readClientFinished(); err != nil {
-		return err
-	}
-
-	c.isHandshakeComplete.Store(true)
-
+	// Server handles the client's Finished and marks the handshake complete.
 	return nil
 }
 

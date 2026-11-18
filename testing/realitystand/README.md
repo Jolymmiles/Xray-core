@@ -122,8 +122,8 @@ records and HTTP/2 startup.
 
 The enabled inbound makes background TLS probes for each target, server
 name and ALPN profile. For HTTP/2 it also measures startup with a
-`GET /` request. See the [resumed ClientHello replay limitation](#known-limitation-replay-of-a-resumed-clienthello)
-before enabling this option.
+`GET /` request. See [replay protection and ticket refusal](#replay-protection-and-ticket-refusal)
+for its scope.
 
 The updated uTLS dependency also changes several ClientHello presets.
 Those preset changes apply independently of the `browser` setting.
@@ -246,14 +246,21 @@ the time the client takes for its Finished.
   ends in the target's certificate and a dropped connection; the client then
   offers no ticket there for 10 minutes.
 
-### Known limitation: replay of a resumed ClientHello
+### Replay protection and ticket refusal
 
-A captured ClientHello that offers a valid REALITY-issued ticket can be
-replayed while the ticket and the authenticated ClientHello are still
-accepted. REALITY can return `selected_identity` in its plaintext
-ServerHello. The target rejects the same ticket and performs a full
-handshake. An active observer with the capture can distinguish those
-responses. The replay test is in the `edge` group.
+The server records authenticated browser-mode ClientHellos with a valid
+ticket and binder before it starts a REALITY handshake. A repeated
+ClientHello goes to the target. The bounded history holds up to 40,000 entries per
+process and is shared by inbounds using the same private key. Protection
+for an entry ends when it expires, is evicted, or the process restarts.
+Independent replicas have independent histories. The `edge` group
+captures the replay scenario.
+
+For an invalid binder, the probe distinguishes a TLS alert, a closed
+read side, a reset, and a read deadline with no response. Silence must
+be observed twice before it is stored. A TCP reset
+can be reproduced on a connection that exposes its underlying TCP
+socket. The delay is measured at the target and includes network jitter.
 
 ## Not covered yet
 

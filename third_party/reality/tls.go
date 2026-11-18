@@ -206,6 +206,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 	waitGroup.Add(2)
 
 	go func() {
+		authenticated := false
 		for {
 			mutex.Lock()
 			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
@@ -279,21 +280,27 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientTime: %v\n", remoteAddr, hs.c.ClientTime)
 					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientShortId: %v\n", remoteAddr, hs.c.ClientShortId)
 				}
+				now := time.Now()
 				if (config.MinClientVer == nil || Value(hs.c.ClientVer[:]...) >= Value(config.MinClientVer...)) &&
 					(config.MaxClientVer == nil || Value(hs.c.ClientVer[:]...) <= Value(config.MaxClientVer...)) &&
-					(config.MaxTimeDiff == 0 || time.Since(hs.c.ClientTime).Abs() <= config.MaxTimeDiff) &&
-					(config.ShortIds[hs.c.ClientShortId]) {
-					hs.c.conn = conn
+					(config.MaxTimeDiff == 0 || now.Sub(hs.c.ClientTime).Abs() <= config.MaxTimeDiff) &&
+					config.ShortIds[hs.c.ClientShortId] {
+					authenticated = true
 				}
 				break
 			}
-			if config.Show {
-				fmt.Printf("REALITY remoteAddr: %v\ths.c.conn == conn: %v\n", remoteAddr, hs.c.conn == conn)
-			}
 			break
 		}
+		var validBinder bool
 		if config.BrowserMode && hs.clientHello != nil && hs.c.vers == VersionTLS13 && config.ServerNames[hs.clientHello.serverName] {
-			hs.refusal = hs.ticketRefusal()
+			hs.refusal, validBinder = hs.inspectTicketHello()
+		}
+		if authenticated && ticketHellos.acceptClientHello(&hs, time.Now(), validBinder) {
+			hs.c.conn = conn
+			hs.ticketHelloAccepted = hs.c.realityTickets && validBinder
+		}
+		if config.Show {
+			fmt.Printf("REALITY remoteAddr: %v\ths.c.conn == conn: %v\n", remoteAddr, hs.c.conn == conn)
 		}
 		mutex.Unlock()
 		if hs.refusal != nil {
@@ -303,19 +310,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				fmt.Printf("REALITY remoteAddr: %v\trefused a ticket with a wrong binder: % x after %v\n", remoteAddr, hs.refusal.BadBinder, hs.refusal.BadBinderDelay)
 			}
 			target.Close()
-			if hs.refusal.BadBinderDelay > 0 {
-				conn.SetReadDeadline(time.Now().Add(hs.refusal.BadBinderDelay))
-				io.Copy(io.Discard, underlying) // until then, or until the client goes
-				conn.SetReadDeadline(time.Time{})
-			}
-			// Close as a server that sends an alert does: FIN after it,
-			// then whatever the client still sends, so that no reset
-			// takes the alert with it.
-			conn.Write(hs.refusal.BadBinder)
-			underlying.CloseWrite()
-			conn.SetReadDeadline(time.Now().Add(time.Second))
-			io.Copy(io.Discard, underlying)
-			conn.Close()
+			closeAfterRefusal(conn, underlying, hs.refusal)
 			waitGroup.Done()
 			return
 		}
@@ -559,6 +554,52 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 		c.handshakeFn = c.serverHandshake
 		return c
 	*/
+}
+
+func closeAfterRefusal(conn net.Conn, underlying CloseWriteConn, shape *TicketShape) {
+	defer conn.Close()
+	if shape.BadBinderDelay > 0 {
+		deadline := time.Now().Add(shape.BadBinderDelay)
+		if err := underlying.SetReadDeadline(deadline); err != nil {
+			return
+		}
+		if _, err := io.Copy(io.Discard, underlying); err == nil {
+			// A peer can send FIN and still read the pending response.
+			time.Sleep(time.Until(deadline))
+		}
+	}
+	if shape.badBinderClose == resetRefusal && setAbortiveClose(underlying) {
+		return
+	}
+	if len(shape.BadBinder) > 0 {
+		if err := conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+			return
+		}
+		if _, err := conn.Write(shape.BadBinder); err != nil {
+			return
+		}
+	}
+	// Preserve the FIN and any alert by draining the peer's remaining data.
+	underlying.CloseWrite()
+	if err := underlying.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
+		io.Copy(io.Discard, underlying)
+	}
+}
+
+func setAbortiveClose(conn net.Conn) bool {
+	for range 8 {
+		switch c := conn.(type) {
+		case interface{ SetLinger(int) error }:
+			return c.SetLinger(0) == nil
+		case interface{ NetConn() net.Conn }:
+			conn = c.NetConn()
+		case interface{ Raw() net.Conn }:
+			conn = c.Raw()
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // [REALITY] SECTION END

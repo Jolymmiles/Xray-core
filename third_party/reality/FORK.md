@@ -26,7 +26,8 @@ Keep this list complete; everything else must match upstream byte for byte.
   and `tls.go` implement opt-in REALITY session tickets and destination
   profiling. `h2_detect.go` measures the destination's HTTP/2 greeting for
   XHTTP. The extension is disabled by default. The module tests cover
-  the ticket cache and both probe paths. The module uses `x/net/http2/hpack`
+  the ticket cache, process-local replay guard, and both probe paths,
+  including ticket refusals with TCP FIN and RST. The module uses `x/net/http2/hpack`
   for the H2 probe, with the related `x/crypto` and `x/sys` versions
   recorded in `go.mod`.
 
