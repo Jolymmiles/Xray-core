@@ -122,11 +122,12 @@ func TestSniffUTPHandshake(t *testing.T) {
 // more after it is another name, and the walk does not allocate.
 func TestSniffHTTPTrackerParameterNames(t *testing.T) {
 	for name, request := range map[string]string{
-		"bad escape":    "GET /announce?info%zzhash=x&peer_id=y HTTP/1.1\r\n",
-		"not hex":       "GET /announce?info%<Fhash=x&peer_id=y HTTP/1.1\r\n",
-		"longer name":   "GET /announce?info_hash%41=x&peer_id=y HTTP/1.1\r\n",
-		"cut escape":    "GET /announce?info_hash=x&peer_i%6 HTTP/1.1\r\n",
-		"plus is space": "GET /announce?info+hash=x&peer_id=y HTTP/1.1\r\n",
+		"bad escape":     "GET /announce?info%zzhash=x&peer_id=y HTTP/1.1\r\n",
+		"not hex":        "GET /announce?info%<Fhash=x&peer_id=y HTTP/1.1\r\n",
+		"second not hex": "GET /announce?info%5vhash=x&peer_id=y HTTP/1.1\r\n",
+		"longer name":    "GET /announce?info_hash%41=x&peer_id=y HTTP/1.1\r\n",
+		"cut escape":     "GET /announce?info_hash=x&peer_i%6 HTTP/1.1\r\n",
+		"plus is space":  "GET /announce?info+hash=x&peer_id=y HTTP/1.1\r\n",
 	} {
 		if _, err := SniffHTTPTracker([]byte(request)); err == nil {
 			t.Errorf("%s: %q taken for a tracker request", name, request)
