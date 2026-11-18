@@ -79,12 +79,6 @@ func (r clientSessionResumption) enabled() bool {
 }
 
 func (r clientSessionResumption) client(connection net.Conn, config *utls.Config, fingerprint utls.ClientHelloID) *utls.UConn {
-	if resumesWithAnotherHello(fingerprint) {
-		// Not even a cache the caller put in the uTLS config resumes it:
-		// uTLS would fill the template's session_ticket with a TLS 1.2
-		// ticket.
-		config.ClientSessionCache = nil
-	}
 	if r.source != nil {
 		if spec, eligible := clientHelloSpecForResumption(fingerprint); eligible {
 			config.ClientSessionCache = r.sessionCache(fingerprint)
