@@ -57,6 +57,7 @@ func TestXHTTPMuxCoolProcess(t *testing.T) {
 				t.Logf("server (keepalive %t) logs:\n%s", keepAlive, server.logs.String())
 			}
 		})
+		waitTCP(t, server, serverPort)
 
 		for _, mode := range []string{"packet-up", "stream-up", "stream-one"} {
 			t.Run(fmt.Sprintf("keepalive=%t/%s", keepAlive, mode), func(t *testing.T) {
