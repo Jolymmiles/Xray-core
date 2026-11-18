@@ -275,7 +275,7 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 				return conn, err
 			}
 			if browserProfile {
-				conn = &ackConn{Conn: conn}
+				conn = &ackConn{Conn: conn, prefaceLeft: len(h2Preface)}
 			}
 			if !governed {
 				return conn, nil

@@ -84,6 +84,21 @@ func (c *shapeConn) NetConn() net.Conn {
 	return c.Conn
 }
 
+func (c *shapeConn) Close() error {
+	err := c.Conn.Close()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.finishStartup()
+	return err
+}
+
+func (c *shapeConn) finishStartup() {
+	c.state = 2
+	if c.timer != nil {
+		c.timer.Stop()
+	}
+}
+
 // recordOverhead is what a TLS 1.3 record adds to its content: the header,
 // the content type and the AEAD tag.
 const recordOverhead = 5 + 1 + 16
@@ -173,10 +188,14 @@ func (c *shapeConn) writeStartup(b []byte, force bool) error {
 			frame := c.frames[kind]
 			if kind == reality.H2Settings {
 				frame = fitSettings(frame, room)
+				if frame == nil {
+					ready = false
+					break
+				}
 			}
 			payload = append(payload, frame...)
 		}
-		if len(payload)+recordOverhead > controlLength {
+		if !ready || len(payload)+recordOverhead > controlLength {
 			force = true
 			break
 		}
@@ -202,7 +221,7 @@ func (c *shapeConn) writeStartup(b []byte, force bool) error {
 			c.err = io.ErrShortWrite
 		}
 		if c.err != nil {
-			c.state = 2
+			c.finishStartup()
 			return c.err
 		}
 		c.profile = c.profile[1:]
@@ -213,10 +232,7 @@ func (c *shapeConn) writeStartup(b []byte, force bool) error {
 	if len(c.profile) > 0 {
 		c.startupGrant = 0
 	}
-	c.state = 2
-	if c.timer != nil {
-		c.timer.Stop()
-	}
+	c.finishStartup()
 	rest := c.startupRemainder(b)
 	if len(rest) == 0 {
 		return nil
@@ -316,10 +332,6 @@ func frameSize(b []byte) int {
 	return frameHeaderLen + (int(b[0])<<16 | int(b[1])<<8 | int(b[2]))
 }
 
-// settingsKept are the parameters kept first when SETTINGS has to shrink:
-// those that shape flow control, then the rest of what nginx sends.
-var settingsKept = []uint16{settingInitWin, settingMaxConc, settingMaxFrame}
-
 // fitSettings removes settings to fit the measured record.
 // The advertised stream window and concurrency limit stay in the frame.
 func fitSettings(settings []byte, room int) []byte {
@@ -328,9 +340,19 @@ func fitSettings(settings []byte, room int) []byte {
 	}
 	selected := make(map[uint16]bool)
 	capacity := (room - frameHeaderLen) / 6
-	for _, id := range settingsKept {
-		if len(selected) < capacity || id == settingInitWin || id == settingMaxConc {
+	for p := frameHeaderLen; p+6 <= len(settings); p += 6 {
+		id := binary.BigEndian.Uint16(settings[p:])
+		if id == settingInitWin || id == settingMaxConc {
 			selected[id] = true
+		}
+	}
+	if capacity < len(selected) || room < frameHeaderLen {
+		return nil
+	}
+	for p := frameHeaderLen; p+6 <= len(settings) && len(selected) < capacity; p += 6 {
+		if binary.BigEndian.Uint16(settings[p:]) == settingMaxFrame {
+			selected[settingMaxFrame] = true
+			break
 		}
 	}
 	for p := frameHeaderLen; p+6 <= len(settings); p += 6 {
@@ -355,26 +377,51 @@ func fitSettings(settings []byte, room int) []byte {
 // that follows.
 type ackConn struct {
 	net.Conn
+	mu          sync.Mutex
+	prefaceLeft int
+	header      [frameHeaderLen]byte
+	headerBytes int
+	payload     int
+	done        bool
 }
 
 func (c *ackConn) Write(b []byte) (int, error) {
-	at := -1
-	for p := 0; p+frameHeaderLen <= len(b); {
-		n := frameSize(b[p:])
-		if p+n > len(b) {
-			break
-		}
-		if b[p+3] == frameSettings && b[p+4]&0x1 != 0 {
-			at = p
-			break
-		}
-		p += n
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return c.Conn.Write(b)
 	}
-	if at < 0 || len(b) == frameHeaderLen {
+	p := min(c.prefaceLeft, len(b))
+	c.prefaceLeft -= p
+	at, end := -1, 0
+	for p < len(b) {
+		if c.payload > 0 {
+			n := min(c.payload, len(b)-p)
+			c.payload -= n
+			p += n
+			continue
+		}
+		start := p - c.headerBytes
+		n := copy(c.header[c.headerBytes:], b[p:])
+		p += n
+		c.headerBytes += n
+		if c.headerBytes != frameHeaderLen {
+			break
+		}
+		c.headerBytes = 0
+		c.payload = frameSize(c.header[:]) - frameHeaderLen
+		if c.payload == 0 && c.header[3] == frameSettings && c.header[4]&0x1 != 0 &&
+			binary.BigEndian.Uint32(c.header[5:])&0x7fffffff == 0 {
+			c.done = true
+			at, end = max(0, start), p
+			break
+		}
+	}
+	if at < 0 || (at == 0 && end == len(b)) {
 		return c.Conn.Write(b)
 	}
 	written := 0
-	for _, part := range [][]byte{b[:at], b[at : at+frameHeaderLen], b[at+frameHeaderLen:]} {
+	for _, part := range [][]byte{b[:at], b[at:end], b[end:]} {
 		if len(part) == 0 {
 			continue
 		}
@@ -382,6 +429,9 @@ func (c *ackConn) Write(b []byte) (int, error) {
 		written += n
 		if err != nil {
 			return written, err
+		}
+		if n != len(part) {
+			return written, io.ErrShortWrite
 		}
 	}
 	return written, nil

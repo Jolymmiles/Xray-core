@@ -258,9 +258,37 @@ func TestAckConnWritesTheAcknowledgementAlone(t *testing.T) {
 	if len(under.writes) != 2 || !bytes.Equal(under.writes[0], ack) || !bytes.Equal(under.writes[1], wu) {
 		t.Fatalf("writes %x", under.writes)
 	}
-	c.Write(wu)
-	if len(under.writes) != 3 {
-		t.Fatal("other writes pass")
+	later := append(bytes.Clone(ack), wu...)
+	if _, err := c.Write(later); err != nil || len(under.writes) != 3 || !bytes.Equal(under.writes[2], later) {
+		t.Fatal("writes after the initial ACK pass without splitting", err)
+	}
+}
+
+func TestAckConnHandlesFragmentedPrefaceAndFrameHeaders(t *testing.T) {
+	under := &writesConn{}
+	c := &ackConn{Conn: under, prefaceLeft: len(h2Preface)}
+	badStream := frame(frameSettings, 1, 1, nil)
+	badLength := frame(frameSettings, 1, 0, make([]byte, 6))
+	ack := frame(frameSettings, 1, 0, nil)
+	wu := frame(frameWindowUpd, 0, 0, []byte{0, 0, 0, 1})
+	initial := append(append([]byte(h2Preface), badStream...), badLength...)
+	for _, chunk := range [][]byte{initial[:4], initial[4 : len(initial)-2], initial[len(initial)-2:]} {
+		if n, err := c.Write(chunk); n != len(chunk) || err != nil {
+			t.Fatalf("initial write %d, %v", n, err)
+		}
+	}
+	if c.done || len(under.writes) != 3 {
+		t.Fatalf("invalid ACK split the stream: %x", under.writes)
+	}
+	if _, err := c.Write(ack[:4]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write(append(bytes.Clone(ack[4:]), wu...)); err != nil {
+		t.Fatal(err)
+	}
+	if len(under.writes) != 6 || !bytes.Equal(under.writes[3], ack[:4]) ||
+		!bytes.Equal(under.writes[4], ack[4:]) || !bytes.Equal(under.writes[5], wu) {
+		t.Fatalf("writes %x", under.writes)
 	}
 }
 
