@@ -246,10 +246,25 @@ pinned uTLS until that lands, and Firefox and Edge depend on it.
 The pin moved to `f03e50a18427` afterwards (Jolymmiles/utls#1 and #2), which
 carries the Firefox 156 and Edge 157 presets. `firefox` now sends both
 extensions and asks for tickets, and
-`transport/internet/reality/resumption_test.go` passes for it. The stand was
-not rerun on that pin, so the findings of this section stand for the old one.
-`ios` is still iOS 14 in that uTLS: the `ios` change the 2026-11-16 findings
-mention is not part of it.
+`transport/internet/reality/resumption_test.go` passes for it. `ios` is still
+iOS 14 in that uTLS: the `ios` change the 2026-11-16 findings mention is not
+part of it.
+
+The stand was rerun on that pin on 2026-11-18 (`8ff8d448`, `RTT_MS=0`
+because the host had no netem, the `browsers`, `xray` and `xhttp` groups,
+twice), and once more on the build before the pin moved (`c6a33f2a`), all
+against one browsers run:
+
+- RAW through REALITY: `chrome`, `edge` and `firefox` match their browsers
+  in the full and the resumed handshake on nginx, Caddy and HAProxy in both
+  runs. On the build before the pin moved, `edge` and `firefox` differed and
+  `firefox` resumed nowhere.
+- XHTTP, Firefox: full and resumed startups match on Caddy and HAProxy, where
+  the build before the pin moved differed.
+- The verify-delay check and the XHTTP startup checks on nginx and on the
+  stub differ at both builds, and three verify-delay and four XHTTP verdicts
+  changed between the two runs of one binary. At RTT 0 these checks do not
+  tell one build from another.
 
 ## Findings (2026-11-16)
 
