@@ -348,3 +348,16 @@ func TestREALITYServerKeyShareAcceptance(t *testing.T) {
 		})
 	}
 }
+
+// TestREALITYRequireMlkemAcceptsEdge pins that "edge" passes a server with
+// "requireMlkem": Edge 157 sends an X25519MLKEM768 key share, which Edge 85,
+// the alias's earlier target, did not.
+func TestREALITYRequireMlkemAcceptsEdge(t *testing.T) {
+	got := runKeyShareHandshake(t, utls.HelloEdge_Auto, keepHello, true)
+	if !got.serverAccepted || !got.clientVerified {
+		t.Fatalf("server accepted = %v, client verified = %v, want both true", got.serverAccepted, got.clientVerified)
+	}
+	if got.fromCover {
+		t.Fatal("accepted hello was answered with the cover target's certificate")
+	}
+}

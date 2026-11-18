@@ -68,7 +68,7 @@ func namedFingerprints(t *testing.T) map[string]utls.ClientHelloID {
 // other extension: doing so produces a ClientHello that matches no real
 // browser, which is precisely what uTLS exists to avoid.
 //
-// See transport/internet/tls/SESSION_RESUMPTION_REVIEW.md section 4.
+// docs/FORK.md describes the rule and its Firefox 156 exception.
 func TestResumptionNeverForgesFingerprint(t *testing.T) {
 	for name, id := range namedFingerprints(t) {
 		t.Run(name, func(t *testing.T) {
@@ -148,5 +148,27 @@ func TestResumptionRequiresPrerequisiteExtensions(t *testing.T) {
 					hasSessionTicket, hasPSKModes)
 			}
 		})
+	}
+}
+
+// TestResumptionDeclinesFirefox156 pins the one preset the template rule
+// cannot judge. Firefox 156's template carries both prerequisite extensions,
+// so resumptionSpec would accept it, but Firefox changes more than
+// pre_shared_key when it resumes. The decision by fingerprint declines it and
+// leaves the older Firefox presets as they were.
+func TestResumptionDeclinesFirefox156(t *testing.T) {
+	if _, ok := resumptionSpec(stockSpec(t, "hellofirefox_156", utls.HelloFirefox_156)); !ok {
+		t.Fatal("Firefox 156's template no longer qualifies by itself; the exception is not needed")
+	}
+	if spec, ok := clientHelloSpecForResumption(utls.HelloFirefox_156); ok || spec != nil {
+		t.Fatal("Firefox 156 is offered a resumption template")
+	}
+	for name, id := range namedFingerprints(t) {
+		if id.Client == utls.HelloFirefox_156.Client && id.Version == utls.HelloFirefox_156.Version && SupportsSessionResumption(id) {
+			t.Errorf("%s selects Firefox 156 and qualifies for session resumption", name)
+		}
+	}
+	if !SupportsSessionResumption(utls.HelloFirefox_120) {
+		t.Error("Firefox 120 lost session resumption")
 	}
 }

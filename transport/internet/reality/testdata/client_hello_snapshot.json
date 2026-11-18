@@ -6,104 +6,112 @@
     "error": "transport/internet/reality: Current fingerprint Android11 does not support TLS 1.3, REALITY handshake cannot establish."
   },
   "chrome": {
-    "sha256": "32bc9c77e616aad6e90ab09aeee4f8a4c8173b3baae77c2850b3cebc76e090d8",
-    "length": 1951,
+    "sha256": "3d82dd088b5e5885caae1604bc4620ed36c6c30a362dcefd91f92bcb0c289677",
+    "length": 2015,
     "extensions": [
-      60138,
-      65281,
-      13,
-      10,
-      27,
-      18,
+      27242,
+      65037,
+      35,
+      23,
+      5,
       0,
       43,
-      11,
-      16,
-      23,
-      51,
-      65037,
-      45,
-      35,
-      17613,
+      65281,
       51764,
-      5,
-      14906
+      11,
+      10,
+      17613,
+      45,
+      18,
+      27,
+      13,
+      16,
+      51,
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "edge": {
-    "sha256": "c4751e174764ae069151d66c5af473080986a912dd361ca20d009084b3c0db27",
-    "length": 517,
+    "sha256": "d7114c724febfef6002e4d51d46fb610d8763d281c86b528cdc76fb3f8277fc8",
+    "length": 1825,
     "extensions": [
-      19018,
+      27242,
+      65037,
+      35,
+      23,
+      5,
+      0,
+      43,
+      65281,
+      11,
+      10,
+      17613,
+      45,
+      18,
+      27,
+      13,
+      16,
+      51,
+      56026
+    ],
+    "groups": [
+      27242,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "keyShares": [
+      "0x6a6a/1",
+      "0x11ec/1216",
+      "0x001d/32"
+    ],
+    "versions": [
+      31354,
+      772,
+      771
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ],
+    "alps": [
+      "h2"
+    ]
+  },
+  "firefox": {
+    "sha256": "2e983f7ae31c8cf9222e7dec88908a0560a85956ff638bd6047dd11cd05e46a0",
+    "length": 1889,
+    "extensions": [
       0,
       23,
       65281,
       10,
       11,
       35,
-      16,
-      5,
-      13,
-      18,
-      51,
-      45,
-      43,
-      27,
-      10794,
-      21
-    ],
-    "groups": [
-      43690,
-      29,
-      23,
-      24
-    ],
-    "keyShares": [
-      "0xaaaa/1",
-      "0x001d/32"
-    ],
-    "versions": [
-      6682,
-      772,
-      771,
-      770,
-      769
-    ],
-    "alpn": [
-      "h2",
-      "http/1.1"
-    ]
-  },
-  "firefox": {
-    "sha256": "1d0a94506957707f6578fb836d9db0ad9ee86dc6a7eb552438bcfaa86a3f682f",
-    "length": 1886,
-    "extensions": [
-      0,
-      23,
-      65281,
-      10,
-      11,
       16,
       5,
       34,
@@ -111,6 +119,7 @@
       51,
       43,
       13,
+      45,
       28,
       27,
       65037
@@ -120,9 +129,7 @@
       29,
       23,
       24,
-      25,
-      256,
-      257
+      25
     ],
     "keyShares": [
       "0x11ec/1216",
@@ -233,6 +240,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_100_psk": {
@@ -279,49 +289,55 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_106_shuffle": {
-    "sha256": "e40a458dbd06db8be6394d9d3ff2bdbd378413f79c9517f845641a560379d8b1",
+    "sha256": "5da364ff760d0adcfc731bdb41c88646cb17a6ce5511196ebd433f1da1cdf6ad",
     "length": 517,
     "extensions": [
-      60138,
+      27242,
+      17513,
+      35,
       23,
-      65281,
       5,
-      11,
-      13,
+      0,
       45,
+      65281,
+      27,
+      11,
       10,
       43,
-      0,
       18,
+      13,
       16,
       51,
-      35,
-      27,
-      17513,
-      14906,
+      56026,
       21
     ],
     "groups": [
-      39578,
+      27242,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_112_psk_shuf": {
@@ -331,274 +347,292 @@
     "error": "transport/internet/reality: REALITY: failed to build the ClientHello \u003e tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "hellochrome_115_pq": {
-    "sha256": "2953d6232d014a960028b7e956ead660f5fdfb12d61d34ecab5cf7c213f1bd95",
+    "sha256": "492d34eb95895f1d1ec257c72d0d4151354dec4b97a3afa06c91e3caf0c7386f",
     "length": 1531,
     "extensions": [
-      60138,
+      27242,
+      17513,
+      35,
       23,
-      65281,
       5,
-      11,
-      13,
+      0,
       45,
+      65281,
+      27,
+      11,
       10,
       43,
-      0,
       18,
+      13,
       16,
       51,
-      35,
-      27,
-      17513,
-      14906
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       25497,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x6399/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_115_pq_psk": {
     "error": "transport/internet/reality: REALITY: failed to build the ClientHello \u003e tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "hellochrome_120": {
-    "sha256": "6e15c3c56906bec490c8d21167d5debc694344515cd196310ec0750a20e35504",
+    "sha256": "f2ff7f10714e727dbd5fdbae050363f8e22db6e7083f71a384b634954f3babbf",
     "length": 531,
     "extensions": [
-      60138,
-      65281,
-      13,
-      10,
-      27,
-      18,
+      27242,
+      65037,
+      35,
+      23,
+      5,
       0,
       43,
-      11,
-      16,
-      23,
-      51,
-      5,
-      45,
-      35,
+      65281,
       17513,
-      65037,
-      14906
+      11,
+      10,
+      27,
+      45,
+      18,
+      13,
+      16,
+      51,
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_120_pq": {
-    "sha256": "02195bc99964322cb47ba8f7c6c0e1b2a75647c355e2a5389baa2ee973bd8543",
-    "length": 1753,
+    "sha256": "bd2deb5aa9cabccf67f27857c9631a92cdd4bed6182e4c7ccfbe63190d786198",
+    "length": 1817,
     "extensions": [
-      60138,
-      23,
-      65281,
+      27242,
       65037,
-      11,
-      13,
-      45,
-      10,
-      43,
+      35,
+      23,
+      5,
       0,
+      43,
+      65281,
+      17513,
+      11,
+      10,
+      27,
+      45,
       18,
+      13,
       16,
       51,
-      35,
-      27,
-      17513,
-      5,
-      14906
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       25497,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x6399/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_131": {
-    "sha256": "c2a5aaa186a262ab940ad7017312e74d27cb57711fed83814cb7fdf02294d943",
-    "length": 1753,
+    "sha256": "a3cf89fe20fa2899f2bd10ee9cdf7105e59675d73201edab8e9adf67b9bd3903",
+    "length": 1817,
     "extensions": [
-      60138,
-      23,
-      65281,
+      27242,
       65037,
-      11,
-      13,
-      45,
-      10,
-      43,
+      35,
+      23,
+      5,
       0,
+      43,
+      65281,
+      17513,
+      11,
+      10,
+      27,
+      45,
       18,
+      13,
       16,
       51,
-      35,
-      27,
-      17513,
-      5,
-      14906
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_133": {
-    "sha256": "2cb3212efe1cad86e2a8cffb1e30f544cfaa0ac586d0bbd992dee350b8b27472",
-    "length": 1753,
+    "sha256": "4948d9b9e81ef00ea5cc3d0f5be2d60ba599c4d1424d5990af4d6aa757f66908",
+    "length": 1817,
     "extensions": [
-      60138,
-      23,
-      65281,
+      27242,
       65037,
-      11,
-      13,
-      45,
-      10,
-      43,
+      35,
+      23,
+      5,
       0,
+      43,
+      65281,
+      17613,
+      11,
+      10,
+      27,
+      45,
       18,
+      13,
       16,
       51,
-      35,
-      27,
-      17613,
-      5,
-      14906
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_155": {
-    "sha256": "32bc9c77e616aad6e90ab09aeee4f8a4c8173b3baae77c2850b3cebc76e090d8",
-    "length": 1951,
+    "sha256": "3d82dd088b5e5885caae1604bc4620ed36c6c30a362dcefd91f92bcb0c289677",
+    "length": 2015,
     "extensions": [
-      60138,
-      65281,
-      13,
-      10,
-      27,
-      18,
+      27242,
+      65037,
+      35,
+      23,
+      5,
       0,
       43,
-      11,
-      16,
-      23,
-      51,
-      65037,
-      45,
-      35,
-      17613,
+      65281,
       51764,
-      5,
-      14906
+      11,
+      10,
+      17613,
+      45,
+      18,
+      27,
+      13,
+      16,
+      51,
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_58": {
@@ -827,52 +861,58 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_auto": {
-    "sha256": "32bc9c77e616aad6e90ab09aeee4f8a4c8173b3baae77c2850b3cebc76e090d8",
-    "length": 1951,
+    "sha256": "3d82dd088b5e5885caae1604bc4620ed36c6c30a362dcefd91f92bcb0c289677",
+    "length": 2015,
     "extensions": [
-      60138,
-      65281,
-      13,
-      10,
-      27,
-      18,
+      27242,
+      65037,
+      35,
+      23,
+      5,
       0,
       43,
-      11,
-      16,
-      23,
-      51,
-      65037,
-      45,
-      35,
-      17613,
+      65281,
       51764,
-      5,
-      14906
+      11,
+      10,
+      17613,
+      45,
+      18,
+      27,
+      13,
+      16,
+      51,
+      56026
     ],
     "groups": [
-      39578,
+      27242,
       4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0x9a9a/1",
+      "0x6a6a/1",
       "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
-      60138,
+      31354,
       772,
       771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "helloedge_106": {
@@ -916,6 +956,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "helloedge_85": {
@@ -963,47 +1006,51 @@
     ]
   },
   "helloedge_auto": {
-    "sha256": "c4751e174764ae069151d66c5af473080986a912dd361ca20d009084b3c0db27",
-    "length": 517,
+    "sha256": "d7114c724febfef6002e4d51d46fb610d8763d281c86b528cdc76fb3f8277fc8",
+    "length": 1825,
     "extensions": [
-      19018,
-      0,
-      23,
-      65281,
-      10,
-      11,
+      27242,
+      65037,
       35,
-      16,
+      23,
       5,
-      13,
-      18,
-      51,
-      45,
+      0,
       43,
+      65281,
+      11,
+      10,
+      17613,
+      45,
+      18,
       27,
-      10794,
-      21
+      13,
+      16,
+      51,
+      56026
     ],
     "groups": [
-      43690,
+      27242,
+      4588,
       29,
       23,
       24
     ],
     "keyShares": [
-      "0xaaaa/1",
+      "0x6a6a/1",
+      "0x11ec/1216",
       "0x001d/32"
     ],
     "versions": [
-      6682,
+      31354,
       772,
-      771,
-      770,
-      769
+      771
     ],
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellofirefox_102": {
@@ -1305,14 +1352,15 @@
     ]
   },
   "hellofirefox_auto": {
-    "sha256": "1d0a94506957707f6578fb836d9db0ad9ee86dc6a7eb552438bcfaa86a3f682f",
-    "length": 1886,
+    "sha256": "2e983f7ae31c8cf9222e7dec88908a0560a85956ff638bd6047dd11cd05e46a0",
+    "length": 1889,
     "extensions": [
       0,
       23,
       65281,
       10,
       11,
+      35,
       16,
       5,
       34,
@@ -1320,6 +1368,7 @@
       51,
       43,
       13,
+      45,
       28,
       27,
       65037
@@ -1329,9 +1378,7 @@
       29,
       23,
       24,
-      25,
-      256,
-      257
+      25
     ],
     "keyShares": [
       "0x11ec/1216",
@@ -1520,6 +1567,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "helloqq_auto": {
@@ -1565,6 +1615,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellorandomized": {
@@ -1605,6 +1658,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellorandomizednoalpn": {
@@ -1854,6 +1910,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "randomized@32b8ac49": {

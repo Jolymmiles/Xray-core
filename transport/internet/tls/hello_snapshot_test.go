@@ -4,8 +4,11 @@ import (
 	"context"
 	gotls "crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
+	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 	"testing/cryptotest"
@@ -167,4 +170,70 @@ func TestClientHelloSnapshot(t *testing.T) {
 	}
 
 	hellotest.Compare(t, helloSnapshotFile, got, *updateHelloSnapshot)
+}
+
+// TestFirefoxHelloIgnoresSessionCache pins that a configured session cache
+// leaves the first ClientHello of the firefox aliases as it is without one.
+// Firefox 156 never resumes here, and TestClientHelloSnapshot holds every row
+// of the golden file to what Xray sends.
+func TestFirefoxHelloIgnoresSessionCache(t *testing.T) {
+	data, err := os.ReadFile(helloSnapshotFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden map[string]hellotest.Snapshot
+	if err := json.Unmarshal(data, &golden); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"firefox", "hellofirefox_auto"} {
+		for _, paths := range [][2]string{{"stock", "resumption"}, {"http11", "http11-resumption"}} {
+			without, with := golden[paths[0]+"/"+name], golden[paths[1]+"/"+name]
+			if without.SHA256 == "" || !reflect.DeepEqual(without, with) {
+				t.Errorf("%s: %s and %s differ or are missing:\n%+v\n%+v", name, paths[0], paths[1], without, with)
+			}
+		}
+	}
+}
+
+// TestHelloOffersALPSOnlyForItsALPN pins that no ClientHello offers
+// application settings for a protocol its ALPN leaves out. Chromium adds
+// ALPS for the protocols it puts in ALPN, so a WebSocket or HTTPUpgrade
+// hello, which offers http/1.1 alone, carries no ALPS extension, while the
+// same fingerprint keeps ALPS for h2 wherever it offers h2.
+func TestHelloOffersALPSOnlyForItsALPN(t *testing.T) {
+	browserLike := helloPath{name: "http11-browser-alpn", http11: true, config: func() *gotls.Config {
+		return &gotls.Config{ServerName: "example.com", NextProtos: []string{"h2", "http/1.1"}}
+	}}
+	withALPS := make(map[string]int)
+	for name, fingerprint := range snapshotFingerprints(t) {
+		for _, path := range append([]helloPath{browserLike}, helloPaths...) {
+			record, err := emitClientHello(path, fingerprint)
+			if err != nil {
+				continue // a fingerprint that cannot build its hello on this path
+			}
+			hello, err := hellotest.Summarize(record)
+			if err != nil {
+				t.Fatalf("%s/%s: %v", path.name, name, err)
+			}
+			for _, protocol := range hello.ALPS {
+				if !slices.Contains(hello.ALPN, protocol) {
+					t.Errorf("%s/%s: ALPS for %q, ALPN %q", path.name, name, protocol, hello.ALPN)
+				}
+			}
+			// Both codepoints: 17513 until Chrome 131, 17613 since.
+			sent := slices.Contains(hello.Extensions, 17513) || slices.Contains(hello.Extensions, 17613)
+			if sent && len(hello.ALPS) == 0 {
+				t.Errorf("%s/%s: an ALPS extension without a protocol, ALPN %q", path.name, name, hello.ALPN)
+			}
+			if sent {
+				withALPS[path.name]++
+			}
+		}
+	}
+	// The rule must not hold by dropping ALPS everywhere.
+	for _, path := range []string{"stock", "resumption", browserLike.name} {
+		if withALPS[path] == 0 {
+			t.Errorf("no fingerprint offers ALPS on the %s path", path)
+		}
+	}
 }
