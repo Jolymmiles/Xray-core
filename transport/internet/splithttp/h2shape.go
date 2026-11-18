@@ -23,6 +23,7 @@ const (
 	frameHeaderLen  = 9
 	frameSettings   = 0x4
 	frameWindowUpd  = 0x8
+	settingTableSz  = 0x1
 	settingMaxConc  = 0x3
 	settingInitWin  = 0x4
 	settingMaxFrame = 0x5
@@ -147,7 +148,11 @@ func (c *shapeConn) waitForStartup() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.state == 1 {
-			c.err = c.writeStartup(nil, true)
+			// No write follows that could return the error: close, so the
+			// peer does not wait for the rest of a partial record.
+			if c.err = c.writeStartup(nil, true); c.err != nil {
+				c.Conn.Close()
+			}
 		}
 	})
 }
@@ -332,8 +337,11 @@ func frameSize(b []byte) int {
 	return frameHeaderLen + (int(b[0])<<16 | int(b[1])<<8 | int(b[2]))
 }
 
-// fitSettings removes settings to fit the measured record.
-// The advertised stream window and concurrency limit stay in the frame.
+// fitSettings removes settings to fit the measured record, or returns nil
+// when the settings that must stay do not fit. The advertised stream window
+// and concurrency limit stay in the frame, and so does a header table
+// smaller than the default 4096 bytes: a peer that assumes the default
+// would encode headers the decoder rejects.
 func fitSettings(settings []byte, room int) []byte {
 	if len(settings) <= room {
 		return settings
@@ -342,7 +350,8 @@ func fitSettings(settings []byte, room int) []byte {
 	capacity := (room - frameHeaderLen) / 6
 	for p := frameHeaderLen; p+6 <= len(settings); p += 6 {
 		id := binary.BigEndian.Uint16(settings[p:])
-		if id == settingInitWin || id == settingMaxConc {
+		if id == settingInitWin || id == settingMaxConc ||
+			(id == settingTableSz && binary.BigEndian.Uint32(settings[p+2:]) < 4096) {
 			selected[id] = true
 		}
 	}
@@ -374,13 +383,13 @@ func fitSettings(settings []byte, room int) []byte {
 
 // ackConn writes the acknowledgement of the server's SETTINGS in a record of
 // its own, as Chrome does; Go's client writes it with the WINDOW_UPDATE
-// that follows.
+// that follows. A frame header split across writes is held until it is
+// complete, so a fragmented acknowledgement still goes in one write.
 type ackConn struct {
 	net.Conn
 	mu          sync.Mutex
 	prefaceLeft int
-	header      [frameHeaderLen]byte
-	headerBytes int
+	held        []byte // the start of a frame header not yet written
 	payload     int
 	done        bool
 }
@@ -391,48 +400,56 @@ func (c *ackConn) Write(b []byte) (int, error) {
 	if c.done {
 		return c.Conn.Write(b)
 	}
-	p := min(c.prefaceLeft, len(b))
+	data, held := b, len(c.held)
+	if held != 0 {
+		data = append(c.held, b...)
+		c.held = nil
+	}
+	p := min(c.prefaceLeft, len(data))
 	c.prefaceLeft -= p
-	at, end := -1, 0
-	for p < len(b) {
+	at, end, partial := -1, 0, len(data)
+	for p < len(data) {
 		if c.payload > 0 {
-			n := min(c.payload, len(b)-p)
+			n := min(c.payload, len(data)-p)
 			c.payload -= n
 			p += n
 			continue
 		}
-		start := p - c.headerBytes
-		n := copy(c.header[c.headerBytes:], b[p:])
-		p += n
-		c.headerBytes += n
-		if c.headerBytes != frameHeaderLen {
+		if len(data)-p < frameHeaderLen {
+			partial = p
 			break
 		}
-		c.headerBytes = 0
-		c.payload = frameSize(c.header[:]) - frameHeaderLen
-		if c.payload == 0 && c.header[3] == frameSettings && c.header[4]&0x1 != 0 &&
-			binary.BigEndian.Uint32(c.header[5:])&0x7fffffff == 0 {
+		header := data[p : p+frameHeaderLen]
+		p += frameHeaderLen
+		c.payload = frameSize(header) - frameHeaderLen
+		if c.payload == 0 && header[3] == frameSettings && header[4]&0x1 != 0 &&
+			binary.BigEndian.Uint32(header[5:])&0x7fffffff == 0 {
 			c.done = true
-			at, end = max(0, start), p
+			at, end = p-frameHeaderLen, p
 			break
 		}
 	}
-	if at < 0 || (at == 0 && end == len(b)) {
-		return c.Conn.Write(b)
+	if partial < len(data) {
+		c.held = bytes.Clone(data[partial:])
+		data = data[:partial]
+	}
+	parts := [][]byte{data}
+	if at >= 0 {
+		parts = [][]byte{data[:at], data[at:end], data[end:]}
 	}
 	written := 0
-	for _, part := range [][]byte{b[:at], b[at:end], b[end:]} {
+	for _, part := range parts {
 		if len(part) == 0 {
 			continue
 		}
 		n, err := c.Conn.Write(part)
 		written += n
-		if err != nil {
-			return written, err
+		if err == nil && n != len(part) {
+			err = io.ErrShortWrite
 		}
-		if n != len(part) {
-			return written, io.ErrShortWrite
+		if err != nil {
+			return max(0, written-held), err
 		}
 	}
-	return written, nil
+	return len(b), nil
 }

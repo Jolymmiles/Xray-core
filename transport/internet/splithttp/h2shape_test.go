@@ -299,8 +299,9 @@ func TestAckConnHandlesFragmentedPrefaceAndFrameHeaders(t *testing.T) {
 	if _, err := c.Write(append(bytes.Clone(ack[4:]), wu...)); err != nil {
 		t.Fatal(err)
 	}
-	if len(under.writes) != 6 || !bytes.Equal(under.writes[3], ack[:4]) ||
-		!bytes.Equal(under.writes[4], ack[4:]) || !bytes.Equal(under.writes[5], wu) {
+	// A header split across writes is held until it can be classified, so
+	// the acknowledgement still goes in one write of its own.
+	if len(under.writes) != 5 || !bytes.Equal(under.writes[3], ack) || !bytes.Equal(under.writes[4], wu) {
 		t.Fatalf("writes %x", under.writes)
 	}
 }
@@ -339,5 +340,72 @@ func TestShapeConnFitsTheTargetsRecord(t *testing.T) {
 	}
 	if !bytes.Equal(under.writes[0], append(settings(0x3, 0x4), wu...)) {
 		t.Fatalf("first write %x: INITIAL_WINDOW_SIZE and MAX_CONCURRENT_STREAMS stay", under.writes[0])
+	}
+}
+
+// A decoder table smaller than the default must be announced: a peer that
+// assumes 4096 bytes would encode headers the server cannot decode.
+func TestFitSettingsKeepsASmallHeaderTable(t *testing.T) {
+	var p []byte
+	for _, id := range []uint16{0x5, 0x3, 0x6, 0x1, 0x4, 0x8} {
+		value := uint32(1 << 16)
+		if id == 0x1 {
+			value = 1024
+		}
+		p = binary.BigEndian.AppendUint16(p, id)
+		p = binary.BigEndian.AppendUint32(p, value)
+	}
+	goSettings := frame(frameSettings, 0, 0, p)
+	fitted := fitSettings(goSettings, frameHeaderLen+3*6)
+	found := false
+	for q := frameHeaderLen; fitted != nil && q+6 <= len(fitted); q += 6 {
+		if binary.BigEndian.Uint16(fitted[q:]) == 0x1 {
+			found = binary.BigEndian.Uint32(fitted[q+2:]) == 1024
+		}
+	}
+	if !found {
+		t.Fatalf("fitted SETTINGS %x dropped HEADER_TABLE_SIZE 1024", fitted)
+	}
+	if fitted := fitSettings(goSettings, frameHeaderLen+2*6); fitted != nil {
+		t.Fatalf("SETTINGS %x cannot carry the table size and must not be shaped", fitted)
+	}
+	// A default or larger table may go: the peer then assumes 4096.
+	if fitted := fitSettings(settings(0x5, 0x3, 0x6, 0x1, 0x4, 0x8), frameHeaderLen+2*6); fitted == nil {
+		t.Fatal("a 64 KiB table does not need announcing")
+	}
+}
+
+type failingStartupConn struct {
+	startupWritesConn
+	closed chan struct{}
+}
+
+func (c *failingStartupConn) WritePaddedAppRecord([]byte, int) (int, error) {
+	return 0, net.ErrClosed
+}
+
+func (c *failingStartupConn) Write([]byte) (int, error) { return 0, net.ErrClosed }
+
+func (c *failingStartupConn) Close() error {
+	close(c.closed)
+	return nil
+}
+
+// When the deferred flush of SETTINGS fails, nothing else may write: the
+// connection must close rather than leave the peer waiting.
+func TestShapeConnClosesWhenTheDeferredFlushFails(t *testing.T) {
+	under := &failingStartupConn{closed: make(chan struct{})}
+	c := &shapeConn{Conn: under, writer: under, profile: []reality.H2StartupRecord{
+		{Length: 62, Frames: []reality.H2StartupFrame{reality.H2Settings, reality.H2WindowUpdate}},
+		{Length: 31, Frames: []reality.H2StartupFrame{reality.H2SettingsAck}},
+	}}
+	// SETTINGS waits for its WINDOW_UPDATE, which never comes.
+	if _, err := c.Write(settings(0x5, 0x3, 0x4)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-under.closed:
+	case <-time.After(10 * shapeWait):
+		t.Fatal("the connection stayed open after the deferred flush failed")
 	}
 }
