@@ -1,9 +1,12 @@
 package dispatcher
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 
+	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
 )
 
@@ -18,13 +21,13 @@ func stunBinding() []byte {
 
 func sniffDatagrams(t *testing.T, network net.Network, datagrams ...[]byte) (SniffResult, error) {
 	t.Helper()
-	reader := newCachedReader(&datagramReader{datagrams: datagrams})
+	reader := newTestCachedReader(t, &datagramReader{datagrams: datagrams})
 	ctx := snifferContext()
 	return sniff(ctx, reader, false, network, newSniffer(ctx))
 }
 
 // A call's first datagram is a STUN check; DTLS and SRTP follow on the same
-// ports.
+// ports. sniff decides on the first datagram, before the DTLS one is read.
 func TestSniffSTUNFlow(t *testing.T) {
 	dtls := []byte{0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20}
 	for _, network := range []net.Network{net.Network_UDP, net.Network_TCP} {
@@ -76,12 +79,61 @@ func TestSniffSTUNLeavesOtherUDPFlows(t *testing.T) {
 	}
 }
 
-// A caller may hand the datagrams of an empty cache: the sniffer reads the
-// payload then, and does not index the first datagram.
+// SniffDatagrams gets an empty list when the cache holds several buffers and
+// the first is longer than the scratch (default.go): there is no first
+// datagram to read whole then, and a stream reader would take a datagram
+// that only starts with a STUN message. A nil list is a caller without
+// datagrams, which every datagram sniffer reads as a stream.
 func TestSniffSTUNWithoutDatagrams(t *testing.T) {
-	s := newSniffer(snifferContext())
-	result, err := s.SniffDatagrams(snifferContext(), stunBinding(), [][]byte{}, net.Network_UDP)
+	// A Sniffer keeps what is still pending: one per call.
+	empty := newSniffer(snifferContext())
+	if result, err := empty.SniffDatagrams(snifferContext(), stunBinding(), [][]byte{}, net.Network_UDP); err == nil && result.Protocol() == "stun" {
+		t.Fatal("SniffDatagrams with an empty list took the payload for STUN")
+	}
+	none := newSniffer(snifferContext())
+	if result, err := none.SniffDatagrams(snifferContext(), stunBinding(), nil, net.Network_UDP); err != nil || result.Protocol() != "stun" {
+		t.Fatalf("SniffDatagrams without datagrams = %v, %v; want stun, read as a stream", result, err)
+	}
+}
+
+// batchReader yields all its datagrams in one read, each in its own buffer:
+// a link that queued several datagrams before the dispatcher read.
+type batchReader struct{ datagrams [][]byte }
+
+func (r *batchReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	if len(r.datagrams) == 0 {
+		return nil, buf.ErrReadTimeout
+	}
+	var mb buf.MultiBuffer
+	for _, d := range r.datagrams {
+		mb = append(mb, buf.FromBytes(bytes.Clone(d)))
+	}
+	r.datagrams = nil
+	return mb, nil
+}
+
+func (r *batchReader) ReadMultiBufferTimeout(time.Duration) (buf.MultiBuffer, error) {
+	return r.ReadMultiBuffer()
+}
+
+// A datagram longer than the scratch that starts with a STUN message, then a
+// second, in one read: the cache hands no datagrams, and the payload is not
+// STUN.
+func TestSniffSTUNLongDatagramStartingWithAMessage(t *testing.T) {
+	long := append(stunBinding(), make([]byte, 39064-len(stunBinding()))...)
+	reader := newTestCachedReader(t, &batchReader{datagrams: [][]byte{long, stunBinding()}})
+	ctx := snifferContext()
+	if result, err := sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx)); err == nil && result.Protocol() == "stun" {
+		t.Fatal("a 39064-byte datagram that starts with a STUN message taken for STUN")
+	}
+}
+
+// ICE-TCP connectivity checks carry the RFC 4571 length before the message.
+func TestSniffSTUNOverICETCP(t *testing.T) {
+	m := stunBinding()
+	framed := append(binary.BigEndian.AppendUint16(nil, uint16(len(m))), m...)
+	result, err := sniffDatagrams(t, net.Network_TCP, framed)
 	if err != nil || result.Protocol() != "stun" {
-		t.Fatalf("SniffDatagrams() = %v, %v; want stun", result, err)
+		t.Fatalf("an ICE-TCP binding request: sniff() = %v, %v; want stun", result, err)
 	}
 }

@@ -21,7 +21,7 @@ func snifferContext() context.Context {
 
 // TestSniffHTTPNeverAsksForMoreData documents the precondition behind the HTTP
 // precheck in Sniff: SniffHTTP decides from the request line alone and never
-// reports ErrProtoNeedMoreData. Only the TLS and QUIC sniffers do. If SniffHTTP
+// reports ErrProtoNeedMoreData. Only the TLS, QUIC and STUN sniffers do. If SniffHTTP
 // ever gains that return, Sniff must learn to keep the remaining sniffers
 // pending instead of discarding them.
 func TestSniffHTTPNeverAsksForMoreData(t *testing.T) {

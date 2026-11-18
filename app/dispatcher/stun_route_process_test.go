@@ -88,4 +88,34 @@ func TestSTUNRouteProcessE2E(t *testing.T) {
 			t.Fatal("STUN over TCP reached the destination")
 		}
 	})
+
+	t.Run("ice-tcp binding is blocked", func(t *testing.T) {
+		message := stunBinding()
+		framed := append([]byte{byte(len(message) >> 8), byte(len(message))}, message...)
+		conn := btSOCKSConnect(t, socksPort, tcpEcho.addr.Port)
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := conn.Write(framed); err != nil {
+			t.Fatalf("write ICE-TCP check: %v\nserver logs:\n%s", err, process.logs())
+		}
+		if _, err := conn.Read(make([]byte, len(framed))); err == nil {
+			t.Fatal("proxy echoed an ICE-TCP check")
+		}
+		if tcpEcho.recorded(framed) {
+			t.Fatal("an ICE-TCP check reached the destination")
+		}
+	})
+
+	// A read error alone does not tell a block from a server that died on
+	// the message: the proxy must still answer after the blocked flows.
+	t.Run("proxy still answers after the blocked flows", func(t *testing.T) {
+		payload := []byte("plain-tcp-after-block")
+		if response := btRoundTripTCP(t, socksPort, tcpEcho.addr.Port, payload, 5*time.Second); !bytes.Equal(response, payload) {
+			t.Fatalf("echo mismatch: got %q\nserver logs:\n%s", response, process.logs())
+		}
+		udp := []byte("plain-udp-after-block")
+		if response := btRoundTripUDP(t, socksPort, udpEcho.addr, udp, 5*time.Second); !bytes.Equal(response, udp) {
+			t.Fatalf("echo mismatch: got %q\nserver logs:\n%s", response, process.logs())
+		}
+	})
 }
