@@ -36,14 +36,14 @@ type h2StartupProfiles struct {
 	full             []H2StartupRecord
 	resumed          []H2StartupRecord
 	resumedDelayed   []H2StartupRecord
-	firefoxFull      []H2StartupRecord
+	pipelinedFull    []H2StartupRecord // the greeting with the preface (and request) waiting
 	fullDelayedReply []H2StartupRecord
 	resumedWithReply []H2StartupRecord
 }
 
 func (p h2StartupProfiles) withPrevious(previous h2StartupProfiles, missing *[6]time.Time, now time.Time) h2StartupProfiles {
-	current := [6]*[]H2StartupRecord{&p.full, &p.resumed, &p.resumedDelayed, &p.firefoxFull, &p.fullDelayedReply, &p.resumedWithReply}
-	old := [6][]H2StartupRecord{previous.full, previous.resumed, previous.resumedDelayed, previous.firefoxFull, previous.fullDelayedReply, previous.resumedWithReply}
+	current := [6]*[]H2StartupRecord{&p.full, &p.resumed, &p.resumedDelayed, &p.pipelinedFull, &p.fullDelayedReply, &p.resumedWithReply}
+	old := [6][]H2StartupRecord{previous.full, previous.resumed, previous.resumedDelayed, previous.pipelinedFull, previous.fullDelayedReply, previous.resumedWithReply}
 	for i, sample := range current {
 		switch {
 		case len(*sample) != 0:
@@ -63,7 +63,7 @@ func (p h2StartupProfiles) withPrevious(previous h2StartupProfiles, missing *[6]
 // live drops the variants missing from refreshes for ticketShapeMaxAge,
 // which withPrevious drops only when the next refresh ends.
 func (p h2StartupProfiles) live(missing [6]time.Time, now time.Time) h2StartupProfiles {
-	variants := [6]*[]H2StartupRecord{&p.full, &p.resumed, &p.resumedDelayed, &p.firefoxFull, &p.fullDelayedReply, &p.resumedWithReply}
+	variants := [6]*[]H2StartupRecord{&p.full, &p.resumed, &p.resumedDelayed, &p.pipelinedFull, &p.fullDelayedReply, &p.resumedWithReply}
 	for i, variant := range variants {
 		if !missing[i].IsZero() && now.Sub(missing[i]) >= ticketShapeMaxAge {
 			*variant = nil
@@ -72,17 +72,28 @@ func (p h2StartupProfiles) live(missing [6]time.Time, now time.Time) h2StartupPr
 	return p
 }
 
-func (p h2StartupProfiles) records(resumed, firefox bool) []H2StartupRecord {
+// records picks the profile for a connection. pipelined reports that the
+// client's data was already waiting when the startup began: a target that
+// starts HTTP/2 then reads the preface and request at once and groups its
+// greeting with them, otherwise it sends SETTINGS first. Firefox sends its
+// preface and request with its Finished; Chromium's arrive close behind it,
+// and which grouping a target gives them follows from that race.
+func (p h2StartupProfiles) records(resumed, firefox, pipelined bool) []H2StartupRecord {
 	if firefox {
 		if resumed && len(p.resumedWithReply) != 0 {
 			return p.resumedWithReply
 		}
-		if !resumed && len(p.firefoxFull) != 0 {
-			return p.firefoxFull
+		if !resumed && len(p.pipelinedFull) != 0 {
+			return p.pipelinedFull
 		}
 	}
-	if !resumed && !firefox && len(p.fullDelayedReply) != 0 {
-		return p.fullDelayedReply
+	if !resumed && !firefox {
+		if pipelined && len(p.pipelinedFull) != 0 {
+			return p.pipelinedFull
+		}
+		if !pipelined && len(p.fullDelayedReply) != 0 {
+			return p.fullDelayedReply
+		}
 	}
 	if resumed && firefox && len(p.resumedDelayed) != 0 {
 		return p.resumedDelayed
@@ -209,9 +220,9 @@ func measureH2Startup(config *Config, sni string) h2StartupProfiles {
 	// when the target sends the greeting together, with or without the reply.
 	// When control frames arrive separately, use the control-only profile.
 	if len(withReply.full) == 1 {
-		profiles.firefoxFull = withReply.full
+		profiles.pipelinedFull = withReply.full
 	} else if len(fast.full) == 1 {
-		profiles.firefoxFull = fast.full
+		profiles.pipelinedFull = fast.full
 	}
 	if len(withDelayedReply) == 2 && slices.Contains(withDelayedReply[0].Frames, H2WindowUpdate) &&
 		endsWithH2Reply(withDelayedReply) {

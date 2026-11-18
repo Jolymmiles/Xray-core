@@ -338,6 +338,20 @@ func verifyDelay(fingerprint utls.ClientHelloID, key string) func() time.Duratio
 	}
 }
 
+// applicationDataGap returns how long after its handshake a browser sends
+// its first application data, or nil when it sends it with its Finished.
+// Chrome 157 left 0.25 to 1.2 ms on the stand. The gap decides what a
+// target that reads after its handshake finds waiting, which changes how
+// nginx groups its HTTP/2 greeting.
+func applicationDataGap(fingerprint utls.ClientHelloID) func() time.Duration {
+	switch fingerprint.Client {
+	case "Chrome", "Edge":
+		const from, to = 250 * time.Microsecond, 1200 * time.Microsecond
+		return func() time.Duration { return from + time.Duration(rand.Int64N(int64(to-from))) }
+	}
+	return nil
+}
+
 // verifyCacheTTL is how long Chromium keeps a certificate's verification.
 const verifyCacheTTL = 30 * time.Minute
 

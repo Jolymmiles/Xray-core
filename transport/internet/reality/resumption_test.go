@@ -1032,6 +1032,34 @@ func TestVerifyDelayOncePerServer(t *testing.T) {
 	}
 }
 
+// Chromium's first application data trails its Finished; Firefox sends
+// both together.
+func TestApplicationDataGap(t *testing.T) {
+	gap := applicationDataGap(utls.HelloChrome_Auto)
+	if gap == nil || applicationDataGap(utls.HelloEdge_Auto) == nil {
+		t.Fatal("no gap for Chromium")
+	}
+	for range 100 {
+		if d := gap(); d < 250*time.Microsecond || d >= 1200*time.Microsecond {
+			t.Fatalf("gap %v outside Chrome's", d)
+		}
+	}
+	if applicationDataGap(utls.HelloFirefox_Auto) != nil || applicationDataGap(utls.HelloSafari_Auto) != nil {
+		t.Fatal("a gap for a browser that sends its data with Finished")
+	}
+	c := &UConn{firstData: time.Now().Add(5 * time.Millisecond)}
+	start := time.Now()
+	c.dataOnce.Do(c.waitFirstData)
+	if elapsed := time.Since(start); elapsed < 5*time.Millisecond {
+		t.Fatalf("first data went after %v", elapsed)
+	}
+	start = time.Now()
+	c.dataOnce.Do(c.waitFirstData)
+	if elapsed := time.Since(start); elapsed > time.Millisecond {
+		t.Fatalf("later data waited %v", elapsed)
+	}
+}
+
 // An outbound that requires ML-DSA-65 does not resume with a ticket another
 // outbound to the same server got without it: the server has no ML-DSA
 // key, and only a full handshake would have shown that.

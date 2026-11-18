@@ -178,6 +178,10 @@ def server_config(binary_servers, browser=True):
         if browser:
             for inbound in inbounds:
                 inbound["streamSettings"]["realitySettings"]["browser"] = "auto"
+    if os.environ.get("STAND_SHOW"):
+        # REALITY logs each connection and the profiles it measured
+        for inbound in inbounds:
+            inbound["streamSettings"]["realitySettings"]["show"] = True
     return {"log": {"loglevel": "warning"}, "inbounds": inbounds,
             "outbounds": [{"protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}]}
 

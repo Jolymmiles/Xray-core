@@ -25,7 +25,9 @@ Keep this list complete; everything else must match upstream byte for byte.
   `common.go`, `conn.go`, `handshake_server_tls13.go`, `record_detect.go`
   and `tls.go` implement opt-in REALITY session tickets and destination
   profiling. `h2_detect.go` measures the destination's HTTP/2 greeting for
-  XHTTP. The extension is disabled by default. The module tests cover
+  XHTTP; `input_pending*.go` tell whether the client's data already waits
+  when the greeting starts (the kernel's count on Linux), which picks the
+  grouping for a full Chromium handshake. The extension is disabled by default. The module tests cover
   the ticket cache, process-local replay guard, and both probe paths,
   including ticket refusals with TCP FIN and RST. The module uses `x/net/http2/hpack`
   for the H2 probe, with the related `x/crypto` and `x/sys` versions

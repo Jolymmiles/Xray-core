@@ -73,6 +73,23 @@ type UConn struct {
 	Verified            bool
 	browserTickets      *connTickets
 	suppressCloseNotify atomic.Bool
+
+	// firstData is when the first application data may go: Chromium
+	// sends it a little after its Finished, not with it.
+	firstData time.Time
+	dataOnce  sync.Once
+}
+
+// Write holds the first application data until firstData.
+func (c *UConn) Write(b []byte) (int, error) {
+	c.dataOnce.Do(c.waitFirstData)
+	return c.UConn.Write(b)
+}
+
+func (c *UConn) waitFirstData() {
+	if wait := time.Until(c.firstData); wait > 0 {
+		time.Sleep(wait)
+	}
 }
 
 func (c *UConn) SuppressCloseNotify() {
@@ -303,6 +320,9 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 				tickets.fail(uConn.browserTickets.key)
 			}
 			return nil, err
+		}
+		if gap := applicationDataGap(*fingerprint); config.Browser == "auto" && gap != nil {
+			uConn.firstData = time.Now().Add(gap())
 		}
 		if cache := uConn.browserTickets; cache != nil && !uConn.Verified {
 			if offered {

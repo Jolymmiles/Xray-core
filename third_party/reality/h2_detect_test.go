@@ -111,7 +111,7 @@ func TestMeasureH2StartupProbesResumedConnections(t *testing.T) {
 		{Length: 31, Frames: []H2StartupFrame{H2SettingsAck}},
 	}
 	wantResumed := []H2StartupRecord{{Length: 40, Frames: []H2StartupFrame{H2Settings, H2SettingsAck}}}
-	if !reflect.DeepEqual(profiles.records(false, false), wantFull) || !reflect.DeepEqual(profiles.records(true, false), wantResumed) {
+	if !reflect.DeepEqual(profiles.records(false, false, false), wantFull) || !reflect.DeepEqual(profiles.records(true, false, false), wantResumed) {
 		t.Fatalf("startup profiles %+v, want full %+v and resumed %+v", profiles, wantFull, wantResumed)
 	}
 	for range 4 {
@@ -132,10 +132,10 @@ func TestFirefoxUsesDelayedStartupWhenResumed(t *testing.T) {
 	profiles := h2StartupProfiles{full: delayed, resumed: fast, resumedDelayed: delayed}
 	firefox := &clientHelloMsg{extensions: []uint16{28, 34}}
 	chrome := &clientHelloMsg{ticketSupported: true}
-	if got := profiles.records(true, hasFirefoxH2Fingerprint(firefox)); !reflect.DeepEqual(got, delayed) {
+	if got := profiles.records(true, hasFirefoxH2Fingerprint(firefox), true); !reflect.DeepEqual(got, delayed) {
 		t.Fatalf("Firefox got %v, want %v", got, delayed)
 	}
-	if got := profiles.records(true, hasFirefoxH2Fingerprint(chrome)); !reflect.DeepEqual(got, fast) {
+	if got := profiles.records(true, hasFirefoxH2Fingerprint(chrome), true); !reflect.DeepEqual(got, fast) {
 		t.Fatalf("Chrome got %v, want %v", got, fast)
 	}
 }
@@ -143,12 +143,70 @@ func TestFirefoxUsesDelayedStartupWhenResumed(t *testing.T) {
 func TestFullBrowserH2ProfilesCanMixReplyAfterDifferentFrames(t *testing.T) {
 	chromium := []H2StartupRecord{{Length: 62}, {Length: 146, ResponseBytes: 115}}
 	firefox := []H2StartupRecord{{Length: 186, ResponseBytes: 115}}
-	profiles := h2StartupProfiles{fullDelayedReply: chromium, firefoxFull: firefox}
-	if got := profiles.records(false, false); !reflect.DeepEqual(got, chromium) {
+	profiles := h2StartupProfiles{fullDelayedReply: chromium, pipelinedFull: firefox}
+	if got := profiles.records(false, false, false); !reflect.DeepEqual(got, chromium) {
 		t.Errorf("Chromium got %v, want %v", got, chromium)
 	}
-	if got := profiles.records(false, true); !reflect.DeepEqual(got, firefox) {
+	if got := profiles.records(false, true, false); !reflect.DeepEqual(got, firefox) {
 		t.Errorf("Firefox got %v, want %v", got, firefox)
+	}
+}
+
+// A full Chromium handshake gets the grouping the target gives the same
+// arrival: with the preface and request already waiting when the startup
+// begins, nginx sends its controls and response in one record (Chrome 157
+// on the stand: 188); with nothing waiting, SETTINGS goes first (62, 31).
+func TestFullChromiumH2ProfileFollowsTheClientsArrival(t *testing.T) {
+	delayed := []H2StartupRecord{{Length: 62}, {Length: 31}}
+	delayedReply := []H2StartupRecord{{Length: 62}, {Length: 146, ResponseBytes: 115}}
+	pipelined := []H2StartupRecord{{Length: 186, ResponseBytes: 115}}
+	profiles := h2StartupProfiles{full: delayed, fullDelayedReply: delayedReply, pipelinedFull: pipelined}
+	if got := profiles.records(false, false, true); !reflect.DeepEqual(got, pipelined) {
+		t.Errorf("pipelined: got %v, want %v", got, pipelined)
+	}
+	if got := profiles.records(false, false, false); !reflect.DeepEqual(got, delayedReply) {
+		t.Errorf("not pipelined: got %v, want %v", got, delayedReply)
+	}
+	// A target that never groups the greeting has no pipelined sample.
+	profiles.pipelinedFull = nil
+	if got := profiles.records(false, false, true); !reflect.DeepEqual(got, delayed) {
+		t.Errorf("no pipelined sample: got %v, want %v", got, delayed)
+	}
+}
+
+// inputPending sees client bytes the kernel holds, not only those a read
+// already took in.
+func TestInputPending(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	c := &Conn{conn: server}
+	if c.inputPending() {
+		t.Fatal("input pending before the client wrote")
+	}
+	if _, err := client.Write([]byte{23, 3, 3, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); !c.inputPending(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the kernel's bytes were not seen")
+		}
+	}
+	buffered := &Conn{conn: server, rawInput: bytes.NewBuffer([]byte{23})}
+	if !buffered.inputPending() {
+		t.Fatal("bytes already read were not seen")
 	}
 }
 

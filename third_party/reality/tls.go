@@ -452,9 +452,12 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				key, alpn := recordsKey(config, hs.clientHello)
 				if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
 					if postHandshakeRecordsLens, ok := val.([]int); ok {
+						var h2Profiles *h2StartupProfiles
+						firefox := hasFirefoxH2Fingerprint(hs.clientHello)
 						if hs.ticketShape != nil && config.AppRecords && alpn == 2 {
-							hs.c.h2Startup = detectH2Startup(config, key, hs.clientHello.serverName).
-								records(hs.usingPSK, hasFirefoxH2Fingerprint(hs.clientHello))
+							profiles := detectH2Startup(config, key, hs.clientHello.serverName)
+							h2Profiles = &profiles
+							hs.c.h2Startup = profiles.records(hs.usingPSK, firefox, false)
 						}
 						lens, tickets := hs.postHandshakeRecords(postHandshakeRecordsLens)
 						for i, length := range lens {
@@ -485,6 +488,17 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 							hs.c.write(postHandshakeRecord)
 							if config.Show {
 								fmt.Printf("REALITY remoteAddr: %v\tlen(postHandshakeRecord): %v\n", remoteAddr, len(postHandshakeRecord))
+							}
+						}
+						if h2Profiles != nil && len(hs.c.h2Startup) != 0 {
+							// The target starts HTTP/2 once its tickets are out,
+							// with whatever the client sent by then.
+							pipelined := hs.c.inputPending()
+							if records := h2Profiles.records(hs.usingPSK, firefox, pipelined); len(records) != 0 {
+								hs.c.h2Startup = records
+							}
+							if config.Show {
+								fmt.Printf("REALITY remoteAddr: %v\tclient data waiting: %v\th2 startup: %v\n", remoteAddr, pipelined, hs.c.h2Startup)
 							}
 						}
 						break
