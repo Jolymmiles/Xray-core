@@ -40,7 +40,8 @@ const (
 )
 
 // MaxMessageLen is the most of a stream the dispatcher shows a sniffer
-// (app/dispatcher's cache). A longer message is turned down: waiting for it
+// (app/dispatcher's cache). A longer message, or an ICE-TCP frame longer
+// with its 2-byte length, is turned down: waiting for it
 // would keep the server reading, and caching, what the client sends for the
 // whole sniff budget, and the message would never be shown whole.
 const MaxMessageLen = 32768
@@ -63,7 +64,7 @@ func SniffSTUN(b []byte) (*SniffHeader, error) {
 	if err != nil {
 		return nil, err
 	}
-	if n > MaxMessageLen {
+	if start+n > MaxMessageLen {
 		return nil, errNotSTUN
 	}
 	if start+n > len(b) {
