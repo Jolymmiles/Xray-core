@@ -141,7 +141,8 @@ func isDNSQuery(b []byte) bool {
 			offset++
 			break
 		}
-		if label > 63 || offset+1+label > 12+255 {
+		// The name, its root label included, is at most 255 octets.
+		if label > 63 || offset+1+label+1 > 12+255 {
 			return false
 		}
 		offset += 1 + label
