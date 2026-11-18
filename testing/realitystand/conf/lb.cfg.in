@@ -1,0 +1,14 @@
+global
+	maxconn 256
+defaults
+	mode tcp
+	timeout connect 5s
+	timeout client 30s
+	timeout server 30s
+frontend lb
+	bind 10.9.0.40:443
+	default_backend reality
+backend reality
+	balance roundrobin
+	server new 10.9.0.21:443
+	server old 10.9.0.31:443

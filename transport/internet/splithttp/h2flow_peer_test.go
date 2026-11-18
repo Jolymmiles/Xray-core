@@ -14,7 +14,7 @@ func TestFlowConnKeepsPhysicalPeer(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 	peer := &gonet.TCPAddr{IP: gonet.ParseIP("203.0.113.7"), Port: 4242}
-	fc := newFlowConn(net.WithPhysicalPeer(peer, a), flowDefault, flowDefault)
+	fc := newFlowConn(&shapeConn{Conn: net.WithPhysicalPeer(peer, a)}, flowDefault, flowDefault)
 	got, ok := net.PhysicalPeer(fc)
 	if !ok || got.String() != peer.String() {
 		t.Fatalf("physical peer through the governor: %v, %v; want %v", got, ok, peer)

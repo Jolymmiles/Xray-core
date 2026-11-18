@@ -29,12 +29,13 @@ message Config {
   bytes mldsa65_verify = 25;
   string spider_x = 26;
   repeated int64 spider_y = 27;
-
   string master_key_log = 31;
 
   // Fork-owned, outside the blocks upstream numbers: 1-13 for the server,
   // 21-27 for the client, 31.
   bool require_mlkem = 100;
+  // browser is "auto" to resume sessions using the client's fingerprint.
+  string browser = 101;
 }
 
 message LimitFallback {

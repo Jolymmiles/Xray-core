@@ -74,21 +74,57 @@ guard it.
   `transport/internet/reality/uclient_test.go`,
   `transport/internet/reality/randomized_test.go` and
   `transport/internet/grpc/dial_test.go`.
-- uTLS comes from the fork `github.com/Jolymmiles/utls`, branch
-  `fix/keep-secondary-key-shares-a13c59f` (a `replace` in `go.mod`; the
-  module path stays `github.com/refraction-networking/utls`): upstream
-  `a13c59ffe98b`, the commit upstream Xray pins since v26.11.9, plus the
-  changes listed in the fork's `FORK.md`. It keeps the private keys of the
+- uTLS comes from `github.com/Jolymmiles/utls` at `6906384432de` (a
+  `replace` in `go.mod`; the module path stays
+  `github.com/refraction-networking/utls`). Browser preset updates have
+  their own review in the uTLS repository.
+  The fork keeps the private keys of the
   classical key shares after the first and uses the one the server selected,
   so `firefox` and the `hellofirefox_*` forms, which send key shares for
   X25519 and P-256, complete a handshake with a server that selects P-256;
   upstream fails it with "tls: invalid server key share"
   (refraction-networking/utls#402), right after the ServerHello and in
   cleartext, where Firefox goes on. The ClientHello is unchanged. It is a
-  backport of refraction-networking/utls#416; drop the fork once upstream
-  ships the fix. Covered by `transport/internet/tls/fingerprint_health_test.go`,
+  backport of refraction-networking/utls#416. Covered by
+  `transport/internet/tls/fingerprint_health_test.go`,
   the ClientHello snapshot tests and the fork's
   `TestSecondaryKeyShareSelectedByServer`.
+- REALITY browser mode requires `"browser": "auto"` on the inbound and
+  outbound. The default disables the new target probes, session-ticket
+  behavior and XHTTP startup shaping. A client with browser mode off
+  keeps the legacy server connection path even on an enabled inbound.
+  Ticket encryption and the stateful cache are scoped to the server's
+  X25519 and configured ML-DSA private keys. Adding, rotating, or removing
+  the ML-DSA key invalidates existing tickets.
+  Field 101 (`browser`) is fork-owned. Binary protobuf configurations
+  from the review revision that used field 28 must be regenerated from
+  their JSON source.
+  An authenticated resumed ClientHello is accepted once: the server
+  records it before the handshake, and a repeat goes to the destination,
+  which answers it with a full handshake. A stock TLS server resumes a
+  repeat of its own resumed ClientHello again (crypto/tls and OpenSSL both
+  answer `[43 51 41]` twice), so a censor who replays one sees REALITY
+  answer `[43 51 41]`, then `[43 51]`. The history is one process-wide
+  cache of 40,000 entries: after 40,000 newer resumed hellos the same
+  ClientHello is resumed again. After a restart or on another replica
+  that holds only for encrypted tickets; tickets that are ids of a
+  session kept in memory are forgotten on restart and unknown to other
+  replicas, so their repeat gets a full handshake.
+  Covered by `TestReplayedResumedHelloReachesTheTarget`
+  (`transport/internet/reality/resumption_wire_test.go`).
+  An observer on the server-to-destination path can see the probe
+  connections. The probes start when an inbound with browser mode opens
+  its listener, before any client connects, the bad-binder refusal
+  measurement included; outbound opt-in only decides how each connection
+  is answered. Per destination and server name, the baseline starts six
+  TLS probes across the three ALPN modes. Browser mode adds two to four
+  per viable ALPN, plus a confirmation when a refusal probe sees silence.
+  HTTP/2 startup measurement can add up to eleven connections with a
+  SETTINGS exchange and, for a named target, a request to `/`. Profiles
+  refresh once per hour when used, with one-minute retries for an empty H2
+  profile. Counts depend on the destination's TLS and ALPN support.
+  The comparisons and passive-observation limits are documented in
+  `testing/realitystand/README.md`.
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`
   (`proxy/vision_buffers.go`), which checks the field types and caches their
   offsets per connection type and fails closed on any other layout; upstream

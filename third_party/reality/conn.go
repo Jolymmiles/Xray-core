@@ -31,6 +31,9 @@ type Conn struct {
 	ClientTime        time.Time
 	ClientShortId     [8]byte
 	MaxUselessRecords int
+	// realityTickets is set when the client asked for session tickets.
+	realityTickets bool
+	h2Startup      []H2StartupRecord
 	// [REALITY] SECTION END
 
 	// constant
@@ -193,6 +196,10 @@ type halfConn struct {
 	// [REALITY] SECTION: define var
 	handshakeLen [7]int
 	handshakeBuf []byte
+	// ticket keeps a NewSessionTicket one: a real ticket, not a stand-in.
+	ticket bool
+	// appPad holds the requested wire length for a padded application record.
+	appPad []int
 	// [REALITY] SECTION END
 
 	sync.Mutex
@@ -567,14 +574,24 @@ func (hc *halfConn) encrypt(record, payload []byte, rand io.Reader) ([]byte, err
 				case typeNewSessionTicket:
 					padding = hc.handshakeLen[6]
 					hc.handshakeLen[6] = 0
-					record[5] = byte(recordTypeApplicationData)
-					record[6] = 0
+					if !hc.ticket {
+						record[5] = byte(recordTypeApplicationData)
+						record[6] = 0
+					}
 				}
 				padding -= len(record) + c.Overhead()
 				if padding < 0 {
 					return nil, fmt.Errorf("payload[0]: %v, padding: %v", payload[0], padding)
 				}
 				record = append(record, empty[:padding]...)
+			}
+			if recordType(record[0]) == recordTypeApplicationData && len(hc.appPad) > 0 {
+				// The application's first records, as long as the
+				// target's: padded when shorter, as TLS 1.3 allows.
+				if pad := hc.appPad[0] - len(record) - c.Overhead(); pad > 0 {
+					record = append(record, empty[:pad]...)
+				}
+				hc.appPad = hc.appPad[1:]
 			}
 			record[0] = byte(recordTypeApplicationData)
 
@@ -1127,6 +1144,10 @@ var outBufPool = sync.Pool{
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
+	return c.writeRecordsLocked(typ, data, false)
+}
+
+func (c *Conn) writeRecordsLocked(typ recordType, data []byte, singleRecord bool) (int, error) {
 	if c.quic != nil {
 		if typ != recordTypeHandshake {
 			return 0, errors.New("tls: internal error: sending non-handshake message to QUIC transport")
@@ -1155,7 +1176,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 	var n int
 	for len(data) > 0 {
 		m := len(data)
-		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
+		if maxPayload := c.maxPayloadSizeForWrite(typ); !singleRecord && m > maxPayload {
 			m = maxPayload
 		}
 
@@ -1382,6 +1403,16 @@ var (
 // has not yet completed. See [Conn.SetDeadline], [Conn.SetReadDeadline], and
 // [Conn.SetWriteDeadline].
 func (c *Conn) Write(b []byte) (int, error) {
+	return c.writeApplication(b, 0)
+}
+
+// WritePaddedAppRecord writes one small TLS 1.3 application record padded to
+// length, including the TLS header and AEAD tag.
+func (c *Conn) WritePaddedAppRecord(b []byte, length int) (int, error) {
+	return c.writeApplication(b, length)
+}
+
+func (c *Conn) writeApplication(b []byte, length int) (int, error) {
 	// interlock with Close below
 	for {
 		x := c.activeCall.Load()
@@ -1413,6 +1444,17 @@ func (c *Conn) Write(b []byte) (int, error) {
 		return 0, errShutdown
 	}
 
+	if length != 0 {
+		const overhead = recordHeaderLen + 1 + 16
+		if c.quic != nil || c.vers != VersionTLS13 || len(b) == 0 || len(b)+overhead > length ||
+			length > maxPlaintext+overhead {
+			return 0, errors.New("tls: invalid padded application record size")
+		}
+		previous := c.out.appPad
+		c.out.appPad = []int{length}
+		defer func() { c.out.appPad = previous }()
+	}
+
 	// TLS 1.0 is susceptible to a chosen-plaintext
 	// attack when using block mode ciphers due to predictable IVs.
 	// This can be prevented by splitting each Application Data
@@ -1433,7 +1475,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 		}
 	}
 
-	n, err := c.writeRecordLocked(recordTypeApplicationData, b)
+	n, err := c.writeRecordsLocked(recordTypeApplicationData, b, length != 0)
 	return n + m, c.out.setErrorLocked(err)
 }
 

@@ -604,7 +604,17 @@ type Config struct {
 	// share, as upstream does. Xray-core fork change, see fork_keyshare.go.
 	RequireMLKEM bool
 
-	Mldsa65Key *mldsa.PrivateKey
+	Mldsa65Key       *mldsa.PrivateKey
+	h2StartupRecords sync.Map
+
+	// BrowserMode enables target probes and browser behavior for clients
+	// that request it in their authenticated REALITY handshake.
+	BrowserMode bool
+
+	// AppRecords enables an HTTP/2 startup profile for the application.
+	// When the profile is available, the application writes the startup
+	// records and REALITY sends the new session ticket records.
+	AppRecords bool
 
 	LimitFallbackUpload   LimitFallback
 	LimitFallbackDownload LimitFallback
@@ -1062,6 +1072,8 @@ func (c *Config) Clone() *Config {
 		ShortIds:              c.ShortIds,
 		RequireMLKEM:          c.RequireMLKEM,
 		Mldsa65Key:            c.Mldsa65Key,
+		BrowserMode:           c.BrowserMode,
+		AppRecords:            c.AppRecords,
 		LimitFallbackUpload:   c.LimitFallbackUpload,
 		LimitFallbackDownload: c.LimitFallbackDownload,
 		// [REALITY] SECTION END

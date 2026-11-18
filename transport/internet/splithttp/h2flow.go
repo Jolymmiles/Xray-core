@@ -220,6 +220,10 @@ func (l *flowListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	fc := newFlowConn(c, l.up, l.down)
+	if shaped, ok := c.(*shapeConn); ok {
+		fc.shapeStartup = len(shaped.profile) != 0
+		fc.holdStartupUpCredit = shaped.omitsStartupWindow()
+	}
 	fc.sendWindow, fc.noQueueCuts = l.sendWindow, l.noQueueCuts
 	if l.connWindow > 0 {
 		fc.upConnGrant, fc.upConnGrantKnown = int64(max(l.connWindow, h2InitWindow)-h2InitWindow), true
@@ -741,6 +745,9 @@ type flowConn struct {
 	// its reader does, and governing them twice takes no rate. serverReplied
 	// notes the server's first HEADERS.
 	peerGoverned, serverReplied bool
+	// REALITY shapes the greeting as the target's. Periodic flow probes
+	// can start with the first response.
+	shapeStartup bool
 	// pingTagged says a server has sent its tagged first PING, see flowPingTag.
 	pingTagged bool
 	// resets are streams whose client sent past their window, to be reset.
@@ -779,9 +786,10 @@ type flowConn struct {
 
 	// Connection-level window of the upload: DATA the client sent, credit
 	// the server returned on stream 0, and credit handed on to the client.
-	upConnSent      int64
-	upConnReturned  int64
-	upConnForwarded int64
+	upConnSent          int64
+	upConnReturned      int64
+	upConnForwarded     int64
+	holdStartupUpCredit bool
 	// upConnGrant is the connection window the server grants on top of the
 	// protocol's 65535: its first stream-0 credit, the rest of which is data
 	// a handler read. The listener knows it; without one it is the credit
@@ -1551,6 +1559,9 @@ func (c *flowConn) upConnRelease() int64 {
 }
 
 func (c *flowConn) appendUpConnRelease(out []byte) []byte {
+	if c.holdStartupUpCredit && c.upConnSent == 0 {
+		return out
+	}
 	if rel := c.upConnRelease(); rel > 0 {
 		c.upConnForwarded += rel
 		out = appendWindowUpdate(out, 0, rel)
@@ -1622,7 +1633,7 @@ func (c *flowConn) rebasePing() {
 // connection learns the round trip of the empty path. Once the kernel vouches
 // for that round trip, no more are needed.
 func (c *flowConn) appendPing(now time.Time, out []byte) []byte {
-	if !c.pingReady || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
+	if !c.pingReady || (c.shapeStartup && !c.serverReplied) || (len(c.streams) == 0 && c.rttBase != 0) || c.modelled(now) || now.Sub(c.lastPing) < flowPingInterval ||
 		(!c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) < flowPingTimeout) {
 		return out
 	}
@@ -2237,10 +2248,9 @@ func (w *flowWriter) control(f h2Frame, header, payload, out []byte) []byte {
 		if c.client && c.pingAck(f, payload) {
 			return out
 		}
-		// A governed server sends a PING of its own with its first SETTINGS,
-		// before it answers anything, tagged: a stock server's health check can
-		// come early too, and is not one.
-		if c.client && f.flags&h2FlagAck == 0 && !c.serverReplied && !c.peerGoverned && len(payload) == 8 && binary.BigEndian.Uint32(payload) == flowPingTag {
+		// A governed server tags its first PING. Shaped REALITY servers
+		// can send the tag with the first response.
+		if c.client && f.flags&h2FlagAck == 0 && (!c.serverReplied || c.shapeStartup) && !c.peerGoverned && len(payload) == 8 && binary.BigEndian.Uint32(payload) == flowPingTag {
 			c.peerGoverned, c.restock = true, true
 		}
 	case h2GoAway:

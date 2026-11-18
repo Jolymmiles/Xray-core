@@ -1,0 +1,5 @@
+<html><body>stand<script>
+// The target closes idle connections after 2 s, so each of these comes over
+// a new connection that resumes the session.
+for (let i = 1; i <= 5; i++) setTimeout(() => fetch('/index.html?' + i), 3000 * i);
+</script></body></html>
