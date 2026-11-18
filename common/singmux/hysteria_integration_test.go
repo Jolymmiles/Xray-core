@@ -25,17 +25,18 @@ func TestHysteriaProcessClientMatrix(t *testing.T) {
 	certificate, privateKey := generateCertificate(t, workDir)
 	tcpEcho := startTCPEcho(t).(*net.TCPAddr)
 	udpEcho := startUDPEcho(t).(*net.UDPAddr)
+	ipv6Echoes := startUDPEchoIPv6(t, hysteriaIPv6EchoCount)
 
 	for _, obfs := range []string{"plain", "gecko"} {
 		for _, peer := range []string{"xray", "sing-box", "mihomo"} {
 			t.Run(obfs+"/"+peer, func(t *testing.T) {
-				runHysteriaClientScenario(t, workDir, binaries, certificate, privateKey, peer, obfs == "gecko", tcpEcho, udpEcho)
+				runHysteriaClientScenario(t, workDir, binaries, certificate, privateKey, peer, obfs == "gecko", tcpEcho, udpEcho, ipv6Echoes)
 			})
 		}
 	}
 }
 
-func runHysteriaClientScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer string, gecko bool, tcpEcho *net.TCPAddr, udpEcho *net.UDPAddr) {
+func runHysteriaClientScenario(t *testing.T, workDir string, binaries e2eBinaries, certificate, privateKey, peer string, gecko bool, tcpEcho *net.TCPAddr, udpEcho *net.UDPAddr, ipv6Echoes []*net.UDPAddr) {
 	t.Helper()
 	serverPort := freeUDPPort(t)
 	socksPort := freeTCPPort(t)
@@ -65,6 +66,7 @@ func runHysteriaClientScenario(t *testing.T, workDir string, binaries e2eBinarie
 	waitSOCKSTCPForwarding(t, client, socksPort, tcpEcho)
 	testSOCKSTCP(t, socksPort, tcpEcho)
 	testSOCKSUDP(t, socksPort, udpEcho)
+	testSOCKSUDPIPv6Targets(t, socksPort, ipv6Echoes)
 }
 
 // hysteriaFinalmask is the finalmask of both Xray ends; gecko adds the Gecko

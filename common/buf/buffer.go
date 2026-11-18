@@ -29,6 +29,7 @@ var (
 type managedBuffer struct {
 	udp       net.Destination
 	udpIPv4   bufferIPv4Address
+	udpIPv6   bufferIPv6Address
 	udpDomain bufferDomainAddress
 	udpIsIPv4 bool
 	single    [1]*Buffer
@@ -132,6 +133,7 @@ func (b *Buffer) Release() {
 			*b = Buffer{}
 			slab.udp = net.Destination{}
 			slab.udpIPv4 = bufferIPv4Address{}
+			slab.udpIPv6 = bufferIPv6Address{}
 			slab.udpDomain = bufferDomainAddress{}
 			slab.udpIsIPv4 = false
 			slab.single[0] = nil
@@ -184,6 +186,14 @@ func (a *bufferIPv4Address) String() string          { return a.IP().String() }
 func (a *bufferIPv4Address) NetIPAddr() netip.Addr   { return netip.AddrFrom4([4]byte(*a)) }
 func (a *bufferIPv4Address) RawIPv4() [4]byte        { return [4]byte(*a) }
 
+type bufferIPv6Address [16]byte
+
+func (a *bufferIPv6Address) IP() stdnet.IP           { return stdnet.IP(a[:]) }
+func (*bufferIPv6Address) Domain() string            { panic("Calling Domain() on an IPv6Address.") }
+func (*bufferIPv6Address) Family() net.AddressFamily { return net.AddressFamilyIPv6 }
+func (a *bufferIPv6Address) String() string          { return "[" + a.IP().String() + "]" }
+func (a *bufferIPv6Address) NetIPAddr() netip.Addr   { return netip.AddrFrom16([16]byte(*a)) }
+
 type bufferDomainAddress struct {
 	domain string
 }
@@ -207,6 +217,21 @@ func (b *Buffer) SetManagedUDPIPv4(ip [4]byte, port net.Port) {
 	b.UDP = &slab.udp
 }
 
+// SetManagedUDPIPv6 stores an IPv6 packet destination entirely in the managed
+// slab, including the Address interface target. The caller passes an address
+// that is not IPv4-mapped; net.IPAddress turns those into IPv4 addresses.
+func (b *Buffer) SetManagedUDPIPv6(ip [16]byte, port net.Port) {
+	if !b.slab {
+		panic("SetManagedUDPIPv6 called on unmanaged buffer")
+	}
+	slab := managedBufferFromStorage(b.v)
+	slab.udpIPv6 = bufferIPv6Address(ip)
+	slab.udpDomain.domain = ""
+	slab.udp = net.UDPDestination(&slab.udpIPv6, port)
+	slab.udpIsIPv4 = false
+	b.UDP = &slab.udp
+}
+
 // SetManagedUDPDomain stores domain packet metadata in the managed slab,
 // avoiding an interface box allocation. The domain string must own its bytes.
 func (b *Buffer) SetManagedUDPDomain(domain string, port net.Port) {
@@ -221,25 +246,34 @@ func (b *Buffer) SetManagedUDPDomain(domain string, port net.Port) {
 }
 
 // ManagedUDPIPv4 returns inline IPv4 packet metadata without going through
-// the Address interface. The result is available only after SetManagedUDPIPv4.
+// the Address interface. It succeeds only after SetManagedUDPIPv4, and only
+// while b.UDP and its address still point at that metadata: an override that
+// replaces either must not leave the old address readable here.
 func (b *Buffer) ManagedUDPIPv4() ([4]byte, net.Port, bool) {
-	if !b.slab {
+	if !b.slab || b.UDP == nil {
 		return [4]byte{}, 0, false
 	}
 	slab := managedBufferFromStorage(b.v)
-	if !slab.udpIsIPv4 {
+	if !slab.udpIsIPv4 || b.UDP != &slab.udp {
+		return [4]byte{}, 0, false
+	}
+	if address, ok := slab.udp.Address.(*bufferIPv4Address); !ok || address != &slab.udpIPv4 {
 		return [4]byte{}, 0, false
 	}
 	return [4]byte(slab.udpIPv4), slab.udp.Port, true
 }
 
 // ManagedUDPDomain returns inline domain metadata without going through the
-// generic Address interface. It succeeds only after SetManagedUDPDomain.
+// generic Address interface. It succeeds only after SetManagedUDPDomain, and
+// only while b.UDP and its address still point at that metadata.
 func (b *Buffer) ManagedUDPDomain() (string, net.Port, bool) {
 	if !b.slab || b.UDP == nil {
 		return "", 0, false
 	}
 	slab := managedBufferFromStorage(b.v)
+	if b.UDP != &slab.udp {
+		return "", 0, false
+	}
 	address, ok := slab.udp.Address.(*bufferDomainAddress)
 	if !ok || address != &slab.udpDomain {
 		return "", 0, false

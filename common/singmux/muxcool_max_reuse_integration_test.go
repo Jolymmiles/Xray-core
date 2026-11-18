@@ -220,8 +220,9 @@ func (s *muxCoolSession) echo(t *testing.T, payload string) {
 }
 
 // buildXrayRevision builds ./main of an Xray revision from the local git
-// object store into workDir.
-func buildXrayRevision(t testing.TB, workDir, label, revision string) string {
+// object store into workDir, with go build -trimpath -buildvcs=false and any
+// extra buildOptions, such as release tags.
+func buildXrayRevision(t testing.TB, workDir, label, revision string, buildOptions ...string) string {
 	t.Helper()
 	source := filepath.Join(workDir, label+"-source")
 	binary := filepath.Join(workDir, "xray-"+label)
@@ -246,7 +247,8 @@ func buildXrayRevision(t testing.TB, workDir, label, revision string) string {
 	if extractErr != nil {
 		t.Fatalf("extract %s: %v", revision, extractErr)
 	}
-	build := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", binary, "./main")
+	arguments := append([]string{"build", "-trimpath", "-buildvcs=false"}, buildOptions...)
+	build := exec.Command("go", append(arguments, "-o", binary, "./main")...)
 	build.Dir = source
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v\n%s", label, err, output)

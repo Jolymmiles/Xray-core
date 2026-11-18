@@ -2,6 +2,7 @@ package dokodemo
 
 import (
 	"context"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -204,19 +205,39 @@ func (d *DokodemoDoor) Process(ctx context.Context, network net.Network, conn st
 func NewPacketWriter(conn net.PacketConn, d *net.Destination, mark int, back *net.UDPAddr) buf.Writer {
 	writer := &PacketWriter{
 		conn:  conn,
-		conns: make(map[net.Destination]net.PacketConn),
+		conns: make(map[netip.AddrPort]net.PacketConn),
 		mark:  mark,
 		back:  back,
 	}
-	writer.conns[*d] = conn
+	if key, ok := packetWriterKey(*d); ok {
+		writer.conns[key] = conn
+	} else {
+		writer.unkeyed = true
+	}
 	return writer
 }
 
+// PacketWriter sends each reply from a fake UDP socket bound to the reply's
+// source. The sockets are keyed by address value: packet buffers keep reply
+// addresses in their own types, which a net.Destination key would compare by
+// pointer, opening a socket per buffer.
 type PacketWriter struct {
 	conn  net.PacketConn
-	conns map[net.Destination]net.PacketConn
+	conns map[netip.AddrPort]net.PacketConn
 	mark  int
 	back  *net.UDPAddr
+	// unkeyed is set when conn's destination is not an IP, so conns does not
+	// hold conn and Close has to close it itself.
+	unkeyed bool
+}
+
+// packetWriterKey returns the IP and port of an IP destination.
+func packetWriterKey(destination net.Destination) (netip.AddrPort, bool) {
+	ip, ok := net.AddressToNetIPAddr(destination.Address)
+	if !ok {
+		return netip.AddrPort{}, false
+	}
+	return netip.AddrPortFrom(ip.Unmap(), destination.Port.Value()), true
 }
 
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -227,8 +248,13 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			break
 		}
 		var err error
+		var key netip.AddrPort
+		var isIP bool
 		if b.UDP != nil && b.UDP.Address.Family().IsIP() {
-			conn := w.conns[*b.UDP]
+			key, isIP = packetWriterKey(*b.UDP)
+		}
+		if isIP {
+			conn := w.conns[key]
 			if conn == nil {
 				conn, err = FakeUDP(
 					&net.UDPAddr{
@@ -242,12 +268,12 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 					b.Release()
 					continue
 				}
-				w.conns[*b.UDP] = conn
+				w.conns[key] = conn
 			}
 			_, err = conn.WriteTo(b.Bytes(), w.back)
 			if err != nil {
 				errors.LogInfo(context.Background(), err.Error())
-				w.conns[*b.UDP] = nil
+				w.conns[key] = nil
 				conn.Close()
 			}
 			b.Release()
@@ -268,6 +294,9 @@ func (w *PacketWriter) Close() error {
 		if conn != nil {
 			conn.Close()
 		}
+	}
+	if w.unkeyed {
+		w.conn.Close()
 	}
 	return nil
 }

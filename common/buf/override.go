@@ -14,7 +14,7 @@ func (r *EndpointOverrideReader) ReadMultiBuffer() (MultiBuffer, error) {
 	mb, err := r.Reader.ReadMultiBuffer()
 	if err == nil {
 		for _, b := range mb {
-			if b.UDP != nil && b.UDP.Address == r.OriginalDest {
+			if b.UDP != nil && net.AddressEqual(b.UDP.Address, r.OriginalDest) {
 				b.UDP.Address = r.Dest
 			}
 		}
@@ -30,7 +30,7 @@ type EndpointOverrideWriter struct {
 
 func (w *EndpointOverrideWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	for _, b := range mb {
-		if b.UDP != nil && b.UDP.Address == w.Dest {
+		if b.UDP != nil && net.AddressEqual(b.UDP.Address, w.Dest) {
 			b.UDP.Address = w.OriginalDest
 		}
 	}
