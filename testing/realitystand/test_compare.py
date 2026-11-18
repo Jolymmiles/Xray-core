@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from analyze import h2_startup
-from compare import compare_h2, compare_handshakes, main
+from compare import compare_h2, compare_handshakes, load, main
 
 
 def stream(number, *, extensions=(0, 43), finished_length=58, startup=None):
@@ -22,6 +23,14 @@ def stream(number, *, extensions=(0, 43), finished_length=58, startup=None):
 
 
 class CompareTest(unittest.TestCase):
+    def test_legacy_analysis_without_pcap_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scenario = Path(directory) / "test"
+            scenario.mkdir()
+            (scenario / "analysis.json").write_text(json.dumps([stream(0)]))
+            with self.assertRaisesRegex(ValueError, "current analysis or raw capture required"):
+                load(directory, "test")
+
     def test_checks_every_candidate_against_reference_variants(self):
         first = stream(0)
         second = stream(1, finished_length=60)

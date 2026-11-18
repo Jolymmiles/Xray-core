@@ -29,14 +29,15 @@ HANDSHAKE_TAGS = {"SH", "CCS", "EE", "Cert", "CV", "Fin", "NST"}
 
 def load(run, name):
     path = f"{run}/{name}/analysis.json"
-    has_capture = os.path.isfile(f"{run}/{name}/capture.pcap")
     if os.path.exists(path):
         with open(path) as f:
             data = json.load(f)
         if all("server_psk_selected" in stream and "h2_startup" in stream
-               and ("h2_started" in stream or not has_capture)
+               and "h2_started" in stream
                and (not stream["h2_startup"] or "before" in stream["h2_startup"]) for stream in data):
             return data
+    if not os.path.isfile(f"{run}/{name}/capture.pcap"):
+        raise ValueError(f"{run}/{name}: current analysis or raw capture required")
     subprocess.run([sys.executable, f"{CODE}/analyze.py", run, name], stdout=subprocess.DEVNULL, check=True)
     with open(path) as f:
         return json.load(f)
