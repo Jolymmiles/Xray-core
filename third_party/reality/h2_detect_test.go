@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	gotls "crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -253,6 +254,32 @@ func TestH2StartupRefreshKeepsLastProfileOnFailure(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("refresh did not finish")
+}
+
+// A variant missing from refreshes for ticketShapeMaxAge is not handed to
+// connections while the next refresh runs, nor by a snapshot whose refresh
+// is already running.
+func TestH2StartupDoesNotServeExpiredVariant(t *testing.T) {
+	full := []H2StartupRecord{{Length: 31, Frames: []H2StartupFrame{H2Settings}}}
+	resumed := []H2StartupRecord{{Length: 44, Frames: []H2StartupFrame{H2Settings}}}
+	for _, running := range []bool{false, true} {
+		key := fmt.Sprint(t.Name(), running)
+		var missing [6]time.Time
+		missing[0] = time.Now().Add(-ticketShapeMaxAge - time.Minute)
+		config := &Config{DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, net.ErrClosed
+		}}
+		config.h2StartupRecords.Store(key, &h2StartupSnapshot{
+			profiles: h2StartupProfiles{full: full, resumed: resumed},
+			probed:   time.Now().Add(-2 * ticketShapeRefresh),
+			running:  running,
+			missing:  missing,
+		})
+		got := detectH2Startup(config, key, "example.com")
+		if len(got.full) != 0 || !reflect.DeepEqual(got.resumed, resumed) {
+			t.Fatalf("running %v: served %+v, want only the live resumed variant", running, got)
+		}
+	}
 }
 
 type writtenRecords struct {

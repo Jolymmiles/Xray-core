@@ -103,6 +103,16 @@ func TestRealityTicketRejectsMalformedLabels(t *testing.T) {
 	}
 }
 
+// Xray always sets a private key, but direct users of the library reach
+// ticket inspection before authentication without one.
+func TestRealityTicketWithoutPrivateKey(t *testing.T) {
+	config := &Config{}
+	shape := &TicketShape{Lifetime: 60}
+	if config.realityTicketSession(shape, make([]byte, 192), false) != nil {
+		t.Fatal("a configuration without a private key resumed a ticket")
+	}
+}
+
 // A ticket that is an id belongs to the private key that issued it: a
 // server with another key does not find it, even with the same id.
 func TestSessionCacheIsScopedToTheKey(t *testing.T) {

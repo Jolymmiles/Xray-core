@@ -396,7 +396,7 @@ func (hs *serverHandshakeStateTLS13) postHandshakeRecords(lens []int) ([]int, []
 // expire, as nginx's session cache does: a used one is still refused with
 // a wrong binder there.
 func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take bool) *SessionState {
-	if !bytes.HasPrefix(label, shape.Prefix) {
+	if c.PrivateKey == nil || !bytes.HasPrefix(label, shape.Prefix) {
 		return nil
 	}
 	var session *SessionState

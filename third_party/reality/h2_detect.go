@@ -60,6 +60,18 @@ func (p h2StartupProfiles) withPrevious(previous h2StartupProfiles, missing *[6]
 	return p
 }
 
+// live drops the variants missing from refreshes for ticketShapeMaxAge,
+// which withPrevious drops only when the next refresh ends.
+func (p h2StartupProfiles) live(missing [6]time.Time, now time.Time) h2StartupProfiles {
+	variants := [6]*[]H2StartupRecord{&p.full, &p.resumed, &p.resumedDelayed, &p.firefoxFull, &p.fullDelayedReply, &p.resumedWithReply}
+	for i, variant := range variants {
+		if !missing[i].IsZero() && now.Sub(missing[i]) >= ticketShapeMaxAge {
+			*variant = nil
+		}
+	}
+	return p
+}
+
 func (p h2StartupProfiles) records(resumed, firefox bool) []H2StartupRecord {
 	if firefox {
 		if resumed && len(p.resumedWithReply) != 0 {
@@ -108,19 +120,21 @@ const h2PrefaceDelay = 60 * time.Millisecond
 // background. An unreachable target does not erase the last measurement.
 func detectH2Startup(config *Config, key, sni string) h2StartupProfiles {
 	pending := &h2StartupSnapshot{probed: time.Now(), running: true}
+	var served h2StartupProfiles
 	if value, loaded := config.h2StartupRecords.LoadOrStore(key, pending); loaded {
 		previous := value.(*h2StartupSnapshot)
+		served = previous.profiles.live(previous.missing, time.Now())
 		interval := ticketShapeRefresh
-		if len(previous.profiles.full) == 0 && len(previous.profiles.resumed) == 0 {
+		if len(served.full) == 0 && len(served.resumed) == 0 {
 			interval = time.Minute
 		}
 		if previous.running || time.Since(previous.probed) < interval {
-			return previous.profiles
+			return served
 		}
 		pending.profiles = previous.profiles
 		pending.missing = previous.missing
 		if !config.h2StartupRecords.CompareAndSwap(key, previous, pending) {
-			return previous.profiles
+			return served
 		}
 	}
 	go func() {
@@ -130,7 +144,7 @@ func detectH2Startup(config *Config, key, sni string) h2StartupProfiles {
 		profiles = profiles.withPrevious(pending.profiles, &missing, now)
 		config.h2StartupRecords.Store(key, &h2StartupSnapshot{profiles: profiles, probed: now, missing: missing})
 	}()
-	return pending.profiles
+	return served
 }
 
 func measureH2Startup(config *Config, sni string) h2StartupProfiles {
