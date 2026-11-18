@@ -115,6 +115,10 @@ func storeTicketShape(config *Config, key, sni string, alpn int, shape, previous
 		return
 	}
 	final := *shape
+	if reply.inconclusive {
+		// No new evidence about the refusal: the carried one stands.
+		final = *published
+	}
 	final.badBinderSession = nil
 	if reply.kind != noRefusal {
 		final.RefusesBadBinder = true
@@ -197,7 +201,9 @@ func RefreshTicketShape(config *Config, key, sni string, alpn int) {
 		// its tickets later: one that issued tickets has not shown it stopped,
 		// so that refresh failed and the profile ages until it expires.
 		if (noTickets && !shape.Issues) || shape.expired(now) {
-			GlobalTicketShapes.Store(key, &TicketShape{probed: now, noTickets: noTickets})
+			// An issuer that expired has only shown inconclusive samples:
+			// its profile becomes unknown, and the next refresh decides.
+			GlobalTicketShapes.Store(key, &TicketShape{probed: now, noTickets: noTickets && !shape.Issues})
 			return
 		}
 		again := *shape
@@ -701,12 +707,17 @@ type binderRefusal struct {
 	kind   refusalKind
 	alerts []byte
 	delay  time.Duration
+	// inconclusive marks a noRefusal that measured nothing: the probe did
+	// not send a binder, or its answer was neither a refusal nor silence.
+	inconclusive bool
 }
+
+var inconclusiveRefusal = binderRefusal{inconclusive: true}
 
 func confirmBinderRefusal(probe func() binderRefusal) binderRefusal {
 	reply := probe()
 	if reply.kind == silentRefusal && probe().kind != silentRefusal {
-		return binderRefusal{}
+		return inconclusiveRefusal
 	}
 	return reply
 }
@@ -720,7 +731,7 @@ func connectionWasReset(err error) bool {
 
 func classifyBinderRefusal(capture *probeCaptureConn, start time.Time) binderRefusal {
 	if errors.Is(capture.readErr, errProbeLimit) {
-		return binderRefusal{}
+		return inconclusiveRefusal
 	}
 	answer := capture.received()
 	if len(answer) == 0 {
@@ -735,7 +746,7 @@ func classifyBinderRefusal(capture *probeCaptureConn, start time.Time) binderRef
 		if errors.As(capture.readErr, &timeout) && timeout.Timeout() && capture.readEnd.Sub(start) >= badBinderWait {
 			return binderRefusal{kind: silentRefusal, delay: badBinderWait}
 		}
-		return binderRefusal{}
+		return inconclusiveRefusal
 	}
 	n := 0
 	for _, r := range splitRecords(answer) {
@@ -767,15 +778,15 @@ func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSe
 	defer cancel()
 	target, err := dial(ctx, config.Type, config.Dest)
 	if err != nil {
-		return binderRefusal{}
+		return inconclusiveRefusal
 	}
 	defer target.Close()
 	if err := target.SetDeadline(time.Now().Add(ticketProbeTimeout)); err != nil {
-		return binderRefusal{}
+		return inconclusiveRefusal
 	}
 	if config.Xver == 1 || config.Xver == 2 {
 		if _, err = proxyproto.HeaderProxyFromAddrs(config.Xver, target.LocalAddr(), target.RemoteAddr()).WriteTo(target); err != nil {
-			return binderRefusal{}
+			return inconclusiveRefusal
 		}
 	}
 	capture := &probeCaptureConn{Conn: target}
@@ -793,8 +804,12 @@ func probeBadBinder(config *Config, sni string, alpn int, session *utls.ClientSe
 		NextProtos:         nextProtos,
 		ClientSessionCache: &ticketRecorder{replay: session},
 	}, utls.HelloGolang)
-	if err := uConn.Handshake(); err == nil || spoiler.sentAt.IsZero() {
-		return binderRefusal{}
+	err = uConn.Handshake()
+	switch {
+	case spoiler.sentAt.IsZero():
+		return inconclusiveRefusal
+	case err == nil:
+		return binderRefusal{} // the destination went on: it does not refuse
 	}
 	return classifyBinderRefusal(capture, spoiler.sentAt)
 }

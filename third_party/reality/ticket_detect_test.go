@@ -337,12 +337,14 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 		name        string
 		previous    TicketShape
 		keepsIssuer bool
+		unknown     bool
 	}{
 		// Three seconds without a ticket do not prove that a destination
 		// which issued tickets stopped: it may send them later.
-		{"issuing", TicketShape{Issues: true}, true},
-		{"issuing_failed_long_ago", TicketShape{Issues: true, failedSince: time.Now().Add(-ticketShapeMaxAge)}, false},
-		{"ticketless", TicketShape{noTickets: true}, false},
+		{"issuing", TicketShape{Issues: true}, true, false},
+		// An expired issuer has shown only inconclusive samples: unknown.
+		{"issuing_failed_long_ago", TicketShape{Issues: true, failedSince: time.Now().Add(-ticketShapeMaxAge)}, false, true},
+		{"ticketless", TicketShape{noTickets: true}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			key := config.Dest + " " + t.Name()
@@ -366,6 +368,12 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 				if LoadTicketShape(key) != nil {
 					t.Fatal("refresh retained a ticket shape after a confirmed no-ticket handshake")
 				}
+				if tc.unknown {
+					if loadTicketProfile(key) != nil {
+						t.Fatalf("an expired issuer became a confirmed ticketless profile: %+v", fresh)
+					}
+					return
+				}
 				if profile := loadTicketProfile(key); profile == nil || !profile.noTickets {
 					t.Fatal("a successful ticketless measurement was indistinguishable from a failed probe")
 				}
@@ -378,57 +386,79 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 
 // A refresh publishes the fresh shape before its bad-binder probe ends, which
 // takes up to 80 s for a silent destination. Until then the previous refusal
-// still describes the destination.
+// still describes the destination; a refusal probe that measures nothing
+// leaves it, and one that measures replaces it.
 func TestRefreshKeepsRefusalWhileProbing(t *testing.T) {
-	dest := goTarget(t)
-	release := make(chan struct{})
-	var dials atomic.Int32
-	config := &Config{Type: "tcp", Dest: dest, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		if dials.Add(1) <= 2 { // the full and the resumed probe
-			return new(net.Dialer).DialContext(ctx, network, address)
-		}
-		<-release
-		return nil, net.ErrClosed
-	}}
-	key := dest + " refusal"
-	t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
-	old := time.Now().Add(-2 * ticketShapeRefresh)
-	alert := []byte{21, 3, 3, 0, 2, 2, 51}
-	GlobalTicketShapes.Store(key, &TicketShape{
-		Issues: true, Resumes: true, probed: old,
-		RefusesBadBinder: true, BadBinder: alert, BadBinderDelay: time.Second, badBinderClose: alertRefusal,
-	})
-	RefreshTicketShape(config, key, "example.com", 0)
-	load := func() *TicketShape {
-		value, _ := GlobalTicketShapes.Load(key)
-		return value.(*TicketShape)
-	}
-	for deadline := time.Now().Add(15 * time.Second); dials.Load() < 3; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			close(release)
-			t.Fatal("the refresh did not start its bad-binder probe")
-		}
-	}
-	fresh := load()
-	close(release)
-	if !fresh.probed.After(old) || !fresh.RefusesBadBinder || !bytes.Equal(fresh.BadBinder, alert) ||
-		fresh.BadBinderDelay != time.Second || fresh.badBinderClose != alertRefusal {
-		t.Fatalf("fresh shape lost the refusal while its probe runs: %+v", fresh)
-	}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if final := load(); final != fresh {
-			if final.RefusesBadBinder || final.badBinderSession != nil {
-				t.Fatalf("a failed refusal probe kept the previous refusal: %+v", final)
+	for _, measured := range []bool{false, true} {
+		t.Run(fmt.Sprint("measured=", measured), func(t *testing.T) {
+			dest := goTarget(t)
+			release := make(chan struct{})
+			var dials atomic.Int32
+			config := &Config{Type: "tcp", Dest: dest, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				if dials.Add(1) <= 2 { // the full and the resumed probe
+					return new(net.Dialer).DialContext(ctx, network, address)
+				}
+				<-release
+				if measured {
+					return new(net.Dialer).DialContext(ctx, network, address)
+				}
+				return nil, net.ErrClosed
+			}}
+			key := dest + " refusal"
+			t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+			old := time.Now().Add(-2 * ticketShapeRefresh)
+			alert := []byte{21, 3, 3, 0, 2, 2, 40}
+			GlobalTicketShapes.Store(key, &TicketShape{
+				Issues: true, Resumes: true, probed: old,
+				RefusesBadBinder: true, BadBinder: alert, BadBinderDelay: time.Second, badBinderClose: alertRefusal,
+			})
+			RefreshTicketShape(config, key, "example.com", 0)
+			load := func() *TicketShape {
+				value, _ := GlobalTicketShapes.Load(key)
+				return value.(*TicketShape)
 			}
-			return
-		}
+			for deadline := time.Now().Add(15 * time.Second); dials.Load() < 3; time.Sleep(10 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					close(release)
+					t.Fatal("the refresh did not start its bad-binder probe")
+				}
+			}
+			fresh := load()
+			close(release)
+			if !fresh.probed.After(old) || !fresh.RefusesBadBinder || !bytes.Equal(fresh.BadBinder, alert) ||
+				fresh.BadBinderDelay != time.Second || fresh.badBinderClose != alertRefusal {
+				t.Fatalf("fresh shape lost the refusal while its probe runs: %+v", fresh)
+			}
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+				final := load()
+				if final == fresh {
+					continue
+				}
+				want := alert
+				if measured {
+					want = decryptErrorAlert // crypto/tls refuses at once
+				}
+				if final.badBinderSession != nil || !final.RefusesBadBinder || !bytes.Equal(final.BadBinder, want) {
+					t.Fatalf("refusal after the probe %+v, want alert % x", final, want)
+				}
+				return
+			}
+			t.Fatal("the result of the refusal probe was not published")
+		})
 	}
-	t.Fatal("the result of the refusal probe was not published")
 }
 
+// The ClientHello eofAfterHello read: not read or not parsed, without a
+// ticket, or offering one.
+const (
+	helloUnread = iota
+	helloWithoutTicket
+	helloWithTicket
+)
+
 // eofAfterHello accepts one connection, reads one TLS record and closes,
-// reporting whether that record was a ClientHello offering a ticket.
-func eofAfterHello(t *testing.T) (dest string, offered <-chan bool) {
+// reporting what that record was.
+func eofAfterHello(t *testing.T) (dest string, offered <-chan int) {
 	t.Helper()
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -438,9 +468,9 @@ func eofAfterHello(t *testing.T) (dest string, offered <-chan bool) {
 	if err := listener.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	result := make(chan bool, 1)
+	result := make(chan int, 1)
 	go func() {
-		defer close(result)
+		defer close(result) // helloUnread
 		peer, err := listener.AcceptTCP()
 		if err != nil {
 			return
@@ -458,7 +488,13 @@ func eofAfterHello(t *testing.T) (dest string, offered <-chan bool) {
 			return
 		}
 		var hello clientHelloMsg
-		result <- hello.unmarshal(record[recordHeaderLen:]) && len(hello.pskIdentities) != 0
+		switch {
+		case !hello.unmarshal(record[recordHeaderLen:]):
+		case len(hello.pskIdentities) != 0:
+			result <- helloWithTicket
+		default:
+			result <- helloWithoutTicket
+		}
 	}()
 	return listener.Addr().String(), result
 }
@@ -473,8 +509,8 @@ func TestProbePeerEOFIsFIN(t *testing.T) {
 	if reply := probeBadBinder(config, "example.com", 0, full.sessions[0]); reply.kind != finRefusal || len(reply.alerts) != 0 || reply.delay >= time.Second {
 		t.Fatalf("early EOF classified as %+v, want FIN within a second", reply)
 	}
-	if !<-offered {
-		t.Fatal("the probe did not offer the ticket")
+	if got := <-offered; got != helloWithTicket {
+		t.Fatalf("the peer read ClientHello kind %d, want one offering the ticket", got)
 	}
 }
 
@@ -486,8 +522,8 @@ func TestProbeWithoutTicketIsNoRefusal(t *testing.T) {
 	if reply := probeBadBinder(config, "example.com", 0, nil); reply.kind != noRefusal {
 		t.Fatalf("a probe without a ticket published refusal %+v", reply)
 	}
-	if <-offered {
-		t.Fatal("the probe offered a ticket it does not have")
+	if got := <-offered; got != helloWithoutTicket {
+		t.Fatalf("the peer read ClientHello kind %d, want a parsed one without a ticket", got)
 	}
 }
 
