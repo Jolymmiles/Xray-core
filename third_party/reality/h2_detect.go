@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -33,8 +32,6 @@ type H2StartupRecord struct {
 	ResponseBytes int // bytes from the first response HEADERS to the end of this record
 }
 
-var h2StartupRecords sync.Map
-
 type h2StartupProfiles struct {
 	full             []H2StartupRecord
 	resumed          []H2StartupRecord
@@ -44,16 +41,21 @@ type h2StartupProfiles struct {
 	resumedWithReply []H2StartupRecord
 }
 
-func (p h2StartupProfiles) withPrevious(previous h2StartupProfiles) h2StartupProfiles {
-	if len(p.full) == 0 && len(p.fullDelayedReply) == 0 && len(p.firefoxFull) == 0 {
-		p.full = previous.full
-		p.fullDelayedReply = previous.fullDelayedReply
-		p.firefoxFull = previous.firefoxFull
-	}
-	if len(p.resumed) == 0 && len(p.resumedDelayed) == 0 && len(p.resumedWithReply) == 0 {
-		p.resumed = previous.resumed
-		p.resumedDelayed = previous.resumedDelayed
-		p.resumedWithReply = previous.resumedWithReply
+func (p h2StartupProfiles) withPrevious(previous h2StartupProfiles, missing *[6]time.Time, now time.Time) h2StartupProfiles {
+	current := [6]*[]H2StartupRecord{&p.full, &p.resumed, &p.resumedDelayed, &p.firefoxFull, &p.fullDelayedReply, &p.resumedWithReply}
+	old := [6][]H2StartupRecord{previous.full, previous.resumed, previous.resumedDelayed, previous.firefoxFull, previous.fullDelayedReply, previous.resumedWithReply}
+	for i, sample := range current {
+		switch {
+		case len(*sample) != 0:
+			missing[i] = time.Time{}
+		case len(old[i]) != 0:
+			if missing[i].IsZero() {
+				missing[i] = now
+			}
+			if now.Sub(missing[i]) < ticketShapeMaxAge {
+				*sample = old[i]
+			}
+		}
 	}
 	return p
 }
@@ -95,6 +97,7 @@ type h2StartupSnapshot struct {
 	profiles h2StartupProfiles
 	probed   time.Time
 	running  bool
+	missing  [6]time.Time
 }
 
 // The peer may send SETTINGS before seeing the client preface. With an
@@ -105,7 +108,7 @@ const h2PrefaceDelay = 60 * time.Millisecond
 // background. An unreachable target does not erase the last measurement.
 func detectH2Startup(config *Config, key, sni string) h2StartupProfiles {
 	pending := &h2StartupSnapshot{probed: time.Now(), running: true}
-	if value, loaded := h2StartupRecords.LoadOrStore(key, pending); loaded {
+	if value, loaded := config.h2StartupRecords.LoadOrStore(key, pending); loaded {
 		previous := value.(*h2StartupSnapshot)
 		interval := ticketShapeRefresh
 		if len(previous.profiles.full) == 0 && len(previous.profiles.resumed) == 0 {
@@ -115,13 +118,17 @@ func detectH2Startup(config *Config, key, sni string) h2StartupProfiles {
 			return previous.profiles
 		}
 		pending.profiles = previous.profiles
-		if !h2StartupRecords.CompareAndSwap(key, previous, pending) {
+		pending.missing = previous.missing
+		if !config.h2StartupRecords.CompareAndSwap(key, previous, pending) {
 			return previous.profiles
 		}
 	}
 	go func() {
-		profiles := measureH2Startup(config, sni).withPrevious(pending.profiles)
-		h2StartupRecords.Store(key, &h2StartupSnapshot{profiles: profiles, probed: time.Now()})
+		profiles := measureH2Startup(config, sni)
+		now := time.Now()
+		missing := pending.missing
+		profiles = profiles.withPrevious(pending.profiles, &missing, now)
+		config.h2StartupRecords.Store(key, &h2StartupSnapshot{profiles: profiles, probed: now, missing: missing})
 	}()
 	return pending.profiles
 }
@@ -235,8 +242,10 @@ func h2StartupRequest(sni string) []byte {
 	return append(frame, headers.Bytes()...)
 }
 
-const h2ClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-const h2EmptySettings = "\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+const (
+	h2ClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+	h2EmptySettings = "\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+)
 
 // Chrome and Firefox advertise a 64 KiB HPACK table. Some targets emit a
 // table size update in their first response only after seeing this setting.
@@ -249,10 +258,14 @@ type recordReader struct {
 	header    [recordHeaderLen]byte
 	remaining int
 	length    int
+	budget    int
 }
 
 func (c *recordReader) Read(b []byte) (int, error) {
 	if c.remaining == 0 {
+		if c.budget < len(c.header) {
+			return 0, errProbeLimit
+		}
 		if len(b) < len(c.header) {
 			return 0, io.ErrShortBuffer
 		}
@@ -261,6 +274,10 @@ func (c *recordReader) Read(b []byte) (int, error) {
 		}
 		c.remaining = int(binary.BigEndian.Uint16(c.header[3:]))
 		c.length = len(c.header) + c.remaining
+		if c.length > c.budget {
+			return 0, errProbeLimit
+		}
+		c.budget -= c.length
 		return copy(b, c.header[:]), nil
 	}
 	n, err := c.Conn.Read(b[:min(len(b), c.remaining)])
@@ -288,10 +305,10 @@ func probeH2Startup(config *Config, sni string, prefaceDelay time.Duration, repl
 		}
 	}
 
-	wire := &recordReader{Conn: target}
+	wire := &recordReader{Conn: target, budget: maxProbeBytes}
 	recorder := &ticketRecorder{replay: replay}
 	conn, err := probeClient(wire, &utls.Config{
-		ServerName: sni, InsecureSkipVerify: true, ClientSessionCache: recorder,
+		ServerName: sni, InsecureSkipVerify: sni == "", ClientSessionCache: recorder,
 	}, 2, replay != nil)
 	if err != nil || conn.HandshakeContext(ctx) != nil {
 		return sample
@@ -302,7 +319,7 @@ func probeH2Startup(config *Config, sni string, prefaceDelay time.Duration, repl
 	}
 	sample.resumed = state.DidResume
 	defer func() {
-		if tickets := recorder.take(); len(tickets) > 0 {
+		if tickets, overflow := recorder.take(); len(tickets) > 0 && !overflow {
 			sample.ticket = tickets[0]
 		}
 	}()

@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -132,13 +133,35 @@ while True:
     threading.Thread(target=serve, args=(c,), daemon=True).start()
 `
 
-// opensslTarget serves TLS with OpenSSL, as nginx does.
-func opensslTarget(t *testing.T) string {
+func pythonWithSSL(t *testing.T) string {
 	t.Helper()
-	bin, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not installed")
+	var failure string
+	for _, name := range []string{"python3", "python"} {
+		bin, err := exec.LookPath(name)
+		if err != nil || strings.Contains(strings.ToLower(filepath.ToSlash(bin)), "/microsoft/windowsapps/") {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		output, err := exec.CommandContext(ctx, bin, "-c", "try:\n import ssl\nexcept ImportError:\n raise SystemExit(77)").CombinedOutput()
+		cancel()
+		if err == nil {
+			return bin
+		}
+		if status, ok := err.(*exec.ExitError); !ok || status.ExitCode() != 77 {
+			failure = fmt.Sprintf("%s: %v: %s", bin, err, output)
+		}
 	}
+	if failure != "" {
+		t.Fatalf("Python ssl availability check: %s", failure)
+	}
+	t.Skip("no Python interpreter with ssl is installed")
+	return ""
+}
+
+// opensslTarget serves TLS with OpenSSL, as nginx does.
+func opensslTarget(t *testing.T, args ...string) string {
+	t.Helper()
+	bin := pythonWithSSL(t)
 	dir := t.TempDir()
 	certPEM, keyPEM := testCertificate(t, "example.com")
 	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
@@ -148,7 +171,13 @@ func opensslTarget(t *testing.T) string {
 	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "-c", opensslServerPy, certFile, keyFile)
+	cmd := exec.Command(bin, append([]string{"-c", opensslServerPy, certFile, keyFile}, args...)...)
+	stderr, err := os.Create(filepath.Join(dir, "stderr.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -160,11 +189,30 @@ func opensslTarget(t *testing.T) string {
 		cmd.Process.Kill()
 		cmd.Wait()
 	})
-	var port int
-	if _, err := fmt.Fscan(stdout, &port); err != nil {
-		t.Skip("python3 has no ssl module: ", err)
+	type readiness struct {
+		port int
+		err  error
 	}
-	return "127.0.0.1:" + strconv.Itoa(port)
+	ready := make(chan readiness, 1)
+	go func() {
+		var result readiness
+		_, result.err = fmt.Fscan(stdout, &result.port)
+		ready <- result
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-ready:
+		if result.err != nil || result.port < 1 || result.port > 65535 {
+			output, _ := os.ReadFile(stderr.Name())
+			t.Fatalf("OpenSSL fixture reported port %d: %v: %s", result.port, result.err, output)
+		}
+		return "127.0.0.1:" + strconv.Itoa(result.port)
+	case <-timer.C:
+		output, _ := os.ReadFile(stderr.Name())
+		t.Fatalf("OpenSSL fixture readiness timed out: %s", output)
+		return ""
+	}
 }
 
 func TestProbeTicketShapeGoTarget(t *testing.T) {
@@ -242,7 +290,7 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 	}
 	key := config.Dest + " no tickets"
 	old := time.Now().Add(-2 * ticketShapeRefresh)
-	GlobalTicketShapes.Store(key, &TicketShape{Issues: true, probed: old, measured: old})
+	GlobalTicketShapes.Store(key, &TicketShape{Issues: true, probed: old})
 	t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
 	RefreshTicketShape(config, key, "example.com", 0)
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -250,6 +298,9 @@ func TestProbeTicketShapeNoTickets(t *testing.T) {
 		if fresh := value.(*TicketShape); fresh.probed.After(old) {
 			if LoadTicketShape(key) != nil {
 				t.Fatal("refresh retained a ticket shape after a successful no-ticket handshake")
+			}
+			if profile := loadTicketProfile(key); profile == nil || !profile.noTickets {
+				t.Fatal("a successful ticketless measurement was indistinguishable from a failed probe")
 			}
 			return
 		}
@@ -301,18 +352,23 @@ func TestTicketShapeExpiresAfterFailedRefresh(t *testing.T) {
 		return nil, net.ErrClosed
 	}}
 	for _, tc := range []struct {
-		name  string
-		age   time.Duration
-		keeps bool
+		name    string
+		failure time.Duration
+		keeps   bool
 	}{
-		{"recent", 2 * ticketShapeRefresh, true},
+		{"healthy_after_idle", 0, true},
+		{"recent_failure", 2 * ticketShapeRefresh, true},
 		{"expired", ticketShapeMaxAge + time.Minute, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			key := t.Name()
 			t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
-			old := time.Now().Add(-tc.age)
-			GlobalTicketShapes.Store(key, &TicketShape{Issues: true, probed: old, measured: old})
+			old := time.Now().Add(-2 * ticketShapeMaxAge)
+			var failedSince time.Time
+			if tc.failure != 0 {
+				failedSince = time.Now().Add(-tc.failure)
+			}
+			GlobalTicketShapes.Store(key, &TicketShape{Issues: true, probed: old, failedSince: failedSince})
 			if (LoadTicketShape(key) != nil) != tc.keeps {
 				t.Fatal("unexpected profile availability before refresh")
 			}
@@ -323,7 +379,8 @@ func TestTicketShapeExpiresAfterFailedRefresh(t *testing.T) {
 				if fresh.probed.Equal(old) {
 					continue
 				}
-				if fresh.Issues != tc.keeps || (tc.keeps && fresh.measured != old) {
+				if fresh.Issues != tc.keeps || (tc.keeps && fresh.failedSince.IsZero()) ||
+					(tc.keeps && !failedSince.IsZero() && fresh.failedSince != failedSince) {
 					t.Fatalf("failed refresh changed the profile incorrectly: %+v", fresh)
 				}
 				return

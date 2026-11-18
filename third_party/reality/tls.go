@@ -262,7 +262,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				copy(ciphertext, hs.clientHello.sessionId)
 				copy(hs.clientHello.sessionId, plainText) // hs.clientHello.sessionId points to hs.clientHello.raw[39:]
 				_, err = aead.Open(plainText[:0], hs.clientHello.random[20:], ciphertext, hs.clientHello.original)
-				if err != nil && len(hs.clientHello.pskBinders) != 0 {
+				if err != nil && config.BrowserMode && len(hs.clientHello.pskBinders) != 0 {
 					// A client that offers a ticket seals its session id over the ClientHello without the binders, which cover the session id.
 					_, err = aead.Open(plainText[:0], hs.clientHello.random[20:], ciphertext, pskAAD(hs.clientHello.original, hs.clientHello.pskBinders))
 				}
@@ -291,11 +291,11 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			}
 			break
 		}
-		var validBinder bool
+		var validBinder, invalidBinder bool
 		if config.BrowserMode && hs.clientHello != nil && hs.c.vers == VersionTLS13 && config.ServerNames[hs.clientHello.serverName] {
-			hs.refusal, validBinder = hs.inspectTicketHello()
+			hs.refusal, validBinder, invalidBinder = hs.inspectTicketHello()
 		}
-		if authenticated && ticketHellos.acceptClientHello(&hs, time.Now(), validBinder) {
+		if authenticated && !invalidBinder && ticketHellos.acceptClientHello(&hs, time.Now(), validBinder) {
 			hs.c.conn = conn
 			hs.ticketHelloAccepted = hs.c.realityTickets && validBinder
 		}
@@ -452,15 +452,12 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				key, alpn := recordsKey(config, hs.clientHello)
 				if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
 					if postHandshakeRecordsLens, ok := val.([]int); ok {
-						if hs.c.realityTickets && config.AppRecords && alpn == 2 {
+						if hs.ticketShape != nil && config.AppRecords && alpn == 2 {
 							hs.c.h2Startup = detectH2Startup(config, key, hs.clientHello.serverName).
 								records(hs.usingPSK, hasFirefoxH2Fingerprint(hs.clientHello))
 						}
 						lens, tickets := hs.postHandshakeRecords(postHandshakeRecordsLens)
 						for i, length := range lens {
-							if len(hs.c.h2Startup) != 0 && tickets[i] == 0 {
-								continue
-							}
 							if tickets[i] > 0 {
 								if msgs := hs.c.ticketMsgs(hs.ticketShape, length, tickets[i]); msgs != nil {
 									if err := hs.c.writeTicketRecord(msgs, length); err != nil {

@@ -52,8 +52,10 @@ func TestProbeH2ReadsStartupAfterClientPreface(t *testing.T) {
 		}
 		// As in the HAProxy capture, SETTINGS and its acknowledgement
 		// share one TLS record, after the target sees the client's preface.
-		settings := []byte{0, 0, 18, 4, 0, 0, 0, 0, 0,
-			0, 8, 0, 0, 0, 1, 0, 4, 0, 1, 0, 0, 0, 3, 0, 0, 0, 100}
+		settings := []byte{
+			0, 0, 18, 4, 0, 0, 0, 0, 0,
+			0, 8, 0, 0, 0, 1, 0, 4, 0, 1, 0, 0, 0, 3, 0, 0, 0, 100,
+		}
 		ack := []byte{0, 0, 0, 4, 1, 0, 0, 0, 0}
 		_, err = conn.Write(append(settings, ack...))
 		serverErr <- err
@@ -201,30 +203,46 @@ func TestH2StartupPartialRefresh(t *testing.T) {
 		{h2StartupProfiles{full: full}, h2StartupProfiles{full: full, resumed: old.resumed}},
 		{h2StartupProfiles{resumed: resumed}, h2StartupProfiles{full: old.full, resumed: resumed}},
 	} {
-		if got := test.measured.withPrevious(old); !reflect.DeepEqual(got, test.want) {
+		if got := test.measured.withPrevious(old, new([6]time.Time), time.Now()); !reflect.DeepEqual(got, test.want) {
 			t.Fatalf("merged startup profiles %+v, want %+v", got, test.want)
 		}
 	}
 }
 
+func TestH2StartupAgesIndividualVariants(t *testing.T) {
+	resumed := []H2StartupRecord{{Length: 44}}
+	reply := []H2StartupRecord{{Length: 31}}
+	old := h2StartupProfiles{resumed: resumed}
+	sample := h2StartupProfiles{resumedWithReply: reply}
+	var missing [6]time.Time
+	now := time.Now()
+	first := sample.withPrevious(old, &missing, now)
+	if !reflect.DeepEqual(first.resumed, resumed) || !reflect.DeepEqual(first.resumedWithReply, reply) {
+		t.Fatalf("partial refresh lost a live variant: %+v", first)
+	}
+	expired := sample.withPrevious(first, &missing, now.Add(ticketShapeMaxAge))
+	if len(expired.resumed) != 0 || !reflect.DeepEqual(expired.resumedWithReply, reply) {
+		t.Fatalf("only the stale variant should expire: %+v", expired)
+	}
+}
+
 func TestH2StartupRefreshKeepsLastProfileOnFailure(t *testing.T) {
 	key := t.Name()
-	t.Cleanup(func() { h2StartupRecords.Delete(key) })
 	full := []H2StartupRecord{{Length: 31, Frames: []H2StartupFrame{H2Settings}}}
 	old := &h2StartupSnapshot{
 		profiles: h2StartupProfiles{full: full},
 		probed:   time.Now().Add(-2 * ticketShapeRefresh),
 	}
-	h2StartupRecords.Store(key, old)
 	config := &Config{DialContext: func(context.Context, string, string) (net.Conn, error) {
 		return nil, net.ErrClosed
 	}}
+	config.h2StartupRecords.Store(key, old)
 	if got := detectH2Startup(config, key, "example.com").full; !reflect.DeepEqual(got, full) {
 		t.Fatalf("refresh returned %v, want %v", got, full)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		value, _ := h2StartupRecords.Load(key)
+		value, _ := config.h2StartupRecords.Load(key)
 		snapshot := value.(*h2StartupSnapshot)
 		if !snapshot.running {
 			if snapshot.probed.After(old.probed) && reflect.DeepEqual(snapshot.profiles.full, full) {

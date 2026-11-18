@@ -140,7 +140,7 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 	if c.realityTickets {
 		key, alpn := recordsKey(c.config, hs.clientHello)
 		RefreshTicketShape(c.config, key, hs.clientHello.serverName, alpn)
-		if hs.ticketShape = LoadTicketShape(key); hs.ticketShape == nil {
+		if hs.ticketShape = loadTicketProfile(key); hs.ticketShape == nil {
 			DetectTicketShape(c.config, key, hs.clientHello.serverName, alpn)
 		} else if hs.ticketHelloAccepted {
 			hs.realityResume(hs.ticketShape)

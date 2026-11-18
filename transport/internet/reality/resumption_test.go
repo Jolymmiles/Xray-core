@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/reality"
 	"github.com/xtls/xray-core/common/net"
+	xraytls "github.com/xtls/xray-core/transport/internet/tls"
 )
 
 const testServerName = "example.com"
@@ -144,22 +146,35 @@ while True:
     threading.Thread(target=serve, args=(c,), daemon=True).start()
 `
 
+func pythonWithSSL(t *testing.T) string {
+	t.Helper()
+	var failure string
+	for _, name := range []string{"python3", "python"} {
+		bin, err := exec.LookPath(name)
+		if err != nil || strings.Contains(strings.ToLower(filepath.ToSlash(bin)), "/microsoft/windowsapps/") {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		output, err := exec.CommandContext(ctx, bin, "-c", "try:\n import ssl\nexcept ImportError:\n raise SystemExit(77)").CombinedOutput()
+		cancel()
+		if err == nil {
+			return bin
+		}
+		if status, ok := err.(*exec.ExitError); !ok || status.ExitCode() != 77 {
+			failure = fmt.Sprintf("%s: %v: %s", bin, err, output)
+		}
+	}
+	if failure != "" {
+		t.Fatalf("Python ssl availability check: %s", failure)
+	}
+	t.Skip("no Python interpreter with ssl is installed")
+	return ""
+}
+
 // opensslTarget serves TLS with OpenSSL, as nginx does.
 func opensslTarget(t *testing.T, args ...string) string {
 	t.Helper()
-	bin, err := exec.LookPath("python")
-	if err != nil {
-		bin, err = exec.LookPath("python3")
-		if err != nil {
-			t.Skip("Python is not installed")
-		}
-	}
-	if output, err := exec.Command(bin, "-c", "try:\n import ssl\nexcept ImportError:\n raise SystemExit(77)").CombinedOutput(); err != nil {
-		if status, ok := err.(*exec.ExitError); ok && status.ExitCode() == 77 {
-			t.Skip("Python has no ssl module")
-		}
-		t.Fatalf("Python ssl availability check: %v: %s", err, output)
-	}
+	bin := pythonWithSSL(t)
 	dir := t.TempDir()
 	certPEM, keyPEM := testCertificate(t)
 	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
@@ -187,12 +202,30 @@ func opensslTarget(t *testing.T, args ...string) string {
 		cmd.Process.Kill()
 		cmd.Wait()
 	})
-	var port int
-	if _, err := fmt.Fscan(stdout, &port); err != nil {
-		output, _ := os.ReadFile(stderr.Name())
-		t.Fatalf("OpenSSL fixture did not report a port: %v: %s", err, output)
+	type readiness struct {
+		port int
+		err  error
 	}
-	return "127.0.0.1:" + strconv.Itoa(port)
+	ready := make(chan readiness, 1)
+	go func() {
+		var result readiness
+		_, result.err = fmt.Fscan(stdout, &result.port)
+		ready <- result
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-ready:
+		if result.err != nil || result.port < 1 || result.port > 65535 {
+			output, _ := os.ReadFile(stderr.Name())
+			t.Fatalf("OpenSSL fixture reported port %d: %v: %s", result.port, result.err, output)
+		}
+		return "127.0.0.1:" + strconv.Itoa(result.port)
+	case <-timer.C:
+		output, _ := os.ReadFile(stderr.Name())
+		t.Fatalf("OpenSSL fixture readiness timed out: %s", output)
+		return ""
+	}
 }
 
 type realityServer struct {
@@ -474,6 +507,45 @@ func TestNoResumptionWithoutBrowser(t *testing.T) {
 	if len(full.records) != len(again.records) {
 		t.Fatalf("records %v and %v", full.records, again.records)
 	}
+
+	// Allow the test client to collect tickets without setting the
+	// authenticated browser flag. A real ticket then becomes observable.
+	raw, err := gonet.DialTimeout("tcp", server.addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if err := raw.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	cache := utls.NewLRUClientSessionCache(4)
+	probe := &UConn{
+		Config:     &Config{PublicKey: server.public, ShortId: make([]byte, 8)},
+		ServerName: testServerName,
+	}
+	probe.UConn, err = xraytls.NewUClient(raw, &utls.Config{
+		ServerName: testServerName, InsecureSkipVerify: true, VerifyConnection: probe.VerifyConnection,
+		ClientSessionCache: cache, OmitEmptyPsk: true,
+	}, utls.HelloChrome_Auto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.HandshakeContext(t.Context()); err != nil || !probe.Verified {
+		t.Fatalf("unflagged REALITY handshake failed: %v", err)
+	}
+	if _, err := probe.Write([]byte{9}); err != nil {
+		t.Fatal(err)
+	}
+	var reply [1]byte
+	if _, err := io.ReadFull(probe, reply[:]); err != nil || reply[0] != 9 {
+		t.Fatalf("unflagged REALITY request failed: %v", err)
+	}
+	if _, ok := cache.Get(testServerName); ok {
+		t.Fatal("the server issued a session ticket without the browser flag")
+	}
 }
 
 func testTicketKey(server *realityServer) string {
@@ -605,6 +677,13 @@ func TestResumptionHelloFollowsTheBrowser(t *testing.T) {
 	for fingerprint, keepsSessionTicket := range map[string]bool{"firefox": false, "chrome": true} {
 		full := dialRealityAs(t, server, "auto", fingerprint)
 		resumed := dialRealityAs(t, server, "auto", fingerprint)
+		if fingerprint == "firefox" && utls.HelloFirefox_Auto == utls.HelloFirefox_148 {
+			if resumed.conn.ConnectionState().DidResume || !slices.Equal(full.hello, resumed.hello) ||
+				!slices.Equal(full.helloLens, resumed.helloLens) {
+				t.Fatalf("Firefox 148 must preserve its full ClientHello: %v, %v", full.hello, resumed.hello)
+			}
+			continue
+		}
 		if !resumed.conn.ConnectionState().DidResume {
 			t.Fatalf("%s: the second connection resumes", fingerprint)
 		}
@@ -666,6 +745,10 @@ func TestTicketWithWrongBinderIsRefused(t *testing.T) {
 		t.Fatal("the OpenSSL target did not return a TLS alert")
 	}
 	want := shape.BadBinder
+	if len(want) != 7 || !bytes.Equal(want[:6], []byte{21, 3, 3, 0, 2, 2}) ||
+		(want[6] != 47 && want[6] != 51) {
+		t.Fatalf("expected an independent OpenSSL fatal binder alert, got % x", want)
+	}
 	dialReality(t, server, "auto")
 	key := testTicketKey(server)
 
@@ -812,6 +895,13 @@ func expire(t *testing.T, session *utls.ClientSessionState) *utls.ClientSessionS
 func TestExpiredTicketLeavesTheFullClientHello(t *testing.T) {
 	server := startRealityServer(t, goTarget(t))
 	full := dialRealityAs(t, server, "auto", "firefox")
+	if utls.HelloFirefox_Auto == utls.HelloFirefox_148 {
+		if again := dialRealityAs(t, server, "auto", "firefox"); again.conn.ConnectionState().DidResume ||
+			!slices.Equal(again.hello, full.hello) || !slices.Equal(again.helloLens, full.helloLens) {
+			t.Fatal("Firefox 148 must retain its full ClientHello")
+		}
+		return
+	}
 	host, portStr, _ := gonet.SplitHostPort(server.addr)
 	port, _ := strconv.Atoi(portStr)
 	key := ticketKey(&Config{Fingerprint: "firefox", PublicKey: server.public, ShortId: make([]byte, 8)},

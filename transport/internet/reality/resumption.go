@@ -98,8 +98,15 @@ func (s *ticketStore) fail(key string) {
 	if s.failed == nil {
 		s.failed = make(map[string]time.Time)
 	}
-	if len(s.failed) >= ticketServers {
-		clear(s.failed)
+	if _, exists := s.failed[key]; !exists && len(s.failed) >= ticketServers {
+		var oldest string
+		var earliest time.Time
+		for name, failedAt := range s.failed {
+			if earliest.IsZero() || failedAt.Before(earliest) {
+				oldest, earliest = name, failedAt
+			}
+		}
+		delete(s.failed, oldest)
 	}
 	s.failed[key] = time.Now()
 }

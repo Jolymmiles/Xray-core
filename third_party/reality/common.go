@@ -604,7 +604,8 @@ type Config struct {
 	// share, as upstream does. Xray-core fork change, see fork_keyshare.go.
 	RequireMLKEM bool
 
-	Mldsa65Key *mldsa.PrivateKey
+	Mldsa65Key       *mldsa.PrivateKey
+	h2StartupRecords sync.Map
 
 	// BrowserMode enables target probes and browser behavior for clients
 	// that request it in their authenticated REALITY handshake.
