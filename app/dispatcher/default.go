@@ -25,7 +25,12 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
-var errSniffingTimeout = errors.New("timeout on sniffing")
+var (
+	errSniffingTimeout = errors.New("timeout on sniffing")
+	// errSniffingPastView ends a sniff that needs more data than the cache
+	// shows a sniffer: reading on would only cache the client's upload.
+	errSniffingPastView = errors.New("sniffing needs more data than the cache shows")
+)
 
 type cachedReader struct {
 	sync.Mutex
@@ -97,6 +102,15 @@ func (r *cachedReader) Datagrams() [][]byte {
 		size += b.Len()
 	}
 	return r.datagrams
+}
+
+// holdsMoreThan reports whether the cache holds bytes past payload, the
+// payload the last Cache returned: once it does, the payload is all a sniffer
+// sees of the cache, and further reads cannot show it more.
+func (r *cachedReader) holdsMoreThan(payload []byte) bool {
+	r.Lock()
+	defer r.Unlock()
+	return int(r.cache.Len()) > len(payload)
 }
 
 func (r *cachedReader) readInternal() buf.MultiBuffer {
@@ -649,6 +663,10 @@ func sniff(ctx context.Context, cReader *cachedReader, metadataOnly bool, networ
 						totalAttempt++
 					case protocol.ErrProtoNeedMoreData: // Protocol Need More Data: protocol matches, but need more data to complete sniffing
 						// in this case, do not add totalAttempt(allow to read until timeout)
+						// unless the sniffer has seen all it ever can.
+						if cReader.holdsMoreThan(payloadBytes) {
+							return nil, errSniffingPastView
+						}
 					default:
 						return result, err
 					}
