@@ -35,11 +35,21 @@ func TestSniffIPDiscoveryRejects(t *testing.T) {
 	lastAddressByte[71] = 1
 	length := request(0x0001e240, 0)
 	length[3] = 0x48
+	// Each signature byte on its own, the address left empty.
+	firstByte := request(0x0001e240, 0)
+	firstByte[0] = 1
+	responseType := request(0x0001e240, 0)
+	responseType[1] = 2
+	lengthHigh := request(0x0001e240, 0)
+	lengthHigh[2] = 1
 	for name, b := range map[string][]byte{
 		"response":                response,
 		"request with an address": address,
 		"last address byte set":   lastAddressByte,
 		"other length":            length,
+		"type high byte":          firstByte,
+		"response, empty address": responseType,
+		"length high byte":        lengthHigh,
 		"zeros":                   make([]byte, 74),
 		"one byte short":          request(1, 0)[:73],
 		"one byte long":           append(request(1, 0), 0),

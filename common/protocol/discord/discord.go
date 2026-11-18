@@ -3,6 +3,12 @@
 // a call, a stream or screen sharing follows on the same pair of ports, so a
 // rule on it routes the whole call. Discord in a browser speaks WebRTC
 // instead, which the STUN sniffer takes.
+//
+// The rule holds for the UDP flow the request opens, as for every sniffer
+// that reads the first datagram. A flow reopened mid-call, after an idle
+// timeout or a reconnect, starts with RTP and takes the default route. On a
+// full-cone association the flow is keyed without its destination, so what
+// the same socket sends elsewhere takes the route the request chose.
 package discord
 
 import (
@@ -22,7 +28,7 @@ func (h *SniffHeader) Domain() string {
 // The IP discovery packet of Discord voice:
 //
 //	0-1      type: 1 for a request, 2 for the response
-//	2-3      length of what follows the SSRC and this field: 70
+//	2-3      length of what follows the type and this field: 70
 //	4-7      SSRC
 //	8-71     address, a null-terminated string, empty in a request
 //	72-73    port

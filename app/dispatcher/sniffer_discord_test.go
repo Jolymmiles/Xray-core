@@ -61,3 +61,30 @@ func TestSniffDiscordRTCLeavesSTUN(t *testing.T) {
 		t.Fatalf("a STUN binding sniffed as %v, %v; want stun", result, err)
 	}
 }
+
+// sniffBatch sniffs datagrams that all arrive in one read, the way a link
+// that queued them before the dispatcher read hands them over.
+func sniffBatch(t *testing.T, datagrams ...[]byte) (SniffResult, error) {
+	t.Helper()
+	reader := newTestCachedReader(t, &batchReader{datagrams: datagrams})
+	ctx := snifferContext()
+	return sniff(ctx, reader, false, net.Network_UDP, newSniffer(ctx))
+}
+
+// The request and the RTP after it in one read: the request is still the
+// first datagram.
+func TestSniffDiscordRTCThenRTPInOneRead(t *testing.T) {
+	rtp := []byte{0x90, 0x78, 0x00, 0x01, 0x00, 0x00, 0x03, 0xc0, 0x00, 0x01, 0xe2, 0x40, 0xbe, 0xde, 0x00, 0x01}
+	result, err := sniffBatch(t, discordIPDiscovery(), rtp)
+	if err != nil || result.Protocol() != "discordrtc" {
+		t.Fatalf("sniff() = %v, %v; want discordrtc", result, err)
+	}
+}
+
+// A request split across two datagrams of one read is none.
+func TestSniffDiscordRTCSplitInOneRead(t *testing.T) {
+	split := discordIPDiscovery()
+	if result, err := sniffBatch(t, split[:8], split[8:]); err == nil && result.Protocol() == "discordrtc" {
+		t.Fatal("a request split across two datagrams of one read taken for discordrtc")
+	}
+}
