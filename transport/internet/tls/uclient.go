@@ -44,6 +44,13 @@ type UClientOption func(*uClientOptions)
 
 type uClientOptions struct {
 	http11ALPN bool
+	spec       *utls.ClientHelloSpec
+}
+
+func WithClientHelloSpec(spec *utls.ClientHelloSpec) UClientOption {
+	return func(options *uClientOptions) {
+		options.spec = spec
+	}
 }
 
 // WithHTTP11ALPN gives the ClientHello the ALPN of the WebSocket and
@@ -95,7 +102,15 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 	// config.NextProtos with the fingerprint's own ALPN.
 	alpn := http11ALPN(config.NextProtos)
 
-	uConn := resumption.client(c, config, fingerprint)
+	var uConn *utls.UConn
+	if settings.spec != nil {
+		uConn = utls.UClient(c, config, utls.HelloCustom)
+		if err := uConn.ApplyPreset(settings.spec); err != nil {
+			return nil, err
+		}
+	} else {
+		uConn = resumption.client(c, config, fingerprint)
+	}
 	if err := uConn.BuildHandshakeState(); err != nil {
 		return nil, err
 	}

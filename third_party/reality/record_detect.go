@@ -24,6 +24,12 @@ func DetectPostHandshakeRecordsLens(config *Config) {
 	for sni := range config.ServerNames {
 		for alpn := range 3 { // 0, 1, 2
 			key := config.Dest + " " + sni + " " + strconv.Itoa(alpn)
+			if config.BrowserMode {
+				DetectTicketShape(config, key, sni, alpn)
+				if config.AppRecords && alpn == 2 {
+					detectH2Startup(config, key, sni)
+				}
+			}
 			if _, loaded := GlobalPostHandshakeRecordsLens.LoadOrStore(key, false); !loaded {
 				go func() {
 					defer func() {

@@ -28,6 +28,7 @@ func (c *Config) GetREALITYConfig() *reality.Config {
 		MaxClientVer: c.MaxClientVer,
 		MaxTimeDiff:  time.Duration(c.MaxTimeDiff) * time.Millisecond,
 		RequireMLKEM: c.RequireMlkem,
+		BrowserMode:  c.Browser == "auto",
 
 		NextProtos:             nil, // should be nil
 		SessionTicketsDisabled: true,

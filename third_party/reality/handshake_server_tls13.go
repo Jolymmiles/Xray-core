@@ -68,6 +68,13 @@ type serverHandshakeStateTLS13 struct {
 	transcript      hash.Hash
 	clientFinished  []byte
 	echContext      *echServerContext
+
+	// [REALITY] SECTION: session tickets
+	ticketShape         *TicketShape // set when the client asked for tickets and the target's are known
+	ticketInFlight      bool         // a ticket went with the server's flight
+	refusal             *TicketShape // set when a ticket came with a wrong binder: how the target refuses it
+	ticketHelloAccepted bool         // a known PSK offer with a valid binder, reserved before the handshake
+	// [REALITY] SECTION END
 }
 
 // [REALITY] SECTION: do handshake
@@ -130,6 +137,15 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 
 		c.serverName = hs.clientHello.serverName
 	}
+	if c.realityTickets {
+		key, alpn := recordsKey(c.config, hs.clientHello)
+		RefreshTicketShape(c.config, key, hs.clientHello.serverName, alpn)
+		if hs.ticketShape = loadTicketProfile(key); hs.ticketShape == nil {
+			DetectTicketShape(c.config, key, hs.clientHello.serverName, alpn)
+		} else if hs.ticketHelloAccepted {
+			hs.realityResume(hs.ticketShape)
+		}
+	}
 	/*
 		if err := hs.checkForResumption(); err != nil {
 			return err
@@ -176,7 +192,17 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 		return err
 	}
 	if hs.c.out.handshakeLen[6] != 0 {
-		if _, err := c.writeRecord(recordTypeHandshake, []byte{typeNewSessionTicket}); err != nil {
+		hs.ticketInFlight = true
+		msg := []byte{typeNewSessionTicket}
+		if hs.ticketShape != nil {
+			if tickets := c.ticketMsgs(hs.ticketShape, hs.c.out.handshakeLen[6], 1); tickets != nil {
+				msg = tickets[0]
+				c.out.ticket = true
+			}
+		}
+		_, err := c.writeRecord(recordTypeHandshake, msg)
+		c.out.ticket = false
+		if err != nil {
 			return err
 		}
 	}

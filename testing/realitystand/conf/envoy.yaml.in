@@ -1,0 +1,56 @@
+static_resources:
+  listeners:
+  - name: stand_tls
+    address:
+      socket_address:
+        address: 10.9.0.16
+        port_value: 443
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_params:
+              tls_minimum_protocol_version: TLSv1_3
+            tls_certificates:
+            - certificate_chain:
+                filename: "@WORK@/certs/real/ecdsa-chain.pem"
+              private_key:
+                filename: "@WORK@/certs/real/ecdsa.key"
+            alpn_protocols: [h2, http/1.1]
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: stand
+          stream_idle_timeout: 5s
+          common_http_protocol_options:
+            idle_timeout: 2s
+          route_config:
+            name: root
+            virtual_hosts:
+            - name: stand
+              domains: ["envoy.example.test"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: origin
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: origin
+    type: STATIC
+    connect_timeout: 1s
+    load_assignment:
+      cluster_name: origin
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 10.9.0.50
+                port_value: 80

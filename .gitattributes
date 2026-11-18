@@ -9,3 +9,9 @@ third_party/** -whitespace
 # changes" section of each FORK.md.
 third_party/reality/FORK.md whitespace
 third_party/reality/fork_keyshare.go whitespace
+third_party/reality/h2_detect*.go whitespace
+third_party/reality/input_pending*.go whitespace
+third_party/reality/reality_ticket*.go whitespace
+third_party/reality/session_cache_test.go whitespace
+third_party/reality/ticket_detect*.go whitespace
+third_party/reality/ticket_survey_test.go whitespace

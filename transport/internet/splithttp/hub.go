@@ -591,7 +591,22 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			}
 		}
 		if config := reality.ConfigFromStreamSettings(streamSettings); config != nil {
-			l.listener = goreality.NewListener(l.listener, config.GetREALITYConfig())
+			// The HTTP/2 server sends what the target sends after the
+			// handshake, shaped as the target's records, see shapeConn.
+			realityConfig := config.GetREALITYConfig()
+			realityConfig.AppRecords = realityConfig.BrowserMode
+			l.listener = goreality.NewListener(l.listener, realityConfig)
+			if realityConfig.AppRecords {
+				shaped := &shapeListener{Listener: l.listener}
+				l.listener = shaped
+				if !l.config.h2FlowOn() {
+					// net/http accumulates small increments instead of
+					// sending a standalone bootstrap frame.
+					if grant := h2ConnWindow(http2Config) - h2InitWindow; grant >= 4<<10 {
+						shaped.startupGrant = uint32(grant)
+					}
+				}
+			}
 		}
 
 		handler.localAddr = l.listener.Addr()
