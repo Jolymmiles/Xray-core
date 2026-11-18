@@ -44,8 +44,9 @@ func TestSniffDiscordRTCNotOverTCP(t *testing.T) {
 	}
 }
 
-// A caller may hand the datagrams of an empty cache: the sniffer reads the
-// payload then.
+// An empty list of datagrams, which the cache hands when its first buffer is
+// longer than the scratch, leaves the payload: the sniffer reads that, as the
+// uTP sniffer does.
 func TestSniffDiscordRTCWithoutDatagrams(t *testing.T) {
 	s := newSniffer(snifferContext())
 	result, err := s.SniffDatagrams(snifferContext(), discordIPDiscovery(), [][]byte{}, net.Network_UDP)
