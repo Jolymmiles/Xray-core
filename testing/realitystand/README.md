@@ -207,7 +207,9 @@ target's does: once its tickets are out, REALITY checks whether client
 data already waits (on Linux, also in the kernel). If it does, the
 combined sample is used; otherwise the delayed one, with SETTINGS first.
 Chrome sends its first data 0.25-1.2 ms after its Finished, so the REALITY
-client keeps such a gap for Chrome and Edge; nginx gave Chrome 157 both
+client schedules its first data that long after its handshake for Chrome
+and Edge (the scheduled delay: on loopback the measured gap between the
+Finished write and the first data write was 0.70-2.12 ms); nginx gave Chrome 157 both
 groupings within one run. Firefox can use a sample that combines the
 greeting into one record, with or without a response.
 Resumed Chromium prefers the

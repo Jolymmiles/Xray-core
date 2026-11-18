@@ -20,6 +20,9 @@ func (c *Conn) inputPending() bool {
 		case interface{ Raw() net.Conn }: // a PROXY protocol connection
 			conn = inner.Raw()
 			continue
+		case interface{ RawConn() net.Conn }: // a FinalMask wrapper
+			conn = inner.RawConn()
+			continue
 		}
 		break
 	}

@@ -575,7 +575,7 @@ func TestProbePeerEOFIsFIN(t *testing.T) {
 func TestProbeWithoutTicketIsNoRefusal(t *testing.T) {
 	dest, offered := eofAfterHello(t)
 	config := &Config{Type: "tcp4", Dest: dest}
-	if reply := probeBadBinder(config, "example.com", 0, nil); reply.kind != noRefusal {
+	if reply := probeBadBinder(config, "example.com", 0, nil); reply.kind != noRefusal || !reply.inconclusive {
 		t.Fatalf("a probe without a ticket published refusal %+v", reply)
 	}
 	if got := <-offered; got != helloWithoutTicket {

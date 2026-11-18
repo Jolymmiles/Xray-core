@@ -88,12 +88,17 @@ func (p h2StartupProfiles) records(resumed, firefox, pipelined bool) []H2Startup
 		}
 	}
 	if !resumed && !firefox {
-		if pipelined && len(p.pipelinedFull) != 0 {
-			return p.pipelinedFull
+		// Prefer the variant the arrival calls for, then any measured one.
+		order := [3][]H2StartupRecord{p.fullDelayedReply, p.full, p.pipelinedFull}
+		if pipelined {
+			order = [3][]H2StartupRecord{p.pipelinedFull, p.fullDelayedReply, p.full}
 		}
-		if !pipelined && len(p.fullDelayedReply) != 0 {
-			return p.fullDelayedReply
+		for _, records := range order {
+			if len(records) != 0 {
+				return records
+			}
 		}
+		return nil
 	}
 	if resumed && firefox && len(p.resumedDelayed) != 0 {
 		return p.resumedDelayed

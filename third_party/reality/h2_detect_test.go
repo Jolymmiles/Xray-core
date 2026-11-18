@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -167,35 +168,57 @@ func TestFullChromiumH2ProfileFollowsTheClientsArrival(t *testing.T) {
 	if got := profiles.records(false, false, false); !reflect.DeepEqual(got, delayedReply) {
 		t.Errorf("not pipelined: got %v, want %v", got, delayedReply)
 	}
-	// A target that never groups the greeting has no pipelined sample.
+	// A target that never groups the greeting has no pipelined sample:
+	// the delayed one with the reply goes first, as before.
 	profiles.pipelinedFull = nil
-	if got := profiles.records(false, false, true); !reflect.DeepEqual(got, delayed) {
-		t.Errorf("no pipelined sample: got %v, want %v", got, delayed)
+	if got := profiles.records(false, false, true); !reflect.DeepEqual(got, delayedReply) {
+		t.Errorf("no pipelined sample: got %v, want %v", got, delayedReply)
+	}
+	// With only the pipelined sample measured, either arrival gets it.
+	only := h2StartupProfiles{pipelinedFull: pipelined}
+	if got := only.records(false, false, false); !reflect.DeepEqual(got, pipelined) {
+		t.Errorf("only a pipelined sample: got %v, want %v", got, pipelined)
 	}
 }
 
-// inputPending sees client bytes the kernel holds, not only those a read
-// already took in.
-func TestInputPending(t *testing.T) {
+func tcpPair(t *testing.T) (client, server net.Conn) {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	client, err := net.Dial("tcp", listener.Addr().String())
+	client, err = net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
-	server, err := listener.Accept()
+	t.Cleanup(func() { client.Close() })
+	server, err = listener.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	t.Cleanup(func() { server.Close() })
+	return client, server
+}
+
+// inputPending sees bytes a read already took in, on any system.
+func TestInputPendingBuffered(t *testing.T) {
+	_, server := tcpPair(t) // nothing queued on the socket
+	if (&Conn{conn: server}).inputPending() {
+		t.Fatal("input pending on an idle socket")
+	}
+	if !(&Conn{conn: server, rawInput: bytes.NewBuffer([]byte{23})}).inputPending() {
+		t.Fatal("bytes already read were not seen")
+	}
+}
+
+// On Linux inputPending also sees the bytes the kernel holds.
+func TestInputPendingKernel(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the kernel's count is read on Linux only")
+	}
+	client, server := tcpPair(t)
 	c := &Conn{conn: server}
-	if c.inputPending() {
-		t.Fatal("input pending before the client wrote")
-	}
 	if _, err := client.Write([]byte{23, 3, 3, 0, 1, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -203,10 +226,6 @@ func TestInputPending(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("the kernel's bytes were not seen")
 		}
-	}
-	buffered := &Conn{conn: server, rawInput: bytes.NewBuffer([]byte{23})}
-	if !buffered.inputPending() {
-		t.Fatal("bytes already read were not seen")
 	}
 }
 

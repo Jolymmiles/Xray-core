@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -252,4 +253,220 @@ func TestNoH2StartupWithoutTicketProfile(t *testing.T) {
 	if records := <-startup; len(records) != 0 {
 		t.Fatalf("HTTP/2 startup %+v shaped with the legacy records", records)
 	}
+}
+
+// nginxLikeH2Target serves TLS with HTTP/2's greeting grouped as nginx groups
+// it: one record of SETTINGS, WINDOW_UPDATE and the ACK when the client's
+// preface already waits after the handshake, else SETTINGS and
+// WINDOW_UPDATE first and the ACK once the preface comes.
+func nginxLikeH2Target(t *testing.T) string {
+	t.Helper()
+	certPEM, keyPEM := testCertificate(t)
+	cert, err := gotls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := gotls.Listen("tcp", "127.0.0.1:0", &gotls.Config{
+		Certificates: []gotls.Certificate{cert},
+		NextProtos:   []string{"h2", "http/1.1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	settings := []byte{0, 0, 12, 4, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 128, 0, 4, 0, 1, 0, 0}
+	window := []byte{0, 0, 4, 8, 0, 0, 0, 0, 0, 0, 0xef, 0, 1}
+	ack := []byte{0, 0, 0, 4, 1, 0, 0, 0, 0}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				tlsConn := conn.(*gotls.Conn)
+				tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+				if err := tlsConn.Handshake(); err != nil || tlsConn.ConnectionState().NegotiatedProtocol != "h2" {
+					io.Copy(io.Discard, tlsConn)
+					return
+				}
+				buf := make([]byte, 16<<10)
+				tlsConn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+				if n, _ := tlsConn.Read(buf); n > 0 {
+					tlsConn.Write(slices.Concat(settings, window, ack))
+				} else {
+					tlsConn.Write(slices.Concat(settings, window))
+					tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					if n, _ := tlsConn.Read(buf); n == 0 {
+						return
+					}
+					tlsConn.Write(ack)
+				}
+				tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				io.Copy(io.Discard, tlsConn)
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// heldWrites holds everything written after the ClientHello until flush,
+// so the client's Finished and first data reach the server in one write.
+type heldWrites struct {
+	gonet.Conn
+	mu     sync.Mutex
+	writes int
+	held   []byte
+}
+
+func (c *heldWrites) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes++
+	if c.writes == 1 {
+		return c.Conn.Write(b)
+	}
+	c.held = append(c.held, b...)
+	return len(b), nil
+}
+
+func (c *heldWrites) flush() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.Conn.Write(c.held)
+	c.held = nil
+	return err
+}
+
+// A full Chromium handshake gets the grouping the target gives the same
+// arrival: with the client's first data in the write of its Finished the
+// combined record, after a pause SETTINGS first.
+func TestH2StartupFollowsTheClientsArrival(t *testing.T) {
+	target := nginxLikeH2Target(t)
+	startup := make(chan []reality.H2StartupRecord, 1)
+	server := startRealityServer(t, target, func(conn gonet.Conn, config *reality.Config) (*reality.Conn, error) {
+		client, err := reality.Server(context.Background(), conn, config)
+		if err == nil {
+			startup <- client.H2StartupRecords()
+		}
+		return client, err
+	})
+	server.config.AppRecords = true
+	ticketsKey := testTicketKey(server)
+	dial := func(pipelined bool) []reality.H2StartupRecord {
+		t.Helper()
+		tickets.clear(ticketsKey) // a full handshake
+		raw, err := gonet.Dial("tcp", server.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := &heldWrites{Conn: raw}
+		var conn gonet.Conn = raw
+		if pipelined {
+			conn = held
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := UClient(conn, &Config{
+			Fingerprint: "chrome", ServerName: testServerName, PublicKey: server.public,
+			ShortId: make([]byte, 8), SpiderY: make([]int64, 10), Browser: "auto",
+		}, ctx, serverDestination(server))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if !pipelined {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if _, err := client.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		if pipelined {
+			if err := held.flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		select {
+		case records := <-startup:
+			return records
+		case <-time.After(10 * time.Second):
+			t.Fatal("the server did not finish the handshake")
+			return nil
+		}
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		if records := dial(false); len(records) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the target's HTTP/2 startup was not measured")
+		}
+	}
+	if records := dial(true); len(records) != 1 || len(records[0].Frames) != 3 {
+		t.Fatalf("client data waiting: startup %+v, want the combined record", records)
+	}
+	if records := dial(false); len(records) != 2 || len(records[0].Frames) != 2 {
+		t.Fatalf("nothing waiting: startup %+v, want SETTINGS first", records)
+	}
+}
+
+// writeTimes records when each write reached the socket.
+type writeTimes struct {
+	gonet.Conn
+	mu    sync.Mutex
+	times []time.Time
+}
+
+func (c *writeTimes) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	c.times = append(c.times, time.Now())
+	c.mu.Unlock()
+	return c.Conn.Write(b)
+}
+
+// In browser mode Chrome's first application data trails its Finished by
+// at least 250 µs; without browser mode nothing waits.
+func TestFirstDataGapOnTheWire(t *testing.T) {
+	server := startRealityServer(t, goTarget(t))
+	gap := func(browser string) (time.Duration, *UConn) {
+		t.Helper()
+		raw, err := gonet.Dial("tcp", server.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		times := &writeTimes{Conn: raw}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		conn, err := UClient(times, &Config{
+			Fingerprint: "chrome", ServerName: testServerName, PublicKey: server.public,
+			ShortId: make([]byte, 8), SpiderY: make([]int64, 10), Browser: browser,
+		}, ctx, serverDestination(server))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		times.mu.Lock()
+		handshakeWrites := len(times.times)
+		times.mu.Unlock()
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			t.Fatal(err)
+		}
+		times.mu.Lock()
+		defer times.mu.Unlock()
+		if len(times.times) != handshakeWrites+1 {
+			t.Fatalf("%d writes, want the handshake's %d and one", len(times.times), handshakeWrites)
+		}
+		return times.times[handshakeWrites].Sub(times.times[handshakeWrites-1]), conn.(*UConn)
+	}
+	for range 3 {
+		if d, _ := gap("auto"); d < 250*time.Microsecond {
+			t.Fatalf("browser mode: first data %v after Finished, want at least 250µs", d)
+		}
+	}
+	d, conn := gap("")
+	if !conn.firstData.IsZero() || d >= 250*time.Microsecond {
+		t.Fatalf("without browser mode the first data waited %v", d)
+	}
+	t.Logf("without browser mode the first data went %v after Finished", d)
 }

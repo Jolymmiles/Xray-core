@@ -490,9 +490,10 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 								fmt.Printf("REALITY remoteAddr: %v\tlen(postHandshakeRecord): %v\n", remoteAddr, len(postHandshakeRecord))
 							}
 						}
-						if h2Profiles != nil && len(hs.c.h2Startup) != 0 {
+						if h2Profiles != nil && len(hs.c.h2Startup) != 0 && !hs.usingPSK && !firefox {
 							// The target starts HTTP/2 once its tickets are out,
-							// with whatever the client sent by then.
+							// with whatever the client sent by then. Only a full
+							// Chromium handshake chooses by it.
 							pipelined := hs.c.inputPending()
 							if records := h2Profiles.records(hs.usingPSK, firefox, pipelined); len(records) != 0 {
 								hs.c.h2Startup = records
