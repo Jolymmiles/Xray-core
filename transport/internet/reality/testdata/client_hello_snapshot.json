@@ -49,6 +49,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "edge": {
@@ -94,6 +97,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "firefox": {
@@ -234,6 +240,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_100_psk": {
@@ -280,6 +289,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_106_shuffle": {
@@ -323,6 +335,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_112_psk_shuf": {
@@ -373,6 +388,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_115_pq_psk": {
@@ -419,6 +437,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_120_pq": {
@@ -464,6 +485,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_131": {
@@ -509,6 +533,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_133": {
@@ -554,6 +581,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_155": {
@@ -600,6 +630,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_58": {
@@ -828,6 +861,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellochrome_auto": {
@@ -874,6 +910,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "helloedge_106": {
@@ -917,6 +956,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "helloedge_85": {
@@ -1006,6 +1048,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellofirefox_102": {
@@ -1522,6 +1567,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "helloqq_auto": {
@@ -1567,6 +1615,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellorandomized": {
@@ -1607,6 +1658,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "hellorandomizednoalpn": {
@@ -1856,6 +1910,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "randomized@32b8ac49": {

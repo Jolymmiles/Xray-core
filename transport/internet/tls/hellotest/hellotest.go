@@ -94,6 +94,7 @@ type Snapshot struct {
 	KeyShares  []string `json:"keyShares,omitempty"`
 	Versions   []uint16 `json:"versions,omitempty"`
 	ALPN       []string `json:"alpn,omitempty"`
+	ALPS       []string `json:"alps,omitempty"`
 	Error      string   `json:"error,omitempty"`
 }
 
@@ -132,6 +133,8 @@ func Summarize(record []byte) (Snapshot, error) {
 			snapshot.KeyShares, err = readKeyShares(&data)
 		case 16: // application_layer_protocol_negotiation
 			snapshot.ALPN, err = readProtocols(&data)
+		case 17513, 17613: // application_settings, old and new codepoint
+			snapshot.ALPS, err = readProtocols(&data)
 		}
 		if err != nil {
 			return snapshot, err

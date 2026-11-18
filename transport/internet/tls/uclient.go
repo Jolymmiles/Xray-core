@@ -113,6 +113,7 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 			config.NextProtos = []string{"http/1.1"}
 		} else {
 			setALPN(uConn, alpn)
+			keepALPSWithinALPN(uConn, alpn)
 			rebuild = true
 		}
 	}
@@ -122,6 +123,35 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 		}
 	}
 	return uConn, nil
+}
+
+// keepALPSWithinALPN leaves application settings only for protocols the
+// hello offers, and no ALPS extension when none is left. Chromium adds ALPS
+// for the protocols it puts in ALPN, and BoringSSL sends no extension
+// without one, so a hello that offers http/1.1 alone carries no ALPS for h2.
+func keepALPSWithinALPN(uConn *utls.UConn, alpn []string) {
+	offered := func(protocols []string) []string {
+		return slices.DeleteFunc(slices.Clone(protocols), func(protocol string) bool {
+			return !slices.Contains(alpn, protocol)
+		})
+	}
+	extensions := make([]utls.TLSExtension, 0, len(uConn.Extensions))
+	for _, extension := range uConn.Extensions {
+		switch settings := extension.(type) {
+		case *utls.ApplicationSettingsExtension:
+			settings.SupportedProtocols = offered(settings.SupportedProtocols)
+			if len(settings.SupportedProtocols) == 0 {
+				continue
+			}
+		case *utls.ApplicationSettingsExtensionNew:
+			settings.SupportedProtocols = offered(settings.SupportedProtocols)
+			if len(settings.SupportedProtocols) == 0 {
+				continue
+			}
+		}
+		extensions = append(extensions, extension)
+	}
+	uConn.Extensions = extensions
 }
 
 // dropKeyShare removes the key share for group from the hello and reports

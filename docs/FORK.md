@@ -49,7 +49,12 @@ guard it.
   `WithHTTP11ALPN` replaces upstream's `WebsocketHandshakeContext` without
   reading uTLS's private config; for a fingerprint without ALPN it adds the
   extension before `pre_shared_key`, where upstream appends it after, which
-  breaks a handshake that resumes a session. The `randomized` and
+  breaks a handshake that resumes a session. It also drops the
+  fingerprint's ALPS for a protocol the hello no longer offers, and the
+  extension with it when none is left: Chromium adds ALPS for the protocols
+  it puts in ALPN, so a WebSocket or HTTPUpgrade hello that offers http/1.1
+  alone carries no ALPS, where upstream keeps ALPS for h2 next to it
+  (`TestHelloOffersALPSOnlyForItsALPN`). The `randomized` and
   `randomizednoalpn` presets always offer X25519MLKEM768 with its key share
   and send key shares for X25519MLKEM768 and X25519 only; upstream draws the
   hybrid group and its key share independently, so a process could start

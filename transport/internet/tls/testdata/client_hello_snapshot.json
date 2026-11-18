@@ -46,8 +46,8 @@
     ]
   },
   "http11-resumption/chrome": {
-    "sha256": "b7c3854b374f970722ab3003fbc3030dbf61ba46f382e02dc37a3e308daf9526",
-    "length": 2012,
+    "sha256": "3da49331a49e568b2731dff4703f0b851854d66ae9b5b1d4c7bb357760e09788",
+    "length": 2003,
     "extensions": [
       27242,
       65037,
@@ -60,7 +60,6 @@
       51764,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -91,8 +90,8 @@
     ]
   },
   "http11-resumption/edge": {
-    "sha256": "c49f94cd4ecf59d7744ee867c9c3e59c33d814b4dfb4ffa72870d21ecba49758",
-    "length": 1822,
+    "sha256": "a7d241cabaea5821a77eed3c7f9dbee61208f96e384693125b55fd82b2af032c",
+    "length": 1813,
     "extensions": [
       27242,
       65037,
@@ -104,7 +103,6 @@
       65281,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -291,7 +289,7 @@
     ]
   },
   "http11-resumption/hellochrome_100": {
-    "sha256": "d3a9cd848b618aec8e7044ff70708107bc5ed2cacf1cc507f0e2b46e4937feeb",
+    "sha256": "ca0daf1ab0d0619ea7f9a411015d1bbeecff3d50ff66efb0fb9e57174b7f2bc6",
     "length": 517,
     "extensions": [
       19018,
@@ -309,7 +307,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -336,7 +333,7 @@
     "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "http11-resumption/hellochrome_102": {
-    "sha256": "d3a9cd848b618aec8e7044ff70708107bc5ed2cacf1cc507f0e2b46e4937feeb",
+    "sha256": "ca0daf1ab0d0619ea7f9a411015d1bbeecff3d50ff66efb0fb9e57174b7f2bc6",
     "length": 517,
     "extensions": [
       19018,
@@ -354,7 +351,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -378,11 +374,10 @@
     ]
   },
   "http11-resumption/hellochrome_106_shuffle": {
-    "sha256": "7c7b4d9d6cc45cb6dbedb58217668e537b46150a30f60e80a4a21c218f5176b4",
+    "sha256": "9135ede3e90b27a6fd1f39080563c4d86ef94960c1a1ba118ca283e5aefdffe4",
     "length": 517,
     "extensions": [
       27242,
-      17513,
       35,
       23,
       5,
@@ -426,11 +421,10 @@
     "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "http11-resumption/hellochrome_115_pq": {
-    "sha256": "06951c79dfa30b987657d774fb8a7b62c48b322fe4613bc8544f9ce5760d3351",
-    "length": 1528,
+    "sha256": "94cdb85172a6d47aad3950ac360c110d03e54115a35ae47c50f867b85a1e3743",
+    "length": 1519,
     "extensions": [
       27242,
-      17513,
       35,
       23,
       5,
@@ -472,8 +466,8 @@
     "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "http11-resumption/hellochrome_120": {
-    "sha256": "3d9ba1f0085fee3e911a7b9e61c785c82bcbf6c9026cbd73120a186e4360f6dc",
-    "length": 528,
+    "sha256": "f5d37f223a2989b1f23ca0156489d3ec3068831128ce9df6f0d80e6537b0d043",
+    "length": 519,
     "extensions": [
       27242,
       65037,
@@ -483,7 +477,6 @@
       0,
       43,
       65281,
-      17513,
       11,
       10,
       27,
@@ -514,8 +507,8 @@
     ]
   },
   "http11-resumption/hellochrome_120_pq": {
-    "sha256": "e10d288cdc50b34a4d5dab29864649f82fa2399114c753c24b02f280d3b8998e",
-    "length": 1814,
+    "sha256": "8d4de509f1e17bc1fd81ee2bb6328fac9532840fcb7761a1ddeb491fc076956b",
+    "length": 1805,
     "extensions": [
       27242,
       65037,
@@ -525,7 +518,6 @@
       0,
       43,
       65281,
-      17513,
       11,
       10,
       27,
@@ -558,8 +550,8 @@
     ]
   },
   "http11-resumption/hellochrome_131": {
-    "sha256": "e95abc35dfcb06931e14a0dd6ba60343553e09d472ba8c556d58fdb3c7fb2e11",
-    "length": 1814,
+    "sha256": "b5871b60bff299bc286257c3a23c7c26294b8b0e8965532916c478195af6bbd0",
+    "length": 1805,
     "extensions": [
       27242,
       65037,
@@ -569,7 +561,6 @@
       0,
       43,
       65281,
-      17513,
       11,
       10,
       27,
@@ -602,8 +593,8 @@
     ]
   },
   "http11-resumption/hellochrome_133": {
-    "sha256": "abf5e9eb1d01e39061e4e54920eb85d3221870d60a4b389c4939722503914d4f",
-    "length": 1814,
+    "sha256": "b5871b60bff299bc286257c3a23c7c26294b8b0e8965532916c478195af6bbd0",
+    "length": 1805,
     "extensions": [
       27242,
       65037,
@@ -613,7 +604,6 @@
       0,
       43,
       65281,
-      17613,
       11,
       10,
       27,
@@ -646,8 +636,8 @@
     ]
   },
   "http11-resumption/hellochrome_155": {
-    "sha256": "b7c3854b374f970722ab3003fbc3030dbf61ba46f382e02dc37a3e308daf9526",
-    "length": 2012,
+    "sha256": "3da49331a49e568b2731dff4703f0b851854d66ae9b5b1d4c7bb357760e09788",
+    "length": 2003,
     "extensions": [
       27242,
       65037,
@@ -660,7 +650,6 @@
       51764,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -920,7 +909,7 @@
     ]
   },
   "http11-resumption/hellochrome_96": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -938,7 +927,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -964,8 +952,8 @@
     ]
   },
   "http11-resumption/hellochrome_auto": {
-    "sha256": "b7c3854b374f970722ab3003fbc3030dbf61ba46f382e02dc37a3e308daf9526",
-    "length": 2012,
+    "sha256": "3da49331a49e568b2731dff4703f0b851854d66ae9b5b1d4c7bb357760e09788",
+    "length": 2003,
     "extensions": [
       27242,
       65037,
@@ -978,7 +966,6 @@
       51764,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -1009,7 +996,7 @@
     ]
   },
   "http11-resumption/helloedge_106": {
-    "sha256": "d3a9cd848b618aec8e7044ff70708107bc5ed2cacf1cc507f0e2b46e4937feeb",
+    "sha256": "ca0daf1ab0d0619ea7f9a411015d1bbeecff3d50ff66efb0fb9e57174b7f2bc6",
     "length": 517,
     "extensions": [
       19018,
@@ -1027,7 +1014,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -1094,8 +1080,8 @@
     ]
   },
   "http11-resumption/helloedge_auto": {
-    "sha256": "c49f94cd4ecf59d7744ee867c9c3e59c33d814b4dfb4ffa72870d21ecba49758",
-    "length": 1822,
+    "sha256": "a7d241cabaea5821a77eed3c7f9dbee61208f96e384693125b55fd82b2af032c",
+    "length": 1813,
     "extensions": [
       27242,
       65037,
@@ -1107,7 +1093,6 @@
       65281,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -1723,7 +1708,7 @@
     ]
   },
   "http11-resumption/helloqq_11_1": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -1741,7 +1726,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -1767,7 +1751,7 @@
     ]
   },
   "http11-resumption/helloqq_auto": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -1785,7 +1769,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -1846,8 +1829,8 @@
     ]
   },
   "http11-resumption/hellorandomizedalpn": {
-    "sha256": "512ec675606a797c338a9a11dd38d23fee80a0ed2f061c1f034b92897d13bc92",
-    "length": 1498,
+    "sha256": "6181d48abbb29f5a5766ccbe7bdc30ee24e762d67ae923e62c83569911795cd2",
+    "length": 1489,
     "extensions": [
       18,
       23,
@@ -1860,7 +1843,6 @@
       0,
       35,
       16,
-      17513,
       51
     ],
     "groups": [
@@ -2086,7 +2068,7 @@
     ]
   },
   "http11-resumption/qq": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -2104,7 +2086,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -2506,8 +2487,8 @@
     ]
   },
   "http11/chrome": {
-    "sha256": "b7c3854b374f970722ab3003fbc3030dbf61ba46f382e02dc37a3e308daf9526",
-    "length": 2012,
+    "sha256": "3da49331a49e568b2731dff4703f0b851854d66ae9b5b1d4c7bb357760e09788",
+    "length": 2003,
     "extensions": [
       27242,
       65037,
@@ -2520,7 +2501,6 @@
       51764,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -2551,8 +2531,8 @@
     ]
   },
   "http11/edge": {
-    "sha256": "c49f94cd4ecf59d7744ee867c9c3e59c33d814b4dfb4ffa72870d21ecba49758",
-    "length": 1822,
+    "sha256": "a7d241cabaea5821a77eed3c7f9dbee61208f96e384693125b55fd82b2af032c",
+    "length": 1813,
     "extensions": [
       27242,
       65037,
@@ -2564,7 +2544,6 @@
       65281,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -2751,7 +2730,7 @@
     ]
   },
   "http11/hellochrome_100": {
-    "sha256": "d3a9cd848b618aec8e7044ff70708107bc5ed2cacf1cc507f0e2b46e4937feeb",
+    "sha256": "ca0daf1ab0d0619ea7f9a411015d1bbeecff3d50ff66efb0fb9e57174b7f2bc6",
     "length": 517,
     "extensions": [
       19018,
@@ -2769,7 +2748,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -2796,7 +2774,7 @@
     "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "http11/hellochrome_102": {
-    "sha256": "d3a9cd848b618aec8e7044ff70708107bc5ed2cacf1cc507f0e2b46e4937feeb",
+    "sha256": "ca0daf1ab0d0619ea7f9a411015d1bbeecff3d50ff66efb0fb9e57174b7f2bc6",
     "length": 517,
     "extensions": [
       19018,
@@ -2814,7 +2792,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -2838,11 +2815,10 @@
     ]
   },
   "http11/hellochrome_106_shuffle": {
-    "sha256": "7c7b4d9d6cc45cb6dbedb58217668e537b46150a30f60e80a4a21c218f5176b4",
+    "sha256": "9135ede3e90b27a6fd1f39080563c4d86ef94960c1a1ba118ca283e5aefdffe4",
     "length": 517,
     "extensions": [
       27242,
-      17513,
       35,
       23,
       5,
@@ -2886,11 +2862,10 @@
     "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "http11/hellochrome_115_pq": {
-    "sha256": "06951c79dfa30b987657d774fb8a7b62c48b322fe4613bc8544f9ce5760d3351",
-    "length": 1528,
+    "sha256": "94cdb85172a6d47aad3950ac360c110d03e54115a35ae47c50f867b85a1e3743",
+    "length": 1519,
     "extensions": [
       27242,
-      17513,
       35,
       23,
       5,
@@ -2932,8 +2907,8 @@
     "error": "tls: empty psk detected; remove the psk extension for this connection or set OmitEmptyPsk to true to conceal it in utls"
   },
   "http11/hellochrome_120": {
-    "sha256": "3d9ba1f0085fee3e911a7b9e61c785c82bcbf6c9026cbd73120a186e4360f6dc",
-    "length": 528,
+    "sha256": "f5d37f223a2989b1f23ca0156489d3ec3068831128ce9df6f0d80e6537b0d043",
+    "length": 519,
     "extensions": [
       27242,
       65037,
@@ -2943,7 +2918,6 @@
       0,
       43,
       65281,
-      17513,
       11,
       10,
       27,
@@ -2974,8 +2948,8 @@
     ]
   },
   "http11/hellochrome_120_pq": {
-    "sha256": "e10d288cdc50b34a4d5dab29864649f82fa2399114c753c24b02f280d3b8998e",
-    "length": 1814,
+    "sha256": "8d4de509f1e17bc1fd81ee2bb6328fac9532840fcb7761a1ddeb491fc076956b",
+    "length": 1805,
     "extensions": [
       27242,
       65037,
@@ -2985,7 +2959,6 @@
       0,
       43,
       65281,
-      17513,
       11,
       10,
       27,
@@ -3018,8 +2991,8 @@
     ]
   },
   "http11/hellochrome_131": {
-    "sha256": "e95abc35dfcb06931e14a0dd6ba60343553e09d472ba8c556d58fdb3c7fb2e11",
-    "length": 1814,
+    "sha256": "b5871b60bff299bc286257c3a23c7c26294b8b0e8965532916c478195af6bbd0",
+    "length": 1805,
     "extensions": [
       27242,
       65037,
@@ -3029,7 +3002,6 @@
       0,
       43,
       65281,
-      17513,
       11,
       10,
       27,
@@ -3062,8 +3034,8 @@
     ]
   },
   "http11/hellochrome_133": {
-    "sha256": "abf5e9eb1d01e39061e4e54920eb85d3221870d60a4b389c4939722503914d4f",
-    "length": 1814,
+    "sha256": "b5871b60bff299bc286257c3a23c7c26294b8b0e8965532916c478195af6bbd0",
+    "length": 1805,
     "extensions": [
       27242,
       65037,
@@ -3073,7 +3045,6 @@
       0,
       43,
       65281,
-      17613,
       11,
       10,
       27,
@@ -3106,8 +3077,8 @@
     ]
   },
   "http11/hellochrome_155": {
-    "sha256": "b7c3854b374f970722ab3003fbc3030dbf61ba46f382e02dc37a3e308daf9526",
-    "length": 2012,
+    "sha256": "3da49331a49e568b2731dff4703f0b851854d66ae9b5b1d4c7bb357760e09788",
+    "length": 2003,
     "extensions": [
       27242,
       65037,
@@ -3120,7 +3091,6 @@
       51764,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -3380,7 +3350,7 @@
     ]
   },
   "http11/hellochrome_96": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -3398,7 +3368,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -3424,8 +3393,8 @@
     ]
   },
   "http11/hellochrome_auto": {
-    "sha256": "b7c3854b374f970722ab3003fbc3030dbf61ba46f382e02dc37a3e308daf9526",
-    "length": 2012,
+    "sha256": "3da49331a49e568b2731dff4703f0b851854d66ae9b5b1d4c7bb357760e09788",
+    "length": 2003,
     "extensions": [
       27242,
       65037,
@@ -3438,7 +3407,6 @@
       51764,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -3469,7 +3437,7 @@
     ]
   },
   "http11/helloedge_106": {
-    "sha256": "d3a9cd848b618aec8e7044ff70708107bc5ed2cacf1cc507f0e2b46e4937feeb",
+    "sha256": "ca0daf1ab0d0619ea7f9a411015d1bbeecff3d50ff66efb0fb9e57174b7f2bc6",
     "length": 517,
     "extensions": [
       19018,
@@ -3487,7 +3455,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -3554,8 +3521,8 @@
     ]
   },
   "http11/helloedge_auto": {
-    "sha256": "c49f94cd4ecf59d7744ee867c9c3e59c33d814b4dfb4ffa72870d21ecba49758",
-    "length": 1822,
+    "sha256": "a7d241cabaea5821a77eed3c7f9dbee61208f96e384693125b55fd82b2af032c",
+    "length": 1813,
     "extensions": [
       27242,
       65037,
@@ -3567,7 +3534,6 @@
       65281,
       11,
       10,
-      17613,
       45,
       18,
       27,
@@ -4183,7 +4149,7 @@
     ]
   },
   "http11/helloqq_11_1": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -4201,7 +4167,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -4227,7 +4192,7 @@
     ]
   },
   "http11/helloqq_auto": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -4245,7 +4210,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -4294,8 +4258,8 @@
     ]
   },
   "http11/hellorandomizedalpn": {
-    "sha256": "512ec675606a797c338a9a11dd38d23fee80a0ed2f061c1f034b92897d13bc92",
-    "length": 1498,
+    "sha256": "6181d48abbb29f5a5766ccbe7bdc30ee24e762d67ae923e62c83569911795cd2",
+    "length": 1489,
     "extensions": [
       18,
       23,
@@ -4308,7 +4272,6 @@
       0,
       35,
       16,
-      17513,
       51
     ],
     "groups": [
@@ -4534,7 +4497,7 @@
     ]
   },
   "http11/qq": {
-    "sha256": "52b2d0046a74467e3e558de8e2732f7c49d3823759f3bd0c543fdb1b2a902194",
+    "sha256": "e7587608a7f08fc8b08ffb42e2d4a12bf2d58f281763de3646202da80a3a4675",
     "length": 517,
     "extensions": [
       19018,
@@ -4552,7 +4515,6 @@
       45,
       43,
       27,
-      17513,
       10794,
       21
     ],
@@ -4996,6 +4958,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/edge": {
@@ -5041,6 +5006,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/firefox": {
@@ -5244,6 +5212,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_100_psk": {
@@ -5290,6 +5261,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_106_shuffle": {
@@ -5333,6 +5307,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_112_psk_shuf": {
@@ -5383,6 +5360,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_115_pq_psk": {
@@ -5429,6 +5409,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_120_pq": {
@@ -5474,6 +5457,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_131": {
@@ -5519,6 +5505,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_133": {
@@ -5564,6 +5553,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_155": {
@@ -5610,6 +5602,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_58": {
@@ -5890,6 +5885,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellochrome_auto": {
@@ -5936,6 +5934,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/helloedge_106": {
@@ -5979,6 +5980,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/helloedge_85": {
@@ -6068,6 +6072,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellofirefox_102": {
@@ -6723,6 +6730,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/helloqq_auto": {
@@ -6768,6 +6778,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellorandomized": {
@@ -6841,6 +6854,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/hellorandomizednoalpn": {
@@ -7090,6 +7106,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "resumption/randomized@32b8ac49": {
@@ -7500,6 +7519,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/edge": {
@@ -7545,6 +7567,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/firefox": {
@@ -7748,6 +7773,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_100_psk": {
@@ -7794,6 +7822,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_106_shuffle": {
@@ -7837,6 +7868,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_112_psk_shuf": {
@@ -7887,6 +7921,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_115_pq_psk": {
@@ -7933,6 +7970,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_120_pq": {
@@ -7978,6 +8018,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_131": {
@@ -8023,6 +8066,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_133": {
@@ -8068,6 +8114,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_155": {
@@ -8114,6 +8163,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_58": {
@@ -8394,6 +8446,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellochrome_auto": {
@@ -8440,6 +8495,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/helloedge_106": {
@@ -8483,6 +8541,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/helloedge_85": {
@@ -8572,6 +8633,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellofirefox_102": {
@@ -9227,6 +9291,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/helloqq_auto": {
@@ -9272,6 +9339,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellorandomized": {
@@ -9333,6 +9403,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/hellorandomizednoalpn": {
@@ -9582,6 +9655,9 @@
     "alpn": [
       "h2",
       "http/1.1"
+    ],
+    "alps": [
+      "h2"
     ]
   },
   "stock/randomized@32b8ac49": {
