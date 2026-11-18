@@ -86,6 +86,10 @@ type TicketShape struct {
 	BadBinder        []byte
 	BadBinderDelay   time.Duration
 	badBinderClose   refusalKind
+	// refusalAt is when the refusal was measured. A refresh carries it
+	// only for ticketShapeMaxAge, as long as a profile lives without a
+	// successful measurement.
+	refusalAt time.Time
 
 	noTickets        bool
 	probed           time.Time
@@ -99,7 +103,8 @@ type TicketShape struct {
 func storeTicketShape(config *Config, key, sni string, alpn int, shape, previous *TicketShape) {
 	shape.probed = time.Now()
 	published := shape
-	if previous != nil && previous.RefusesBadBinder && !previous.expired(shape.probed) && shape.Resumes {
+	if previous != nil && previous.RefusesBadBinder && shape.Resumes &&
+		shape.probed.Sub(previous.refusalAt) < ticketShapeMaxAge && !previous.expired(shape.probed) {
 		carried := *shape
 		carried.copyRefusal(previous)
 		published = &carried
@@ -123,6 +128,7 @@ func storeTicketShape(config *Config, key, sni string, alpn int, shape, previous
 	if reply.kind != noRefusal {
 		final.RefusesBadBinder = true
 		final.BadBinder, final.BadBinderDelay, final.badBinderClose = reply.alerts, reply.delay, reply.kind
+		final.refusalAt = time.Now()
 	}
 	GlobalTicketShapes.CompareAndSwap(key, published, &final)
 }
@@ -130,6 +136,7 @@ func storeTicketShape(config *Config, key, sni string, alpn int, shape, previous
 func (shape *TicketShape) copyRefusal(from *TicketShape) {
 	shape.RefusesBadBinder = from.RefusesBadBinder
 	shape.BadBinder, shape.BadBinderDelay, shape.badBinderClose = from.BadBinder, from.BadBinderDelay, from.badBinderClose
+	shape.refusalAt = from.refusalAt
 }
 
 // ticketRecordOverhead is what a TLS 1.3 record holding a NewSessionTicket
