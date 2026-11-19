@@ -306,9 +306,11 @@ func (h heldReport) Handle(message log.Message) {
 	}
 }
 
-// The worker is closed before the carrier's error is reported, so that its
-// sessions get their replies and their end while a log handler takes its
-// time; reported first, the error would keep them silent for as long.
+// The factory has closed the downlink's end, the worker and the uplink before
+// it reports the carrier's error, so that the sessions get their replies and
+// their end while a log handler takes its time; reported earlier, the error
+// would keep them silent for as long. The session here is in the middle of an
+// upload larger than the uplink holds, and its reply has no end of its own.
 func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -331,12 +333,25 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 			stop:       stop,
 			result:     errors.New("connection reset"),
 			returned:   make(chan struct{}),
+			withoutEnd: true,
 		}
 		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer worker.Close()
+		sendBlocks := func(count int) error {
+			var blocks buf.MultiBuffer
+			for range count {
+				block := buf.New()
+				block.Extend(buf.Size)
+				blocks = append(blocks, block)
+			}
+			return uploadWriter.WriteMultiBuffer(blocks)
+		}
+		if err := sendBlocks(32); err != nil {
+			t.Fatal(err)
+		}
 		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
 			Target: net.TCPDestination(net.LocalHostIP, 80),
 		}})
@@ -348,7 +363,29 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 			t.Fatal("the carrier's error is being reported and the worker is still open")
 		}
 
-		// The report is still held: the session gets its reply and its end.
+		// The report is still held. The uplink is interrupted: the upload
+		// it held is released, and what the application sends is taken.
+		sent := make(chan error, 1)
+		go func() {
+			for range 2 {
+				if err := sendBlocks(1); err != nil {
+					sent <- err
+					return
+				}
+			}
+			sent <- nil
+		}()
+		synctest.Wait()
+		select {
+		case err := <-sent:
+			if err != nil {
+				t.Fatalf("the upload failed: %v", err)
+			}
+		default:
+			t.Fatal("the carrier's error is being reported and the application is held on its upload")
+		}
+
+		// The downlink is closed: the session gets its reply and its end.
 		var body string
 		for {
 			data, err := reply.ReadMultiBufferTimeout(time.Second)
@@ -358,7 +395,7 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 				break
 			}
 			if err != nil {
-				t.Fatalf("read %q, then: %v", body, err)
+				t.Fatalf("the carrier's error is being reported; the application read %q, then: %v", body, err)
 			}
 		}
 		if body != "firstlast" {

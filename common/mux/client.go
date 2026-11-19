@@ -187,7 +187,8 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		// which answers a reply for a closed session with an END, away from
 		// the end of the downlink and so from finish(). Interrupted, it
 		// fails every write, and fetchInput deals with what its session
-		// still uploads.
+		// still uploads. The worker is closed first: fetchInput takes a
+		// write that fails on an open worker for the end of its session.
 		common.Interrupt(uplinkReader)
 		cancel()
 		// Reported last: a log handler takes its time, and reported before

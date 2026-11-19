@@ -96,12 +96,14 @@ func (w *heldWriter) WriteMultiBuffer(data buf.MultiBuffer) error {
 // answeringCarrier answers the worker's first session with two frames and an
 // end, waiting between the frames until the first is being delivered, then
 // returns result. With a nil result it has closed the downlink as VLESS does;
-// with an error it leaves it open.
+// with an error it leaves it open. With withoutEnd it does not send the end,
+// as a carrier that fails in the middle of a reply.
 type answeringCarrier struct {
 	delivering <-chan struct{}
 	stop       <-chan struct{} // closed when the test ends, whatever it saw
 	result     error
 	returned   chan struct{}
+	withoutEnd bool
 }
 
 func (c *answeringCarrier) Process(ctx context.Context, link *transport.Link, _ internet.Dialer) error {
@@ -132,8 +134,10 @@ func (c *answeringCarrier) Process(ctx context.Context, link *transport.Link, _ 
 	if err := send("last"); err != nil {
 		return err
 	}
-	if err := response.Close(); err != nil {
-		return err
+	if !c.withoutEnd {
+		if err := response.Close(); err != nil {
+			return err
+		}
 	}
 	if c.result != nil {
 		return c.result
