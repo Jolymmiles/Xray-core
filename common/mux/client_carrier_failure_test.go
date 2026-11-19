@@ -99,6 +99,7 @@ func (w *heldWriter) WriteMultiBuffer(data buf.MultiBuffer) error {
 // with an error it leaves it open.
 type answeringCarrier struct {
 	delivering <-chan struct{}
+	stop       <-chan struct{} // closed when the test ends, whatever it saw
 	result     error
 	returned   chan struct{}
 }
@@ -123,6 +124,8 @@ func (c *answeringCarrier) Process(ctx context.Context, link *transport.Link, _ 
 	}
 	select {
 	case <-c.delivering:
+	case <-c.stop:
+		return errors.New("the test ended before the first frame was delivered")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -154,7 +157,9 @@ func TestDialingWorkerDeliversWhatItsCarrierWroteBeforeEnding(t *testing.T) {
 			sink := &heldWriter{Writer: output, writing: make(chan struct{}), resume: make(chan struct{})}
 			resume := sync.OnceFunc(func() { close(sink.resume) })
 			defer resume()
-			carrier := &answeringCarrier{delivering: sink.writing, result: result, returned: make(chan struct{})}
+			stop := make(chan struct{})
+			defer close(stop)
+			carrier := &answeringCarrier{delivering: sink.writing, stop: stop, result: result, returned: make(chan struct{})}
 			factory := mux.DialingWorkerFactory{Proxy: carrier}
 			worker, err := factory.Create()
 			if err != nil {

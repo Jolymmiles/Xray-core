@@ -185,6 +185,14 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		common.Close(downlinkWriter)
 		common.Must(c.Close())
 		cancel()
+		// Nobody reads the uplink any more, and what is written to it has
+		// nowhere to go. Left unread it fills, and a write to it would hold
+		// fetchOutput, which answers a reply for a closed session with an
+		// END, away from the end of the downlink and so from finish(), the
+		// only place that interrupts the uplink. Interrupting it here would
+		// end the sessions that are writing before their replies are
+		// delivered. finish() ends this read.
+		_ = buf.Copy(uplinkReader, buf.Discard)
 	}(f.Proxy, f.Dialer, c.done)
 
 	return c, nil
@@ -281,7 +289,9 @@ func (m *ClientWorker) monitor() {
 		checkCount := m.sessionManager.count()
 		select {
 		case <-m.done.Wait():
-			// Cleanup already completed in finish() before done was closed.
+			// finish() does the cleanup. It has run already, except in a
+			// dialing worker whose carrier ended: there done is closed at
+			// once, and finish() follows when the downlink is drained.
 			return
 		case <-m.timer.C:
 			if m.sessionManager.closeIfIdle(checkSize, checkCount) {
