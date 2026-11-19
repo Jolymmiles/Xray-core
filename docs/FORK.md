@@ -134,11 +134,14 @@ guard it.
     Firefox does not send. The ticket is taken from the cache before the
     hello is built, because the hello depends on it. Xray's caches give a
     ticket to one connection, so it is offered once, as Firefox does; a
-    session cache a caller of `NewUClient` brings keeps its own policy. A
-    connection that fails after it offered a ticket, for any fingerprint,
-    leaves the newer ticket another connection has stored since: uTLS drops
-    the failed handshake's ticket by server name, and the cache had given
-    that one up already (`TestFailedDialKeepsANewerTicket`).
+    session cache a caller of `NewUClient` brings keeps its own policy. In
+    the cache behind the TLS settings, for any fingerprint, a connection
+    that fails after it offered a ticket leaves the newer ticket another
+    connection has stored since, for the next connection to offer: uTLS
+    drops the failed handshake's ticket by server name, and that cache had
+    given it up already (`TestFailedDialKeepsANewerTicket`). REALITY keeps
+    its own rule: a failed offer clears the server's tickets and holds new
+    offers back for ten minutes.
     Limits: Firefox also
     sends `early_data` when a ticket allows it, and Xray, which sends no
     early data, does not, as Firefox with `security.tls.enable_0rtt_data`
