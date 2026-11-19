@@ -224,8 +224,8 @@ func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination, openingAlo
 	}
 }
 
-// A session whose opening frame the uplink refused has no reply to wait for:
-// the carrier never saw it. It is closed at once, also while another
+// A session whose opening frame never reached the carrier has no reply to
+// wait for. It is closed when the carrier returns, also while another
 // session's slow reader holds the worker's reader. The opening frame is the
 // empty one a session sends after a wait when it has nothing to upload, or
 // the one that carries its first upload.
@@ -307,11 +307,11 @@ func endsSessionOfRefusedOpening(t *testing.T, withUpload bool) {
 		letFail()
 		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
-		if active := worker.ActiveConnections(); active != 2 {
-			t.Fatalf("%d sessions before the opening frame was sent, want 2", active)
+		// The carrier never saw the session: it is closed with the carrier's
+		// return, and does not wait for its opening frame to be refused.
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions after the carrier returned, want the slow one only", active)
 		}
-
-		// With nothing to upload the session opens itself after a wait.
 		releaseUplink()
 		time.Sleep(time.Second)
 		synctest.Wait()
@@ -468,12 +468,13 @@ func endsUnansweredSession(t *testing.T, result error) {
 
 // The worker's state is taken when a refused write returns to the session
 // that made it. A carrier can interrupt its uplink and return right after:
-// when it has returned by then, the worker is closed and the session is kept
-// for its reply, as after any refusal on a closed worker. The refusal is held
-// here until the carrier has returned;
+// when it has returned by then, the session is treated as one of a closed
+// worker. Nothing was written for it, so it is closed with the carrier's
+// return and does not wait for the session whose slow reader holds the
+// worker's reader. The refusal is held here until the carrier has returned;
 // TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile
 // has the other order.
-func TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier(t *testing.T) {
+func TestDialingWorkerEndsASessionWhoseRefusalReturnsAfterItsCarrier(t *testing.T) {
 	log.RegisterHandler(discardRecords{})
 	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
 	synctest.Test(t, func(t *testing.T) {
@@ -556,15 +557,13 @@ func TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier(t *testing
 		synctest.Wait()
 		letReturn()
 		synctest.Wait()
-		if active := worker.ActiveConnections(); active != 2 {
-			t.Fatalf("%d sessions after the refusal returned on a closed worker, want both", active)
-		}
-
-		// The kept session ends when its application goes away.
-		upload.Interrupt()
-		synctest.Wait()
 		if active := worker.ActiveConnections(); active != 1 {
-			t.Fatalf("%d sessions after one application left, want the slow one only", active)
+			t.Fatalf("%d sessions after the refusal returned on a closed worker, want the slow one only", active)
+		}
+		data, err := reply.ReadMultiBufferTimeout(time.Second)
+		buf.ReleaseMulti(data)
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("the session's reply did not end: %v", err)
 		}
 	})
 }

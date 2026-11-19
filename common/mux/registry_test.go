@@ -248,3 +248,48 @@ type callbackRegistryLease struct {
 }
 
 func (l *callbackRegistryLease) Close() { l.once.Do(l.close) }
+
+// A registry closed around the sessions kept for their replies admits
+// nothing more and ends what was waiting to be admitted, as a full close
+// does. The kept session stays until it is closed, and the registry is idle
+// only then.
+func TestSessionRegistryClosedAroundAKeptSessionAdmitsNothing(t *testing.T) {
+	registry := newSessionRegistry()
+	keptAdmission := registry.reserve(21)
+	if !keptAdmission.beginCommit() {
+		t.Fatal("begin commit failed")
+	}
+	owner := new(Session)
+	if !keptAdmission.finishCommit(owner, new(countingRegistryLease)) {
+		t.Fatal("finish commit failed")
+	}
+	keptAdmission.completeCommit()
+	pending := registry.reserve(22)
+	ctx, cancel := context.WithCancel(context.Background())
+	if !pending.prepare(cancel) {
+		t.Fatal("prepare failed")
+	}
+
+	registry.closeExcept(map[*Session]struct{}{owner: {}})
+	if got, found := registry.active(21); !found || got != owner {
+		t.Fatalf("active slot = %p, %v; want the kept session %p", got, found, owner)
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("the close did not cancel the pending preparation")
+	}
+	if pending.beginCommit() {
+		t.Fatal("a pending preparation committed after the close")
+	}
+	if registry.reserve(23) != nil {
+		t.Fatal("the registry admitted a session after the close")
+	}
+	if registry.closeIfIdle(0, 0) {
+		t.Fatal("the registry is idle while a kept session is left")
+	}
+	owner.Close(false)
+	if !registry.closeIfIdle(0, 0) {
+		t.Fatal("the registry is not idle after its kept session closed")
+	}
+}

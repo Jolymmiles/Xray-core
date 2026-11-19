@@ -831,3 +831,37 @@ accounting for its 10 outgoing resets during startup/teardown. Original global
 host deltas remain unscoped; the isolated diagnostic supplies the attributable
 TCP evidence without changing the host's networking. No packet-loss capacity
 or camouflage claim is made.
+
+## Mux.Cool client downlink reader (2026-11-19)
+
+The Mux.Cool client worker (`common/mux/client.go`) gives its downlink
+reader up for the time of each write to a session, so that the rest of the
+downlink can be handed out by session once the carrier is gone
+(`common/mux/client_downlink.go`). That adds one lock and unlock per write
+to the path of every Mux.Cool download and replaces `buf.Copy` in it with a
+loop of its own. The measurement is a regression gate for that path, not a
+performance claim.
+
+- Benchmark: `BenchmarkClientWorkerDownlink`
+  (`common/mux/client_downlink_bench_test.go`): frames of one 8 KiB buffer
+  written on the carrier's side for 1 and for 8 sessions in turn, delivered
+  to outputs that never wait.
+- Command, per build: `go test -c -o mux.test ./common/mux`, then one
+  `bench-run` slot running four rounds with the two builds in turn (A B A
+  B), each `./mux.test -test.run '^$' -test.bench
+  BenchmarkClientWorkerDownlink -test.benchtime 2s -test.count 2
+  -test.benchmem`: eight samples per build.
+- Conditions: before `4746d143` (clean), after `5956c245` (clean); go1.27.3,
+  `-tags http2legacy`; linux/amd64, Ryzen 9 9950X, kernel 7.2.12, reserved
+  CPUs 14, 15, 30, 31, other agents' work on the remaining cores.
+
+| Sessions | Before, ns per frame (median, min to max) | After | Allocations per frame |
+| ---: | --- | --- | --- |
+| 1 | 383.5 (382.1 to 389.4) | 369.7 (363.2 to 404.2) | 12 to 11, 317 B to 293 B |
+| 8 | 387.1 (385.2 to 484.3) | 372.4 (365.8 to 391.8) | 12 to 11, 317 B to 293 B |
+
+The medians differ by about 4 % and the two builds' ranges overlap, so the
+timing shows no regression and no gain is claimed; the change also saves
+one allocation per frame. No process-level throughput was
+measured for this change: `testing/gates.sh smux xhttp` and the
+stress-and-reconnect runs are its process gates.

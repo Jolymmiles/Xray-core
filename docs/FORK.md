@@ -647,25 +647,38 @@ guard it.
 - A Mux.Cool client worker made by `DialingWorkerFactory` ends its sessions
   when its carrier returns, and delivers first what the carrier had written.
   The factory closes the carrier's end of the downlink and interrupts the
-  uplink; the worker's reader drains the downlink and then closes the
-  sessions and interrupts the link. Until then the end of an upload ends
-  its session as it does under a live carrier, Mux.Cool having no
-  half-close, and so does an upload that fails to be read, and one the
-  uplink refuses while the worker is open. An upload the uplink refuses on
-  a closed worker does not: the application ended nothing, and a reply may
-  still be on its way. Such an upload is read on and dropped for as long as
-  its session lasts, since left unread it would hold an application that
-  sends before it reads and hide one that goes away, and its session is
-  kept for the worker's cleanup unless its input fails or its opening
-  frame was the one refused. An application that closes after a last
-  write, as a TLS client sending its close alert does, is such a session:
-  the write is refused, the upload then ends, and it is released with the
-  worker, not at once. The factory reports the carrier's error only
-  after it has closed the downlink's end, the worker and the uplink, so
-  that a slow log handler does not hold up the end of the sessions; for
-  the same reason a session reports what stopped its upload after it has
-  dropped the rest of that upload and been closed or kept.
-  Upstream closes the sessions and
+  uplink. The worker's reader then reads the downlink to its end and
+  finishes the worker; if it is held on a write to a session whose
+  application does not read, the factory takes the downlink over
+  (`common/mux/client_downlink.go`): nothing more will arrive and what is
+  left is bounded, so it is sorted by session, each session with something
+  left gets it from a goroutine of its own, after the write that was under
+  way if that was its own, and is closed after it, and every other session
+  is closed at once. No session waits for another's application to read;
+  closing a session interrupts its input and closes its output, and one
+  that waits for its peer still holds the closes after it, or the takeover
+  while a live END or a failed write closes it, as `main`'s cleanup does.
+  Pipes and the connection writers of the inbounds that hand theirs over
+  do not wait; an SMUX inbound's stream can, until its own carrier takes
+  its CLOSE or HALF_CLOSE frame, with no bound on the whole close. The
+  taken worker keeps no session, frame or unread bytes, interrupts the
+  downlink, and is not idle while a session is still handed its reply. With a
+  live carrier the downlink's order stands, Mux.Cool having no flow control
+  of its own, and the reader gives the downlink up only for the time of a
+  write or a log line, one lock per write; a write that meets the end of
+  its output stops that frame and leaves the session open, as `buf.Copy`
+  did. The end of an upload ends its session as it
+  does under a live carrier, Mux.Cool having no half-close, and so does an
+  upload that fails to be read, and one the uplink refuses while the
+  worker is open. An upload the uplink refuses on a closed worker does not:
+  the application ended nothing, and its reply may still be on its way.
+  Such an upload is read on and dropped for as long as its session lasts,
+  since left unread it would hold an application that sends before it
+  reads and hide one that goes away. The factory reports the carrier's
+  error only after all of the above, so that a slow log handler does not
+  hold up the end of the sessions; for the same reason a session reports
+  what stopped its upload after it has dropped the rest of that upload and
+  been closed or kept. Upstream closes the sessions and
   interrupts the link in `monitor` as soon as the carrier returns, which
   drops a response already received. The fork moved that cleanup out of
   `monitor` in `4f01e31b`, after which a failed carrier left its sessions
@@ -676,8 +689,33 @@ guard it.
   (`common/mux/client_carrier_failure_test.go`),
   `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
   (`common/mux/client_carrier_uplink_test.go`),
+  `TestDialingWorkerEndsSiblingsOfASessionThatDoesNotRead`,
+  `TestClientWorkerKeepsTheDownlinkInOrderWhileItsCarrierLives`,
+  `TestDialingWorkerDeliversTheRestOfAFrameItWasWriting`,
+  `TestDialingWorkerSortsWhatItsCarrierLeft`,
+  `TestDialingWorkerSortsTheFramesItHandsNothingOutOf`,
+  `TestDialingWorkerKeepsDatagramsApartBehindASessionThatDoesNotRead`,
+  `TestDialingWorkerEndsAWaitingSessionWhenItsWriteFailsOrTheWorkerCloses`,
+  `TestDialingWorkerDropsWhatFollowsAWriteThatFailed`,
+  `TestClientWorkerClosesASessionWhoseOutputFailsAndGoesOn`,
+  `TestDialingWorkerIsNotIdleWhileASessionWaitsForItsReply`,
+  `TestDialingWorkerHandsTheDownlinkOutWhileAFailedWriteIsReported`,
+  `TestClientWorkerLeavesASessionWhoseOutputEnded`,
+  `TestClientWorkerFinishesBeforeItReportsWhatEndedItsReader`,
+  `TestDialingWorkerReportsAFailedWriteAtItsFramesEnd`,
+  `TestDialingWorkerHandsTheDownlinkOutBeforeItReportsItsCarrier`,
+  `TestDialingWorkerHandsOutTheRestBeforeItClosesTheOthers` and
+  `TestDialingWorkerLeavesTheDownlinkAloneAfterItWasTaken`
+  (`common/mux/client_carrier_siblings_test.go`),
+  `TestSessionRegistryClosedAroundAKeptSessionAdmitsNothing`
+  (`common/mux/registry_test.go`),
+  `TestTakeoverReleasesTheDownlinkAndKeepsALateReaderOut`,
+  `TestTakeoverLeavesAReaderThatStoppedAlone`,
+  `TestClientWorkerReleasesWhatItsReaderHeldWhenItEnds` and
+  `TestTailReportsAFailedWriteAfterItsSessionCloses`
+  (`common/mux/client_downlink_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails`,
-  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`,
+  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReplyWaits`,
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
   `TestDialingWorkerEndsASessionWhoseInputFailsOnce`,
   `TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded`,
@@ -691,7 +729,7 @@ guard it.
   `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
   `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused`,
   `TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails`,
-  `TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier` and
+  `TestDialingWorkerEndsASessionWhoseRefusalReturnsAfterItsCarrier` and
   `TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen`
   (`common/mux/client_carrier_first_batch_test.go`),
   `TestDialingWorkerEndsASessionWhoseFirstPayloadIsRefusedWhileOpen`,
