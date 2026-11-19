@@ -204,30 +204,31 @@ guard it.
   wrong binder is never authenticated, unless the ticket is older than
   seven days, the longest lifetime TLS 1.3 allows: that one is not
   checked, and the target would not resume it either. When the target's
-  profile places the ticket and its refusal was measured in the last
-  three hours,
-  REALITY refuses it as the target refuses its own; otherwise it goes to
-  the target, which answers its full handshake. The profile does not place
-  it while it is probed after a start, or once a new probe found a new
-  prefix or a shorter lifetime, or once the ticket outlived the lifetime
-  it was issued with; then, for an authenticated hello, the
+  profile places the ticket and its refusal was measured in the last three
+  hours, REALITY refuses it as the target refuses its own; otherwise it
+  goes to the target, which answers its full handshake. The profile does
+  not place it while it is probed after a start, or once a new probe found
+  a new prefix or a shorter lifetime, or once the ticket outlived the
+  lifetime it was issued with; then, for an authenticated hello, the
   ticket, sealed with a key derived from the private key, is found by
   trying each prefix length up to 64 bytes. Behind a longer prefix REALITY
-  issues ids of sessions kept in memory instead. Binders that do not
-  match the identities go to the target too: the session id does not
-  cover them, so they can be split anew in the same bytes. A censor who
-  replays a recorded hello with a spoiled binder right after a restart,
-  before the refusal is measured again, still sees the target's full
-  handshake where the process that ran before refused: the measurement is
-  not kept across restarts. Covered by
+  issues ids of sessions kept in memory instead. Binders that do not match
+  the identities go to the target too: the session id does not cover them,
+  so they can be split anew in the same bytes. A censor who replays a
+  recorded hello with a spoiled binder right after a restart, before the
+  refusal is measured again, still sees the target's full handshake where
+  the process that ran before refused: the measurement is not kept across
+  restarts. Covered by
   `TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed`
   (`transport/internet/reality/resumption_wire_test.go`),
   `TestTicketWithWrongBinderIsRefused` and
   `TestKnownBadBinderReachesCoverWithoutRefusalProfile`
   (`transport/internet/reality/resumption_test.go`), and
-  `TestUnprofiledTicketSession`, `TestInspectTicketHelloOutsideTheProfile`,
+  `TestUnprofiledTicketSession`,
+  `TestInspectTicketHelloOutsideTheProfile`,
   `TestInspectTicketHelloMismatchedBinders` and
-  `TestSealedTicketPrefixBound` (`third_party/reality/session_cache_test.go`).
+  `TestSealedTicketPrefixBound`
+  (`third_party/reality/session_cache_test.go`).
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`
   (`proxy/vision_buffers.go`), which checks the field types and caches their
   offsets per connection type and fails closed on any other layout; upstream
