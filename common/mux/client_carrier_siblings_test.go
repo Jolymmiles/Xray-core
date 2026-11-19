@@ -436,7 +436,7 @@ func TestDialingWorkerSortsWhatItsCarrierLeft(t *testing.T) {
 		dl := &worker.downlink
 		dl.Lock()
 		defer dl.Unlock()
-		if left := dl.reader.Buffer.Len(); left != 0 {
+		if left := heldBytes(dl.reader.Buffer); left != 0 {
 			t.Fatalf("the worker still holds %d bytes of the downlink", left)
 		}
 	})
@@ -1187,8 +1187,8 @@ func TestDialingWorkerLeavesTheDownlinkAloneAfterItWasTaken(t *testing.T) {
 		dl := &worker.downlink
 		dl.Lock()
 		defer dl.Unlock()
-		if dl.writing != nil || dl.frame != nil || !dl.reader.Buffer.IsEmpty() {
-			t.Fatalf("the worker still holds session %v, frame %v and %d buffered bytes", dl.writing, dl.frame, dl.reader.Buffer.Len())
+		if dl.writing != nil || dl.frame != nil || heldBytes(dl.reader.Buffer) != 0 {
+			t.Fatalf("the worker still holds session %v, frame %v and %d buffered bytes", dl.writing, dl.frame, heldBytes(dl.reader.Buffer))
 		}
 	})
 }

@@ -655,10 +655,12 @@ guard it.
   left gets it from a goroutine of its own, after the write that was under
   way if that was its own, and is closed after it, and every other session
   is closed at once. No session waits for another's application to read;
-  closing a session closes its output, and an output whose `Close` waited
-  for its application would still hold the closes after it, or the
-  takeover while a live END closes it. The outputs the tree's inbounds
-  hand over do not wait on `Close`. The
+  closing a session interrupts its input and closes its output, and one
+  that waits for its peer still holds the closes after it, or the takeover
+  while a live END or a failed write closes it, as `main`'s cleanup does.
+  Pipes and the connection writers of the inbounds that hand theirs over
+  do not wait; an SMUX inbound's stream can, for its peer's CLOSE or
+  HALF_CLOSE. The
   taken worker keeps no session, frame or unread bytes, interrupts the
   downlink, and is not idle while a session is still handed its reply. With a
   live carrier the downlink's order stands, Mux.Cool having no flow control
@@ -707,7 +709,7 @@ guard it.
   `TestSessionRegistryClosedAroundAKeptSessionAdmitsNothing`
   (`common/mux/registry_test.go`),
   `TestTakeoverReleasesTheDownlinkAndKeepsALateReaderOut`,
-  `TestTakeoverLeavesAFinishedReaderAlone`,
+  `TestTakeoverLeavesAReaderThatStoppedAlone`,
   `TestClientWorkerReleasesWhatItsReaderHeldWhenItEnds` and
   `TestTailReportsAFailedWriteAfterItsSessionCloses`
   (`common/mux/client_downlink_test.go`),

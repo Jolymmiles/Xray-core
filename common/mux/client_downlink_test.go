@@ -71,15 +71,43 @@ func TestTakeoverReleasesTheDownlinkAndKeepsALateReaderOut(t *testing.T) {
 	}
 }
 
-// A reader that has finished by itself owns the worker's end: a carrier that
-// returns after it takes nothing over, also when that reader left frames
-// behind.
-func TestTakeoverLeavesAFinishedReaderAlone(t *testing.T) {
+// heldBytes counts what buffers still hold up to the capacity of data: a
+// MultiBuffer cut to length zero still holds the buffers past its length.
+func heldBytes(data buf.MultiBuffer) int32 {
+	return data[:cap(data)].Len()
+}
+
+// stopsOnFirstRead is a downlink whose first read fails and says so.
+type stopsOnFirstRead struct {
+	*pipe.Reader
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (r *stopsOnFirstRead) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	first := false
+	r.once.Do(func() { first = true })
+	if first {
+		close(r.stopped)
+		return nil, io.ErrUnexpectedEOF
+	}
+	return r.Reader.ReadMultiBuffer()
+}
+
+// A reader that has stopped by itself owns the worker's end: a carrier that
+// returns after it, while the reader is on its way to finish the worker,
+// takes nothing over and hands out none of the frames the reader left.
+func TestTakeoverLeavesAReaderThatStoppedAlone(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
 	downlink, carrierSide := pipe.New()
 	defer downlink.Interrupt()
 	reply, output := pipe.New()
 	defer reply.Interrupt()
+	reader := &stopsOnFirstRead{Reader: downlink, stopped: make(chan struct{})}
 	worker := &ClientWorker{sessionManager: newClientSessionManager(), done: done.New(), link: transport.Link{Reader: downlink}}
+	defer worker.sessionManager.close()
+	worker.downlink.reader = &buf.BufferedReader{Reader: reader}
 	admission := worker.sessionManager.allocate(&ClientStrategy{})
 	if admission == nil || !admission.beginCommit() {
 		t.Fatal("the session was not admitted")
@@ -89,28 +117,35 @@ func TestTakeoverLeavesAFinishedReaderAlone(t *testing.T) {
 		t.Fatal("the session was not committed")
 	}
 	admission.completeCommit()
-	defer worker.sessionManager.close()
 	if err := sendText(&transport.Link{Writer: carrierSide}, s.ID, "later frame"); err != nil {
-		t.Fatal(err)
-	}
-	data, err := downlink.ReadMultiBufferTimeout(time.Second)
-	if err != nil {
 		t.Fatal(err)
 	}
 	if err := carrierSide.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// The reader stopped with that frame in its buffer and has not yet
-	// finished the worker.
-	worker.downlink.ended = true
-	worker.downlink.reader = &buf.BufferedReader{Reader: downlink, Buffer: data}
-	defer func() { buf.ReleaseMulti(worker.downlink.reader.Buffer) }()
 
-	worker.takeDownlink()
-	if worker.downlink.taken {
-		got, err := reply.ReadMultiBufferTimeout(time.Second)
-		defer buf.ReleaseMulti(got)
-		t.Fatalf("the downlink was taken over after its reader finished; the session read %q (%v)", got.String(), err)
+	finished := make(chan struct{})
+	// Holding finishOnce holds the reader between letting go of the
+	// downlink and finishing the worker, where the carrier takes its turn.
+	worker.finishOnce.Do(func() {
+		go func() {
+			defer close(finished)
+			worker.fetchOutput()
+		}()
+		await(t, reader.stopped, "the reader to stop")
+		worker.takeDownlink()
+		if worker.downlink.taken {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			defer buf.ReleaseMulti(data)
+			t.Errorf("the downlink was taken over after its reader stopped; the session read %q (%v)", data.String(), err)
+		}
+	})
+	await(t, finished, "the reader to finish")
+	worker.sessionManager.close()
+	data, err := reply.ReadMultiBufferTimeout(time.Second)
+	defer buf.ReleaseMulti(data)
+	if !data.IsEmpty() || !errors.Is(err, io.EOF) {
+		t.Errorf("the session read %q (%v), want only its end", data.String(), err)
 	}
 }
 
@@ -161,7 +196,7 @@ func TestClientWorkerReleasesWhatItsReaderHeldWhenItEnds(t *testing.T) {
 		await(t, held.entered, "the report of the unknown status")
 		synctest.Wait()
 		worker.downlink.Lock()
-		left := worker.downlink.reader.Buffer.Len()
+		left := heldBytes(worker.downlink.reader.Buffer)
 		worker.downlink.Unlock()
 		if left != 0 {
 			t.Fatalf("the finished reader still holds %d bytes", left)
