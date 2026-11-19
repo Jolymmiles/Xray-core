@@ -43,8 +43,9 @@ func TestTicketFromAnotherProcessIsUnknown(t *testing.T) {
 }
 
 // Once the record of accepted hellos drops one to make room, a copy of it
-// would be resumed again: tickets issued no later than its acceptance are
-// unknown from then on, and newer ones still resume.
+// would be resumed again: tickets issued no later than a minute after its
+// acceptance, the most the clock may have been stepped back by between the
+// ticket and the hello, are not resumed from then on; newer ones still are.
 func TestTicketHelloCacheForgetsOlderTickets(t *testing.T) {
 	cache := &ticketHelloCache{size: 2, entries: make(map[[32]byte]*list.Element)}
 	start := time.Now().Truncate(time.Second)
@@ -54,7 +55,7 @@ func TestTicketHelloCacheForgetsOlderTickets(t *testing.T) {
 		t.Fatal("a cache that dropped nothing does not remember")
 	}
 	for i, key := range [][32]byte{{1}, {2}, {3}} {
-		if !cache.accept(key, at(10*i), at(3600), true) {
+		if !cache.accept(key, at(100*i), at(3600), true) {
 			t.Fatalf("hello %d was refused", i)
 		}
 	}
@@ -62,51 +63,60 @@ func TestTicketHelloCacheForgetsOlderTickets(t *testing.T) {
 	if cache.remembers(ticketAt(-1)) || cache.remembers(ticketAt(0)) {
 		t.Fatal("a ticket older than a dropped hello is still resumed")
 	}
-	if !cache.remembers(ticketAt(1)) {
+	if cache.remembers(ticketAt(60)) {
+		t.Fatal("a ticket issued before a step back of the clock by a minute is still resumed")
+	}
+	if !cache.remembers(ticketAt(61)) {
 		t.Fatal("a ticket newer than every dropped hello is not resumed")
 	}
 	// A hello not remembered drops nothing.
-	if !cache.accept([32]byte{4}, at(30), at(3600), false) || !cache.remembers(ticketAt(1)) {
+	if !cache.accept([32]byte{4}, at(300), at(3600), false) || !cache.remembers(ticketAt(61)) {
 		t.Fatal("a hello that was not recorded forgot others")
 	}
-	if !cache.accept([32]byte{5}, at(40), at(3600), true) || cache.remembers(ticketAt(10)) || !cache.remembers(ticketAt(11)) {
-		t.Fatal("dropping the hello accepted at 10 did not forget tickets up to it")
+	if !cache.accept([32]byte{5}, at(400), at(3600), true) || cache.remembers(ticketAt(160)) || !cache.remembers(ticketAt(161)) {
+		t.Fatal("dropping the hello accepted at 100 did not forget tickets up to a minute after it")
 	}
 }
 
 // A copy of a resumed hello whose binder was checked while the hello was
 // still recorded, and that is recorded itself once the hello was dropped,
-// is not resumed: the handshake looks the ticket up again after that.
+// is not resumed: realityResume looks the ticket up again after that.
 func TestTicketForgottenBeforeTheCopyIsRecorded(t *testing.T) {
 	config := testConfig(t)
-	cache := &ticketHelloCache{size: 1, entries: make(map[[32]byte]*list.Element)}
+	cache := &ticketHelloCache{size: 2, entries: make(map[[32]byte]*list.Element)}
 	previous := ticketHellos
 	ticketHellos = cache
 	t.Cleanup(func() { ticketHellos = previous })
 
-	issued := time.Now().Add(-time.Minute)
+	now := time.Now()
+	issued := now.Add(-10 * time.Minute)
 	ticket, shape := testTicket(t, config, issued)
-	original, copied, other := [32]byte{1}, [32]byte{1}, [32]byte{2}
-	if !cache.accept(original, issued.Add(time.Second), issued.Add(time.Hour), true) {
-		t.Fatal("the original hello was refused")
+	original, other, third := [32]byte{1}, [32]byte{2}, [32]byte{3}
+	if !cache.accept(original, issued.Add(time.Second), now.Add(time.Hour), true) ||
+		!cache.accept(other, now.Add(-5*time.Minute), now.Add(time.Hour), true) {
+		t.Fatal("a hello was refused")
 	}
 	// The copy arrives: the ticket is known and its binder checked.
-	if config.realityTicketSession(shape, ticket, false) == nil {
+	if config.realityTicketSession(shape, ticket, false) == nil || config.resumableTicketSession(shape, ticket) == nil {
 		t.Fatal("the ticket was not known while its hello was recorded")
 	}
 	// Another hello takes the original's place before the copy is recorded.
-	if !cache.accept(other, time.Now(), time.Now().Add(time.Hour), true) {
+	if !cache.accept(third, now.Add(-4*time.Minute), now.Add(time.Hour), true) {
 		t.Fatal("another hello was refused")
 	}
-	if !cache.accept(copied, time.Now(), time.Now().Add(time.Hour), true) {
+	if !cache.accept(original, now, now.Add(time.Hour), true) {
 		t.Fatal("the copy of a dropped hello was not recorded")
 	}
-	// realityResume looks the ticket up again.
-	if config.realityTicketSession(shape, ticket, false) != nil {
+	if config.resumableTicketSession(shape, ticket) != nil {
 		t.Fatal("the copy of a dropped hello resumed")
 	}
-	fresh, shape := testTicket(t, config, time.Now().Add(time.Second))
-	if config.realityTicketSession(shape, fresh, false) == nil {
-		t.Fatal("a ticket issued after the dropped hello was not resumed")
+	// The ticket is still REALITY's: a wrong binder on it is refused as
+	// before, as the target refuses its own.
+	if config.realityTicketSession(shape, ticket, false) == nil {
+		t.Fatal("a ticket older than a dropped hello is no longer known")
+	}
+	fresh, shape := testTicket(t, config, now)
+	if config.resumableTicketSession(shape, fresh) == nil {
+		t.Fatal("a ticket issued after the dropped hellos was not resumed")
 	}
 }

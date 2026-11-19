@@ -41,10 +41,10 @@ type seenTicketHello struct {
 }
 
 // ticketHelloCache is the record of the resumed ClientHellos this process
-// accepted, by which a copy of one is not resumed again. forgotten is when
-// the newest hello it dropped to make room was accepted: a ticket issued no
-// later than that may have resumed a hello no longer here, so it is not
-// resumed any more.
+// accepted, by which a copy of one is not resumed again. forgotten bounds
+// when the tickets of the hellos it dropped to make room were issued: a
+// ticket issued no later than that may have resumed a hello no longer
+// here, so it is not resumed any more.
 type ticketHelloCache struct {
 	sync.Mutex
 	size      int
@@ -76,22 +76,35 @@ func (s *ticketHelloCache) accept(key [32]byte, now, expires time.Time, remember
 		seen := oldest.Value.(seenTicketHello)
 		delete(s.entries, seen.key)
 		s.order.Remove(oldest)
-		if seen.accepted.After(s.forgotten) {
-			s.forgotten = seen.accepted
+		// realityTicketSession took the ticket only if it was issued no
+		// later than a minute after the hello came, by the wall clock,
+		// which a step back may have moved since it was issued.
+		if issued := seen.accepted.Add(time.Minute); issued.After(s.forgotten) {
+			s.forgotten = issued
 		}
 	}
-	s.entries[key] = s.order.PushBack(seenTicketHello{key: key, accepted: now, expires: expires})
+	s.entries[key] = s.order.PushBack(seenTicketHello{key: key, accepted: now.Round(0), expires: expires})
 	return true
 }
 
 // remembers reports whether every resumed ClientHello accepted with a
-// ticket issued at createdAt is still in the cache. A ticket is issued
-// before any hello that offers it, so if it was issued after the last
-// accepted hello the cache dropped, none of its hellos was dropped.
+// ticket issued at createdAt is still in the cache: whether the ticket was
+// issued after every ticket of the hellos the cache dropped.
 func (s *ticketHelloCache) remembers(createdAt uint64) bool {
 	s.Lock()
 	defer s.Unlock()
 	return time.Unix(int64(createdAt), 0).After(s.forgotten)
+}
+
+// resumableTicketSession is realityTicketSession for a ClientHello that is
+// to resume: a ticket older than ticketHellos remembers is not resumed, as
+// a copy of a hello that resumed with it could be resumed again.
+func (c *Config) resumableTicketSession(shape *TicketShape, label []byte) *SessionState {
+	session := c.realityTicketSession(shape, label, false)
+	if session == nil || !ticketHellos.remembers(session.createdAt) {
+		return nil
+	}
+	return session
 }
 
 func (s *ticketHelloCache) acceptClientHello(hs *serverHandshakeStateTLS13, now time.Time, validBinder bool) bool {
@@ -303,7 +316,7 @@ func (hs *serverHandshakeStateTLS13) realityResume(shape *TicketShape) bool {
 	if (shape.FlightRecords == 1) != (c.out.handshakeBuf != nil) || c.out.handshakeLen[2] == 0 {
 		return false
 	}
-	session := c.config.realityTicketSession(shape, ch.pskIdentities[0].label, false)
+	session := c.config.resumableTicketSession(shape, ch.pskIdentities[0].label)
 	if session == nil {
 		return false
 	}
@@ -429,8 +442,7 @@ func (hs *serverHandshakeStateTLS13) postHandshakeRecords(lens []int) ([]int, []
 // that has not expired, or nil. A ticket that is an id of a session kept
 // here is taken out when take is set; REALITY keeps them until they
 // expire, as nginx's session cache does: a used one is still refused with
-// a wrong binder there. A ticket older than ticketHellos remembers is
-// unknown: a copy of a hello that offered it could be resumed again.
+// a wrong binder there.
 func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take bool) *SessionState {
 	if c.PrivateKey == nil || !bytes.HasPrefix(label, shape.Prefix) {
 		return nil
@@ -449,9 +461,6 @@ func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take boo
 	}
 	age := c.time().Sub(time.Unix(int64(session.createdAt), 0))
 	if age < -time.Minute || age > min(time.Duration(shape.Lifetime)*time.Second, maxSessionTicketLifetime) {
-		return nil
-	}
-	if !ticketHellos.remembers(session.createdAt) {
 		return nil
 	}
 	return session

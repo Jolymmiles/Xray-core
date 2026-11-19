@@ -312,7 +312,7 @@ answers a ticket it did not issue:
   so tickets issued before a restart, or by another replica with the same
   private key, do not decrypt;
 - once the history evicts an entry to make room, tickets issued no later
-  than that entry's acceptance are not resumed.
+  than a minute after that entry's acceptance are not resumed.
 
 A restart or an eviction therefore costs clients one full handshake, not
 a resumption of a copy. Replicas behind one address do not resume each

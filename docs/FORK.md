@@ -183,18 +183,19 @@ guard it.
   answer `[43 51 41]` twice), so a censor who replays one sees REALITY
   answer `[43 51 41]`, then `[43 51]`. The history is one process-wide
   cache of 40,000 entries and empty after a restart. A ticket it cannot
-  vouch for is an unknown ticket, and its ClientHello gets REALITY's full
-  handshake, `[43 51]` as from the target: a ticket from before a restart
-  or from another replica does not decrypt, and once the cache evicts an
-  entry, tickets issued no later than that entry's acceptance are not
-  resumed. Before this, the restarted process resumed the copy
-  (`[43 51 41]`) for the target's ticket lifetime, 604,800 s for a Go
-  target. The cost is one full handshake per client after a restart, no
-  resumption across replicas, and, on a server that resumes 40,000 times
-  within a ticket lifetime, a shorter effective lifetime. A ClientHello
-  that offers such a ticket with a wrong binder gets the full handshake
-  too, not the target's measured refusal, as the target answers a ticket
-  it does not know.
+  vouch for is not resumed, and its ClientHello gets REALITY's full
+  handshake, `[43 51]` as from the target. A ticket from before a restart
+  or from another replica does not decrypt: it is an unknown ticket, with
+  a wrong binder as well. Once the cache evicts an entry, tickets issued
+  no later than a minute after that entry's acceptance (the age check
+  admits tickets up to a minute in the future, so a clock stepped back
+  is covered) are not resumed; they are still REALITY's, so a wrong binder
+  on one gets the measured refusal as before. Before this, the restarted
+  process resumed the copy (`[43 51 41]`) for the target's ticket
+  lifetime, 604,800 s for a Go target. The cost is one full handshake per
+  client after a restart, no resumption across replicas, and, on a server
+  that resumes 40,000 times within a ticket lifetime, a shorter effective
+  lifetime.
   Covered by `TestReplayedResumedHelloReachesTheTarget`,
   `TestRestartedServerDoesNotResumeAReplayedHello`
   (`transport/internet/reality/resumption_wire_test.go`,
