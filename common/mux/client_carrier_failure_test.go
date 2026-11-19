@@ -104,10 +104,15 @@ type answeringCarrier struct {
 	result     error
 	returned   chan struct{}
 	withoutEnd bool
+	// context, when set, receives the context the carrier ran under.
+	context chan context.Context
 }
 
 func (c *answeringCarrier) Process(ctx context.Context, link *transport.Link, _ internet.Dialer) error {
 	defer close(c.returned)
+	if c.context != nil {
+		c.context <- ctx
+	}
 	// What the reader took beyond the opening frame's metadata goes back
 	// to the pool.
 	reader := &buf.BufferedReader{Reader: link.Reader}

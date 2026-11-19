@@ -662,7 +662,9 @@ guard it.
   the write is refused, the upload then ends, and it is released with the
   worker, not at once. The factory reports the carrier's error only
   after it has closed the downlink's end, the worker and the uplink, so
-  that a slow log handler does not hold up the end of the sessions.
+  that a slow log handler does not hold up the end of the sessions; for
+  the same reason a session reports what stopped its upload after it has
+  dropped the rest of that upload and been closed or kept.
   Upstream closes the sessions and
   interrupts the link in `monitor` as soon as the carrier returns, which
   drops a response already received. The fork moved that cleanup out of
@@ -679,6 +681,8 @@ guard it.
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
   `TestDialingWorkerEndsASessionWhoseInputFailsOnce`,
   `TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded`,
+  `TestDialingWorkerDropsARefusedUploadBeforeItReportsIt`,
+  `TestDialingWorkerReleasesTheUploadItDrops`,
   `TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile`,
   `TestDialingWorkerKeepsQueuedReplyWhenTheRefusedBatchIsTheLast`,
   `TestClientWorkerSendsTheLastBatchAndMarksAFailedUpload`

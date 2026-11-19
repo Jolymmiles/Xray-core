@@ -334,6 +334,7 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 			result:     errors.New("connection reset"),
 			returned:   make(chan struct{}),
 			withoutEnd: true,
+			context:    make(chan context.Context, 1),
 		}
 		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
 		if err != nil {
@@ -361,6 +362,9 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 		await(t, report.entered, "the report of the carrier's error")
 		if !worker.Closed() {
 			t.Fatal("the carrier's error is being reported and the worker is still open")
+		}
+		if await(t, carrier.context, "the carrier's context").Err() == nil {
+			t.Fatal("the carrier's error is being reported and its context is not cancelled")
 		}
 
 		// The report is still held. The uplink is interrupted: the upload
@@ -640,8 +644,8 @@ func (h heldUploadReport) Handle(message log.Message) {
 // An upload the uplink refused while the worker was open ends its session,
 // also when the carrier returns before that refusal has been reported: what
 // counts is the worker's state as the failed write returns to the session,
-// which is taken before the report. A carrier can interrupt its uplink
-// before it returns, and a log handler takes its time.
+// and the report comes after the session's cleanup. A carrier can interrupt
+// its uplink before it returns, and a log handler takes its time.
 func TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile(t *testing.T) {
 	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -865,4 +869,173 @@ func TestClientWorkerSendsTheLastBatchAndMarksAFailedUpload(t *testing.T) {
 			})
 		})
 	}
+}
+
+// What stopped an upload is reported after the session has been dealt with.
+// A log handler takes its time: held ahead of the read-and-drop, the report
+// of a refused upload would keep the application on its upload, its reply
+// unread, with no other session involved. The report is held here until the
+// application has sent, ended its upload and read its whole reply.
+func TestDialingWorkerDropsARefusedUploadBeforeItReportsIt(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		report := heldUploadReport{once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(report)
+		release := sync.OnceFunc(func() { close(report.resume) })
+		defer release()
+		defer log.RegisterHandler(discardLogs{})
+
+		upload, uploadWriter := pipe.New(pipe.WithSizeLimit(0))
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		defer uploadWriter.Close()
+		sink := &acceptedWriter{Writer: output, accepted: make(chan struct{})}
+		stop := make(chan struct{})
+		defer close(stop)
+		carrier := &answeringCarrier{
+			delivering: sink.accepted,
+			stop:       stop,
+			result:     errors.New("connection reset"),
+			returned:   make(chan struct{}),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
+			t.Fatal("the worker refused the session")
+		}
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+
+		sent := make(chan error, 1)
+		go func() {
+			for range 4 {
+				block := buf.New()
+				block.Extend(buf.Size)
+				if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+					sent <- err
+					return
+				}
+			}
+			sent <- uploadWriter.Close()
+		}()
+		synctest.Wait()
+		select {
+		case err := <-sent:
+			if err != nil {
+				t.Fatalf("the upload failed: %v", err)
+			}
+		default:
+			t.Fatal("the report of the refused upload holds the application on its upload")
+		}
+
+		var body string
+		for {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			body += data.String()
+			buf.ReleaseMulti(data)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("read %q, then: %v", body, err)
+			}
+		}
+		if body != "firstlast" {
+			t.Fatalf("the application read %q and then the end, want the whole reply %q", body, "firstlast")
+		}
+		await(t, report.entered, "the report of the refused upload")
+	})
+}
+
+// droppedInput is a session's input that is not a pipe. Its first batch
+// waits for a signal and is refused by the uplink; its second comes with the
+// end of the input and is dropped. It keeps the second batch's slice to see
+// whether its buffers were released.
+type droppedInput struct {
+	ready   <-chan struct{}
+	reads   int
+	dropped buf.MultiBuffer
+}
+
+func (r *droppedInput) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	r.reads++
+	block := func() *buf.Buffer {
+		b := buf.New()
+		b.Extend(buf.Size)
+		return b
+	}
+	switch r.reads {
+	case 1:
+		<-r.ready
+		return buf.MultiBuffer{block()}, nil
+	case 2:
+		r.dropped = buf.MultiBuffer{block(), block()}
+		return r.dropped, io.EOF
+	default:
+		return nil, io.EOF
+	}
+}
+
+// What is read of a refused upload and dropped goes back to the pool. The
+// application reads nothing meanwhile, so its session lasts.
+func TestDialingWorkerReleasesTheUploadItDrops(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		sink := &acceptedWriter{Writer: output, accepted: make(chan struct{})}
+		stop := make(chan struct{})
+		defer close(stop)
+		carrier := &answeringCarrier{
+			delivering: sink.accepted,
+			stop:       stop,
+			result:     errors.New("connection reset"),
+			returned:   make(chan struct{}),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		carrierGone := make(chan struct{})
+		release := sync.OnceFunc(func() { close(carrierGone) })
+		defer release()
+		input := &droppedInput{ready: carrierGone}
+		dispatched := make(chan bool, 1)
+		go func() { dispatched <- worker.Dispatch(ctx, &transport.Link{Reader: input, Writer: sink}) }()
+
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		release()
+		synctest.Wait()
+		if input.reads != 2 {
+			t.Fatalf("the input was read %d times, want its refused batch and its last", input.reads)
+		}
+		for i, buffer := range input.dropped {
+			if buffer != nil {
+				t.Fatalf("buffer %d of the dropped batch was not released", i)
+			}
+		}
+
+		// The session ends once its reply is read.
+		for {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			buf.ReleaseMulti(data)
+			if err != nil {
+				break
+			}
+		}
+		if !await(t, dispatched, "Dispatch to return") {
+			t.Fatal("the worker refused the session")
+		}
+	})
 }

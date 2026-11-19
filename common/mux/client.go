@@ -345,6 +345,16 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	// gone, the application did not end anything, and fetchOutput may
 	// still be delivering what the carrier wrote for this session.
 	// finish() closes such a session after that.
+	// What stopped the upload is reported last, after the session has been
+	// dealt with: a log handler takes its time, and the read-and-drop below
+	// and the session's end must not wait for it.
+	var stopped error
+	stoppedIn := "failed to fetch all input"
+	defer func() {
+		if stopped != nil {
+			errors.LogInfoInner(ctx, stopped, stoppedIn)
+		}
+	}()
 	keptForReply := false
 	defer func() {
 		if !keptForReply {
@@ -363,15 +373,13 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 			return
 		}
 	}
-	// The worker's state is taken here, as the failed write or read returns
-	// and before the error is reported: a log handler takes its time, and
-	// the carrier may return meanwhile. A carrier that interrupts its
-	// uplink and returns at once is seen either way.
+	// The worker's state is taken here, as the failed write or read returns.
+	// A carrier that interrupts its uplink and returns at once is seen
+	// either way.
 	closed := m.Closed()
+	stopped = err
 	if inFirstPayload {
-		errors.LogInfoInner(ctx, err, "failed to write first payload")
-	} else {
-		errors.LogInfoInner(ctx, err, "failed to fetch all input")
+		stoppedIn = "failed to write first payload"
 	}
 	writer.hasError = true
 	// Only a closed worker keeps a session, and only one the carrier may
