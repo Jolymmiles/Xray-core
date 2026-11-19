@@ -631,8 +631,9 @@ func (h heldUploadReport) Handle(message log.Message) {
 
 // An upload the uplink refused while the worker was open ends its session,
 // also when the carrier returns before that refusal has been reported: what
-// counts is the worker's state when the write failed. A carrier can
-// interrupt its uplink before it returns, and a log handler takes its time.
+// counts is the worker's state as the failed write returns to the session,
+// which is taken before the report. A carrier can interrupt its uplink
+// before it returns, and a log handler takes its time.
 func TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile(t *testing.T) {
 	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
