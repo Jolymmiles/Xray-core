@@ -305,9 +305,9 @@ func (h heldReport) Handle(message log.Message) {
 	}
 }
 
-// The worker is closed, and its sessions are ended, before the carrier's
-// error is reported: a log handler takes its time, and the sessions of a
-// failed carrier would stay silent for as long.
+// The worker is closed before the carrier's error is reported, so that its
+// sessions get their replies and their end while a log handler takes its
+// time; reported first, the error would keep them silent for as long.
 func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -368,9 +368,11 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 
 // onceFailingInput is a session's input that is not a pipe: it gives one
 // batch, then fails one read and stays usable, as a connection does whose
-// owner put a deadline on a single read.
+// owner put a deadline on a single read. The failing read may bring a last
+// batch with its error.
 type onceFailingInput struct {
 	first buf.MultiBuffer
+	last  buf.MultiBuffer
 	fail  chan struct{}
 	idle  chan struct{}
 	state int
@@ -383,7 +385,7 @@ func (r *onceFailingInput) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		return r.first, nil
 	case 2:
 		<-r.fail
-		return nil, errors.New("i/o timeout")
+		return r.last, errors.New("i/o timeout")
 	default:
 		<-r.idle
 		return nil, io.EOF
@@ -393,9 +395,16 @@ func (r *onceFailingInput) ReadMultiBuffer() (buf.MultiBuffer, error) {
 // A session whose input fails is closed at once on a closed worker too, and
 // its Dispatch returns. Its input is not read again for more: a reader that
 // is not a pipe can fail once and then wait, behind another session's slow
-// reader, for as long as that one holds the worker's reader.
+// reader, for as long as that one holds the worker's reader. That holds
+// when the failing read brings a last batch, which the uplink refuses.
 func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
 	quietLogs(t)
+	for name, withLastBatch := range map[string]bool{"an empty read": false, "a read with a last batch": true} {
+		t.Run(name, func(t *testing.T) { endsSessionOfFailedInput(t, withLastBatch) })
+	}
+}
+
+func endsSessionOfFailedInput(t *testing.T, withLastBatch bool) {
 	synctest.Test(t, func(t *testing.T) {
 		slowUpload, slowSend := pipe.New(pipe.WithSizeLimit(0))
 		defer slowSend.Close()
@@ -427,7 +436,14 @@ func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
 		block := buf.New()
 		block.Extend(buf.Size)
 		input := &onceFailingInput{first: buf.MultiBuffer{block}, fail: make(chan struct{}), idle: make(chan struct{})}
+		if withLastBatch {
+			last := buf.New()
+			last.Extend(buf.Size)
+			input.last = buf.MultiBuffer{last}
+		}
 		defer close(input.idle)
+		failInput := sync.OnceFunc(func() { close(input.fail) })
+		defer failInput()
 		reply, output := pipe.New(pipe.WithSizeLimit(0))
 		defer reply.Interrupt()
 		// Dispatch waits for the session when its input is not a pipe.
@@ -442,7 +458,7 @@ func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
 			t.Fatalf("%d sessions before the input failed, want 2", active)
 		}
 
-		close(input.fail)
+		failInput()
 		synctest.Wait()
 		if active := worker.ActiveConnections(); active != 1 {
 			t.Fatalf("%d sessions after one input failed, want the slow one only", active)
@@ -454,6 +470,96 @@ func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
 			}
 		default:
 			t.Fatal("Dispatch still waits for a session whose input failed")
+		}
+	})
+}
+
+// Once its session has ended, an input whose upload is being dropped is not
+// read any more. A wrapped reader does not pass on the interrupt a session's
+// end gives its input, and what its owner sends afterwards is the owner's:
+// Dispatch has returned by then.
+func TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		stop := make(chan struct{})
+		defer close(stop)
+		carrierMayEnd := make(chan struct{})
+		carrier := &answeringCarrier{
+			delivering: carrierMayEnd,
+			stop:       stop,
+			result:     errors.New("connection reset"),
+			returned:   make(chan struct{}),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+
+		input, send := pipe.New(pipe.WithSizeLimit(0))
+		defer input.Interrupt()
+		defer send.Close()
+		reply, output := pipe.New()
+		defer reply.Interrupt()
+		// More than the uplink holds: the upload is in progress when the
+		// carrier fails, and is refused.
+		var request buf.MultiBuffer
+		for size := 0; size < 256*1024; size += buf.Size {
+			block := buf.New()
+			block.Extend(buf.Size)
+			request = append(request, block)
+		}
+		if err := send.WriteMultiBuffer(request); err != nil {
+			t.Fatal(err)
+		}
+		dispatched := make(chan bool, 1)
+		go func() {
+			dispatched <- worker.Dispatch(ctx, &transport.Link{Reader: &buf.TimeoutWrapperReader{Reader: input}, Writer: output})
+		}()
+		synctest.Wait()
+
+		close(carrierMayEnd)
+		await(t, worker.WaitClosed(), "the worker to close")
+		// The reply is read, so the worker's reader reaches the end of
+		// the downlink and ends the session.
+		for {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			buf.ReleaseMulti(data)
+			if err != nil {
+				break
+			}
+		}
+		if !await(t, dispatched, "Dispatch to return") {
+			t.Fatal("the worker refused the session")
+		}
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions after the worker finished, want none", active)
+		}
+
+		// One read may have been waiting when the session ended. No other
+		// follows it: of three writes into a pipe that holds one, the
+		// third is not taken.
+		taken := make(chan int, 1)
+		go func() {
+			for count := range 3 {
+				block := buf.New()
+				block.Extend(buf.Size)
+				if err := send.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+					taken <- count
+					return
+				}
+			}
+			taken <- 3
+		}()
+		synctest.Wait()
+		select {
+		case count := <-taken:
+			t.Fatalf("the ended session's input was still read: %d writes taken after Dispatch returned", count)
+		default:
 		}
 	})
 }

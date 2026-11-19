@@ -194,10 +194,18 @@ func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination, openingAlo
 
 // A session whose opening frame the uplink refused has no reply to wait for:
 // the carrier never saw it. It is closed at once, also while another
-// session's slow reader holds the worker's reader.
+// session's slow reader holds the worker's reader. The opening frame is the
+// empty one a session sends after a wait when it has nothing to upload, or
+// the one that carries its first upload.
 func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 	log.RegisterHandler(discardRecords{})
 	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	for name, withUpload := range map[string]bool{"an empty opening frame": false, "an opening frame with payload": true} {
+		t.Run(name, func(t *testing.T) { endsSessionOfRefusedOpening(t, withUpload) })
+	}
+}
+
+func endsSessionOfRefusedOpening(t *testing.T, withUpload bool) {
 	synctest.Test(t, func(t *testing.T) {
 		target := net.TCPDestination(net.LocalHostIP, 80)
 		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: target}})
@@ -243,14 +251,27 @@ func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 		synctest.Wait()
 
 		// The second session is dispatched and the carrier fails before the
-		// session has sent the frame that opens it.
+		// session's opening frame reaches the uplink: the session has not
+		// sent it yet, or the write is held until the carrier is gone.
+		carrierGone := make(chan struct{})
+		releaseUplink := sync.OnceFunc(func() { close(carrierGone) })
+		defer releaseUplink()
 		upload, send := pipe.New(pipe.WithSizeLimit(0))
 		defer send.Close()
 		reply, output := pipe.New(pipe.WithSizeLimit(0))
 		defer reply.Interrupt()
+		if withUpload {
+			worker.link.Writer = &openingOnly{MutexWriter: worker.link.Writer.(*MutexWriter), opened: true, release: carrierGone}
+			block := buf.New()
+			block.Extend(buf.Size)
+			if err := send.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
 			t.Fatal("the worker refused the second session")
 		}
+		synctest.Wait()
 		letFail()
 		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
@@ -259,6 +280,7 @@ func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 		}
 
 		// With nothing to upload the session opens itself after a wait.
+		releaseUplink()
 		time.Sleep(time.Second)
 		synctest.Wait()
 		if active := worker.ActiveConnections(); active != 1 {
@@ -273,10 +295,18 @@ func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 }
 
 // On a worker that is not closed a refused upload still ends its session at
-// once: only a closed worker keeps one for its reply.
+// once: only a closed worker keeps one for its reply. The refusal meets the
+// upload after its first payload, or in the middle of it, with the opening
+// frame gone out.
 func TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen(t *testing.T) {
 	log.RegisterHandler(discardRecords{})
 	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	for name, inFirstPayload := range map[string]bool{"after the first payload": false, "within the first payload": true} {
+		t.Run(name, func(t *testing.T) { endsSessionRefusedWhileOpen(t, inFirstPayload) })
+	}
+}
+
+func endsSessionRefusedWhileOpen(t *testing.T, inFirstPayload bool) {
 	synctest.Test(t, func(t *testing.T) {
 		release := make(chan struct{})
 		defer close(release)
@@ -289,30 +319,53 @@ func TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer worker.Close()
+		uplink := worker.link.Writer.(*MutexWriter)
+		refusing := make(chan struct{})
+		refuse := sync.OnceFunc(func() { close(refusing) })
+		defer refuse()
+		if inFirstPayload {
+			worker.link.Writer = &openingOnly{MutexWriter: uplink, release: refusing}
+		}
 
 		upload, send := pipe.New(pipe.WithSizeLimit(0))
 		defer send.Close()
 		reply, output := pipe.New(pipe.WithSizeLimit(0))
 		defer reply.Interrupt()
+		sendBlocks := func(count int) {
+			var blocks buf.MultiBuffer
+			for range count {
+				block := buf.New()
+				block.Extend(buf.Size)
+				blocks = append(blocks, block)
+			}
+			if err := send.WriteMultiBuffer(blocks); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if inFirstPayload {
+			// Two frames: the second is held in front of the uplink.
+			sendBlocks(2)
+		}
 		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
 			Target: net.TCPDestination(net.LocalHostIP, 80),
 		}})
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
 			t.Fatal("the worker refused the session")
 		}
-		sendBlock := func() {
-			block := buf.New()
-			block.Extend(buf.Size)
-			if err := send.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
-				t.Fatal(err)
-			}
+		if !inFirstPayload {
+			sendBlocks(1)
 		}
-		sendBlock()
 		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions in mid-upload, want 1", active)
+		}
 
 		// The carrier stops taking the upload and has not returned.
-		worker.link.Writer.(interface{ Interrupt() }).Interrupt()
-		sendBlock()
+		uplink.Interrupt()
+		refuse()
+		if !inFirstPayload {
+			sendBlocks(1)
+		}
 		synctest.Wait()
 		if worker.Closed() {
 			t.Fatal("the worker closed under a live carrier")

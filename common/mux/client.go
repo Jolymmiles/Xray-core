@@ -190,8 +190,8 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		// still uploads.
 		common.Interrupt(uplinkReader)
 		cancel()
-		// Reported last: a log handler takes its time, and the sessions
-		// would stay silent for as long.
+		// Reported last: a log handler takes its time, and reported before
+		// the lines above it would keep the sessions silent for as long.
 		if errP != nil {
 			errC := errors.Cause(errP)
 			if !(goerrors.Is(errC, io.EOF) || goerrors.Is(errC, io.ErrClosedPipe) || goerrors.Is(errC, context.Canceled)) {
@@ -339,10 +339,11 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	// The end of an upload ends its session, and with it the reply: Mux.Cool
 	// has no half-close, and an application that closes its connection is
 	// read here as one that ended its upload. So does an upload that fails
-	// to be read. One that the uplink refuses on a closed worker does not:
-	// the carrier is gone, the application did not end anything, and
-	// fetchOutput may still be delivering what the carrier wrote for this
-	// session. finish() closes such a session after that.
+	// to be read, and one the uplink refuses while the worker is open. One
+	// that the uplink refuses on a closed worker does not: the carrier is
+	// gone, the application did not end anything, and fetchOutput may
+	// still be delivering what the carrier wrote for this session.
+	// finish() closes such a session after that.
 	keptForReply := false
 	defer func() {
 		if !keptForReply {
@@ -352,6 +353,8 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	defer writer.Close()
 
 	errors.LogInfo(ctx, "dispatching request to ", ob.Target)
+	// refused is set once the uplink of a closed worker has refused part of
+	// the upload of a session that was opened.
 	refused := false
 	if err := writeFirstPayload(s.input, writer); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to write first payload")
@@ -359,21 +362,47 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 		// A first payload goes out in as many frames as it needs. When
 		// the one that opens the session reached the link, the carrier
 		// may have answered it before the uplink refused the rest.
-		refused = writer.opened
-	} else if err := buf.Copy(s.input, writer); err != nil {
-		errors.LogInfoInner(ctx, err, "failed to fetch all input")
-		writer.hasError = true
-		refused = buf.IsWriteError(err)
+		if !writer.opened || !m.Closed() {
+			return
+		}
+		refused = true
 	}
-	if !refused || !m.Closed() {
+	for {
+		// A refused upload is read on, and dropped, for as long as its
+		// session lasts. Nothing takes what the application still sends,
+		// but left unread its input fills and holds an application that
+		// sends before it reads its reply, and an application that goes
+		// away is not seen. After the session has ended its input is its
+		// owner's again.
+		if refused && s.done.Done() {
+			return
+		}
+		data, readErr := s.input.ReadMultiBuffer()
+		if refused {
+			buf.ReleaseMulti(data)
+		} else if !data.IsEmpty() {
+			if err := writer.WriteMultiBuffer(data); err != nil {
+				errors.LogInfoInner(ctx, err, "failed to fetch all input")
+				writer.hasError = true
+				if !m.Closed() {
+					return
+				}
+				refused = true
+			}
+		}
+		if readErr == nil {
+			continue
+		}
+		if errors.Cause(readErr) != io.EOF {
+			errors.LogInfoInner(ctx, readErr, "failed to fetch all input")
+			writer.hasError = true
+			return
+		}
+		// The upload ran to its end. That ends the session, unless part
+		// of it was refused.
+		keptForReply = refused
 		return
 	}
-	// Nothing takes what the application still sends. Its input is read to
-	// its end all the same: left unread it fills and holds an application
-	// that sends before it reads its reply, and an application that goes
-	// away is not seen. The session is kept when that upload runs to its
-	// end, and closed when the input fails.
-	keptForReply = buf.Copy(s.input, buf.Discard) == nil
 }
 
 func (m *ClientWorker) IsClosing() bool {
