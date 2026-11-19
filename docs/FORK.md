@@ -193,15 +193,16 @@ guard it.
   on one gets the measured refusal as before. Before this, the restarted
   process resumed the copy (`[43 51 41]`) for the target's ticket
   lifetime, 604,800 s for a Go target. The cost is a full handshake for
-  each ticket a client holds after a restart (up to two), no resumption across replicas, and, on a server
-  that resumes 40,000 times within a ticket lifetime, a shorter effective
-  lifetime.
+  each ticket a client holds after a restart (up to two), no resumption
+  across replicas, and, on a server that resumes 40,000 times within a
+  ticket lifetime, a shorter effective lifetime.
   Covered by `TestReplayedResumedHelloReachesTheTarget`,
   `TestRestartedServerDoesNotResumeAReplayedHello`
   (`transport/internet/reality/resumption_wire_test.go`,
   `resumption_restart_test.go`), `TestTicketFromAnotherProcessIsUnknown`,
-  `TestTicketHelloCacheForgetsOlderTickets` and
-  `TestTicketForgottenBeforeTheCopyIsRecorded`
+  `TestTicketHelloCacheForgetsOlderTickets`,
+  `TestTicketForgottenBeforeTheCopyIsRecorded` and
+  `TestRealityResumeSkipsForgottenTickets`
   (`third_party/reality/reality_ticket_replay_test.go`).
   An observer on the server-to-destination path can see the probe
   connections. The probes start when an inbound with browser mode opens
