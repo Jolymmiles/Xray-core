@@ -42,6 +42,10 @@ type Writer struct {
 	transferType protocol.TransferType
 	globalID     [8]byte
 	inbound      *session.Inbound
+	// opened is set once a frame with metadata or payload has reached the
+	// link. The first such frame of a request writer opens its session at
+	// the peer. The END that Close writes does not count.
+	opened bool
 }
 
 func NewWriter(id uint16, dest net.Destination, writer buf.Writer, transferType protocol.TransferType, globalID [8]byte, inbound *session.Inbound) *Writer {
@@ -89,7 +93,14 @@ func (w *Writer) writeMetaOnly() error {
 	if err := meta.WriteTo(b); err != nil {
 		return err
 	}
-	return w.writer.WriteMultiBuffer(buf.MultiBuffer{b})
+	return w.written(w.writer.WriteMultiBuffer(buf.MultiBuffer{b}))
+}
+
+func (w *Writer) written(err error) error {
+	if err == nil {
+		w.opened = true
+	}
+	return err
 }
 
 func writeMetaWithFrame(writer buf.Writer, meta FrameMetadata, data buf.MultiBuffer) error {
@@ -114,7 +125,7 @@ func (w *Writer) writeData(mb buf.MultiBuffer) error {
 	meta := w.getNextFrameMeta()
 	meta.Option.Set(OptionData)
 
-	return writeMetaWithFrame(w.writer, meta, mb)
+	return w.written(writeMetaWithFrame(w.writer, meta, mb))
 }
 
 // WriteMultiBuffer implements buf.Writer.

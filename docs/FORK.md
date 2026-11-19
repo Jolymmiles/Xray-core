@@ -644,6 +644,60 @@ guard it.
   the inbound copying a server worker's responses waited for their own
   timeouts. Covered by `TestWorkerEndInterruptsWrappedWriter`
   (`common/mux/mutex_writer_test.go`).
+- A Mux.Cool client worker made by `DialingWorkerFactory` ends its sessions
+  when its carrier returns, and delivers first what the carrier had written.
+  The factory closes the carrier's end of the downlink and interrupts the
+  uplink; the worker's reader drains the downlink and then closes the
+  sessions and interrupts the link. Until then the end of an upload ends
+  its session as it does under a live carrier, Mux.Cool having no
+  half-close, and so does an upload that fails to be read, and one the
+  uplink refuses while the worker is open. An upload the uplink refuses on
+  a closed worker does not: the application ended nothing, and a reply may
+  still be on its way. Such an upload is read on and dropped for as long as
+  its session lasts, since left unread it would hold an application that
+  sends before it reads and hide one that goes away, and its session is
+  kept for the worker's cleanup unless its input fails or its opening
+  frame was the one refused. An application that closes after a last
+  write, as a TLS client sending its close alert does, is such a session:
+  the write is refused, the upload then ends, and it is released with the
+  worker, not at once. The factory reports the carrier's error only
+  after it has closed the downlink's end, the worker and the uplink, so
+  that a slow log handler does not hold up the end of the sessions; for
+  the same reason a session reports what stopped its upload after it has
+  dropped the rest of that upload and been closed or kept.
+  Upstream closes the sessions and
+  interrupts the link in `monitor` as soon as the carrier returns, which
+  drops a response already received. The fork moved that cleanup out of
+  `monitor` in `4f01e31b`, after which a failed carrier left its sessions
+  open and silent. When syncing `common/mux/client.go`, do not take
+  upstream's `monitor` cleanup in place of this. Covered by
+  `TestDialingWorkerEndsSessionsWhenCarrierFails`,
+  `TestDialingWorkerDeliversWhatItsCarrierWroteBeforeEnding`
+  (`common/mux/client_carrier_failure_test.go`),
+  `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
+  (`common/mux/client_carrier_uplink_test.go`),
+  `TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails`,
+  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`,
+  `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
+  `TestDialingWorkerEndsASessionWhoseInputFailsOnce`,
+  `TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded`,
+  `TestDialingWorkerDropsARefusedUploadBeforeItReportsIt`,
+  `TestDialingWorkerReleasesTheUploadItDrops`,
+  `TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile`,
+  `TestDialingWorkerKeepsQueuedReplyWhenTheRefusedBatchIsTheLast`,
+  `TestClientWorkerSendsTheLastBatchAndMarksAFailedUpload`
+  and `TestDialingWorkerClosesBeforeItReportsItsCarrier`
+  (`common/mux/client_carrier_upload_test.go`),
+  `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
+  `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused`,
+  `TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails`,
+  `TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier` and
+  `TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen`
+  (`common/mux/client_carrier_first_batch_test.go`),
+  `TestDialingWorkerEndsASessionWhoseFirstPayloadIsRefusedWhileOpen`,
+  `TestDialingWorkerDropsTheRestOfACutFirstPayload` and
+  `TestClientWorkerMarksTheEndAfterAFailedFirstRead`
+  (`common/mux/client_carrier_first_payload_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
