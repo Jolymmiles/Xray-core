@@ -693,7 +693,11 @@ guard it.
   `TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails`,
   `TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier` and
   `TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen`
-  (`common/mux/client_carrier_first_batch_test.go`).
+  (`common/mux/client_carrier_first_batch_test.go`),
+  `TestDialingWorkerEndsASessionWhoseFirstPayloadIsRefusedWhileOpen`,
+  `TestDialingWorkerDropsTheRestOfACutFirstPayload` and
+  `TestClientWorkerMarksTheEndAfterAFailedFirstRead`
+  (`common/mux/client_carrier_first_payload_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
