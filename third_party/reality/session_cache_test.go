@@ -175,12 +175,13 @@ func ticketHelloState(config *Config, label []byte, binders int) *serverHandshak
 	return &serverHandshakeStateTLS13{c: &Conn{config: config}, clientHello: hello}
 }
 
-// A ticket REALITY issued that the target's profile does not place, as
-// while the target is probed after a start or once a new probe found a new
-// prefix or a shorter lifetime, is checked for an authenticated hello: with
-// a wrong binder it goes to the target, without the refusal of the target's
-// own tickets, which the target would not know it as. That holds for sealed
-// tickets and for ids of sessions this process keeps.
+// A ticket this process issued that the target's profile does not place, as
+// while the profile is probed for the hello's key, once the target no longer
+// resumes, or once a new probe found a new prefix or a shorter lifetime, is
+// checked for an authenticated hello: with a wrong binder it goes to the
+// target, without the refusal of the target's own tickets, which the target
+// would not know it as. That holds for sealed tickets and for ids of
+// sessions this process keeps.
 func TestInspectTicketHelloOutsideTheProfile(t *testing.T) {
 	config := testConfig(t)
 	config.Dest = t.Name()

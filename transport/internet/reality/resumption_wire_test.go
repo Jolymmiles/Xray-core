@@ -159,8 +159,8 @@ func TestReplayedResumedHelloReachesTheTarget(t *testing.T) {
 
 // unsentTicketHello returns the ClientHello record a client offering one of
 // server's tickets builds, without the server seeing it: a hello this
-// process never authenticated, as a censor's recorded copy is until the
-// censor sends it. The failed dial puts no ticket aside.
+// process never authenticated, as a censor's copy of a hello it kept from
+// reaching the server is. The failed dial puts no ticket aside.
 func unsentTicketHello(t *testing.T, server *realityServer) []byte {
 	t.Helper()
 	client, peer := gonet.Pipe()

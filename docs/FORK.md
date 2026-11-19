@@ -225,18 +225,19 @@ guard it.
   measured in the last three hours, REALITY refuses it as the target
   refuses its own; otherwise it goes to the target, which answers its full
   handshake. The profile does not place it while it is probed or unknown
-  for the hello's server name and ALPN, once a new probe found a new
-  prefix, or once the ticket is older than the lifetime the profile
-  announces; then, for an authenticated hello, an id is looked up whole,
-  and a sealed ticket is found by trying each prefix length up to 64 bytes
-  with this process's ticket key. Behind a longer prefix REALITY issues
-  ids of sessions kept in memory instead. Binders that do not match the
-  identities go to the target too: the session id does not cover them, so
-  they can be split anew in the same bytes. A ticket from before a restart
-  does not decrypt in the new process, so a censor who replays a recorded
-  hello with a spoiled binder after a restart sees REALITY's full
-  handshake, as for any unknown ticket, where the process that issued the
-  ticket refused it. Covered by
+  for the hello's server name and ALPN, once a new probe found that the
+  target no longer resumes or has a new prefix, or once the ticket is
+  older than the lifetime the profile announces; then, for an
+  authenticated hello, an id is looked up whole, and a sealed ticket is
+  found by trying each prefix length up to 64 bytes with this process's
+  ticket key. Behind a longer prefix REALITY issues ids of sessions kept
+  in memory instead. Binders that do not match the identities go to the
+  target too: the session id does not cover them, so they can be split
+  anew in the same bytes. A ticket from before a restart does not decrypt
+  in the new process, so a censor who replays a recorded hello with a
+  spoiled binder after a restart sees REALITY's full handshake, as for any
+  unknown ticket, where the process that issued the ticket refused it or
+  sent it to the target. Covered by
   `TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed`
   (`transport/internet/reality/resumption_wire_test.go`),
   `TestTicketWithWrongBinderIsRefused` and
