@@ -684,8 +684,9 @@ guard it.
   `TestDialingWorkerDeliversTheRestOfAFrameItWasWriting`,
   `TestDialingWorkerSortsWhatItsCarrierLeft`,
   `TestDialingWorkerKeepsDatagramsApartBehindASessionThatDoesNotRead`,
-  `TestDialingWorkerEndsAWaitingSessionWhenItsWriteFailsOrTheWorkerCloses`
-  and `TestDialingWorkerDropsWhatFollowsAWriteThatFailed`
+  `TestDialingWorkerEndsAWaitingSessionWhenItsWriteFailsOrTheWorkerCloses`,
+  `TestDialingWorkerDropsWhatFollowsAWriteThatFailed` and
+  `TestClientWorkerClosesASessionWhoseOutputFailsAndGoesOn`
   (`common/mux/client_carrier_siblings_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails`,
   `TestDialingWorkerEndsAnAbandonedSessionWhileItsReplyWaits`,

@@ -6,7 +6,6 @@ import (
 	"io"
 	"sync"
 
-	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
@@ -110,7 +109,6 @@ func (m *ClientWorker) takeDownlink() {
 	}
 	if parseErr != nil {
 		// What follows a frame that cannot be made out is not read.
-		common.Interrupt(m.link.Reader)
 		errors.LogInfoInner(context.Background(), parseErr, "failed to read the rest of the downlink")
 	}
 }

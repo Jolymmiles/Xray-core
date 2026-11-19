@@ -642,3 +642,66 @@ func TestDialingWorkerDropsWhatFollowsAWriteThatFailed(t *testing.T) {
 		}
 	})
 }
+
+// With a live carrier, a session whose output fails a write is closed, the
+// rest of that frame is skipped, and the downlink goes on to the others.
+func TestClientWorkerClosesASessionWhoseOutputFailsAndGoesOn(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		letReturn := sync.OnceFunc(func() { close(release) })
+		defer letReturn()
+		answer := make(chan struct{})
+		opened := make(chan []uint16, 1)
+		carrier := carrierFunc(func(link *transport.Link) error {
+			reader := &buf.BufferedReader{Reader: link.Reader}
+			defer func() { buf.ReleaseMulti(reader.Buffer) }()
+			var ids []uint16
+			for len(ids) < 2 {
+				var frame FrameMetadata
+				if err := frame.Unmarshal(reader, false); err != nil {
+					return err
+				}
+				ids = append(ids, frame.SessionID)
+			}
+			slices.Sort(ids)
+			opened <- ids
+			<-answer
+			if err := sendText(link, ids[0], "for the output that fails"); err != nil {
+				return err
+			}
+			if err := sendText(link, ids[1], "sibling"); err != nil {
+				return err
+			}
+			<-release
+			return nil
+		})
+		worker, err := (&DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		failing := pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		sibling := pipeApplication(t, ctx, worker)
+		await(t, opened, "the carrier to take two opening frames")
+		synctest.Wait()
+
+		failing.abort()
+		close(answer)
+		synctest.Wait()
+		if worker.Closed() {
+			t.Fatal("the worker closed under a live carrier")
+		}
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions after one output failed, want the sibling only", active)
+		}
+		if piece, err := sibling.read(); err != nil || piece != "sibling" {
+			t.Fatalf("the sibling read %q (%v), want %q", piece, err, "sibling")
+		}
+	})
+}
