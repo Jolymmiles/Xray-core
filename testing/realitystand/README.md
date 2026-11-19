@@ -316,7 +316,8 @@ ticket it did not issue:
 
 A restart or an eviction therefore costs a client a full handshake for
 each old ticket it holds (up to two), not a resumption of a copy.
-Replicas behind one address do not resume each other's tickets. The `edge` group captures the replay scenario.
+Replicas behind one address do not resume each other's tickets. The
+`edge` group captures the replay scenario.
 
 For an invalid binder, the probe distinguishes a TLS alert, a closed
 read side, a reset, and a read deadline with no response. Silence must
