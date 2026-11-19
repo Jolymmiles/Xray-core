@@ -132,17 +132,16 @@ func TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails(t *te
 	})
 }
 
-// A session whose application went away is closed at once, also on a worker
-// whose carrier has failed and whose reader is held by another session: that
-// application reads slowly and may hold the reader for long, and nobody is
-// left to read the abandoned session's reply. The application leaves before
-// it has sent anything, in the middle of its upload, or after the uplink has
-// refused what it sent; or it ends its upload, which is also what closing a
-// connection looks like to the session that reads it, and which ends a
-// Mux.Cool session with a live carrier too.
-func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
+// A session whose application went away is closed at once, also when its
+// carrier has failed and its reply is still being delivered: nobody is left
+// to read that reply. The application leaves without having uploaded, in the
+// middle of its upload, or after the uplink has refused what it sent; or it
+// ends its upload, which is also what closing a connection looks like to the
+// session that reads it, and which ends a Mux.Cool session with a live
+// carrier too.
+func TestDialingWorkerEndsAnAbandonedSessionWhileItsReplyWaits(t *testing.T) {
 	quietLogs(t)
-	for name, uploads := range map[string]int{"before its first frame": 0, "in mid-upload": 1, "after a refused upload": 2} {
+	for name, uploads := range map[string]int{"without an upload": 0, "in mid-upload": 1, "after a refused upload": 2} {
 		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploads, false) })
 	}
 	for name, uploads := range map[string]int{"ending an upload it never began": 0, "ending its upload": 1} {
@@ -152,16 +151,16 @@ func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
 
 // endsAbandonedSession has the application send uploads blocks, the first
 // while the carrier lives and the second after it failed, and leave: by an
-// interrupt of its input, or by ending its upload.
+// interrupt of its input, or by ending its upload. It has read nothing, so
+// the first frame of its reply fills its pipe and the worker's reader is
+// held on the second.
 func endsAbandonedSession(t *testing.T, uploads int, endsUpload bool) {
 	synctest.Test(t, func(t *testing.T) {
-		newSession := func() (upload *pipe.Reader, send *pipe.Writer, reply *pipe.Reader, sink *acceptedWriter) {
-			upload, send = pipe.New(pipe.WithSizeLimit(0))
-			reply, output := pipe.New(pipe.WithSizeLimit(0))
-			t.Cleanup(func() { _ = send.Close(); reply.Interrupt() })
-			return upload, send, reply, &acceptedWriter{Writer: output, accepted: make(chan struct{})}
-		}
-		slowUpload, _, _, slowSink := newSession()
+		upload, send := pipe.New(pipe.WithSizeLimit(0))
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		defer send.Close()
+		sink := &acceptedWriter{Writer: output, accepted: make(chan struct{})}
 		carrierMayEnd := make(chan struct{})
 		stop := make(chan struct{})
 		defer close(stop)
@@ -180,15 +179,10 @@ func endsAbandonedSession(t *testing.T, uploads int, endsUpload bool) {
 		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
 			Target: net.TCPDestination(net.LocalHostIP, 80),
 		}})
-		if !worker.Dispatch(ctx, &transport.Link{Reader: slowUpload, Writer: slowSink}) {
-			t.Fatal("the worker refused the first session")
-		}
-		// The slow application's pipe holds the first frame of its reply.
-		await(t, slowSink.accepted, "the first frame of the slow session's reply")
-		upload, send, reply, sink := newSession()
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
-			t.Fatal("the worker refused the second session")
+			t.Fatal("the worker refused the session")
 		}
+		await(t, sink.accepted, "the first frame of the reply")
 		sendBlock := func() {
 			block := buf.New()
 			block.Extend(buf.Size)
@@ -201,8 +195,8 @@ func endsAbandonedSession(t *testing.T, uploads int, endsUpload bool) {
 		}
 		synctest.Wait()
 
-		// The carrier writes the rest of the slow session's reply and fails;
-		// the worker's reader is held on that frame.
+		// The carrier writes the rest of the reply and fails; the worker's
+		// reader is held on that frame.
 		close(carrierMayEnd)
 		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
@@ -210,8 +204,8 @@ func endsAbandonedSession(t *testing.T, uploads int, endsUpload bool) {
 			sendBlock()
 			synctest.Wait()
 		}
-		if active := worker.ActiveConnections(); active != 2 {
-			t.Fatalf("%d sessions before the application left, want 2", active)
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions before the application left, want the one whose reply waits", active)
 		}
 
 		if endsUpload {
@@ -222,13 +216,25 @@ func endsAbandonedSession(t *testing.T, uploads int, endsUpload bool) {
 			upload.Interrupt()
 		}
 		synctest.Wait()
-		if active := worker.ActiveConnections(); active != 1 {
-			t.Fatalf("%d sessions after one application left, want the slow one only", active)
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions after the application left, want none", active)
 		}
-		data, err := reply.ReadMultiBufferTimeout(time.Second)
-		buf.ReleaseMulti(data)
-		if !errors.Is(err, io.EOF) {
-			t.Fatalf("the abandoned session's reply did not end: %v", err)
+		// What had reached the application's side is still there to read;
+		// the frame that was waiting went with the session.
+		var body string
+		for {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			body += data.String()
+			buf.ReleaseMulti(data)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("the abandoned session's reply did not end: %q, then %v", body, err)
+			}
+		}
+		if body != "first" {
+			t.Fatalf("the abandoned session's reply holds %q, want %q", body, "first")
 		}
 	})
 }
@@ -434,11 +440,11 @@ func (r *onceFailingInput) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	}
 }
 
-// A session whose input fails is closed at once on a closed worker too, and
-// its Dispatch returns. Its input is not read again for more: a reader that
-// is not a pipe can fail once and then wait, behind another session's slow
-// reader, for as long as that one holds the worker's reader. That holds
-// when the failing read brings a last batch, which the uplink refuses.
+// A session whose input fails is closed at once, also when its carrier has
+// failed and its reply is still being delivered, and its Dispatch returns.
+// Its input is not read again for more: a reader that is not a pipe can fail
+// once and then wait. That holds when the failing read brings a last batch,
+// which the uplink refuses.
 func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
 	quietLogs(t)
 	for name, withLastBatch := range map[string]bool{"an empty read": false, "a read with a last batch": true} {
@@ -448,11 +454,9 @@ func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
 
 func endsSessionOfFailedInput(t *testing.T, withLastBatch bool) {
 	synctest.Test(t, func(t *testing.T) {
-		slowUpload, slowSend := pipe.New(pipe.WithSizeLimit(0))
-		defer slowSend.Close()
-		slowReply, slowOutput := pipe.New(pipe.WithSizeLimit(0))
-		defer slowReply.Interrupt()
-		slowSink := &acceptedWriter{Writer: slowOutput, accepted: make(chan struct{})}
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		sink := &acceptedWriter{Writer: output, accepted: make(chan struct{})}
 		carrierMayEnd := make(chan struct{})
 		stop := make(chan struct{})
 		defer close(stop)
@@ -470,10 +474,6 @@ func endsSessionOfFailedInput(t *testing.T, withLastBatch bool) {
 		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
 			Target: net.TCPDestination(net.LocalHostIP, 80),
 		}})
-		if !worker.Dispatch(ctx, &transport.Link{Reader: slowUpload, Writer: slowSink}) {
-			t.Fatal("the worker refused the first session")
-		}
-		await(t, slowSink.accepted, "the first frame of the slow session's reply")
 
 		block := buf.New()
 		block.Extend(buf.Size)
@@ -486,29 +486,30 @@ func endsSessionOfFailedInput(t *testing.T, withLastBatch bool) {
 		defer close(input.idle)
 		failInput := sync.OnceFunc(func() { close(input.fail) })
 		defer failInput()
-		reply, output := pipe.New(pipe.WithSizeLimit(0))
-		defer reply.Interrupt()
 		// Dispatch waits for the session when its input is not a pipe.
 		dispatched := make(chan bool, 1)
-		go func() { dispatched <- worker.Dispatch(ctx, &transport.Link{Reader: input, Writer: output}) }()
+		go func() { dispatched <- worker.Dispatch(ctx, &transport.Link{Reader: input, Writer: sink}) }()
+		await(t, sink.accepted, "the first frame of the reply")
 		synctest.Wait()
 
+		// The carrier writes the rest of the reply and fails; the worker's
+		// reader is held on that frame.
 		close(carrierMayEnd)
 		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
-		if active := worker.ActiveConnections(); active != 2 {
-			t.Fatalf("%d sessions before the input failed, want 2", active)
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions before the input failed, want the one whose reply waits", active)
 		}
 
 		failInput()
 		synctest.Wait()
-		if active := worker.ActiveConnections(); active != 1 {
-			t.Fatalf("%d sessions after one input failed, want the slow one only", active)
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions after the input failed, want none", active)
 		}
 		select {
 		case accepted := <-dispatched:
 			if !accepted {
-				t.Fatal("the worker refused the second session")
+				t.Fatal("the worker refused the session")
 			}
 		default:
 			t.Fatal("Dispatch still waits for a session whose input failed")

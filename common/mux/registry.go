@@ -124,16 +124,21 @@ func (r *sessionRegistry) closeActive(id uint16, token uint64) {
 }
 
 func (r *sessionRegistry) close() {
+	r.closeExcept(nil)
+}
+
+// closeExcept closes the registry and every session in it but the active
+// owners in kept, which stay until they are closed one by one or by a later
+// close. Nothing is admitted afterwards.
+func (r *sessionRegistry) closeExcept(kept map[*Session]struct{}) {
 	var owners []*Session
 	var cancels []context.CancelFunc
 	r.mu.Lock()
-	if r.closing {
-		r.mu.Unlock()
-		r.commits.Wait()
-		return
-	}
 	r.closing = true
 	for id, slot := range r.slots {
+		if _, keep := kept[slot.owner]; keep && slot.state == sessionSlotActive {
+			continue
+		}
 		if slot.cancel != nil {
 			cancels = append(cancels, slot.cancel)
 		}
@@ -320,6 +325,10 @@ func (m *clientSessionManager) admitted() int    { return m.registry.admitted() 
 func (m *clientSessionManager) activeCount() int { return m.registry.activeCount() }
 func (m *clientSessionManager) count() int       { return m.registry.count() }
 func (m *clientSessionManager) close()           { m.registry.close() }
+func (m *clientSessionManager) closeExcept(kept map[*Session]struct{}) {
+	m.registry.closeExcept(kept)
+}
+
 func (m *clientSessionManager) closeIfIdle(size, count int) bool {
 	return m.registry.closeIfIdle(size, count)
 }

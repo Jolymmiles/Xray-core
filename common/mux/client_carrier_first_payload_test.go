@@ -146,8 +146,9 @@ func TestDialingWorkerEndsASessionWhoseFirstPayloadIsRefusedWhileOpen(t *testing
 }
 
 // A first payload cut by a refusal after its opening frame on a closed worker
-// is read on and dropped like any refused upload: its session is kept when
-// the upload then runs to its end, and ended when its application leaves.
+// is read on and dropped like any refused upload: its session is kept for
+// the reply the carrier had written when the upload then runs to its end,
+// and ended when its application leaves.
 // TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort reads the reply
 // and never ends the upload.
 func TestDialingWorkerDropsTheRestOfACutFirstPayload(t *testing.T) {
@@ -167,17 +168,9 @@ func TestDialingWorkerDropsTheRestOfACutFirstPayload(t *testing.T) {
 				}
 				defer worker.Close()
 
-				slowUpload, slowSend := pipe.New(pipe.WithSizeLimit(0))
-				defer slowSend.Close()
-				slowReply, slowOutput := pipe.New(pipe.WithSizeLimit(0))
-				defer slowReply.Interrupt()
-				slowSink := &takenWriter{Writer: slowOutput, taken: make(chan struct{})}
-				if !worker.Dispatch(ctx, &transport.Link{Reader: slowUpload, Writer: slowSink}) {
-					t.Fatal("the worker refused the first session")
-				}
-				await(t, slowSink.taken, "the first frame of the slow session's reply")
-				synctest.Wait()
-
+				// The frame that opens the session reaches the carrier;
+				// the next one of the same first payload is held in front
+				// of the uplink until the carrier is gone.
 				carrierGone := make(chan struct{})
 				releaseUplink := sync.OnceFunc(func() { close(carrierGone) })
 				defer releaseUplink()
@@ -186,26 +179,30 @@ func TestDialingWorkerDropsTheRestOfACutFirstPayload(t *testing.T) {
 				defer send.Close()
 				reply, output := pipe.New(pipe.WithSizeLimit(0))
 				defer reply.Interrupt()
+				sink := &takenWriter{Writer: output, taken: make(chan struct{})}
 				if err := send.WriteMultiBuffer(uploadBlocks(2)); err != nil {
 					t.Fatal(err)
 				}
-				if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
-					t.Fatal("the worker refused the second session")
+				if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
+					t.Fatal("the worker refused the session")
 				}
+				// The application reads nothing: the first frame of its
+				// reply fills its pipe and the reader is held on the second.
+				await(t, sink.taken, "the first frame of the reply")
 				synctest.Wait()
 				letFail()
 				await(t, worker.WaitClosed(), "the worker to close")
 				synctest.Wait()
 				releaseUplink()
 				synctest.Wait()
-				if active := worker.ActiveConnections(); active != 2 {
-					t.Fatalf("%d sessions after the first payload was cut, want both", active)
+				if active := worker.ActiveConnections(); active != 1 {
+					t.Fatalf("%d sessions after the first payload was cut, want the one whose reply waits", active)
 				}
 
-				want := uint32(2)
+				want, wantReply := uint32(1), 2*buf.Size
 				if leaves {
 					upload.Interrupt()
-					want = 1
+					want, wantReply = 0, buf.Size
 				} else if err := send.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -213,13 +210,20 @@ func TestDialingWorkerDropsTheRestOfACutFirstPayload(t *testing.T) {
 				if active := worker.ActiveConnections(); active != want {
 					t.Fatalf("%d sessions, want %d", active, want)
 				}
-				if !leaves {
-					return
+				var got int
+				for {
+					data, err := reply.ReadMultiBufferTimeout(time.Second)
+					got += int(data.Len())
+					buf.ReleaseMulti(data)
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						t.Fatalf("read %d bytes of the reply, then: %v", got, err)
+					}
 				}
-				data, err := reply.ReadMultiBufferTimeout(time.Second)
-				buf.ReleaseMulti(data)
-				if !errors.Is(err, io.EOF) {
-					t.Fatalf("the abandoned session's reply did not end: %v", err)
+				if got != wantReply {
+					t.Fatalf("the application read %d bytes of its reply, want %d", got, wantReply)
 				}
 			})
 		})
