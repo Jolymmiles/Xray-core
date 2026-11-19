@@ -171,7 +171,9 @@ func (c *serializingUTLSSessionCache) Put(sessionKey string, session *utls.Clien
 	defer c.Unlock()
 
 	if session == nil {
-		c.cache.Put(sessionKey, nil)
+		// uTLS drops the ticket of a handshake that failed. Get took that
+		// ticket out when it was offered; what is here now is a newer one
+		// that another connection stored.
 		return
 	}
 	if cloned := cloneUTLSSession(session); cloned != nil {
@@ -208,9 +210,9 @@ func reportUnresumableFingerprint(fingerprint utls.ClientHelloID) {
 	if _, reported := reportedUnresumableFingerprints.LoadOrStore(name, struct{}{}); reported {
 		return
 	}
-	if resumesWithAnotherHello(fingerprint) {
+	if followsNSS(fingerprint) {
 		errors.LogInfo(context.Background(), "TLS session resumption is unavailable for fingerprint ", name,
-			": the impersonated client changes more of its ClientHello than pre_shared_key when it resumes")
+			" without a server name: what Firefox sends to an IP address when it resumes was not measured")
 		return
 	}
 	errors.LogInfo(context.Background(), "TLS session resumption is unavailable for fingerprint ", name,
@@ -218,26 +220,25 @@ func reportUnresumableFingerprint(fingerprint utls.ClientHelloID) {
 		"and adding them would not match the impersonated client")
 }
 
-// resumesWithAnotherHello reports whether the impersonated client changes
-// more than pre_shared_key when it resumes, so that its template plus
-// pre_shared_key would be a ClientHello it never sends. Firefox 156 resuming
-// over TLS 1.3 drops session_ticket and grows its GREASE ECH with the PSK.
-// The older Firefox presets are left as they were.
-func resumesWithAnotherHello(fingerprint utls.ClientHelloID) bool {
-	return fingerprint.Client == utls.HelloFirefox_156.Client && fingerprint.Version == utls.HelloFirefox_156.Version
-}
-
-// SupportsSessionResumption reports whether a resumption PSK can be offered
-// under the given fingerprint without altering its ClientHello.
+// SupportsSessionResumption reports whether a session can be resumed under
+// the given fingerprint with the ClientHello its browser sends for it: its
+// template plus pre_shared_key, or for a Firefox that followsNSS the hello
+// newFirefoxClient builds.
 func SupportsSessionResumption(fingerprint utls.ClientHelloID) bool {
+	if followsNSS(fingerprint) {
+		return true
+	}
 	_, eligible := clientHelloSpecForResumption(fingerprint)
 	return eligible
 }
 
 // clientHelloSpecForResumption returns a ClientHello template able to carry a
-// resumption PSK, or false when preserving the stock fingerprint wins.
+// resumption PSK, or false when preserving the stock fingerprint wins. A
+// Firefox that followsNSS changes more than pre_shared_key when it resumes:
+// its template plus pre_shared_key is a ClientHello it never sends, and
+// newFirefoxClient builds the one it does.
 func clientHelloSpecForResumption(fingerprint utls.ClientHelloID) (*utls.ClientHelloSpec, bool) {
-	if resumesWithAnotherHello(fingerprint) {
+	if followsNSS(fingerprint) {
 		return nil, false
 	}
 	spec, err := utls.UTLSIdToSpec(fingerprint)

@@ -66,14 +66,17 @@ func TestUClientSessionResumptionEnabled(t *testing.T) {
 	}
 }
 
-// TestUClientSessionResumptionSkippedForFirefox pins full handshakes for
-// Firefox 156, which the firefox aliases select. Its template carries
-// session_ticket and psk_key_exchange_modes, but a Firefox that resumes over
-// TLS 1.3 drops session_ticket and sends a longer GREASE ECH, which the
-// template plus pre_shared_key does not reproduce. Every connection still
-// works, and every ClientHello after the first has the first one's shape: no
-// ticket and no pre_shared_key.
-func TestUClientSessionResumptionSkippedForFirefox(t *testing.T) {
+// TestUClientSessionResumptionFirefox covers the firefox aliases, whose
+// resumed ClientHello is not their first one plus pre_shared_key. Over TLS
+// 1.3 Firefox leaves session_ticket out, offers the ticket in a
+// pre_shared_key that comes last, and its GREASE ECH grows with it; over TLS
+// 1.2 the ticket goes into session_ticket and nothing else changes. The
+// server accepts both, so the binder covers the hello that was sent.
+func TestUClientSessionResumptionFirefox(t *testing.T) {
+	const (
+		sessionTicket = 35
+		preSharedKey  = 41
+	)
 	versions := map[string]uint16{
 		"TLS12": gotls.VersionTLS12,
 		"TLS13": gotls.VersionTLS13,
@@ -86,10 +89,10 @@ func TestUClientSessionResumptionSkippedForFirefox(t *testing.T) {
 
 				fingerprint := xraytls.GetFingerprint(fingerprintName)
 				if fingerprint == nil || *fingerprint != utls.HelloFirefox_156 {
-					t.Fatalf("%s no longer selects Firefox 156; review the resumption rule for what it selects now", fingerprintName)
+					t.Fatalf("%s no longer selects Firefox 156; measure what it selects now", fingerprintName)
 				}
-				if xraytls.SupportsSessionResumption(*fingerprint) {
-					t.Fatalf("%s qualifies for session resumption", fingerprintName)
+				if !xraytls.SupportsSessionResumption(*fingerprint) {
+					t.Fatalf("%s does not qualify for session resumption", fingerprintName)
 				}
 
 				states, hellos := runRecordedUClientHandshakes(
@@ -103,17 +106,27 @@ func TestUClientSessionResumptionSkippedForFirefox(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for i, state := range states {
-					if state.DidResume {
-						t.Fatalf("TLS connection %d resumed under a Firefox fingerprint", i+1)
+				if states[0].DidResume || slices.Contains(first.Extensions, preSharedKey) {
+					t.Fatalf("the first TLS connection offered or resumed a session: extensions %v", first.Extensions)
+				}
+				for i := 1; i < len(states); i++ {
+					if !states[i].DidResume {
+						t.Fatalf("TLS connection %d did not resume the cached session", i+1)
 					}
 					hello, err := hellotest.Summarize(hellos[i])
 					if err != nil {
 						t.Fatal(err)
 					}
-					if hello.Length != first.Length || !slices.Equal(hello.Extensions, first.Extensions) {
-						t.Fatalf("ClientHello %d differs from the first: %d bytes, extensions %v; first %d bytes, extensions %v",
-							i+1, hello.Length, hello.Extensions, first.Length, first.Extensions)
+					want := slices.Clone(first.Extensions)
+					if version == gotls.VersionTLS13 {
+						want = slices.DeleteFunc(want, func(id uint16) bool { return id == sessionTicket })
+						want = append(want, preSharedKey)
+					}
+					if !slices.Equal(hello.Extensions, want) {
+						t.Fatalf("ClientHello %d has extensions %v, want %v", i+1, hello.Extensions, want)
+					}
+					if hello.Length <= first.Length {
+						t.Fatalf("ClientHello %d is %d bytes, the first is %d: it carries no ticket", i+1, hello.Length, first.Length)
 					}
 				}
 			})

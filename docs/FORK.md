@@ -61,7 +61,17 @@ guard it.
   with a hello that REALITY rejects, that a post-quantum-preferring server
   answers with a HelloRetryRequest uTLS cannot follow, or that breaks RFC
   8446, Section 4.2.8; the P-256 key share upstream may add is dropped, as
-  Chrome sends none. The raw `hellorandomized*` forms keep uTLS's behavior. The
+  Chrome sends none. The raw `hellorandomized*` forms keep uTLS's behavior.
+  With a real ECH config list no fingerprint offers a session ticket: the
+  ticket belongs in the inner hello, uTLS cannot put it there for a
+  fingerprint, and it refuses to build a hello that offers one. That failed
+  the dial when the cache held a ticket from a connection made without
+  ECH; a Go server answering ECH issued no ticket in the tests, so two ECH
+  connections in a row did not show it. A caller of `NewUClient` that
+  brings its own session cache keeps it for `utls.HelloGolang`, Go's own
+  client, which can carry the ticket; through Xray's TLS settings
+  `hellogolang` did not resume with ECH before and does not now
+  (`TestRealECHOffersNoTicket`, `TestRealECHKeepsGoClientSessionCache`). The
   REALITY client builds its hello the same way, returns an error instead of
   panicking for a fingerprint whose hello cannot carry the session ID (the
   `*_psk` forms), reads the server's certificates through `VerifyConnection`
@@ -104,25 +114,54 @@ guard it.
     `crypto/rand`, as BoringSSL does. Upstream seeds one `math/rand` source
     per hello, which reaches at most 2^31-1 of the 17! orders, and leaves
     each extension in its source slot in about 11% of hellos.
-  - `firefox` never resumes a session over the TLS transports
-    (`resumesWithAnotherHello` in `transport/internet/tls/resumption.go`). A
-    preset resumes there when its template carries session_ticket and
-    psk_key_exchange_modes, and Firefox 156's does, but a Firefox that
-    resumes over TLS 1.3 drops session_ticket and sends a longer GREASE ECH
-    (570 bytes against 282 in the fork's captures), so the template plus
-    pre_shared_key would be a hello Firefox does not send. A `firefox`
-    client that takes a full handshake every time against a server that
-    issues tickets can still be told from a browser over several
-    connections, as it could with Firefox 148. The older `hellofirefox_*`
-    presets resume as before. REALITY's browser mode is apart from this
-    rule: it builds the hello Firefox sends with a ticket itself
-    (`transport/internet/reality/resumption.go`), and with this pin
-    `firefox` qualifies for it. The fork's `FORK.md` lists two more limits
-    of the Firefox preset's GREASE ECH.
+  - `firefox` and `hellofirefox_auto` do not send the preset as it is.
+    `transport/internet/tls/firefox.go` builds Firefox 156's ClientHello for
+    each connection, for the TLS transports and for REALITY alike, by rules
+    measured on Firefox 156.0.1 and 160.0 (340 ClientHellos; five are kept
+    in `transport/internet/tls/testdata/firefox`):
+    - the GREASE ECH payload is 16 bytes more than the sum of 117, the
+      server name padded to 100 and the `pre_shared_key` extension, rounded
+      up to 32, so the extension grows from 282 bytes once the server name
+      passes 107 bytes, where the preset has 282 at any length;
+    - its encapsulated key is 32 random bytes, as in NSS, where uTLS puts
+      an X25519 public key, whose last byte never has its top bit set;
+    - with a TLS 1.3 ticket it leaves `session_ticket` out and offers the
+      ticket in a `pre_shared_key` that comes last; with a TLS 1.2 ticket
+      the ticket goes into `session_ticket` and nothing else changes.
+
+    So `firefox` resumes sessions where the TLS settings allow it, which
+    the preset plus `pre_shared_key` could not do without sending a hello
+    Firefox does not send. The ticket is taken from the cache before the
+    hello is built, because the hello depends on it. Xray's caches give a
+    ticket to one connection, so it is offered once, as Firefox does; a
+    session cache a caller of `NewUClient` brings keeps its own policy. In
+    the cache behind the TLS settings, for any fingerprint, a connection
+    that fails after it offered a ticket leaves the newer ticket another
+    connection has stored since, for the next connection to offer: uTLS
+    drops the failed handshake's ticket by server name, and that cache had
+    given it up already (`TestFailedDialKeepsANewerTicket`). REALITY keeps
+    its own rule: a failed offer clears the server's tickets and holds new
+    offers back for ten minutes.
+    Limits: Firefox also
+    sends `early_data` when a ticket allows it, and Xray, which sends no
+    early data, does not, as Firefox with `security.tls.enable_0rtt_data`
+    off: an observer of a server that allows early data sees neither
+    extension 42 nor early records, and at some sizes a GREASE ECH 32 bytes
+    shorter; a connection to an IP address, which carries no server name,
+    was not measured: over the TLS transports it sends the preset without
+    resuming, and in REALITY's browser mode it resumes with the
+    approximation of `transport/internet/reality/resumption.go`; a ticket
+    too long for the hello to carry is dropped; the older
+    `hellofirefox_*` presets keep their templates and the rule of
+    `resumptionSpec`.
 
   Covered by `transport/internet/tls/fingerprint_health_test.go`, the
-  ClientHello snapshot tests, `TestUClientSessionResumptionSkippedForFirefox`,
-  `TestResumptionDeclinesFirefox156`, `TestFirefoxHelloIgnoresSessionCache`,
+  ClientHello snapshot tests, `TestFirefoxClientHelloFollowsCaptures`,
+  `TestFirefoxGREASEECHFields`, `TestFirefoxGREASEECHCountsTheTicketItOffers`,
+  `TestFirefoxOffersATicketOnce`, `TestFirefoxTicketTooLongForTheHello`,
+  `TestUClientSessionResumptionFirefox`,
+  `TestFirefoxResumptionHelloCountsALongServerName`,
+  `TestFirefox156ResumesOnlyWithItsOwnHello`,
   `TestREALITYRequireMlkemAcceptsEdge` and the fork's capture and key-share
   tests.
 - REALITY browser mode requires `"browser": "auto"` on the inbound and
