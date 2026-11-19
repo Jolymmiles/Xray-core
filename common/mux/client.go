@@ -336,9 +336,12 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	writer := NewWriter(s.ID, ob.Target, m.link.Writer, transferType, xudp.GetGlobalID(ctx), inbound)
 	// The end of an upload ends its session, and with it the reply. Not on
 	// a closed worker when the upload ran to its end or the uplink refused
-	// it: the carrier may be gone while fetchOutput is still delivering
-	// what it wrote for this session, and finish() closes the session
-	// after that. A session whose application went away is closed here.
+	// it after the frame that opens the session: the carrier may be gone
+	// while fetchOutput is still delivering what it wrote for this session,
+	// and finish() closes the session after that. A session whose upload
+	// fails to be read is closed here: its application went away. Once the
+	// uplink has refused an upload nobody reads the application's input,
+	// and such a session waits for finish() or for its context.
 	replyMayFollow := false
 	defer func() {
 		if !replyMayFollow || !m.Closed() {
@@ -351,6 +354,10 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	if err := writeFirstPayload(s.input, writer); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to write first payload")
 		writer.hasError = true
+		// A first payload goes out in as many frames as it needs. The
+		// carrier may have taken the one that opens the session, and
+		// answered it, before the uplink refused the rest.
+		replyMayFollow = writer.opened
 		return
 	}
 
