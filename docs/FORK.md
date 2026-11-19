@@ -605,6 +605,21 @@ guard it.
   the inbound copying a server worker's responses waited for their own
   timeouts. Covered by `TestWorkerEndInterruptsWrappedWriter`
   (`common/mux/mutex_writer_test.go`).
+- A Mux.Cool client worker made by `DialingWorkerFactory` ends its sessions
+  when its carrier returns, and delivers first what the carrier had written.
+  The factory closes the carrier's end of the downlink and discards the
+  uplink; the worker's reader drains the downlink and then closes the
+  sessions and interrupts the link. Upstream closes the sessions and
+  interrupts the link in `monitor` as soon as the carrier returns, which
+  drops a response already received. The fork moved that cleanup out of
+  `monitor` in `4f01e31b`, after which a failed carrier left its sessions
+  open and silent. When syncing `common/mux/client.go`, do not take
+  upstream's `monitor` cleanup in place of this. Covered by
+  `TestDialingWorkerEndsSessionsWhenCarrierFails`,
+  `TestDialingWorkerDeliversWhatItsCarrierWroteBeforeEnding`
+  (`common/mux/client_carrier_failure_test.go`) and
+  `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
+  (`common/mux/client_carrier_uplink_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.
