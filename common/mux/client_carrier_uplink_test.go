@@ -31,16 +31,31 @@ func (f carrierFunc) Process(_ context.Context, link *transport.Link, _ internet
 // sessions behind it never get their replies and their end. The uplink is
 // filled here after the carrier's last read, and without that as a control.
 func TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails(t *testing.T) {
-	const deadline = 3 * time.Second
 	for _, full := range []bool{false, true} {
-		t.Run(fmt.Sprintf("full=%t", full), func(t *testing.T) {
+		for _, fails := range []bool{true, false} {
+			t.Run(fmt.Sprintf("full=%t/fails=%t", full, fails), func(t *testing.T) {
+				drainsPastAFullUplink(t, full, fails)
+			})
+		}
+	}
+}
+
+// drainsPastAFullUplink has the carrier return an error, or none with the
+// downlink left open: the uplink is no more read in either case.
+func drainsPastAFullUplink(t *testing.T, full, fails bool) {
+	const deadline = 3 * time.Second
+	{
+		{
 			firstID := make(chan uint16, 1)
 			secondNew := make(chan struct{})
 			uplinkReadDone := make(chan struct{})
 			send := make(chan struct{})
 			release := sync.OnceFunc(func() { close(send) })
 			processResult := make(chan error, 1)
-			carrierFailure := errors.New("carrier failed after queuing responses")
+			var carrierFailure error
+			if fails {
+				carrierFailure = errors.New("carrier failed after queuing responses")
+			}
 			carrier := carrierFunc(func(link *transport.Link) (result error) {
 				defer func() { processResult <- result }()
 				reader := &buf.BufferedReader{Reader: link.Reader}
@@ -167,6 +182,6 @@ func TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails(t *testing.T) {
 			if !errors.Is(err, io.EOF) {
 				t.Fatalf("sibling did not end: %v", err)
 			}
-		})
+		}
 	}
 }

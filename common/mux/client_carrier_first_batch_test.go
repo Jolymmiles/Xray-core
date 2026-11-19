@@ -410,10 +410,17 @@ func endsSessionRefusedWhileOpen(t *testing.T, inFirstPayload bool) {
 
 // A session the carrier has taken and not answered ends when that carrier
 // fails: nothing is queued for it, and its end comes from the end of the
-// downlink, which the factory closes.
+// downlink, which the factory closes. The same holds for a carrier that
+// returns without an error and leaves the downlink open.
 func TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails(t *testing.T) {
 	log.RegisterHandler(discardRecords{})
 	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	for name, result := range map[string]error{"with an error": errors.New("connection reset"), "without an error": nil} {
+		t.Run(name, func(t *testing.T) { endsUnansweredSession(t, result) })
+	}
+}
+
+func endsUnansweredSession(t *testing.T, result error) {
 	synctest.Test(t, func(t *testing.T) {
 		taken := make(chan error, 1)
 		carrier := carrierFunc(func(link *transport.Link) error {
@@ -425,7 +432,7 @@ func TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails(t *testing.T) {
 				err = fmt.Errorf("expected a NEW, got %+v", opening)
 			}
 			taken <- err
-			return errors.New("connection reset")
+			return result
 		})
 		worker, err := (&DialingWorkerFactory{Proxy: carrier}).Create()
 		if err != nil {

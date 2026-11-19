@@ -657,7 +657,10 @@ guard it.
   its session lasts, since left unread it would hold an application that
   sends before it reads and hide one that goes away, and its session is
   kept for the worker's cleanup unless its input fails or its opening
-  frame was the one refused. The factory reports the carrier's error only
+  frame was the one refused. An application that closes after a last
+  write, as a TLS client sending its close alert does, is such a session:
+  the write is refused, the upload then ends, and it is released with the
+  worker, not at once. The factory reports the carrier's error only
   after it has closed the downlink's end, the worker and the uplink, so
   that a slow log handler does not hold up the end of the sessions.
   Upstream closes the sessions and

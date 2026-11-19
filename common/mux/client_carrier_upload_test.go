@@ -516,9 +516,17 @@ func endsSessionOfFailedInput(t *testing.T, withLastBatch bool) {
 // being dropped is begun. A wrapped reader does not pass on the interrupt a
 // session's end gives its input, so one read may be waiting at that moment
 // and takes one batch; what its owner sends after that is the owner's:
-// Dispatch has returned by then.
+// Dispatch has returned by then. The upload is in progress when the carrier
+// fails, or the input is idle and the batch its waiting read takes is the
+// one the uplink refuses.
 func TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded(t *testing.T) {
 	quietLogs(t)
+	for name, size := range map[string]int{"an upload in progress": 256 * 1024, "an idle input": 64} {
+		t.Run(name, func(t *testing.T) { stopsReadingAnEndedSessionsInput(t, size) })
+	}
+}
+
+func stopsReadingAnEndedSessionsInput(t *testing.T, requestSize int) {
 	synctest.Test(t, func(t *testing.T) {
 		stop := make(chan struct{})
 		defer close(stop)
@@ -543,12 +551,12 @@ func TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded(t *testing.T) {
 		defer send.Close()
 		reply, output := pipe.New()
 		defer reply.Interrupt()
-		// More than the uplink holds: the upload is in progress when the
-		// carrier fails, and is refused.
+		// With more than the uplink holds, the upload is in progress when
+		// the carrier fails, and is refused.
 		var request buf.MultiBuffer
-		for size := 0; size < 256*1024; size += buf.Size {
+		for size := 0; size < requestSize; size += buf.Size {
 			block := buf.New()
-			block.Extend(buf.Size)
+			block.Extend(int32(min(buf.Size, requestSize-size)))
 			request = append(request, block)
 		}
 		if err := send.WriteMultiBuffer(request); err != nil {
