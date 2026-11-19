@@ -883,6 +883,60 @@ func TestDialingWorkerHandsTheDownlinkOutWhileAFailedWriteIsReported(t *testing.
 	})
 }
 
+// The factory hands the downlink out before it reports its carrier's error:
+// a log handler takes its time, and the sibling of a session that does not
+// read must not wait for it.
+func TestDialingWorkerHandsTheDownlinkOutBeforeItReportsItsCarrier(t *testing.T) {
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		held := heldLine{text: "failed to handler mux client connection", once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(held)
+		defer log.RegisterHandler(discardRecords{})
+		defer close(held.resume)
+
+		carrier := carrierFunc(func(link *transport.Link) error {
+			reader := &buf.BufferedReader{Reader: link.Reader}
+			defer func() { buf.ReleaseMulti(reader.Buffer) }()
+			var ids []uint16
+			for len(ids) < 2 {
+				var frame FrameMetadata
+				if err := frame.Unmarshal(reader, false); err != nil {
+					return err
+				}
+				ids = append(ids, frame.SessionID)
+			}
+			slices.Sort(ids)
+			// The second frame is the write the worker's reader waits in.
+			for _, text := range []string{"s1", "s2"} {
+				if err := sendText(link, ids[0], text); err != nil {
+					return err
+				}
+			}
+			if err := sendText(link, ids[1], "fast reply"); err != nil {
+				return err
+			}
+			return errors.New("connection reset")
+		})
+		worker, err := (&DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		sibling := pipeApplication(t, ctx, worker)
+
+		await(t, held.entered, "the report of the carrier's error")
+		synctest.Wait()
+		if reply, err := sibling.read(); reply != "fast reply" {
+			t.Fatalf("while the carrier's error is being reported, the sibling read %q (%v), want %q", reply, err, "fast reply")
+		}
+	})
+}
+
 // The downlink is let go for the report of a failed write only once the rest
 // of that write's frame is skipped. The frame reached the worker in two
 // pieces: taken over in the middle of it, its rest would be read as the next

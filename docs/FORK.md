@@ -659,8 +659,8 @@ guard it.
   that waits for its peer still holds the closes after it, or the takeover
   while a live END or a failed write closes it, as `main`'s cleanup does.
   Pipes and the connection writers of the inbounds that hand theirs over
-  do not wait; an SMUX inbound's stream can, for its peer's CLOSE or
-  HALF_CLOSE. The
+  do not wait; an SMUX inbound's stream can, until its own carrier takes
+  its CLOSE frame, for at most 30 s per stream. The
   taken worker keeps no session, frame or unread bytes, interrupts the
   downlink, and is not idle while a session is still handed its reply. With a
   live carrier the downlink's order stands, Mux.Cool having no flow control
@@ -703,6 +703,7 @@ guard it.
   `TestClientWorkerLeavesASessionWhoseOutputEnded`,
   `TestClientWorkerFinishesBeforeItReportsWhatEndedItsReader`,
   `TestDialingWorkerReportsAFailedWriteAtItsFramesEnd`,
+  `TestDialingWorkerHandsTheDownlinkOutBeforeItReportsItsCarrier`,
   `TestDialingWorkerHandsOutTheRestBeforeItClosesTheOthers` and
   `TestDialingWorkerLeavesTheDownlinkAloneAfterItWasTaken`
   (`common/mux/client_carrier_siblings_test.go`),
