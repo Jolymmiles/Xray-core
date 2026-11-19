@@ -512,9 +512,10 @@ func endsSessionOfFailedInput(t *testing.T, withLastBatch bool) {
 	})
 }
 
-// Once its session has ended, an input whose upload is being dropped is not
-// read any more. A wrapped reader does not pass on the interrupt a session's
-// end gives its input, and what its owner sends afterwards is the owner's:
+// Once its session is seen to have ended, no read of an input whose upload is
+// being dropped is begun. A wrapped reader does not pass on the interrupt a
+// session's end gives its input, so one read may be waiting at that moment
+// and takes one batch; what its owner sends after that is the owner's:
 // Dispatch has returned by then.
 func TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded(t *testing.T) {
 	quietLogs(t)

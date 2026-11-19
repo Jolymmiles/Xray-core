@@ -383,7 +383,9 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	// but its input is read on, and dropped, for as long as the session
 	// lasts: left unread it fills and holds an application that sends
 	// before it reads its reply, and an application that goes away is not
-	// seen. After the session has ended its input is its owner's again.
+	// seen. No read is begun once the session is seen to have ended. One
+	// that was waiting then, on an input that cannot be interrupted, still
+	// takes the next batch its owner sends.
 	for readErr := input.err; ; {
 		if readErr != nil {
 			keptForReply = errors.Cause(readErr) == io.EOF
