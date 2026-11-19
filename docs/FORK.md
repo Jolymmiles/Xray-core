@@ -610,13 +610,12 @@ guard it.
   The factory closes the carrier's end of the downlink and interrupts the
   uplink; the worker's reader drains the downlink and then closes the
   sessions and interrupts the link. Until then a session that the carrier
-  may have answered stays open when its upload ends or is refused, so that
-  the end of an upload does not cut off a reply still being delivered. A
-  session whose upload fails to be read while it is being copied, or whose
-  opening frame the uplink refused, is closed at once. After a refused
-  upload nobody reads the application's input: such a session ends with
-  the worker or with its context, which an inbound cancels when its
-  connection ends. Upstream closes the sessions and
+  may have answered stays open when its upload ends, so that the end of an
+  upload does not cut off a reply still being delivered. An upload the
+  uplink refuses is read to its end and dropped: left unread it would hold
+  an application that sends before it reads, and hide one that goes away.
+  A session whose upload fails to be read, or whose opening frame the
+  uplink refused, is closed at once. Upstream closes the sessions and
   interrupts the link in `monitor` as soon as the carrier returns, which
   drops a response already received. The fork moved that cleanup out of
   `monitor` in `4f01e31b`, after which a failed carrier left its sessions
@@ -630,8 +629,10 @@ guard it.
   `TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails`,
   `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld` and
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`
-  (`common/mux/client_carrier_upload_test.go`) and
-  `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`
+  (`common/mux/client_carrier_upload_test.go`),
+  `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
+  `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused` and
+  `TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen`
   (`common/mux/client_carrier_first_batch_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import

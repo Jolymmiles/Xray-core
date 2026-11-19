@@ -40,7 +40,9 @@ func (w *acceptedWriter) WriteMultiBuffer(data buf.MultiBuffer) error {
 // reply the worker is still delivering. The application here reads nothing
 // until its upload is done, and its pipe holds one frame, so the worker is
 // held on the second. Its upload ends with more to send, which the uplink
-// refuses, or with nothing left.
+// refuses, or with nothing left. What it still sends is taken from it: its
+// pipe holds one write, and left unread would hold the application before it
+// gets to read the reply.
 func TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails(t *testing.T) {
 	quietLogs(t)
 	for name, sendsMore := range map[string]bool{"refused": true, "ended": false} {
@@ -79,18 +81,31 @@ func keepsQueuedReply(t *testing.T, sendsMore bool) {
 		<-worker.WaitClosed()
 		synctest.Wait()
 
-		if sendsMore {
-			block := buf.New()
-			block.Extend(buf.Size)
-			if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
-				t.Fatal(err)
+		sent := make(chan error, 1)
+		go func() {
+			for range 4 {
+				if !sendsMore {
+					break
+				}
+				block := buf.New()
+				block.Extend(buf.Size)
+				if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+					sent <- err
+					return
+				}
 			}
-		}
-		if err := uploadWriter.Close(); err != nil {
-			t.Fatal(err)
-		}
+			sent <- uploadWriter.Close()
+		}()
 		// The upload has been taken as far as it goes.
 		synctest.Wait()
+		select {
+		case err := <-sent:
+			if err != nil {
+				t.Fatalf("the upload failed: %v", err)
+			}
+		default:
+			t.Fatal("the application is held on its upload, with its reply unread")
+		}
 
 		var body string
 		for {
@@ -114,15 +129,18 @@ func keepsQueuedReply(t *testing.T, sendsMore bool) {
 // whose carrier has failed and whose reader is held by another session: that
 // application reads slowly and may hold the reader for long, and nobody is
 // left to read the abandoned session's reply. The application leaves before
-// it has sent anything, or in the middle of its upload.
+// it has sent anything, in the middle of its upload, or after the uplink has
+// refused what it sent.
 func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
 	quietLogs(t)
-	for name, uploading := range map[string]bool{"before its first frame": false, "in mid-upload": true} {
-		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploading) })
+	for name, uploads := range map[string]int{"before its first frame": 0, "in mid-upload": 1, "after a refused upload": 2} {
+		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploads) })
 	}
 }
 
-func endsAbandonedSession(t *testing.T, uploading bool) {
+// endsAbandonedSession has the application send uploads blocks, the first
+// while the carrier lives and the second after it failed, and leave.
+func endsAbandonedSession(t *testing.T, uploads int) {
 	synctest.Test(t, func(t *testing.T) {
 		newSession := func() (upload *pipe.Reader, send *pipe.Writer, reply *pipe.Reader, sink *acceptedWriter) {
 			upload, send = pipe.New(pipe.WithSizeLimit(0))
@@ -158,12 +176,15 @@ func endsAbandonedSession(t *testing.T, uploading bool) {
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
 			t.Fatal("the worker refused the second session")
 		}
-		if uploading {
-			request := buf.New()
-			request.Extend(buf.Size)
-			if err := send.WriteMultiBuffer(buf.MultiBuffer{request}); err != nil {
+		sendBlock := func() {
+			block := buf.New()
+			block.Extend(buf.Size)
+			if err := send.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if uploads >= 1 {
+			sendBlock()
 		}
 		synctest.Wait()
 
@@ -172,6 +193,10 @@ func endsAbandonedSession(t *testing.T, uploading bool) {
 		close(carrierMayEnd)
 		<-worker.WaitClosed()
 		synctest.Wait()
+		if uploads >= 2 {
+			sendBlock()
+			synctest.Wait()
+		}
 		if active := worker.ActiveConnections(); active != 2 {
 			t.Fatalf("%d sessions before the application left, want 2", active)
 		}
