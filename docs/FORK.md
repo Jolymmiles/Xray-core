@@ -200,8 +200,9 @@ guard it.
   profile. Counts depend on the destination's TLS and ALPN support.
   The comparisons and passive-observation limits are documented in
   `testing/realitystand/README.md`.
-  A ClientHello that offers one of REALITY's encrypted tickets with a
-  wrong binder is never authenticated. When the target's profile places
+  A ClientHello that offers one of REALITY's live encrypted tickets with
+  a wrong binder is never authenticated; an expired one is not checked,
+  as the target would not resume it either. When the target's profile places
   the ticket and its refusal was measured in the last three hours,
   REALITY refuses it as the target refuses its own; otherwise it goes to
   the target, which answers its full handshake. The profile does not place
