@@ -190,8 +190,8 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		// still uploads.
 		common.Interrupt(uplinkReader)
 		cancel()
-		// Reported last: a log handler takes its time, and until the worker
-		// is closed the end of an upload still ends its session.
+		// Reported last: a log handler takes its time, and the sessions
+		// would stay silent for as long.
 		if errP != nil {
 			errC := errors.Cause(errP)
 			if !(goerrors.Is(errC, io.EOF) || goerrors.Is(errC, io.ErrClosedPipe) || goerrors.Is(errC, context.Canceled)) {
@@ -336,47 +336,44 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 		inbound = session.InboundFromContext(ctx)
 	}
 	writer := NewWriter(s.ID, ob.Target, m.link.Writer, transferType, xudp.GetGlobalID(ctx), inbound)
-	// The end of an upload ends its session, and with it the reply. Not on
-	// a closed worker when the upload ran to its end: the carrier may be
-	// gone while fetchOutput is still delivering what it wrote for this
-	// session, and finish() closes the session after that. A session whose
-	// upload fails to be read is closed here: its application went away.
-	replyMayFollow := false
+	// The end of an upload ends its session, and with it the reply: Mux.Cool
+	// has no half-close, and an application that closes its connection is
+	// read here as one that ended its upload. So does an upload that fails
+	// to be read. One that the uplink refuses on a closed worker does not:
+	// the carrier is gone, the application did not end anything, and
+	// fetchOutput may still be delivering what the carrier wrote for this
+	// session. finish() closes such a session after that.
+	keptForReply := false
 	defer func() {
-		if !replyMayFollow || !m.Closed() {
+		if !keptForReply {
 			s.Close(false)
 		}
 	}()
 	defer writer.Close()
 
 	errors.LogInfo(ctx, "dispatching request to ", ob.Target)
-	err := writeFirstPayload(s.input, writer)
-	if err != nil {
+	refused := false
+	if err := writeFirstPayload(s.input, writer); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to write first payload")
 		writer.hasError = true
-		if !writer.opened {
-			return
-		}
-		// A first payload goes out in as many frames as it needs. The
-		// carrier took the one that opens the session, and may have
-		// answered it, before the uplink refused the rest.
-	} else if err = buf.Copy(s.input, writer); err != nil {
+		// A first payload goes out in as many frames as it needs. When
+		// the one that opens the session reached the link, the carrier
+		// may have answered it before the uplink refused the rest.
+		refused = writer.opened
+	} else if err := buf.Copy(s.input, writer); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to fetch all input")
 		writer.hasError = true
-		if !buf.IsWriteError(err) {
-			// The input failed: the application went away.
-			return
-		}
+		refused = buf.IsWriteError(err)
 	}
-	if err != nil && m.Closed() {
-		// The uplink refused the upload: the carrier is gone and nothing
-		// takes what the application still sends. Its input is read to
-		// its end all the same. Left unread it fills and holds an
-		// application that sends before it reads its reply, and an
-		// application that goes away is not seen.
-		err = buf.Copy(s.input, buf.Discard)
+	if !refused || !m.Closed() {
+		return
 	}
-	replyMayFollow = err == nil
+	// Nothing takes what the application still sends. Its input is read to
+	// its end all the same: left unread it fills and holds an application
+	// that sends before it reads its reply, and an application that goes
+	// away is not seen. The session is kept when that upload runs to its
+	// end, and closed when the input fails.
+	keptForReply = buf.Copy(s.input, buf.Discard) == nil
 }
 
 func (m *ClientWorker) IsClosing() bool {

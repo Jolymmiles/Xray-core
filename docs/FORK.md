@@ -609,15 +609,16 @@ guard it.
   when its carrier returns, and delivers first what the carrier had written.
   The factory closes the carrier's end of the downlink and interrupts the
   uplink; the worker's reader drains the downlink and then closes the
-  sessions and interrupts the link. Until then a session that the carrier
-  may have answered stays open when its upload ends, so that the end of an
-  upload does not cut off a reply still being delivered. An upload the
-  uplink refuses is read to its end and dropped: left unread it would hold
-  an application that sends before it reads, and hide one that goes away.
-  A session whose upload fails to be read, or whose opening frame the
-  uplink refused, is closed at once. The factory reports the carrier's
-  error after all of this, since until the worker is closed the end of an
-  upload ends its session. Upstream closes the sessions and
+  sessions and interrupts the link. Until then the end of an upload ends
+  its session as it does under a live carrier, Mux.Cool having no
+  half-close, and so does an upload that fails to be read. An upload the
+  uplink refuses does not: the application ended nothing, and a reply may
+  still be on its way. Such an upload is read to its end and dropped, since
+  left unread it would hold an application that sends before it reads and
+  hide one that goes away, and its session is kept for the worker's cleanup
+  unless its input fails or its opening frame was the one refused. The
+  factory reports the carrier's error after all of this, so that a slow log
+  handler does not keep the sessions silent. Upstream closes the sessions and
   interrupts the link in `monitor` as soon as the carrier returns, which
   drops a response already received. The fork moved that cleanup out of
   `monitor` in `4f01e31b`, after which a failed carrier left its sessions
@@ -628,7 +629,7 @@ guard it.
   (`common/mux/client_carrier_failure_test.go`),
   `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
   (`common/mux/client_carrier_uplink_test.go`),
-  `TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails`,
+  `TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails`,
   `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`,
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
   `TestDialingWorkerEndsASessionWhoseInputFailsOnce` and

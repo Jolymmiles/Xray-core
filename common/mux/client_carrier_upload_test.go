@@ -49,24 +49,17 @@ func await[T any](t *testing.T, signal <-chan T, what string) T {
 	}
 }
 
-// An application that finishes its upload after the carrier failed still gets
-// the reply the carrier had written. The end of an upload closes its session,
-// and with it the application's side of the reply; once the carrier is gone
-// the upload has nowhere to go, and taking it to its end must not cut off a
-// reply the worker is still delivering. The application here reads nothing
-// until its upload is done, and its pipe holds one frame, so the worker is
-// held on the second. Its upload ends with more to send, which the uplink
-// refuses, or with nothing left. What it still sends is taken from it: its
-// pipe holds one write, and left unread would hold the application before it
-// gets to read the reply.
-func TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails(t *testing.T) {
+// An application whose upload the failed carrier's uplink refused still gets
+// the reply the carrier had written. The end of an upload ends its session,
+// and with it the application's side of the reply; a refusal is not the
+// application's doing, and the upload it cut short must not end the session
+// under a reply the worker is still delivering. The application here sends
+// four more buffers and ends its upload before it reads anything, and its
+// reply pipe holds one frame, so the worker is held on the second. What it
+// sends is taken from it: its upload pipe holds one write, and left unread
+// would hold the application before it gets to read the reply.
+func TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails(t *testing.T) {
 	quietLogs(t)
-	for name, sendsMore := range map[string]bool{"refused": true, "ended": false} {
-		t.Run(name, func(t *testing.T) { keepsQueuedReply(t, sendsMore) })
-	}
-}
-
-func keepsQueuedReply(t *testing.T, sendsMore bool) {
 	synctest.Test(t, func(t *testing.T) {
 		upload, uploadWriter := pipe.New(pipe.WithSizeLimit(0))
 		reply, output := pipe.New(pipe.WithSizeLimit(0))
@@ -100,9 +93,6 @@ func keepsQueuedReply(t *testing.T, sendsMore bool) {
 		sent := make(chan error, 1)
 		go func() {
 			for range 4 {
-				if !sendsMore {
-					break
-				}
 				block := buf.New()
 				block.Extend(buf.Size)
 				if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
@@ -146,17 +136,23 @@ func keepsQueuedReply(t *testing.T, sendsMore bool) {
 // application reads slowly and may hold the reader for long, and nobody is
 // left to read the abandoned session's reply. The application leaves before
 // it has sent anything, in the middle of its upload, or after the uplink has
-// refused what it sent.
+// refused what it sent; or it ends its upload, which is also what closing a
+// connection looks like to the session that reads it, and which ends a
+// Mux.Cool session with a live carrier too.
 func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
 	quietLogs(t)
 	for name, uploads := range map[string]int{"before its first frame": 0, "in mid-upload": 1, "after a refused upload": 2} {
-		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploads) })
+		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploads, false) })
+	}
+	for name, uploads := range map[string]int{"ending an upload it never began": 0, "ending its upload": 1} {
+		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploads, true) })
 	}
 }
 
 // endsAbandonedSession has the application send uploads blocks, the first
-// while the carrier lives and the second after it failed, and leave.
-func endsAbandonedSession(t *testing.T, uploads int) {
+// while the carrier lives and the second after it failed, and leave: by an
+// interrupt of its input, or by ending its upload.
+func endsAbandonedSession(t *testing.T, uploads int, endsUpload bool) {
 	synctest.Test(t, func(t *testing.T) {
 		newSession := func() (upload *pipe.Reader, send *pipe.Writer, reply *pipe.Reader, sink *acceptedWriter) {
 			upload, send = pipe.New(pipe.WithSizeLimit(0))
@@ -217,7 +213,13 @@ func endsAbandonedSession(t *testing.T, uploads int) {
 			t.Fatalf("%d sessions before the application left, want 2", active)
 		}
 
-		upload.Interrupt()
+		if endsUpload {
+			if err := send.Close(); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			upload.Interrupt()
+		}
 		synctest.Wait()
 		if active := worker.ActiveConnections(); active != 1 {
 			t.Fatalf("%d sessions after one application left, want the slow one only", active)
@@ -303,9 +305,9 @@ func (h heldReport) Handle(message log.Message) {
 	}
 }
 
-// The worker is closed before the carrier's error is reported. A log handler
-// takes its time, and an upload that ended meanwhile, on a worker still open,
-// would close its session under the reply the carrier had written.
+// The worker is closed, and its sessions are ended, before the carrier's
+// error is reported: a log handler takes its time, and the sessions of a
+// failed carrier would stay silent for as long.
 func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 	quietLogs(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -344,11 +346,8 @@ func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
 		if !worker.Closed() {
 			t.Fatal("the carrier's error is being reported and the worker is still open")
 		}
-		if err := uploadWriter.Close(); err != nil {
-			t.Fatal(err)
-		}
-		synctest.Wait()
 
+		// The report is still held: the session gets its reply and its end.
 		var body string
 		for {
 			data, err := reply.ReadMultiBufferTimeout(time.Second)
