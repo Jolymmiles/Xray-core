@@ -654,10 +654,14 @@ guard it.
   left is bounded, so it is sorted by session, each session with something
   left gets it from a goroutine of its own, after the write that was under
   way if that was its own, and is closed after it, and every other session
-  is closed at once. No session waits for another's application. With a
+  is closed at once. No session waits for another's application. The
+  taken worker keeps no session, frame or unread bytes, interrupts the
+  downlink, and is not idle while a session is still handed its reply. With a
   live carrier the downlink's order stands, Mux.Cool having no flow control
   of its own, and the reader gives the downlink up only for the time of a
-  write, one lock per write. The end of an upload ends its session as it
+  write or a log line, one lock per write; a write that meets the end of
+  its output stops that frame and leaves the session open, as `buf.Copy`
+  did. The end of an upload ends its session as it
   does under a live carrier, Mux.Cool having no half-close, and so does an
   upload that fails to be read, and one the uplink refuses while the
   worker is open. An upload the uplink refuses on a closed worker does not:
@@ -683,11 +687,20 @@ guard it.
   `TestClientWorkerKeepsTheDownlinkInOrderWhileItsCarrierLives`,
   `TestDialingWorkerDeliversTheRestOfAFrameItWasWriting`,
   `TestDialingWorkerSortsWhatItsCarrierLeft`,
+  `TestDialingWorkerSortsTheFramesItHandsNothingOutOf`,
   `TestDialingWorkerKeepsDatagramsApartBehindASessionThatDoesNotRead`,
   `TestDialingWorkerEndsAWaitingSessionWhenItsWriteFailsOrTheWorkerCloses`,
-  `TestDialingWorkerDropsWhatFollowsAWriteThatFailed` and
-  `TestClientWorkerClosesASessionWhoseOutputFailsAndGoesOn`
+  `TestDialingWorkerDropsWhatFollowsAWriteThatFailed`,
+  `TestClientWorkerClosesASessionWhoseOutputFailsAndGoesOn`,
+  `TestDialingWorkerIsNotIdleWhileASessionWaitsForItsReply`,
+  `TestDialingWorkerHandsTheDownlinkOutWhileAFailedWriteIsReported`,
+  `TestClientWorkerLeavesASessionWhoseOutputEnded`,
+  `TestClientWorkerFinishesBeforeItReportsWhatEndedItsReader`,
+  `TestDialingWorkerHandsOutTheRestBeforeItClosesTheOthers` and
+  `TestDialingWorkerLeavesTheDownlinkAloneAfterItWasTaken`
   (`common/mux/client_carrier_siblings_test.go`),
+  `TestSessionRegistryClosedAroundAKeptSessionAdmitsNothing`
+  (`common/mux/registry_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails`,
   `TestDialingWorkerEndsAnAbandonedSessionWhileItsReplyWaits`,
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,

@@ -534,9 +534,12 @@ func (m *ClientWorker) handleStatusKeep(meta *FrameMetadata, reader *buf.Buffere
 	rr := s.NewReader(reader, &meta.Target)
 	writeErr, err := m.deliver(s, rr)
 	if writeErr != nil {
-		errors.LogInfoInner(context.Background(), writeErr, "failed to write to downstream. closing session ", s.ID)
 		s.Close(false)
-		return buf.Copy(rr, buf.Discard)
+		err = buf.Copy(rr, buf.Discard)
+		// Reported after the session is closed and its frame skipped.
+		if m.report(writeErr, "failed to write to downstream. closing session ", s.ID) {
+			return errDownlinkTaken
+		}
 	}
 
 	return err
@@ -554,6 +557,9 @@ func (m *ClientWorker) handleStatusEnd(meta *FrameMetadata, reader *buf.Buffered
 
 func (m *ClientWorker) fetchOutput() {
 	dl := &m.downlink
+	// What ended the reader is reported after the worker is finished: a log
+	// handler takes its time, and the sessions' end must not wait for it.
+	var report func()
 	dl.Lock()
 	defer func() {
 		taken := dl.taken
@@ -561,6 +567,9 @@ func (m *ClientWorker) fetchOutput() {
 		dl.Unlock()
 		if !taken {
 			m.finish()
+		}
+		if report != nil {
+			report()
 		}
 	}()
 	if dl.taken {
@@ -573,9 +582,9 @@ func (m *ClientWorker) fetchOutput() {
 		err := meta.Unmarshal(reader, false)
 		if err != nil {
 			if errors.Cause(err) != io.EOF {
-				errors.LogInfoInner(context.Background(), err, "failed to read metadata")
+				report = func() { errors.LogInfoInner(context.Background(), err, "failed to read metadata") }
 			}
-			break
+			return
 		}
 
 		switch meta.SessionStatus {
@@ -589,7 +598,7 @@ func (m *ClientWorker) fetchOutput() {
 			err = m.handleStatusKeep(&meta, reader)
 		default:
 			status := meta.SessionStatus
-			errors.LogError(context.Background(), "unknown status: ", status)
+			report = func() { errors.LogError(context.Background(), "unknown status: ", status) }
 			return
 		}
 
@@ -597,7 +606,7 @@ func (m *ClientWorker) fetchOutput() {
 			return
 		}
 		if err != nil {
-			errors.LogInfoInner(context.Background(), err, "failed to process data")
+			report = func() { errors.LogInfoInner(context.Background(), err, "failed to process data") }
 			return
 		}
 	}

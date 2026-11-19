@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
@@ -35,9 +36,10 @@ type downlink struct {
 // errDownlinkTaken tells fetchOutput to leave the downlink alone.
 var errDownlinkTaken = errors.New("the downlink was taken over")
 
-// deliver copies a frame's payload to its session. It is entered and left
-// with the downlink held. A failed write comes back apart from what reading
-// the frame returned.
+// deliver copies a frame's payload to its session as buf.Copy would: a
+// write that fails with the end of its output stops the frame without an
+// error, another failed write comes back apart from what reading the frame
+// returned. It is entered and left with the downlink held.
 func (m *ClientWorker) deliver(s *Session, frame buf.Reader) (writeErr, err error) {
 	dl := &m.downlink
 	for {
@@ -53,6 +55,9 @@ func (m *ClientWorker) deliver(s *Session, frame buf.Reader) (writeErr, err erro
 			}
 			dl.writing, dl.frame = nil, nil
 			if writeErr != nil {
+				if errors.Cause(writeErr) == io.EOF {
+					return nil, nil
+				}
 				return writeErr, nil
 			}
 		}
@@ -69,9 +74,6 @@ func (m *ClientWorker) deliver(s *Session, frame buf.Reader) (writeErr, err erro
 // carrier returned.
 type sessionTail struct {
 	data buf.MultiBuffer
-	// inFlight is set for the session fetchOutput is still writing to: its
-	// tail follows that write.
-	inFlight bool
 }
 
 // takeDownlink takes over what is left of the downlink of a worker whose
@@ -93,22 +95,27 @@ func (m *ClientWorker) takeDownlink() {
 	dl.written = make(chan error, 1)
 	inFlight, written := dl.writing, dl.written
 	tails, parseErr := m.sortDownlink()
+	// Nobody reads the downlink any more: what a remainder that could not
+	// be parsed left in it goes back, and the worker lets go of the session
+	// it was writing to.
+	dl.writing, dl.frame = nil, nil
+	dl.reader.Buffer = buf.ReleaseMulti(dl.reader.Buffer)
+	common.Interrupt(m.link.Reader)
 	dl.Unlock()
 
+	// The deliveries start before the other sessions are closed: closing
+	// an output may wait for its application too.
 	kept := make(map[*Session]struct{}, len(tails))
-	for s := range tails {
-		kept[s] = struct{}{}
-	}
-	m.sessionManager.closeExcept(kept)
 	for s, tail := range tails {
+		kept[s] = struct{}{}
 		var after <-chan error
 		if s == inFlight {
 			after = written
 		}
 		go deliverTail(s, tail, after)
 	}
+	m.sessionManager.closeExcept(kept)
 	if parseErr != nil {
-		// What follows a frame that cannot be made out is not read.
 		errors.LogInfoInner(context.Background(), parseErr, "failed to read the rest of the downlink")
 	}
 }
@@ -130,9 +137,7 @@ func (m *ClientWorker) sortDownlink() (map[*Session]*sessionTail, error) {
 	}
 	ended := make(map[*Session]struct{})
 	if dl.writing != nil {
-		tail := tailOf(dl.writing)
-		tail.inFlight = true
-		if err := tail.collect(dl.writing, dl.frame); err != nil {
+		if err := tailOf(dl.writing).collect(dl.writing, dl.frame); err != nil {
 			return tails, err
 		}
 	}
@@ -206,21 +211,41 @@ func (t *sessionTail) collect(s *Session, frame buf.Reader) error {
 // deliverTail writes a session's tail to it, buffer by buffer, which keeps a
 // packet session's datagrams apart, and closes the session. After is the
 // result of the write fetchOutput had begun, if it was this session's: the
-// tail follows it, and is dropped if it failed.
+// tail follows it, and is dropped if it failed. A failed write is reported
+// after the session is closed, as the worker's reader reports it.
 func deliverTail(s *Session, tail *sessionTail, after <-chan error) {
-	defer s.Close(false)
 	data := tail.data
-	defer func() { buf.ReleaseMulti(data) }()
+	var writeErr error
+	defer func() {
+		buf.ReleaseMulti(data)
+		s.Close(false)
+		if writeErr != nil && errors.Cause(writeErr) != io.EOF {
+			errors.LogInfoInner(context.Background(), writeErr, "failed to write to downstream. closing session ", s.ID)
+		}
+	}()
 	if after != nil {
-		if err := <-after; err != nil {
+		if writeErr = <-after; writeErr != nil {
 			return
 		}
 	}
 	for !data.IsEmpty() {
 		var next *buf.Buffer
 		data, next = buf.SplitFirst(data)
-		if err := s.output.WriteMultiBuffer(buf.MultiBuffer{next}); err != nil {
+		if writeErr = s.output.WriteMultiBuffer(buf.MultiBuffer{next}); writeErr != nil {
 			return
 		}
 	}
+}
+
+// report logs what went wrong with one session's frame while the worker
+// goes on, with the downlink let go: a log handler takes its time, and a
+// carrier that returns meanwhile must find the downlink free. It is entered
+// and left with the downlink held, and tells whether the downlink was taken
+// meanwhile.
+func (m *ClientWorker) report(err error, values ...interface{}) (taken bool) {
+	dl := &m.downlink
+	dl.Unlock()
+	errors.LogInfoInner(context.Background(), err, values...)
+	dl.Lock()
+	return dl.taken
 }

@@ -92,8 +92,11 @@ func (r *sessionRegistry) count() int {
 func (r *sessionRegistry) closeIfIdle(checkAdmitted, checkCount int) bool {
 	r.mu.Lock()
 	if r.closing {
+		// A registry closed around sessions that are still being handed
+		// their replies is not idle while one of them is left.
+		idle := len(r.slots) == 0
 		r.mu.Unlock()
-		return true
+		return idle
 	}
 	if len(r.slots) != 0 || checkAdmitted != 0 || checkCount != int(r.lifetime) {
 		r.mu.Unlock()

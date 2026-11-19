@@ -7,7 +7,9 @@ import (
 	"io"
 	gonet "net"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -429,6 +431,93 @@ func TestDialingWorkerSortsWhatItsCarrierLeft(t *testing.T) {
 		if active := worker.ActiveConnections(); active != 0 {
 			t.Fatalf("%d sessions after every reply was read, want none", active)
 		}
+		// What followed the remainder that could not be made out is not
+		// kept for a reader that will not come.
+		dl := &worker.downlink
+		dl.Lock()
+		defer dl.Unlock()
+		if left := dl.reader.Buffer.Len(); left != 0 {
+			t.Fatalf("the worker still holds %d bytes of the downlink", left)
+		}
+	})
+}
+
+// rawFrame writes one frame with the given metadata and, if payload is not
+// nil, a data option and that payload.
+func rawFrame(link *transport.Link, meta FrameMetadata, payload []byte) error {
+	frame := buf.New()
+	if payload != nil {
+		meta.Option.Set(OptionData)
+	}
+	if err := meta.WriteTo(frame); err != nil {
+		frame.Release()
+		return err
+	}
+	if payload != nil {
+		if _, err := serial.WriteUint16(frame, uint16(len(payload))); err != nil {
+			frame.Release()
+			return err
+		}
+		if _, err := frame.Write(payload); err != nil {
+			frame.Release()
+			return err
+		}
+	}
+	return link.Writer.WriteMultiBuffer(buf.MultiBuffer{frame})
+}
+
+// The frames the sorting hands nothing out of are taken as the worker's
+// reader takes them: a keep frame without data, an END that carries data and
+// a NEW are passed over with what they carry, and a status the worker does
+// not know ends the sorting.
+func TestDialingWorkerSortsTheFramesItHandsNothingOutOf(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		worker, apps := threeSessions(t, tcpTargets, func(link *transport.Link, ids []uint16) error {
+			// The first fills the slow application's pipe, the second is the
+			// write the worker's reader is held on.
+			for _, text := range []string{"s1", "s2"} {
+				if err := sendText(link, ids[0], text); err != nil {
+					return err
+				}
+			}
+			if err := NewResponseWriter(ids[1], link.Writer, protocol.TransferTypeStream).WriteMultiBuffer(buf.MultiBuffer{}); err != nil {
+				return err
+			}
+			if err := sendText(link, ids[1], "x1"); err != nil {
+				return err
+			}
+			if err := rawFrame(link, FrameMetadata{SessionID: ids[2], SessionStatus: SessionStatusEnd}, []byte("bye")); err != nil {
+				return err
+			}
+			if err := sendText(link, ids[1], "x2"); err != nil {
+				return err
+			}
+			if err := rawFrame(link, FrameMetadata{SessionID: 0xffee, SessionStatus: SessionStatusNew, Target: net.TCPDestination(net.LocalHostIP, 80)}, []byte("new")); err != nil {
+				return err
+			}
+			if err := sendText(link, ids[1], "x3"); err != nil {
+				return err
+			}
+			if err := rawFrame(link, FrameMetadata{SessionID: ids[1], SessionStatus: 9}, nil); err != nil {
+				return err
+			}
+			return sendText(link, ids[1], "after the unknown status")
+		})
+		if reply := apps[1].readAll(t); reply != "x1x2x3" {
+			t.Fatalf("the sibling read %q, want %q", reply, "x1x2x3")
+		}
+		if reply := apps[2].readAll(t); reply != "" {
+			t.Fatalf("the session that got an END read %q", reply)
+		}
+		if reply := apps[0].readAll(t); reply != "s1s2" {
+			t.Fatalf("the slow session read %q, want %q", reply, "s1s2")
+		}
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions after every reply was read, want none", active)
+		}
 	})
 }
 
@@ -702,6 +791,316 @@ func TestClientWorkerClosesASessionWhoseOutputFailsAndGoesOn(t *testing.T) {
 		}
 		if piece, err := sibling.read(); err != nil || piece != "sibling" {
 			t.Fatalf("the sibling read %q (%v), want %q", piece, err, "sibling")
+		}
+	})
+}
+
+// A worker's idle check does not finish it while sessions are still being
+// handed their replies: its monitor may have taken a tick just before the
+// carrier returned, and finishing would drop what those sessions wait for.
+func TestDialingWorkerIsNotIdleWhileASessionWaitsForItsReply(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		worker, apps := threeSessions(t, tcpTargets, func(link *transport.Link, ids []uint16) error {
+			for _, text := range []string{"s1", "s2", "s3"} {
+				if err := sendText(link, ids[0], text); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		// What the monitor does on a tick, with the counts it took before.
+		if worker.sessionManager.closeIfIdle(3, 3) {
+			worker.finish()
+		}
+		synctest.Wait()
+		if reply := apps[0].readAll(t); reply != "s1s2s3" {
+			t.Fatalf("the waiting session read %q, want its whole reply %q", reply, "s1s2s3")
+		}
+		synctest.Wait()
+		if !worker.sessionManager.closeIfIdle(0, 3) {
+			t.Fatal("the worker is not idle after its last session ended")
+		}
+	})
+}
+
+// heldLine is a log handler that holds the first line containing text.
+type heldLine struct {
+	text    string
+	once    *sync.Once
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (h heldLine) Handle(message log.Message) {
+	if strings.Contains(message.String(), h.text) {
+		h.once.Do(func() { close(h.entered) })
+		<-h.resume
+	}
+}
+
+// The worker's reader reports a session's failed write with the downlink let
+// go. A log handler takes its time: with the downlink held for the report, a
+// carrier that returned meanwhile could not hand out what it left, and the
+// other sessions would wait for the handler.
+func TestDialingWorkerHandsTheDownlinkOutWhileAFailedWriteIsReported(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		held := heldLine{text: "failed to write to downstream", once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(held)
+		defer log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter()))
+		defer close(held.resume)
+
+		release := make(chan struct{})
+		letReturn := sync.OnceFunc(func() { close(release) })
+		defer letReturn()
+		opened := make(chan []uint16, 1)
+		worker, err := (&DialingWorkerFactory{Proxy: repliesThenReturns(release, errors.New("connection reset"), opened)}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		failing := pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		sibling := pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		pipeApplication(t, ctx, worker)
+		await(t, opened, "the carrier to take three opening frames")
+		synctest.Wait()
+
+		// The first session's output fails the write the reader is held on.
+		failing.abort()
+		await(t, held.entered, "the report of the failed write")
+		letReturn()
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		if reply := sibling.readAll(t); reply != "fast reply" {
+			t.Fatalf("the sibling read %q while a failed write was being reported, want %q", reply, "fast reply")
+		}
+	})
+}
+
+// What ends the worker's reader is reported after the worker has finished:
+// a log handler that takes its time does not hold the end of the sessions.
+func TestClientWorkerFinishesBeforeItReportsWhatEndedItsReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		held := heldLine{text: "unknown status", once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(held)
+		defer log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter()))
+		defer close(held.resume)
+
+		uplink, uplinkWriter := pipe.New()
+		defer uplink.Interrupt()
+		downlink, downlinkWriter := pipe.New()
+		defer downlinkWriter.Close()
+		worker, err := NewClientWorker(transport.Link{Reader: downlink, Writer: uplinkWriter}, ClientStrategy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		app := pipeApplication(t, ctx, worker)
+		frames := &buf.BufferedReader{Reader: uplink}
+		defer func() { buf.ReleaseMulti(frames.Buffer) }()
+		var opening FrameMetadata
+		if err := opening.Unmarshal(frames, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := rawFrame(&transport.Link{Writer: downlinkWriter}, FrameMetadata{SessionID: opening.SessionID, SessionStatus: 9}, nil); err != nil {
+			t.Fatal(err)
+		}
+		await(t, held.entered, "the report of the unknown status")
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions while the end of the reader is reported, want none", active)
+		}
+		if reply := app.readAll(t); reply != "" {
+			t.Fatalf("the application read %q, want only its end", reply)
+		}
+	})
+}
+
+// heldClose is a session's output whose Close waits to be released, as a
+// writer that flushes on close waits for its application.
+type heldClose struct {
+	*pipe.Writer
+	closing chan struct{}
+	release chan struct{}
+}
+
+func (w heldClose) Close() error {
+	close(w.closing)
+	<-w.release
+	return w.Writer.Close()
+}
+
+// The sessions with something left are handed it before the others are
+// closed: an output whose Close waits for its application holds only the
+// closes after it.
+func TestDialingWorkerHandsOutTheRestBeforeItClosesTheOthers(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		letReturn := sync.OnceFunc(func() { close(release) })
+		defer letReturn()
+		opened := make(chan []uint16, 1)
+		worker, err := (&DialingWorkerFactory{Proxy: repliesThenReturns(release, errors.New("connection reset"), opened)}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		sibling := pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		upload, send := pipe.New(pipe.WithSizeLimit(0))
+		defer send.Close()
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		held := heldClose{Writer: output, closing: make(chan struct{}), release: make(chan struct{})}
+		defer close(held.release)
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: held}) {
+			t.Fatal("the worker refused the third session")
+		}
+		await(t, opened, "the carrier to take three opening frames")
+		synctest.Wait()
+
+		letReturn()
+		await(t, held.closing, "the close of the session without a reply")
+		if reply := sibling.readAll(t); reply != "fast reply" {
+			t.Fatalf("the sibling read %q while another session's close was held, want %q", reply, "fast reply")
+		}
+	})
+}
+
+// endedOutput is a session's output whose writes fail with its end.
+type endedOutput struct{}
+
+func (endedOutput) WriteMultiBuffer(data buf.MultiBuffer) error {
+	buf.ReleaseMulti(data)
+	return fmt.Errorf("the output ended: %w", io.EOF)
+}
+
+// A write that fails with the end of its output stops that frame and leaves
+// the session to whoever ends it, as copying the frame did before the
+// reader's own loop: only another failure closes the session.
+func TestClientWorkerLeavesASessionWhoseOutputEnded(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		uplink, uplinkWriter := pipe.New()
+		defer uplink.Interrupt()
+		downlink, downlinkWriter := pipe.New()
+		defer downlinkWriter.Close()
+		worker, err := NewClientWorker(transport.Link{Reader: downlink, Writer: uplinkWriter}, ClientStrategy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		upload, send := pipe.New()
+		defer send.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: endedOutput{}}) {
+			t.Fatal("the worker refused the session")
+		}
+		frames := &buf.BufferedReader{Reader: uplink}
+		defer func() { buf.ReleaseMulti(frames.Buffer) }()
+		var opening FrameMetadata
+		if err := opening.Unmarshal(frames, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := sendText(&transport.Link{Writer: downlinkWriter}, opening.SessionID, "reply"); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions after the output ended a write, want the session still there", active)
+		}
+	})
+}
+
+// countingReader counts the reads of a downlink that end it, and turns the
+// first into a failure.
+type countingReader struct {
+	*pipe.Reader
+	ends atomic.Int32
+}
+
+func (r *countingReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	data, err := r.Reader.ReadMultiBuffer()
+	if err == io.EOF && r.ends.Add(1) == 1 {
+		return nil, errors.New("the downlink broke")
+	}
+	return data, err
+}
+
+// After a takeover the worker's own reader leaves the downlink alone, also
+// when sorting it stopped early, and the worker keeps neither the session it
+// was writing to nor what its reader had buffered.
+func TestDialingWorkerLeavesTheDownlinkAloneAfterItWasTaken(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		uplink, uplinkWriter := pipe.New()
+		downlink, downlinkWriter := pipe.New()
+		reader := &countingReader{Reader: downlink}
+		worker, err := NewClientWorker(transport.Link{Reader: reader, Writer: uplinkWriter}, ClientStrategy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		app := pipeApplication(t, ctx, worker)
+		frames := &buf.BufferedReader{Reader: uplink}
+		defer func() { buf.ReleaseMulti(frames.Buffer) }()
+		var opening FrameMetadata
+		if err := opening.Unmarshal(frames, false); err != nil {
+			t.Fatal(err)
+		}
+		for _, text := range []string{"first", "second"} {
+			if err := sendText(&transport.Link{Writer: downlinkWriter}, opening.SessionID, text); err != nil {
+				t.Fatal(err)
+			}
+		}
+		synctest.Wait()
+
+		// What the factory does when its carrier returns.
+		if err := downlinkWriter.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := worker.done.Close(); err != nil {
+			t.Fatal(err)
+		}
+		uplink.Interrupt()
+		worker.takeDownlink()
+		if ends := reader.ends.Load(); ends != 1 {
+			t.Fatalf("sorting the downlink reached its end %d times, want once", ends)
+		}
+		if reply := app.readAll(t); reply != "firstsecond" {
+			t.Fatalf("the application read %q, want %q", reply, "firstsecond")
+		}
+		synctest.Wait()
+		if ends := reader.ends.Load(); ends != 1 {
+			t.Fatalf("the downlink was read to its end %d times, want once: the worker's reader went on after the takeover", ends)
+		}
+		dl := &worker.downlink
+		dl.Lock()
+		defer dl.Unlock()
+		if dl.writing != nil || dl.frame != nil || !dl.reader.Buffer.IsEmpty() {
+			t.Fatalf("the worker still holds session %v, frame %v and %d buffered bytes", dl.writing, dl.frame, dl.reader.Buffer.Len())
 		}
 	})
 }
