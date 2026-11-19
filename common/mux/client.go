@@ -353,56 +353,61 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	defer writer.Close()
 
 	errors.LogInfo(ctx, "dispatching request to ", ob.Target)
-	// refused is set once the uplink of a closed worker has refused part of
-	// the upload of a session that was opened.
-	refused := false
-	if err := writeFirstPayload(s.input, writer); err != nil {
-		errors.LogInfoInner(ctx, err, "failed to write first payload")
-		writer.hasError = true
-		// A first payload goes out in as many frames as it needs. When
-		// the one that opens the session reached the link, the carrier
-		// may have answered it before the uplink refused the rest.
-		if !writer.opened || !m.Closed() {
+	input := &lastRead{Reader: s.input}
+	inFirstPayload := true
+	err := writeFirstPayload(s.input, writer)
+	if err == nil {
+		inFirstPayload = false
+		if err = buf.Copy(input, writer); err == nil {
 			return
 		}
-		refused = true
 	}
-	for {
-		// A refused upload is read on, and dropped, for as long as its
-		// session lasts. Nothing takes what the application still sends,
-		// but left unread its input fills and holds an application that
-		// sends before it reads its reply, and an application that goes
-		// away is not seen. After the session has ended its input is its
-		// owner's again.
-		if refused && s.done.Done() {
-			return
-		}
-		data, readErr := s.input.ReadMultiBuffer()
-		if refused {
-			buf.ReleaseMulti(data)
-		} else if !data.IsEmpty() {
-			if err := writer.WriteMultiBuffer(data); err != nil {
-				errors.LogInfoInner(ctx, err, "failed to fetch all input")
-				writer.hasError = true
-				if !m.Closed() {
-					return
-				}
-				refused = true
-			}
-		}
-		if readErr == nil {
-			continue
-		}
-		if errors.Cause(readErr) != io.EOF {
-			errors.LogInfoInner(ctx, readErr, "failed to fetch all input")
-			writer.hasError = true
-			return
-		}
-		// The upload ran to its end. That ends the session, unless part
-		// of it was refused.
-		keptForReply = refused
+	// The worker's state is taken before the error is reported: a log
+	// handler takes its time, and the carrier may return meanwhile.
+	closed := m.Closed()
+	if inFirstPayload {
+		errors.LogInfoInner(ctx, err, "failed to write first payload")
+	} else {
+		errors.LogInfoInner(ctx, err, "failed to fetch all input")
+	}
+	writer.hasError = true
+	// Only a closed worker keeps a session, and only one the carrier may
+	// have answered: a first payload goes out in as many frames as it
+	// needs, and the one that opens the session must have reached the link.
+	if !writer.opened || !closed {
 		return
 	}
+	// The uplink refused part of this upload, or its input failed, which
+	// the last read tells. Nothing takes what the application still sends,
+	// but its input is read on, and dropped, for as long as the session
+	// lasts: left unread it fills and holds an application that sends
+	// before it reads its reply, and an application that goes away is not
+	// seen. After the session has ended its input is its owner's again.
+	for readErr := input.err; ; {
+		if readErr != nil {
+			keptForReply = errors.Cause(readErr) == io.EOF
+			return
+		}
+		if s.done.Done() {
+			return
+		}
+		var data buf.MultiBuffer
+		data, readErr = s.input.ReadMultiBuffer()
+		buf.ReleaseMulti(data)
+	}
+}
+
+// lastRead keeps the error of the latest read. buf.Copy reports a write
+// that failed and not the result of the read that brought the batch.
+type lastRead struct {
+	buf.Reader
+	err error
+}
+
+func (r *lastRead) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	data, err := r.Reader.ReadMultiBuffer()
+	r.err = err
+	return data, err
 }
 
 func (m *ClientWorker) IsClosing() bool {

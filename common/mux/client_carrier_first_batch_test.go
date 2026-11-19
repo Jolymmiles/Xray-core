@@ -375,3 +375,54 @@ func endsSessionRefusedWhileOpen(t *testing.T, inFirstPayload bool) {
 		}
 	})
 }
+
+// A session the carrier has taken and not answered ends when that carrier
+// fails: nothing is queued for it, and its end comes from the end of the
+// downlink, which the factory closes.
+func TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		taken := make(chan error, 1)
+		carrier := carrierFunc(func(link *transport.Link) error {
+			reader := &buf.BufferedReader{Reader: link.Reader}
+			defer func() { buf.ReleaseMulti(reader.Buffer) }()
+			var opening FrameMetadata
+			err := opening.Unmarshal(reader, false)
+			if err == nil && opening.SessionStatus != SessionStatusNew {
+				err = fmt.Errorf("expected a NEW, got %+v", opening)
+			}
+			taken <- err
+			return errors.New("connection reset")
+		})
+		worker, err := (&DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+
+		upload, send := pipe.New()
+		defer send.Close()
+		reply, output := pipe.New()
+		defer reply.Interrupt()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
+			t.Fatal("the worker refused the session")
+		}
+		if err := await(t, taken, "the carrier to take the opening frame"); err != nil {
+			t.Fatal(err)
+		}
+		await(t, worker.WaitClosed(), "the worker to close")
+
+		data, err := reply.ReadMultiBufferTimeout(time.Second)
+		buf.ReleaseMulti(data)
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("the session's reply did not end: %v", err)
+		}
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions after the carrier failed, want none", active)
+		}
+	})
+}

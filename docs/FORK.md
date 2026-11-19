@@ -674,11 +674,13 @@ guard it.
   `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`,
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
   `TestDialingWorkerEndsASessionWhoseInputFailsOnce`,
-  `TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded` and
-  `TestDialingWorkerClosesBeforeItReportsItsCarrier`
+  `TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded`,
+  `TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile`
+  and `TestDialingWorkerClosesBeforeItReportsItsCarrier`
   (`common/mux/client_carrier_upload_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
-  `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused` and
+  `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused`,
+  `TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails` and
   `TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen`
   (`common/mux/client_carrier_first_batch_test.go`).
 - The maintained SMUX implementation is the in-tree stack under

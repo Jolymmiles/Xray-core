@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/mux"
@@ -560,6 +561,116 @@ func TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded(t *testing.T) {
 		case count := <-taken:
 			t.Fatalf("the ended session's input was still read: %d writes taken after Dispatch returned", count)
 		default:
+		}
+	})
+}
+
+// uplinkCarrier hands out its end of the uplink before it carries on as the
+// carrier it wraps.
+type uplinkCarrier struct {
+	*answeringCarrier
+	uplink chan buf.Reader
+}
+
+func (c *uplinkCarrier) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
+	c.uplink <- link.Reader
+	return c.answeringCarrier.Process(ctx, link, dialer)
+}
+
+// heldUploadReport is a log handler that holds the report of a failed upload.
+type heldUploadReport struct {
+	once    *sync.Once
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (h heldUploadReport) Handle(message log.Message) {
+	if strings.Contains(message.String(), "failed to fetch all input") {
+		h.once.Do(func() { close(h.entered) })
+		<-h.resume
+	}
+}
+
+// An upload the uplink refused while the worker was open ends its session,
+// also when the carrier returns before that refusal has been reported: what
+// counts is the worker's state when the write failed. A carrier can
+// interrupt its uplink before it returns, and a log handler takes its time.
+func TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		report := heldUploadReport{once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(report)
+		release := sync.OnceFunc(func() { close(report.resume) })
+		defer release()
+		defer log.RegisterHandler(discardLogs{})
+
+		stop := make(chan struct{})
+		defer close(stop)
+		carrierMayEnd := make(chan struct{})
+		carrier := &uplinkCarrier{
+			answeringCarrier: &answeringCarrier{
+				delivering: carrierMayEnd,
+				stop:       stop,
+				result:     errors.New("connection reset"),
+				returned:   make(chan struct{}),
+			},
+			uplink: make(chan buf.Reader, 1),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		uplink := await(t, carrier.uplink, "the carrier to start")
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+
+		// A slow session holds the worker's reader once the carrier is gone,
+		// so that the other session is not ended by the worker's cleanup.
+		slowUpload, slowSend := pipe.New()
+		defer slowSend.Close()
+		slowReply, slowOutput := pipe.New(pipe.WithSizeLimit(0))
+		defer slowReply.Interrupt()
+		slowSink := &acceptedWriter{Writer: slowOutput, accepted: make(chan struct{})}
+		if !worker.Dispatch(ctx, &transport.Link{Reader: slowUpload, Writer: slowSink}) {
+			t.Fatal("the worker refused the first session")
+		}
+		await(t, slowSink.accepted, "the first frame of the slow session's reply")
+
+		upload, send := pipe.New()
+		defer send.Close()
+		reply, output := pipe.New()
+		defer reply.Interrupt()
+		sendBlock := func() {
+			block := buf.New()
+			block.Extend(buf.Size)
+			if err := send.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sendBlock()
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
+			t.Fatal("the worker refused the second session")
+		}
+		synctest.Wait()
+
+		// The carrier stops taking the upload and has not returned.
+		common.Interrupt(uplink)
+		sendBlock()
+		await(t, report.entered, "the report of the refused upload")
+		if worker.Closed() {
+			t.Fatal("the worker closed before the upload was refused")
+		}
+
+		// The carrier returns while that report is held.
+		close(carrierMayEnd)
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		release()
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions after the refused upload was reported, want the slow one only", active)
 		}
 	})
 }
