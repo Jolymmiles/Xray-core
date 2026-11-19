@@ -483,13 +483,15 @@ func (c *Config) liveTicketSession(session *SessionState, lifetime time.Duration
 // sessions kept in memory instead of sealed tickets.
 const maxSealedTicketPrefix = 64
 
-// unprofiledTicketSession returns the session of a ticket REALITY issued,
-// or nil, when the target's profile does not place it: while it is probed
-// after a start, the ticket was issued before; after a new probe, the
-// prefix or the lifetime may have changed. An id of a session this process
-// keeps is looked up whole; for a sealed ticket each prefix length up to
-// maxSealedTicketPrefix is tried, as the MAC authenticates the sealed part,
-// never the prefix.
+// unprofiledTicketSession returns the session of a ticket this process
+// issued, or nil, when the target's profile does not place it: the profile
+// may be probed or unknown for the hello's key, a new probe may have found
+// that the target no longer resumes or has a new prefix or lifetime, or the
+// ticket outlived the profile's lifetime. Tickets from before a restart do
+// not decrypt (ticketKeySalt), so they are not found. An id of a session
+// this process keeps is looked up whole; for a sealed ticket each prefix
+// length up to maxSealedTicketPrefix is tried, as the MAC authenticates the
+// sealed part, never the prefix.
 func (c *Config) unprofiledTicketSession(label []byte) *SessionState {
 	if c.PrivateKey == nil {
 		return nil
@@ -558,12 +560,13 @@ func (hs *serverHandshakeStateTLS13) inspectTicketHello(authenticated bool) (ref
 		session = hs.c.config.realityTicketSession(shape, label, false)
 	}
 	if session == nil && authenticated {
-		// No profile places the ticket: the target is probed after a
-		// start, or was probed again since the ticket was issued and has
-		// a new prefix or a shorter lifetime. The target would not know
-		// it, so one of REALITY's with an invalid binder goes to the
-		// target, as with an unmeasured refusal. Another hello goes there
-		// anyway.
+		// No profile places the ticket: the profile is probed or unknown
+		// for the hello's key, the target no longer resumes, it was
+		// probed again since the ticket was issued and has a new prefix
+		// or a shorter lifetime, or the ticket outlived the profile's
+		// lifetime. The target would not know it, so one of this
+		// process's with an invalid binder goes to the target, as with an
+		// unmeasured refusal. Another hello goes there anyway.
 		shape = nil
 		session = hs.c.config.unprofiledTicketSession(label)
 	}

@@ -159,8 +159,8 @@ func TestReplayedResumedHelloReachesTheTarget(t *testing.T) {
 
 // unsentTicketHello returns the ClientHello record a client offering one of
 // server's tickets builds, without the server seeing it: a hello this
-// process never authenticated, as one recorded before a restart is to the
-// restarted server. The failed dial puts no ticket aside.
+// process never authenticated, as a censor's copy of a hello it kept from
+// reaching the server is. The failed dial puts no ticket aside.
 func unsentTicketHello(t *testing.T, server *realityServer) []byte {
 	t.Helper()
 	client, peer := gonet.Pipe()
@@ -197,13 +197,17 @@ func unsentTicketHello(t *testing.T, server *realityServer) []byte {
 	return hello
 }
 
-// Right after a start the target's ticket profile is still being probed, but
-// REALITY's tickets, sealed with a key derived from the private key, are
-// known across restarts. A censor's copy of a resumed ClientHello with a
-// spoiled binder must not authenticate then either: it goes to the target,
-// as when the target's refusal is not measured, and gets the target's own
-// answer. A hello with a valid binder still authenticates, once, and a
-// client's own ticket still works.
+// The target's ticket profile can stop placing a ticket this process issued:
+// the profile is probed or unknown for the hello's key, as here, a new probe
+// found that the target no longer resumes or has a new prefix or lifetime,
+// or the ticket outlived the profile's lifetime. The tickets are this
+// process's, as ticket keys are per process, so the test covers tickets
+// issued and offered within one process, not tickets from before a restart.
+// A censor's copy of a resumed ClientHello with a spoiled binder must not
+// authenticate then either: it goes to the target, as when the target's
+// refusal is not measured, and gets the target's own answer. A hello with a
+// valid binder still authenticates, once, and a client's own ticket still
+// works.
 func TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed(t *testing.T) {
 	target := goTarget(t)
 	results := make(chan error, 8)
@@ -253,7 +257,7 @@ func TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed(t *testing.T) {
 
 	profile := target + " " + testServerName + " 2"
 	original, _ := reality.GlobalTicketShapes.Load(profile)
-	reality.GlobalTicketShapes.Store(profile, false) // a probe is running, as right after a start
+	reality.GlobalTicketShapes.Store(profile, false) // a probe is running: no profile places the ticket
 	t.Cleanup(func() { reality.GlobalTicketShapes.Store(profile, original) })
 
 	records, err := served(spoiled)
