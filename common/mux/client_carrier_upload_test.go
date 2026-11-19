@@ -14,6 +14,7 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/transport"
+	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
@@ -38,9 +39,16 @@ func (w *acceptedWriter) WriteMultiBuffer(data buf.MultiBuffer) error {
 // the upload has nowhere to go, and taking it to its end must not cut off a
 // reply the worker is still delivering. The application here reads nothing
 // until its upload is done, and its pipe holds one frame, so the worker is
-// held on the second.
+// held on the second. Its upload ends with more to send, which the uplink
+// refuses, or with nothing left.
 func TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails(t *testing.T) {
 	quietLogs(t)
+	for name, sendsMore := range map[string]bool{"refused": true, "ended": false} {
+		t.Run(name, func(t *testing.T) { keepsQueuedReply(t, sendsMore) })
+	}
+}
+
+func keepsQueuedReply(t *testing.T, sendsMore bool) {
 	synctest.Test(t, func(t *testing.T) {
 		upload, uploadWriter := pipe.New(pipe.WithSizeLimit(0))
 		reply, output := pipe.New(pipe.WithSizeLimit(0))
@@ -71,10 +79,12 @@ func TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails(t *testing
 		<-worker.WaitClosed()
 		synctest.Wait()
 
-		block := buf.New()
-		block.Extend(buf.Size)
-		if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
-			t.Fatal(err)
+		if sendsMore {
+			block := buf.New()
+			block.Extend(buf.Size)
+			if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := uploadWriter.Close(); err != nil {
 			t.Fatal(err)
@@ -103,9 +113,16 @@ func TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails(t *testing
 // A session whose application went away is closed at once, also on a worker
 // whose carrier has failed and whose reader is held by another session: that
 // application reads slowly and may hold the reader for long, and nobody is
-// left to read the abandoned session's reply.
+// left to read the abandoned session's reply. The application leaves before
+// it has sent anything, or in the middle of its upload.
 func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
 	quietLogs(t)
+	for name, uploading := range map[string]bool{"before its first frame": false, "in mid-upload": true} {
+		t.Run(name, func(t *testing.T) { endsAbandonedSession(t, uploading) })
+	}
+}
+
+func endsAbandonedSession(t *testing.T, uploading bool) {
 	synctest.Test(t, func(t *testing.T) {
 		newSession := func() (upload *pipe.Reader, send *pipe.Writer, reply *pipe.Reader, sink *acceptedWriter) {
 			upload, send = pipe.New(pipe.WithSizeLimit(0))
@@ -137,9 +154,16 @@ func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
 		}
 		// The slow application's pipe holds the first frame of its reply.
 		<-slowSink.accepted
-		upload, _, reply, sink := newSession()
+		upload, send, reply, sink := newSession()
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
 			t.Fatal("the worker refused the second session")
+		}
+		if uploading {
+			request := buf.New()
+			request.Extend(buf.Size)
+			if err := send.WriteMultiBuffer(buf.MultiBuffer{request}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		synctest.Wait()
 
@@ -161,6 +185,65 @@ func TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld(t *testing.T) {
 		buf.ReleaseMulti(data)
 		if !errors.Is(err, io.EOF) {
 			t.Fatalf("the abandoned session's reply did not end: %v", err)
+		}
+	})
+}
+
+// idleCarrier is an outbound whose carrier stays up until released and
+// carries nothing.
+type idleCarrier struct{ release chan struct{} }
+
+func (c idleCarrier) Process(context.Context, *transport.Link, internet.Dialer) error {
+	<-c.release
+	return nil
+}
+
+// While the carrier lives, the end of an upload still ends its session: the
+// exception above is for a closed worker only.
+func TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		carrier := idleCarrier{release: make(chan struct{})}
+		defer close(carrier.release)
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+
+		upload, uploadWriter := pipe.New(pipe.WithSizeLimit(0))
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
+			t.Fatal("the worker refused the session")
+		}
+		request := buf.New()
+		request.Extend(buf.Size)
+		if err := uploadWriter.WriteMultiBuffer(buf.MultiBuffer{request}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions in mid-upload, want 1", active)
+		}
+		if err := uploadWriter.Close(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+
+		if worker.Closed() {
+			t.Fatal("the worker closed under a live carrier")
+		}
+		if active := worker.ActiveConnections(); active != 0 {
+			t.Fatalf("%d sessions after the upload ended, want none", active)
+		}
+		data, err := reply.ReadMultiBufferTimeout(time.Second)
+		buf.ReleaseMulti(data)
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("the session's reply did not end with its upload: %v", err)
 		}
 	})
 }

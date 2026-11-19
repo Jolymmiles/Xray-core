@@ -623,8 +623,9 @@ guard it.
   (`common/mux/client_carrier_failure_test.go`),
   `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
   (`common/mux/client_carrier_uplink_test.go`),
-  `TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails` and
-  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`
+  `TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails`,
+  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld` and
+  `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`
   (`common/mux/client_carrier_upload_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
