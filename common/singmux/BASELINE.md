@@ -846,21 +846,22 @@ performance claim.
   (`common/mux/client_downlink_bench_test.go`): frames of one 8 KiB buffer
   written on the carrier's side for 1 and for 8 sessions in turn, delivered
   to outputs that never wait.
-- Command, per build: `go test -c -o mux.test ./common/mux`, then
-  `bench-run -- ./mux.test -test.run '^$' -test.bench
-  BenchmarkClientWorkerDownlink -test.benchtime 2s -test.count 2`, four
-  rounds with the two builds in turn (A B A B), eight samples each.
-- Conditions: before `4746d143` (clean), after the working tree of the fix on
-  top of it; go1.27.3, `-tags http2legacy`; linux/amd64, Ryzen 9 9950X,
-  kernel 7.2.12, reserved CPUs 14, 15, 30, 31.
+- Command, per build: `go test -c -o mux.test ./common/mux`, then one
+  `bench-run` slot running four rounds with the two builds in turn (A B A
+  B), each `./mux.test -test.run '^$' -test.bench
+  BenchmarkClientWorkerDownlink -test.benchtime 2s -test.count 2
+  -test.benchmem`: eight samples per build.
+- Conditions: before `4746d143` (clean), after `5956c245` (clean); go1.27.3,
+  `-tags http2legacy`; linux/amd64, Ryzen 9 9950X, kernel 7.2.12, reserved
+  CPUs 14, 15, 30, 31, other agents' work on the remaining cores.
 
 | Sessions | Before, ns per frame (median, min to max) | After | Allocations per frame |
 | ---: | --- | --- | --- |
-| 1 | 381.9 (379.0 to 494.4) | 362.6 (356.0 to 436.4) | 12 to 10, 317 B to 276 B |
-| 8 | 390.4 (377.2 to 463.3) | 370.8 (353.7 to 449.0) | 12 to 10, 317 B to 276 B |
+| 1 | 383.5 (382.1 to 389.4) | 369.7 (363.2 to 404.2) | 12 to 11, 317 B to 293 B |
+| 8 | 387.1 (385.2 to 484.3) | 372.4 (365.8 to 391.8) | 12 to 11, 317 B to 293 B |
 
-The medians differ by less than the spread of either build, so the timing
-shows no regression and no gain; the two allocations fewer per frame are
-those of `buf.Copy`'s per-call setup. No process-level throughput was
+The medians differ by about 4 % and the two builds' ranges overlap, so the
+timing shows no regression and no gain is claimed; the change also saves
+one allocation per frame. No process-level throughput was
 measured for this change: `testing/gates.sh smux xhttp` and the
 stress-and-reconnect runs are its process gates.
