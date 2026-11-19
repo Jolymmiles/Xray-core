@@ -29,7 +29,10 @@ Keep this list complete; everything else must match upstream byte for byte.
   when the greeting starts (the kernel's count on Linux, read through a
   FinalMask wrapper only when its `Splice()` is true), which picks the
   grouping for a full Chromium handshake. The extension is disabled by default. The module tests cover
-  the ticket cache, process-local replay guard, and both probe paths,
+  the ticket cache, process-local replay guard (tickets are keyed to the
+  process, and those issued before an evicted guard entry's acceptance
+  plus a minute are not resumed),
+  and both probe paths,
   including ticket refusals with TCP FIN and RST. The module uses `x/net/http2/hpack`
   for the H2 probe, with the related `x/crypto` and `x/sys` versions
   recorded in `go.mod`.
