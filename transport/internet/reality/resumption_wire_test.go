@@ -197,16 +197,17 @@ func unsentTicketHello(t *testing.T, server *realityServer) []byte {
 	return hello
 }
 
-// The target's ticket profile can stop placing a ticket this process
-// issued: the profile is probed or unknown for the hello's key, as here,
-// or a new probe found a new prefix. The tickets are this process's, as
-// ticket keys are per process, so the test covers tickets issued and
-// offered within one process, not tickets from before a restart. A
-// censor's copy of a resumed ClientHello with a spoiled binder must not
+// The target's ticket profile can stop placing a ticket this process issued:
+// the profile is probed or unknown for the hello's key, as here, a new probe
+// found that the target no longer resumes or has a new prefix or lifetime,
+// or the ticket outlived the profile's lifetime. The tickets are this
+// process's, as ticket keys are per process, so the test covers tickets
+// issued and offered within one process, not tickets from before a restart.
+// A censor's copy of a resumed ClientHello with a spoiled binder must not
 // authenticate then either: it goes to the target, as when the target's
-// refusal is not measured, and gets the target's own answer. A hello with
-// a valid binder still authenticates, once, and a client's own ticket
-// still works.
+// refusal is not measured, and gets the target's own answer. A hello with a
+// valid binder still authenticates, once, and a client's own ticket still
+// works.
 func TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed(t *testing.T) {
 	target := goTarget(t)
 	results := make(chan error, 8)
