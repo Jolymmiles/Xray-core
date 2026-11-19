@@ -4,6 +4,8 @@ import (
 	"container/list"
 	"testing"
 	"time"
+
+	"github.com/xtls/reality/tls13"
 )
 
 // testTicket returns a ticket config issued for a TLS 1.3 session created
@@ -118,5 +120,75 @@ func TestTicketForgottenBeforeTheCopyIsRecorded(t *testing.T) {
 	fresh, shape := testTicket(t, config, now)
 	if config.resumableTicketSession(shape, fresh) == nil {
 		t.Fatal("a ticket issued after the dropped hellos was not resumed")
+	}
+}
+
+// resumingHandshake returns the server's state for a ClientHello that
+// offers ticket with a valid binder, under a target profile that resumes,
+// at the point realityResume decides.
+func resumingHandshake(t *testing.T, config *Config, ticket []byte) *serverHandshakeStateTLS13 {
+	t.Helper()
+	ch := &clientHelloMsg{
+		vers: VersionTLS12, random: make([]byte, 32), sessionId: make([]byte, 32),
+		cipherSuites: []uint16{TLS_AES_128_GCM_SHA256}, compressionMethods: []uint8{compressionNone},
+		supportedVersions: []uint16{VersionTLS13},
+		keyShares:         []keyShare{{group: X25519, data: make([]byte, 32)}},
+		pskModes:          []uint8{pskModeDHE},
+		pskIdentities:     []pskIdentity{{label: ticket}},
+		pskBinders:        [][]byte{make([]byte, 32)},
+	}
+	suite := cipherSuiteTLS13ByID(TLS_AES_128_GCM_SHA256)
+	earlySecret := tls13.NewEarlySecret(suite.hash.New, make([]byte, 32))
+	helloBytes, err := ch.marshalWithoutBinders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := suite.hash.New()
+	transcript.Write(helloBytes)
+	if err := ch.updateBinders([][]byte{suite.finishedHash(earlySecret.ResumptionBinderKey(), transcript)}); err != nil {
+		t.Fatal(err)
+	}
+	hello := &serverHelloMsg{
+		vers: VersionTLS12, random: make([]byte, 32), sessionId: make([]byte, 32),
+		cipherSuite: TLS_AES_128_GCM_SHA256, supportedVersion: VersionTLS13,
+		serverShare: keyShare{group: X25519, data: make([]byte, 32)},
+	}
+	if hello.original, err = hello.marshal(); err != nil {
+		t.Fatal(err)
+	}
+	hs := &serverHandshakeStateTLS13{c: &Conn{config: config}, clientHello: ch, hello: hello, suite: suite}
+	hs.c.out.handshakeLen[2] = 102
+	return hs
+}
+
+// realityResume does not resume a ticket older than a hello the record
+// dropped, though the ticket is REALITY's and the binder valid.
+func TestRealityResumeSkipsForgottenTickets(t *testing.T) {
+	config := testConfig(t)
+	cache := &ticketHelloCache{size: 1, entries: make(map[[32]byte]*list.Element)}
+	previous := ticketHellos
+	ticketHellos = cache
+	t.Cleanup(func() { ticketHellos = previous })
+	shape := &TicketShape{
+		Resumes: true, HelloDelta: 6, FlightRecords: 4, Lifetime: 3600,
+		FullRecords: []int{41, 102, 58}, ResRecords: []int{37, 58},
+	}
+
+	now := time.Now()
+	old, _ := testTicket(t, config, now.Add(-10*time.Minute))
+	if hs := resumingHandshake(t, config, old); !hs.realityResume(shape) || !hs.c.didResume {
+		t.Fatal("a ticket the record vouches for did not resume, so the test shows nothing")
+	}
+	for i, key := range [][32]byte{{1}, {2}} {
+		if !cache.accept(key, now.Add(time.Duration(i-5)*time.Minute), now.Add(time.Hour), true) {
+			t.Fatal("a hello was refused")
+		}
+	}
+	if hs := resumingHandshake(t, config, old); hs.realityResume(shape) || hs.c.didResume || hs.usingPSK {
+		t.Fatal("a ticket older than a hello the record dropped resumed")
+	}
+	fresh, _ := testTicket(t, config, now)
+	if hs := resumingHandshake(t, config, fresh); !hs.realityResume(shape) || !hs.c.didResume {
+		t.Fatal("a ticket newer than the hellos the record dropped did not resume")
 	}
 }

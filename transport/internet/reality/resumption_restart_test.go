@@ -71,10 +71,14 @@ func startRestartedServer(t *testing.T, target string, server *realityServer) st
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Errorf("the restarted server failed: %v", err)
+			}
 		case <-time.After(10 * time.Second):
 			cmd.Process.Kill()
 			<-done
+			t.Error("the restarted server did not stop when its input closed")
 		}
 	})
 	ready := make(chan string, 1)

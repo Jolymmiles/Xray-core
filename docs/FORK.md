@@ -192,8 +192,8 @@ guard it.
   is covered) are not resumed; they are still REALITY's, so a wrong binder
   on one gets the measured refusal as before. Before this, the restarted
   process resumed the copy (`[43 51 41]`) for the target's ticket
-  lifetime, 604,800 s for a Go target. The cost is one full handshake per
-  client after a restart, no resumption across replicas, and, on a server
+  lifetime, 604,800 s for a Go target. The cost is a full handshake for
+  each ticket a client holds after a restart (up to two), no resumption across replicas, and, on a server
   that resumes 40,000 times within a ticket lifetime, a shorter effective
   lifetime.
   Covered by `TestReplayedResumedHelloReachesTheTarget`,

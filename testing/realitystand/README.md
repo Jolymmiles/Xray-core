@@ -314,8 +314,8 @@ answers a ticket it did not issue:
 - once the history evicts an entry to make room, tickets issued no later
   than a minute after that entry's acceptance are not resumed.
 
-A restart or an eviction therefore costs clients one full handshake, not
-a resumption of a copy. Replicas behind one address do not resume each
+A restart or an eviction therefore costs a client a full handshake for
+each old ticket it holds (up to two), not a resumption of a copy. Replicas behind one address do not resume each
 other's tickets. The `edge` group captures the replay scenario.
 
 For an invalid binder, the probe distinguishes a TLS alert, a closed
