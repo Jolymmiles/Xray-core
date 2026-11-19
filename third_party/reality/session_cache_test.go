@@ -103,6 +103,61 @@ func TestRealityTicketRejectsMalformedLabels(t *testing.T) {
 	}
 }
 
+// Without a profile that places REALITY's tickets, a ticket REALITY sealed
+// is found behind a prefix of any length, and nothing else is: not another
+// key's, not an altered one, not one past the longest ticket lifetime, not
+// one behind a prefix longer than any key name.
+func TestUnprofiledTicketSession(t *testing.T) {
+	config := testConfig(t)
+	seal := func(config *Config, createdAt time.Time) []byte {
+		t.Helper()
+		state, err := (&SessionState{
+			version: VersionTLS13, cipherSuite: TLS_AES_128_GCM_SHA256,
+			createdAt: uint64(createdAt.Unix()), secret: make([]byte, 32),
+		}).Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealed, err := config.encryptTicket(state, config.realityTicketKeys())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sealed
+	}
+	sealed := seal(config, time.Now())
+	for _, prefix := range [][]byte{nil, {1, 2, 3, 4}, bytes.Repeat([]byte{7}, 16), bytes.Repeat([]byte{7}, maxUnprofiledTicketPrefix)} {
+		if session := config.unprofiledTicketSession(slices.Concat(prefix, sealed)); session == nil || len(session.secret) != 32 {
+			t.Fatalf("REALITY's ticket behind a prefix of %d bytes was not found", len(prefix))
+		}
+	}
+
+	altered := slices.Concat([]byte{1, 2, 3, 4}, sealed)
+	altered[len(altered)-1] ^= 1
+	invalidState, err := config.encryptTicket([]byte{0xff}, config.realityTicketKeys())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, label := range map[string][]byte{
+		"empty":         nil,
+		"short":         sealed[:47],
+		"long prefix":   slices.Concat(bytes.Repeat([]byte{7}, maxUnprofiledTicketPrefix+1), sealed),
+		"another key":   seal(testConfig(t), time.Now()),
+		"altered":       altered,
+		"expired":       seal(config, time.Now().Add(-maxSessionTicketLifetime-time.Hour)),
+		"invalid state": invalidState,
+		"unknown label": make([]byte, 192),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if config.unprofiledTicketSession(label) != nil {
+				t.Fatal("a label REALITY did not seal, or that expired, gave a session")
+			}
+		})
+	}
+	if (&Config{}).unprofiledTicketSession(sealed) != nil {
+		t.Fatal("a configuration without a private key found a ticket")
+	}
+}
+
 // Xray always sets a private key, but direct users of the library reach
 // ticket inspection before authentication without one.
 func TestRealityTicketWithoutPrivateKey(t *testing.T) {
@@ -143,4 +198,45 @@ func TestSessionCacheDropsTheOldest(t *testing.T) {
 	if cache.get(a, []byte("short"), false) != nil {
 		t.Fatal("an expired session is not found")
 	}
+}
+
+// The cost of finding a ticket without a profile: a miss tries every prefix
+// length up to the bound, over a label of a common ticket's length and over
+// one of 4 KiB.
+func BenchmarkUnprofiledTicketSession(b *testing.B) {
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	config := &Config{PrivateKey: priv}
+	state, err := (&SessionState{
+		version: VersionTLS13, cipherSuite: TLS_AES_128_GCM_SHA256,
+		createdAt: uint64(time.Now().Unix()), secret: make([]byte, 32), Extra: [][]byte{make([]byte, 100)},
+	}).Bytes()
+	if err != nil {
+		b.Fatal(err)
+	}
+	sealed, err := config.encryptTicket(state, config.realityTicketKeys())
+	if err != nil {
+		b.Fatal(err)
+	}
+	found := slices.Concat(bytes.Repeat([]byte{7}, 16), sealed)
+	missed := make([]byte, len(found))
+	b.Logf("label of %d bytes", len(found))
+	b.Run("found", func(b *testing.B) {
+		for b.Loop() {
+			config.unprofiledTicketSession(found)
+		}
+	})
+	b.Run("missed", func(b *testing.B) {
+		for b.Loop() {
+			config.unprofiledTicketSession(missed)
+		}
+	})
+	long := make([]byte, 4<<10)
+	b.Run("missed 4KiB", func(b *testing.B) {
+		for b.Loop() {
+			config.unprofiledTicketSession(long)
+		}
+	})
 }

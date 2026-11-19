@@ -408,14 +408,60 @@ func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take boo
 	} else if session = statefulTickets.get(c, label, take); session == nil {
 		return nil
 	}
+	return c.liveTicketSession(session, time.Duration(shape.Lifetime)*time.Second)
+}
+
+// liveTicketSession returns session if it is a TLS 1.3 server session
+// younger than lifetime, capped at maxSessionTicketLifetime, or nil.
+func (c *Config) liveTicketSession(session *SessionState, lifetime time.Duration) *SessionState {
 	if session.version != VersionTLS13 || session.isClient {
 		return nil
 	}
 	age := c.time().Sub(time.Unix(int64(session.createdAt), 0))
-	if age < -time.Minute || age > min(time.Duration(shape.Lifetime)*time.Second, maxSessionTicketLifetime) {
+	if age < -time.Minute || age > min(lifetime, maxSessionTicketLifetime) {
 		return nil
 	}
 	return session
+}
+
+// maxUnprofiledTicketPrefix bounds the prefixes unprofiledTicketSession
+// tries, and so its work, which runs before the target's answer is relayed.
+// Targets' prefixes are key names: 16 bytes for OpenSSL, BoringSSL and
+// nginx, none for crypto/tls. A ticket behind a longer one is not found.
+const maxUnprofiledTicketPrefix = 64
+
+// unprofiledTicketSession returns the session in a ticket REALITY sealed
+// with its ticket key, or nil, when the target's profile does not say what
+// prefix the ticket carries: while it is probed after a start, the ticket
+// was issued before. Each prefix length up to maxUnprofiledTicketPrefix is
+// tried; the MAC authenticates the sealed part, never the prefix. Tickets
+// that are ids of a session kept in memory do not outlive the process and
+// are not looked for.
+func (c *Config) unprofiledTicketSession(label []byte) *SessionState {
+	keys := c.realityTicketKeys()
+	if len(keys) != 1 {
+		return nil
+	}
+	mac := hmac.New(sha256.New, keys[0].hmacKey[:])
+	sum := make([]byte, 0, sha256.Size)
+	for prefix := 0; prefix <= maxUnprofiledTicketPrefix && len(label)-prefix >= aes.BlockSize+sha256.Size; prefix++ {
+		sealed := label[prefix:]
+		mac.Reset()
+		mac.Write(sealed[:len(sealed)-sha256.Size])
+		if !hmac.Equal(mac.Sum(sum[:0]), sealed[len(sealed)-sha256.Size:]) {
+			continue
+		}
+		plaintext := c.decryptTicket(sealed, keys)
+		if plaintext == nil {
+			return nil
+		}
+		session, err := ParseSessionState(plaintext)
+		if err != nil {
+			return nil
+		}
+		return c.liveTicketSession(session, maxSessionTicketLifetime)
+	}
+	return nil
 }
 
 // checkBinder checks the binder of the first PSK identity of ch against
@@ -433,7 +479,10 @@ func checkBinder(suite *cipherSuiteTLS13, session *SessionState, ch *clientHello
 
 // inspectTicketHello checks whether the offer authenticates a ticket we
 // issued. For a known ticket with an invalid binder, it returns the
-// target's measured refusal, when available.
+// target's measured refusal, when available. Without a profile that places
+// REALITY's tickets, as while the target is probed after a start, a ticket
+// issued before is still checked, and one with an invalid binder goes to
+// the target, as with an unmeasured refusal.
 func (hs *serverHandshakeStateTLS13) inspectTicketHello() (refusal *TicketShape, validBinder, invalidBinder bool) {
 	ch := hs.clientHello
 	if len(ch.pskIdentities) == 0 || len(ch.pskIdentities) != len(ch.pskBinders) ||
@@ -442,10 +491,13 @@ func (hs *serverHandshakeStateTLS13) inspectTicketHello() (refusal *TicketShape,
 	}
 	key, _ := recordsKey(hs.c.config, ch)
 	shape := LoadTicketShape(key)
+	var session *SessionState
 	if shape == nil || !shape.Resumes {
-		return nil, false, false
+		shape = nil
+		session = hs.c.config.unprofiledTicketSession(ch.pskIdentities[0].label)
+	} else {
+		session = hs.c.config.realityTicketSession(shape, ch.pskIdentities[0].label, false)
 	}
-	session := hs.c.config.realityTicketSession(shape, ch.pskIdentities[0].label, false)
 	if session == nil {
 		return nil, false, false
 	}
@@ -458,7 +510,7 @@ func (hs *serverHandshakeStateTLS13) inspectTicketHello() (refusal *TicketShape,
 	}
 	// A refusal measured more than ticketShapeMaxAge ago no longer says
 	// how the target answers: the hello goes to the target.
-	if shape.RefusesBadBinder && time.Since(shape.refusalAt) < ticketShapeMaxAge {
+	if shape != nil && shape.RefusesBadBinder && time.Since(shape.refusalAt) < ticketShapeMaxAge {
 		return shape, false, true
 	}
 	return nil, false, true

@@ -1,6 +1,7 @@
 package reality
 
 import (
+	"bytes"
 	"context"
 	gotls "crypto/tls"
 	"encoding/binary"
@@ -11,10 +12,12 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/reality"
 	"github.com/xtls/xray-core/common/net"
 )
@@ -152,6 +155,106 @@ func TestReplayedResumedHelloReachesTheTarget(t *testing.T) {
 	}
 	if len(replayed) != len(direct) {
 		t.Fatalf("replayed hello: %d records, the target's %d", len(replayed), len(direct))
+	}
+}
+
+// unsentTicketHello returns the ClientHello record a client offering one of
+// server's tickets builds, without the server seeing it: a hello this
+// process never authenticated, as one recorded before a restart is to the
+// restarted server. The failed dial puts no ticket aside.
+func unsentTicketHello(t *testing.T, server *realityServer) []byte {
+	t.Helper()
+	client, peer := gonet.Pipe()
+	sent := make(chan []byte, 1)
+	go func() {
+		defer peer.Close()
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(peer, header); err != nil {
+			sent <- nil
+			return
+		}
+		body := make([]byte, binary.BigEndian.Uint16(header[3:]))
+		if _, err := io.ReadFull(peer, body); err != nil {
+			sent <- nil
+			return
+		}
+		sent <- slices.Concat(header, body)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := UClient(client, &Config{
+		Fingerprint: "chrome", ServerName: testServerName, PublicKey: server.public,
+		ShortId: make([]byte, 8), SpiderY: make([]int64, 10), Browser: "auto",
+	}, ctx, serverDestination(server)); err == nil {
+		t.Fatal("a handshake with no server succeeded")
+	}
+	tickets.Lock()
+	delete(tickets.failed, testTicketKey(server))
+	tickets.Unlock()
+	hello := <-sent
+	if len(hello) == 0 {
+		t.Fatal("the client sent no ClientHello")
+	}
+	return hello
+}
+
+// Right after a start the target's ticket profile is still being probed, but
+// REALITY's tickets, sealed with a key derived from the private key, are
+// known across restarts. A censor's copy of a resumed ClientHello with a
+// spoiled binder must not authenticate then either: it goes to the target,
+// as when the target's refusal is not measured. A client's own ticket still
+// authenticates.
+func TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed(t *testing.T) {
+	target := goTarget(t)
+	results := make(chan error, 8)
+	server := startRealityServer(t, target, func(conn gonet.Conn, config *reality.Config) (*reality.Conn, error) {
+		client, err := reality.Server(context.Background(), conn, config)
+		results <- err
+		return client, err
+	})
+	// Two tickets: one for the recorded hello, one for the client after.
+	key := testTicketKey(server)
+	var held []*utls.ClientSessionState
+	for range 2 {
+		dialReality(t, server, "auto")
+		if err := <-results; err != nil {
+			t.Fatalf("an honest connection failed: %v", err)
+		}
+		held = append(held, tickets.pop(key))
+	}
+	if held[0] == nil || held[1] == nil {
+		t.Fatal("the target's tickets were not issued")
+	}
+	tickets.push(key, held[0])
+	hello := unsentTicketHello(t, server)
+	if !slices.Contains((&recordCapture{out: hello}).helloExtensions(), 41) {
+		t.Fatal("the recorded hello offers no ticket, so the test shows nothing")
+	}
+	spoiled := bytes.Clone(hello)
+	spoiled[len(spoiled)-1] ^= 1
+
+	profile := target + " " + testServerName + " 2"
+	original, _ := reality.GlobalTicketShapes.Load(profile)
+	reality.GlobalTicketShapes.Store(profile, false) // a probe is running, as right after a start
+	t.Cleanup(func() { reality.GlobalTicketShapes.Store(profile, original) })
+
+	records := answer(t, server.addr, spoiled)
+	select {
+	case err := <-results:
+		if err == nil || !strings.Contains(err.Error(), "authentication failed or validation criteria not met") {
+			t.Fatalf("a spoiled binder was authenticated while the profile is probed (%d records): %v", len(records), err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server did not finish with the spoiled hello")
+	}
+
+	tickets.push(key, held[1])
+	c := dialReality(t, server, "auto")
+	if !slices.Contains(c.hello, 41) {
+		t.Fatal("the client offered no ticket, so the test shows nothing")
+	}
+	if err := <-results; err != nil {
+		t.Fatalf("a client's own ticket did not authenticate while the profile is probed: %v", err)
 	}
 }
 

@@ -200,6 +200,23 @@ guard it.
   profile. Counts depend on the destination's TLS and ALPN support.
   The comparisons and passive-observation limits are documented in
   `testing/realitystand/README.md`.
+  A ClientHello that offers one of REALITY's encrypted tickets with a
+  wrong binder is never authenticated. With the target's refusal measured
+  in the last three hours REALITY refuses it as the target refuses its
+  own; otherwise it goes to the target, which answers its full handshake.
+  That holds while the target's ticket profile is unknown too, as during
+  the probe after a start: the ticket, sealed with a key derived from the
+  private key, is then found by trying each prefix length up to 64 bytes,
+  as the prefix comes from the profile. A censor who replays a recorded
+  hello with a spoiled binder right after a restart, before the refusal
+  is measured again, still sees the target's full handshake where the
+  process that ran before refused: the measurement is not kept across
+  restarts. Covered by
+  `TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed`
+  (`transport/internet/reality/resumption_wire_test.go`),
+  `TestTicketWithWrongBinderIsRefused`,
+  `TestKnownBadBinderReachesCoverWithoutRefusalProfile` and
+  `TestUnprofiledTicketSession` (`third_party/reality`).
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`
   (`proxy/vision_buffers.go`), which checks the field types and caches their
   offsets per connection type and fails closed on any other layout; upstream
