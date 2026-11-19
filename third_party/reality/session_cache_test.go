@@ -175,53 +175,66 @@ func ticketHelloState(config *Config, label []byte, binders int) *serverHandshak
 	return &serverHandshakeStateTLS13{c: &Conn{config: config}, clientHello: hello}
 }
 
-// A ticket REALITY sealed that the target's profile does not place, as
+// A ticket REALITY issued that the target's profile does not place, as
 // while the target is probed after a start or once a new probe found a new
 // prefix or a shorter lifetime, is checked for an authenticated hello: with
 // a wrong binder it goes to the target, without the refusal of the target's
-// own tickets, which the target would not know it as.
+// own tickets, which the target would not know it as. That holds for sealed
+// tickets and for ids of sessions this process keeps.
 func TestInspectTicketHelloOutsideTheProfile(t *testing.T) {
 	config := testConfig(t)
 	config.Dest = t.Name()
 	prefix := []byte{1, 2, 3, 4}
-	label := slices.Concat(prefix, sealTestTicket(t, config, time.Now().Add(-2*time.Hour)))
-	hs := ticketHelloState(config, label, 1)
-	key, _ := recordsKey(config, hs.clientHello)
-	t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+	issued := time.Now().Add(-2 * time.Hour)
+	id := slices.Concat(prefix, bytes.Repeat([]byte{0x5a}, 28))
+	statefulTickets.put(config, id, &SessionState{
+		version: VersionTLS13, cipherSuite: TLS_AES_128_GCM_SHA256,
+		createdAt: uint64(issued.Unix()), secret: make([]byte, 32),
+	}, 3*time.Hour)
+	t.Cleanup(func() { statefulTickets.get(config, id, true) })
+	labels := map[string][]byte{
+		"sealed": slices.Concat(prefix, sealTestTicket(t, config, issued)),
+		"id":     id,
+	}
 	profile := func(prefix []byte, lifetime uint32) *TicketShape {
 		return &TicketShape{
 			Issues: true, Resumes: true, Prefix: prefix, Lifetime: lifetime,
 			RefusesBadBinder: true, BadBinder: decryptErrorAlert, badBinderClose: alertRefusal, refusalAt: time.Now(),
 		}
 	}
-	for _, tc := range []struct {
-		name          string
-		profile       any
-		authenticated bool
-		refused       bool
-		invalid       bool
-	}{
-		{name: "probed", profile: false, authenticated: true, invalid: true},
-		{name: "probed, not authenticated", profile: false},
-		{name: "no profile", authenticated: true, invalid: true},
-		{name: "target resumes nothing", profile: &TicketShape{Issues: true}, authenticated: true, invalid: true},
-		{name: "the ticket's profile", profile: profile(prefix, 3*3600), refused: true, invalid: true},
-		{name: "a new prefix", profile: profile([]byte{5, 6, 7, 8}, 3*3600), authenticated: true, invalid: true},
-		{name: "a new prefix, not authenticated", profile: profile([]byte{5, 6, 7, 8}, 3*3600)},
-		{name: "a shorter lifetime", profile: profile(prefix, 3600), authenticated: true, invalid: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.profile == nil {
-				GlobalTicketShapes.Delete(key)
-			} else {
-				GlobalTicketShapes.Store(key, tc.profile)
-			}
-			refusal, valid, invalid := hs.inspectTicketHello(tc.authenticated)
-			if (refusal != nil) != tc.refused || valid || invalid != tc.invalid {
-				t.Fatalf("got refusal %v, valid %v, invalid %v; want refused %v, invalid %v",
-					refusal != nil, valid, invalid, tc.refused, tc.invalid)
-			}
-		})
+	for kind, label := range labels {
+		hs := ticketHelloState(config, label, 1)
+		key, _ := recordsKey(config, hs.clientHello)
+		t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+		for _, tc := range []struct {
+			name          string
+			profile       any
+			authenticated bool
+			refused       bool
+			invalid       bool
+		}{
+			{name: "probed", profile: false, authenticated: true, invalid: true},
+			{name: "probed, not authenticated", profile: false},
+			{name: "no profile", authenticated: true, invalid: true},
+			{name: "target resumes nothing", profile: &TicketShape{Issues: true}, authenticated: true, invalid: true},
+			{name: "the ticket's profile", profile: profile(prefix, 3*3600), refused: true, invalid: true},
+			{name: "a new prefix", profile: profile([]byte{5, 6, 7, 8}, 3*3600), authenticated: true, invalid: true},
+			{name: "a new prefix, not authenticated", profile: profile([]byte{5, 6, 7, 8}, 3*3600)},
+			{name: "a shorter lifetime", profile: profile(prefix, 3600), authenticated: true, invalid: true},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				if tc.profile == nil {
+					GlobalTicketShapes.Delete(key)
+				} else {
+					GlobalTicketShapes.Store(key, tc.profile)
+				}
+				refusal, valid, invalid := hs.inspectTicketHello(tc.authenticated)
+				if (refusal != nil) != tc.refused || valid || invalid != tc.invalid {
+					t.Fatalf("got refusal %v, valid %v, invalid %v; want refused %v, invalid %v",
+						refusal != nil, valid, invalid, tc.refused, tc.invalid)
+				}
+			})
+		}
 	}
 }
 
