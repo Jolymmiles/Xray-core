@@ -55,11 +55,11 @@ func TestRefusalAgeAtUse(t *testing.T) {
 			Issues: true, Resumes: true, Lifetime: 3600, badBinderSession: &utls.ClientSessionState{},
 		}
 		storeTicketShape(config, key, hs.clientHello.serverName, alpn, fresh, previous)
-		if refusal, valid, invalid := hs.inspectTicketHello(); refusal == nil || valid || !invalid {
+		if refusal, valid, invalid := hs.inspectTicketHello(false); refusal == nil || valid || !invalid {
 			t.Fatalf("expected a carried refusal before the limit, got %v, %v, %v", refusal, valid, invalid)
 		}
 		time.Sleep(2 * time.Second) // virtual clock
-		refusal, valid, invalid := hs.inspectTicketHello()
+		refusal, valid, invalid := hs.inspectTicketHello(false)
 		if valid || !invalid {
 			t.Fatalf("expected a known ticket with an invalid binder, got %v, %v", valid, invalid)
 		}

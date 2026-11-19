@@ -293,7 +293,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 		}
 		var validBinder, invalidBinder bool
 		if config.BrowserMode && hs.clientHello != nil && hs.c.vers == VersionTLS13 && config.ServerNames[hs.clientHello.serverName] {
-			hs.refusal, validBinder, invalidBinder = hs.inspectTicketHello()
+			hs.refusal, validBinder, invalidBinder = hs.inspectTicketHello(authenticated)
 		}
 		if authenticated && !invalidBinder && ticketHellos.acceptClientHello(&hs, time.Now(), validBinder) {
 			hs.c.conn = conn
