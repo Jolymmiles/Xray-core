@@ -883,6 +883,94 @@ func TestDialingWorkerHandsTheDownlinkOutWhileAFailedWriteIsReported(t *testing.
 	})
 }
 
+// The downlink is let go for the report of a failed write only once the rest
+// of that write's frame is skipped. The frame reached the worker in two
+// pieces: taken over in the middle of it, its rest would be read as the next
+// frame's metadata and the sibling would lose its reply.
+func TestDialingWorkerReportsAFailedWriteAtItsFramesEnd(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		held := heldLine{text: "failed to write to downstream", once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(held)
+		defer log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter()))
+		defer close(held.resume)
+
+		release := make(chan struct{})
+		letReturn := sync.OnceFunc(func() { close(release) })
+		defer letReturn()
+		written := make(chan struct{})
+		carrier := carrierFunc(func(link *transport.Link) error {
+			reader := &buf.BufferedReader{Reader: link.Reader}
+			defer func() { buf.ReleaseMulti(reader.Buffer) }()
+			var ids []uint16
+			for len(ids) < 2 {
+				var frame FrameMetadata
+				if err := frame.Unmarshal(reader, false); err != nil {
+					return err
+				}
+				ids = append(ids, frame.SessionID)
+			}
+			slices.Sort(ids)
+			// Fills the first application's pipe.
+			if err := sendText(link, ids[0], "a"); err != nil {
+				return err
+			}
+			// One frame of six bytes, in two writes of the carrier.
+			head := buf.New()
+			meta := FrameMetadata{SessionID: ids[0], SessionStatus: SessionStatusKeep}
+			meta.Option.Set(OptionData)
+			if err := meta.WriteTo(head); err != nil {
+				return err
+			}
+			if _, err := serial.WriteUint16(head, 6); err != nil {
+				return err
+			}
+			if _, err := head.WriteString("bcd"); err != nil {
+				return err
+			}
+			if err := link.Writer.WriteMultiBuffer(buf.MultiBuffer{head}); err != nil {
+				return err
+			}
+			// The worker's reader has the first half and is held on it.
+			synctest.Wait()
+			rest := buf.New()
+			if _, err := rest.WriteString("efg"); err != nil {
+				return err
+			}
+			if err := link.Writer.WriteMultiBuffer(buf.MultiBuffer{rest}); err != nil {
+				return err
+			}
+			if err := sendText(link, ids[1], "fast reply"); err != nil {
+				return err
+			}
+			close(written)
+			<-release
+			return errors.New("connection reset")
+		})
+		worker, err := (&DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		failing := pipeApplication(t, ctx, worker)
+		synctest.Wait()
+		sibling := pipeApplication(t, ctx, worker)
+		await(t, written, "the carrier's frames")
+		synctest.Wait()
+
+		failing.abort()
+		await(t, held.entered, "the report of the failed write")
+		letReturn()
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		if reply := sibling.readAll(t); reply != "fast reply" {
+			t.Fatalf("the sibling read %q, want %q: the downlink was taken in the middle of a frame", reply, "fast reply")
+		}
+	})
+}
+
 // What ends the worker's reader is reported after the worker has finished:
 // a log handler that takes its time does not hold the end of the sessions.
 func TestClientWorkerFinishesBeforeItReportsWhatEndedItsReader(t *testing.T) {

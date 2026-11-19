@@ -654,7 +654,11 @@ guard it.
   left is bounded, so it is sorted by session, each session with something
   left gets it from a goroutine of its own, after the write that was under
   way if that was its own, and is closed after it, and every other session
-  is closed at once. No session waits for another's application. The
+  is closed at once. No session waits for another's application to read;
+  closing a session closes its output, and an output whose `Close` waited
+  for its application would still hold the closes after it, or the
+  takeover while a live END closes it. The outputs the tree's inbounds
+  hand over do not wait on `Close`. The
   taken worker keeps no session, frame or unread bytes, interrupts the
   downlink, and is not idle while a session is still handed its reply. With a
   live carrier the downlink's order stands, Mux.Cool having no flow control
@@ -696,6 +700,7 @@ guard it.
   `TestDialingWorkerHandsTheDownlinkOutWhileAFailedWriteIsReported`,
   `TestClientWorkerLeavesASessionWhoseOutputEnded`,
   `TestClientWorkerFinishesBeforeItReportsWhatEndedItsReader`,
+  `TestDialingWorkerReportsAFailedWriteAtItsFramesEnd`,
   `TestDialingWorkerHandsOutTheRestBeforeItClosesTheOthers` and
   `TestDialingWorkerLeavesTheDownlinkAloneAfterItWasTaken`
   (`common/mux/client_carrier_siblings_test.go`),
