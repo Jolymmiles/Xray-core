@@ -133,7 +133,7 @@
     ]
   },
   "http11-resumption/firefox": {
-    "sha256": "eec9bd0e7570be7e9a59fbefb0f3b4e3d46d92e032e3aa162109aa721429b403",
+    "sha256": "70f520ce946022e44b9aca4af9c6861396fe08a3442d9837f16667d9656e3a1f",
     "length": 1886,
     "extensions": [
       0,
@@ -1457,7 +1457,7 @@
     ]
   },
   "http11-resumption/hellofirefox_auto": {
-    "sha256": "eec9bd0e7570be7e9a59fbefb0f3b4e3d46d92e032e3aa162109aa721429b403",
+    "sha256": "70f520ce946022e44b9aca4af9c6861396fe08a3442d9837f16667d9656e3a1f",
     "length": 1886,
     "extensions": [
       0,
@@ -2574,7 +2574,7 @@
     ]
   },
   "http11/firefox": {
-    "sha256": "eec9bd0e7570be7e9a59fbefb0f3b4e3d46d92e032e3aa162109aa721429b403",
+    "sha256": "70f520ce946022e44b9aca4af9c6861396fe08a3442d9837f16667d9656e3a1f",
     "length": 1886,
     "extensions": [
       0,
@@ -3898,7 +3898,7 @@
     ]
   },
   "http11/hellofirefox_auto": {
-    "sha256": "eec9bd0e7570be7e9a59fbefb0f3b4e3d46d92e032e3aa162109aa721429b403",
+    "sha256": "70f520ce946022e44b9aca4af9c6861396fe08a3442d9837f16667d9656e3a1f",
     "length": 1886,
     "extensions": [
       0,
@@ -5012,7 +5012,7 @@
     ]
   },
   "resumption/firefox": {
-    "sha256": "f505645c7aec4b278607afc97ccd2f550835bb695ba3c720327f02069cf64c09",
+    "sha256": "03c1e6f296c6e621e3ea1bfc7691c06bf9b2b5159f158cc0c3eebc3cb8c31ea9",
     "length": 1889,
     "extensions": [
       0,
@@ -6420,7 +6420,7 @@
     ]
   },
   "resumption/hellofirefox_auto": {
-    "sha256": "f505645c7aec4b278607afc97ccd2f550835bb695ba3c720327f02069cf64c09",
+    "sha256": "03c1e6f296c6e621e3ea1bfc7691c06bf9b2b5159f158cc0c3eebc3cb8c31ea9",
     "length": 1889,
     "extensions": [
       0,
@@ -7573,7 +7573,7 @@
     ]
   },
   "stock/firefox": {
-    "sha256": "f505645c7aec4b278607afc97ccd2f550835bb695ba3c720327f02069cf64c09",
+    "sha256": "03c1e6f296c6e621e3ea1bfc7691c06bf9b2b5159f158cc0c3eebc3cb8c31ea9",
     "length": 1889,
     "extensions": [
       0,
@@ -8981,7 +8981,7 @@
     ]
   },
   "stock/hellofirefox_auto": {
-    "sha256": "f505645c7aec4b278607afc97ccd2f550835bb695ba3c720327f02069cf64c09",
+    "sha256": "03c1e6f296c6e621e3ea1bfc7691c06bf9b2b5159f158cc0c3eebc3cb8c31ea9",
     "length": 1889,
     "extensions": [
       0,

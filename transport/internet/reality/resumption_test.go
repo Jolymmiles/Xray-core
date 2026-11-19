@@ -740,6 +740,56 @@ func TestResumptionHelloFollowsTheBrowser(t *testing.T) {
 	}
 }
 
+// Firefox sizes its GREASE ECH from the server name and the ticket together,
+// rounded once. With a server name of 140 bytes and the target's ticket,
+// a pre_shared_key of 152 bytes, that is 474 bytes; rounding the two apart
+// gives 506, and the preset's fixed size plus the ticket gives 442.
+func TestFirefoxResumptionHelloCountsALongServerName(t *testing.T) {
+	server := startRealityServer(t, goTarget(t))
+	dialRealityAs(t, server, "auto", "firefox")
+	host, portStr, _ := gonet.SplitHostPort(server.addr)
+	port, _ := strconv.Atoi(portStr)
+	dest := net.TCPDestination(net.ParseAddress(host), net.Port(port))
+	config := &Config{
+		Fingerprint: "firefox",
+		ServerName:  strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + strings.Repeat("c", 13) + ".test",
+		PublicKey:   server.public,
+		ShortId:     make([]byte, 8),
+		Browser:     "auto",
+	}
+	if len(config.ServerName) != 140 {
+		t.Fatalf("server name of %d bytes", len(config.ServerName))
+	}
+	// The ticket of the connection above, offered under the long name.
+	session := tickets.pop(ticketKey(&Config{Fingerprint: "firefox", PublicKey: server.public, ShortId: make([]byte, 8)}, dest, testServerName))
+	if session == nil {
+		t.Fatal("the first connection left no ticket")
+	}
+	tickets.push(ticketKey(config, dest, config.ServerName), session)
+
+	capture := &recordCapture{Conn: nopConn{}}
+	uConn, err := newUConn(capture, config, dest, utls.HelloFirefox_Auto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.Write(append([]byte{22, 3, 1, byte(len(uConn.HandshakeState.Hello.Raw) >> 8), byte(len(uConn.HandshakeState.Hello.Raw))}, uConn.HandshakeState.Hello.Raw...))
+	types, lens := capture.helloExtensionLens()
+	if types[len(types)-1] != 41 || slices.Contains(types, 35) {
+		t.Fatalf("resumed ClientHello %v", types)
+	}
+	if psk := lens[len(lens)-1]; psk != 148 {
+		t.Fatalf("pre_shared_key body of %d bytes, the target's ticket gives 148", psk)
+	}
+	if ech := lens[slices.Index(types, 0xfe0d)]; ech != 474 {
+		t.Fatalf("GREASE ECH of %d bytes, Firefox sends 474", ech)
+	}
+}
+
+// nopConn is a connection nothing is read from or written to.
+type nopConn struct{ gonet.Conn }
+
+func (nopConn) Write(b []byte) (int, error) { return len(b), nil }
+
 func TestNoTicketOfferedForAWhileAfterOneFailed(t *testing.T) {
 	defer func(f func(*utls.ClientSessionState) bool) { usableTicket = f }(usableTicket)
 	usableTicket = func(*utls.ClientSessionState) bool { return true }

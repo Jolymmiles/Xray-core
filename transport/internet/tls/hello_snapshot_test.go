@@ -172,9 +172,9 @@ func TestClientHelloSnapshot(t *testing.T) {
 	hellotest.Compare(t, helloSnapshotFile, got, *updateHelloSnapshot)
 }
 
-// TestFirefoxHelloIgnoresSessionCache pins that a configured session cache
-// leaves the first ClientHello of the firefox aliases as it is without one.
-// Firefox 156 never resumes here, and TestClientHelloSnapshot holds every row
+// TestFirefoxHelloIgnoresSessionCache pins that a session cache without a
+// ticket leaves the first ClientHello of the firefox aliases as it is without
+// a cache: only a ticket changes it. TestClientHelloSnapshot holds every row
 // of the golden file to what Xray sends.
 func TestFirefoxHelloIgnoresSessionCache(t *testing.T) {
 	data, err := os.ReadFile(helloSnapshotFile)

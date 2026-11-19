@@ -101,14 +101,31 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 	// Read before the hello is built: applying a fingerprint replaces
 	// config.NextProtos with the fingerprint's own ALPN.
 	alpn := http11ALPN(config.NextProtos)
+	if len(config.EncryptedClientHelloConfigList) > 0 && (settings.spec != nil || fingerprint != utls.HelloGolang) {
+		// A ticket belongs in the inner hello, where uTLS cannot put it for
+		// a fingerprint or a custom spec: it fails to build a hello that
+		// offers one next to real ECH. HelloGolang alone is Go's own
+		// client, which can.
+		resumption = clientSessionResumption{}
+		config.ClientSessionCache = nil
+	}
 
 	var uConn *utls.UConn
-	if settings.spec != nil {
+	switch {
+	case settings.spec != nil:
 		uConn = utls.UClient(c, config, utls.HelloCustom)
 		if err := uConn.ApplyPreset(settings.spec); err != nil {
 			return nil, err
 		}
-	} else {
+	case BuildsFirefoxClientHello(fingerprint, config.ServerName):
+		if resumption.source != nil {
+			config.ClientSessionCache = resumption.sessionCache(fingerprint)
+		}
+		var err error
+		if uConn, err = newFirefoxClient(c, config, fingerprint); err != nil {
+			return nil, err
+		}
+	default:
 		uConn = resumption.client(c, config, fingerprint)
 	}
 	if err := uConn.BuildHandshakeState(); err != nil {
