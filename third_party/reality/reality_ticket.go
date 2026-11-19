@@ -170,9 +170,9 @@ func (c *Conn) ticketMsgs(shape *TicketShape, recordLen, n int) [][]byte {
 		if shape.Resumes {
 			label = c.realityTicketLabel(suite, keys, shape.Prefix, nonce, ticketLen)
 			if label == nil {
-				// Too short to carry the session: an id of it, kept here,
-				// as servers with a session cache issue (nginx with
-				// ssl_session_tickets off).
+				// Too short to carry the session, or behind too long a
+				// prefix: an id of it, kept here, as servers with a
+				// session cache issue (nginx with ssl_session_tickets off).
 				label = c.statefulTicket(suite, shape, nonce, ticketLen)
 			}
 		} else {
@@ -201,8 +201,12 @@ func (c *Conn) ticketMsgs(shape *TicketShape, recordLen, n int) [][]byte {
 }
 
 // realityTicketLabel returns a ticket of ticketLen bytes for this
-// connection's session, sealed with REALITY's ticket key behind prefix.
+// connection's session, sealed with REALITY's ticket key behind prefix, or
+// nil.
 func (c *Conn) realityTicketLabel(suite *cipherSuiteTLS13, keys []ticketKey, prefix, nonce []byte, ticketLen int) []byte {
+	if len(prefix) > maxSealedTicketPrefix {
+		return nil // unprofiledTicketSession would not find it
+	}
 	state := c.sessionState()
 	state.secret = tls13.ExpandLabel(suite.hash.New, c.resumptionSecret, "resumption", nonce, suite.hash.Size())
 	// An Extra entry pads the encrypted state to the length of the
@@ -424,16 +428,17 @@ func (c *Config) liveTicketSession(session *SessionState, lifetime time.Duration
 	return session
 }
 
-// maxUnprofiledTicketPrefix bounds the prefixes unprofiledTicketSession
-// tries, and so its work, which runs before the target's answer is relayed.
+// maxSealedTicketPrefix bounds the prefixes unprofiledTicketSession tries,
+// and so its work, which runs before the target's answer is relayed.
 // Targets' prefixes are key names: 16 bytes for OpenSSL, BoringSSL and
-// nginx, none for crypto/tls. A ticket behind a longer one is not found.
-const maxUnprofiledTicketPrefix = 64
+// nginx, none for crypto/tls. Behind a longer one REALITY issues ids of
+// sessions kept in memory instead of sealed tickets.
+const maxSealedTicketPrefix = 64
 
 // unprofiledTicketSession returns the session in a ticket REALITY sealed
 // with its ticket key, or nil, when the target's profile does not say what
 // prefix the ticket carries: while it is probed after a start, the ticket
-// was issued before. Each prefix length up to maxUnprofiledTicketPrefix is
+// was issued before. Each prefix length up to maxSealedTicketPrefix is
 // tried; the MAC authenticates the sealed part, never the prefix. Tickets
 // that are ids of a session kept in memory do not outlive the process and
 // are not looked for.
@@ -444,7 +449,7 @@ func (c *Config) unprofiledTicketSession(label []byte) *SessionState {
 	}
 	mac := hmac.New(sha256.New, keys[0].hmacKey[:])
 	sum := make([]byte, 0, sha256.Size)
-	for prefix := 0; prefix <= maxUnprofiledTicketPrefix && len(label)-prefix >= aes.BlockSize+sha256.Size; prefix++ {
+	for prefix := 0; prefix <= maxSealedTicketPrefix && len(label)-prefix >= aes.BlockSize+sha256.Size; prefix++ {
 		sealed := label[prefix:]
 		mac.Reset()
 		mac.Write(sealed[:len(sealed)-sha256.Size])
@@ -478,25 +483,35 @@ func checkBinder(suite *cipherSuiteTLS13, session *SessionState, ch *clientHello
 }
 
 // inspectTicketHello checks whether the offer authenticates a ticket we
-// issued. For a known ticket with an invalid binder, it returns the
-// target's measured refusal, when available. Without a profile that places
-// REALITY's tickets, as while the target is probed after a start, a ticket
-// issued before is still checked, and one with an invalid binder goes to
-// the target, as with an unmeasured refusal.
-func (hs *serverHandshakeStateTLS13) inspectTicketHello() (refusal *TicketShape, validBinder, invalidBinder bool) {
+// issued. For a ticket of the target's profile with an invalid binder, it
+// returns the target's measured refusal, when available.
+func (hs *serverHandshakeStateTLS13) inspectTicketHello(authenticated bool) (refusal *TicketShape, validBinder, invalidBinder bool) {
 	ch := hs.clientHello
-	if len(ch.pskIdentities) == 0 || len(ch.pskIdentities) != len(ch.pskBinders) ||
-		!slices.Contains(ch.pskModes, pskModeDHE) {
+	if len(ch.pskIdentities) != len(ch.pskBinders) {
+		// The session id does not cover the binders, which may be split
+		// anew in as many bytes: binders that do not match the identities
+		// are malformed, and the target answers them.
+		return nil, false, true
+	}
+	if len(ch.pskIdentities) == 0 || !slices.Contains(ch.pskModes, pskModeDHE) {
 		return nil, false, false
 	}
+	label := ch.pskIdentities[0].label
 	key, _ := recordsKey(hs.c.config, ch)
 	shape := LoadTicketShape(key)
 	var session *SessionState
-	if shape == nil || !shape.Resumes {
+	if shape != nil && shape.Resumes {
+		session = hs.c.config.realityTicketSession(shape, label, false)
+	}
+	if session == nil && authenticated {
+		// No profile places the ticket: the target is probed after a
+		// start, or was probed again since the ticket was issued and has
+		// a new prefix or a shorter lifetime. The target would not know
+		// it, so one of REALITY's with an invalid binder goes to the
+		// target, as with an unmeasured refusal. Another hello goes there
+		// anyway.
 		shape = nil
-		session = hs.c.config.unprofiledTicketSession(ch.pskIdentities[0].label)
-	} else {
-		session = hs.c.config.realityTicketSession(shape, ch.pskIdentities[0].label, false)
+		session = hs.c.config.unprofiledTicketSession(label)
 	}
 	if session == nil {
 		return nil, false, false

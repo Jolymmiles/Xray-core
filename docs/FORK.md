@@ -201,22 +201,29 @@ guard it.
   The comparisons and passive-observation limits are documented in
   `testing/realitystand/README.md`.
   A ClientHello that offers one of REALITY's encrypted tickets with a
-  wrong binder is never authenticated. With the target's refusal measured
-  in the last three hours REALITY refuses it as the target refuses its
-  own; otherwise it goes to the target, which answers its full handshake.
-  That holds while the target's ticket profile is unknown too, as during
-  the probe after a start: the ticket, sealed with a key derived from the
-  private key, is then found by trying each prefix length up to 64 bytes,
-  as the prefix comes from the profile. A censor who replays a recorded
-  hello with a spoiled binder right after a restart, before the refusal
-  is measured again, still sees the target's full handshake where the
-  process that ran before refused: the measurement is not kept across
-  restarts. Covered by
+  wrong binder is never authenticated. When the target's profile places
+  the ticket and its refusal was measured in the last three hours,
+  REALITY refuses it as the target refuses its own; otherwise it goes to
+  the target, which answers its full handshake. The profile does not place
+  it while it is probed after a start, or once a new probe found a new
+  prefix or a shorter lifetime; then, for an authenticated hello, the
+  ticket, sealed with a key derived from the private key, is found by
+  trying each prefix length up to 64 bytes. Behind a longer prefix REALITY
+  issues ids of sessions kept in memory instead. Binders that do not
+  match the identities go to the target too: the session id does not
+  cover them, so they can be split anew in the same bytes. A censor who
+  replays a recorded hello with a spoiled binder right after a restart,
+  before the refusal is measured again, still sees the target's full
+  handshake where the process that ran before refused: the measurement is
+  not kept across restarts. Covered by
   `TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed`
   (`transport/internet/reality/resumption_wire_test.go`),
-  `TestTicketWithWrongBinderIsRefused`,
-  `TestKnownBadBinderReachesCoverWithoutRefusalProfile` and
-  `TestUnprofiledTicketSession` (`third_party/reality`).
+  `TestTicketWithWrongBinderIsRefused` and
+  `TestKnownBadBinderReachesCoverWithoutRefusalProfile`
+  (`transport/internet/reality/resumption_test.go`), and
+  `TestUnprofiledTicketSession`, `TestInspectTicketHelloOutsideTheProfile`,
+  `TestInspectTicketHelloMismatchedBinders` and
+  `TestSealedTicketPrefixBound` (`third_party/reality/session_cache_test.go`).
 - Vision takes the TLS input buffers through `proxy.VisionBuffers`
   (`proxy/vision_buffers.go`), which checks the field types and caches their
   offsets per connection type and fails closed on any other layout; upstream

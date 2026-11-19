@@ -1,7 +1,6 @@
 package reality
 
 import (
-	"bytes"
 	"context"
 	gotls "crypto/tls"
 	"encoding/binary"
@@ -202,8 +201,9 @@ func unsentTicketHello(t *testing.T, server *realityServer) []byte {
 // REALITY's tickets, sealed with a key derived from the private key, are
 // known across restarts. A censor's copy of a resumed ClientHello with a
 // spoiled binder must not authenticate then either: it goes to the target,
-// as when the target's refusal is not measured. A client's own ticket still
-// authenticates.
+// as when the target's refusal is not measured, and gets the target's own
+// answer. A hello with a valid binder still authenticates, once, and a
+// client's own ticket still works.
 func TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed(t *testing.T) {
 	target := goTarget(t)
 	results := make(chan error, 8)
@@ -212,43 +212,74 @@ func TestSpoiledBinderReachesTheTargetWhileTheProfileIsProbed(t *testing.T) {
 		results <- err
 		return client, err
 	})
-	// Two tickets: one for the recorded hello, one for the client after.
+	// Three tickets: for the spoiled hello, for the replayed valid one, and
+	// for the client after them.
 	key := testTicketKey(server)
 	var held []*utls.ClientSessionState
-	for range 2 {
+	for range 3 {
 		dialReality(t, server, "auto")
 		if err := <-results; err != nil {
 			t.Fatalf("an honest connection failed: %v", err)
 		}
-		held = append(held, tickets.pop(key))
+		session := tickets.pop(key)
+		if session == nil {
+			t.Fatal("the target's tickets were not issued")
+		}
+		held = append(held, session)
 	}
-	if held[0] == nil || held[1] == nil {
-		t.Fatal("the target's tickets were not issued")
+	record := func(session *utls.ClientSessionState) []byte {
+		t.Helper()
+		tickets.push(key, session)
+		hello := unsentTicketHello(t, server)
+		if !slices.Contains((&recordCapture{out: hello}).helloExtensions(), 41) {
+			t.Fatal("the recorded hello offers no ticket, so the test shows nothing")
+		}
+		return hello
 	}
-	tickets.push(key, held[0])
-	hello := unsentTicketHello(t, server)
-	if !slices.Contains((&recordCapture{out: hello}).helloExtensions(), 41) {
-		t.Fatal("the recorded hello offers no ticket, so the test shows nothing")
-	}
-	spoiled := bytes.Clone(hello)
+	spoiled, valid := record(held[0]), record(held[1])
 	spoiled[len(spoiled)-1] ^= 1
+	served := func(hello []byte) ([]wireRecord, error) {
+		t.Helper()
+		records := answer(t, server.addr, hello)
+		select {
+		case err := <-results:
+			return records, err
+		case <-time.After(10 * time.Second):
+			t.Fatal("the server did not finish with the recorded hello")
+			return nil, nil
+		}
+	}
+	const refused = "authentication failed or validation criteria not met"
 
 	profile := target + " " + testServerName + " 2"
 	original, _ := reality.GlobalTicketShapes.Load(profile)
 	reality.GlobalTicketShapes.Store(profile, false) // a probe is running, as right after a start
 	t.Cleanup(func() { reality.GlobalTicketShapes.Store(profile, original) })
 
-	records := answer(t, server.addr, spoiled)
-	select {
-	case err := <-results:
-		if err == nil || !strings.Contains(err.Error(), "authentication failed or validation criteria not met") {
-			t.Fatalf("a spoiled binder was authenticated while the profile is probed (%d records): %v", len(records), err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the server did not finish with the spoiled hello")
+	records, err := served(spoiled)
+	if err == nil || !strings.Contains(err.Error(), refused) {
+		t.Fatalf("a spoiled binder was authenticated while the profile is probed (%d records): %v", len(records), err)
+	}
+	direct := answer(t, target, spoiled)
+	if len(records) == 0 || len(direct) == 0 {
+		t.Fatalf("no answer: REALITY %d records, the target %d", len(records), len(direct))
+	}
+	got, want := serverHelloExtensions(t, records[0]), serverHelloExtensions(t, direct[0])
+	if len(records) != len(direct) || !slices.Equal(got, want) {
+		t.Fatalf("the spoiled hello got %d records with ServerHello extensions %v, the target answers %d with %v",
+			len(records), got, len(direct), want)
 	}
 
-	tickets.push(key, held[1])
+	// The valid binder authenticates and reserves the hello: its copy goes
+	// to the target.
+	if _, err := served(valid); err != nil && strings.Contains(err.Error(), refused) {
+		t.Fatalf("a valid binder was not authenticated while the profile is probed: %v", err)
+	}
+	if _, err := served(valid); err == nil || !strings.Contains(err.Error(), refused) {
+		t.Fatalf("a copy of a hello with a valid binder was authenticated again: %v", err)
+	}
+
+	tickets.push(key, held[2])
 	c := dialReality(t, server, "auto")
 	if !slices.Contains(c.hello, 41) {
 		t.Fatal("the client offered no ticket, so the test shows nothing")

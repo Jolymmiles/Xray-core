@@ -109,23 +109,9 @@ func TestRealityTicketRejectsMalformedLabels(t *testing.T) {
 // one behind a prefix longer than any key name.
 func TestUnprofiledTicketSession(t *testing.T) {
 	config := testConfig(t)
-	seal := func(config *Config, createdAt time.Time) []byte {
-		t.Helper()
-		state, err := (&SessionState{
-			version: VersionTLS13, cipherSuite: TLS_AES_128_GCM_SHA256,
-			createdAt: uint64(createdAt.Unix()), secret: make([]byte, 32),
-		}).Bytes()
-		if err != nil {
-			t.Fatal(err)
-		}
-		sealed, err := config.encryptTicket(state, config.realityTicketKeys())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sealed
-	}
+	seal := func(config *Config, createdAt time.Time) []byte { return sealTestTicket(t, config, createdAt) }
 	sealed := seal(config, time.Now())
-	for _, prefix := range [][]byte{nil, {1, 2, 3, 4}, bytes.Repeat([]byte{7}, 16), bytes.Repeat([]byte{7}, maxUnprofiledTicketPrefix)} {
+	for _, prefix := range [][]byte{nil, {1, 2, 3, 4}, bytes.Repeat([]byte{7}, 16), bytes.Repeat([]byte{7}, maxSealedTicketPrefix)} {
 		if session := config.unprofiledTicketSession(slices.Concat(prefix, sealed)); session == nil || len(session.secret) != 32 {
 			t.Fatalf("REALITY's ticket behind a prefix of %d bytes was not found", len(prefix))
 		}
@@ -140,7 +126,7 @@ func TestUnprofiledTicketSession(t *testing.T) {
 	for name, label := range map[string][]byte{
 		"empty":         nil,
 		"short":         sealed[:47],
-		"long prefix":   slices.Concat(bytes.Repeat([]byte{7}, maxUnprofiledTicketPrefix+1), sealed),
+		"long prefix":   slices.Concat(bytes.Repeat([]byte{7}, maxSealedTicketPrefix+1), sealed),
 		"another key":   seal(testConfig(t), time.Now()),
 		"altered":       altered,
 		"expired":       seal(config, time.Now().Add(-maxSessionTicketLifetime-time.Hour)),
@@ -155,6 +141,125 @@ func TestUnprofiledTicketSession(t *testing.T) {
 	}
 	if (&Config{}).unprofiledTicketSession(sealed) != nil {
 		t.Fatal("a configuration without a private key found a ticket")
+	}
+}
+
+// sealTestTicket returns a session created at createdAt, sealed with
+// REALITY's ticket key, without a prefix.
+func sealTestTicket(t *testing.T, config *Config, createdAt time.Time) []byte {
+	t.Helper()
+	state, err := (&SessionState{
+		version: VersionTLS13, cipherSuite: TLS_AES_128_GCM_SHA256,
+		createdAt: uint64(createdAt.Unix()), secret: make([]byte, 32),
+	}).Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := config.encryptTicket(state, config.realityTicketKeys())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+// ticketHelloState returns the state of a handshake whose ClientHello
+// offers label with binders, the first a wrong one.
+func ticketHelloState(config *Config, label []byte, binders int) *serverHandshakeStateTLS13 {
+	hello := &clientHelloMsg{
+		serverName: "example.com",
+		pskModes:   []uint8{pskModeDHE}, pskIdentities: []pskIdentity{{label: label}},
+	}
+	for range binders {
+		hello.pskBinders = append(hello.pskBinders, make([]byte, 32))
+	}
+	return &serverHandshakeStateTLS13{c: &Conn{config: config}, clientHello: hello}
+}
+
+// A ticket REALITY sealed that the target's profile does not place, as
+// while the target is probed after a start or once a new probe found a new
+// prefix or a shorter lifetime, is checked for an authenticated hello: with
+// a wrong binder it goes to the target, without the refusal of the target's
+// own tickets, which the target would not know it as.
+func TestInspectTicketHelloOutsideTheProfile(t *testing.T) {
+	config := testConfig(t)
+	config.Dest = t.Name()
+	prefix := []byte{1, 2, 3, 4}
+	label := slices.Concat(prefix, sealTestTicket(t, config, time.Now().Add(-2*time.Hour)))
+	hs := ticketHelloState(config, label, 1)
+	key, _ := recordsKey(config, hs.clientHello)
+	t.Cleanup(func() { GlobalTicketShapes.Delete(key) })
+	profile := func(prefix []byte, lifetime uint32) *TicketShape {
+		return &TicketShape{
+			Issues: true, Resumes: true, Prefix: prefix, Lifetime: lifetime,
+			RefusesBadBinder: true, BadBinder: decryptErrorAlert, badBinderClose: alertRefusal, refusalAt: time.Now(),
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		profile       any
+		authenticated bool
+		refused       bool
+		invalid       bool
+	}{
+		{name: "probed", profile: false, authenticated: true, invalid: true},
+		{name: "probed, not authenticated", profile: false},
+		{name: "no profile", authenticated: true, invalid: true},
+		{name: "target resumes nothing", profile: &TicketShape{Issues: true}, authenticated: true, invalid: true},
+		{name: "the ticket's profile", profile: profile(prefix, 3*3600), refused: true, invalid: true},
+		{name: "a new prefix", profile: profile([]byte{5, 6, 7, 8}, 3*3600), authenticated: true, invalid: true},
+		{name: "a new prefix, not authenticated", profile: profile([]byte{5, 6, 7, 8}, 3*3600)},
+		{name: "a shorter lifetime", profile: profile(prefix, 3600), authenticated: true, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.profile == nil {
+				GlobalTicketShapes.Delete(key)
+			} else {
+				GlobalTicketShapes.Store(key, tc.profile)
+			}
+			refusal, valid, invalid := hs.inspectTicketHello(tc.authenticated)
+			if (refusal != nil) != tc.refused || valid || invalid != tc.invalid {
+				t.Fatalf("got refusal %v, valid %v, invalid %v; want refused %v, invalid %v",
+					refusal != nil, valid, invalid, tc.refused, tc.invalid)
+			}
+		})
+	}
+}
+
+// The session id does not cover the binders: they can be split anew in the
+// same bytes. Binders that do not match the identities go to the target,
+// which answers malformed framing itself, in any state of the profile.
+func TestInspectTicketHelloMismatchedBinders(t *testing.T) {
+	config := testConfig(t)
+	config.Dest = t.Name()
+	label := sealTestTicket(t, config, time.Now())
+	for _, binders := range []int{0, 2} {
+		hs := ticketHelloState(config, label, binders)
+		for _, authenticated := range []bool{false, true} {
+			if refusal, valid, invalid := hs.inspectTicketHello(authenticated); refusal != nil || valid || !invalid {
+				t.Fatalf("%d binders for one identity, authenticated %v: refusal %v, valid %v, invalid %v",
+					binders, authenticated, refusal != nil, valid, invalid)
+			}
+		}
+	}
+}
+
+// REALITY seals a ticket only behind a prefix unprofiledTicketSession
+// finds it behind; behind a longer one ticketMsgs issues an id instead.
+func TestSealedTicketPrefixBound(t *testing.T) {
+	config := testConfig(t)
+	c := &Conn{config: config, vers: VersionTLS13, cipherSuite: TLS_AES_128_GCM_SHA256}
+	suite := cipherSuiteTLS13ByID(c.cipherSuite)
+	c.resumptionSecret = make([]byte, suite.hash.Size())
+	keys := config.realityTicketKeys()
+	for _, n := range []int{maxSealedTicketPrefix, maxSealedTicketPrefix + 1} {
+		prefix := bytes.Repeat([]byte{7}, n)
+		label := c.realityTicketLabel(suite, keys, prefix, nil, n+400)
+		if n <= maxSealedTicketPrefix && (label == nil || config.unprofiledTicketSession(label) == nil) {
+			t.Fatalf("a ticket behind a prefix of %d bytes was not sealed or not found", n)
+		}
+		if n > maxSealedTicketPrefix && label != nil {
+			t.Fatalf("a ticket was sealed behind a prefix of %d bytes", n)
+		}
 	}
 }
 
