@@ -242,20 +242,31 @@ func TestFirefoxTicketTooLongForTheHello(t *testing.T) {
 			}
 		}
 	}
-	// The boundary for this server name and a SHA-256 binder: the largest
-	// ticket whose hello fits is offered, and one byte more is not.
+	// The boundary with a SHA-256 binder: the largest ticket whose hello
+	// fits is offered, and one byte more is not. With the 107-byte name the
+	// extensions of the largest hello fill their length to the last byte.
 	session := sessionOf(t, gotls.VersionTLS13, 0)
 	session.SetCipherSuite(utls.TLS_AES_128_GCM_SHA256)
-	for ticketLen, offers := range map[int]bool{31832: true, 31833: false} {
-		session.SetSessionTicket(make([]byte, ticketLen))
-		extensions := helloExtensions(t, firefoxHello(t, "example.com", session))
-		total := 0
-		for _, extension := range extensions {
-			total += 4 + len(extension.body)
-		}
-		if offered := extensions[len(extensions)-1].id == 41; offered != offers || total > 65535 {
-			t.Errorf("a ticket of %d bytes: offered %v in %d bytes of extensions, want offered %v within 65535",
-				ticketLen, offered, total, offers)
+	name107 := strings.Repeat("a", 60) + "." + strings.Repeat("b", 46)
+	for _, boundary := range []struct {
+		name            string
+		largest, filled int
+	}{
+		{"example.com", 31832, 65524},
+		{name107, 31779, 65535},
+	} {
+		for ticketLen, offers := range map[int]bool{boundary.largest: true, boundary.largest + 1: false} {
+			session.SetSessionTicket(make([]byte, ticketLen))
+			extensions := helloExtensions(t, firefoxHello(t, boundary.name, session))
+			total := 0
+			for _, extension := range extensions {
+				total += 4 + len(extension.body)
+			}
+			offered := extensions[len(extensions)-1].id == 41
+			if offered != offers || (offered && total != boundary.filled) || total > 65535 {
+				t.Errorf("a %d-byte name, a ticket of %d bytes: offered %v in %d bytes of extensions, want offered %v, %d bytes when offered",
+					len(boundary.name), ticketLen, offered, total, offers, boundary.filled)
+			}
 		}
 	}
 }
