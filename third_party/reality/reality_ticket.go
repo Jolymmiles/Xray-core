@@ -483,13 +483,14 @@ func (c *Config) liveTicketSession(session *SessionState, lifetime time.Duration
 // sessions kept in memory instead of sealed tickets.
 const maxSealedTicketPrefix = 64
 
-// unprofiledTicketSession returns the session of a ticket REALITY issued,
-// or nil, when the target's profile does not place it: while it is probed
-// after a start, the ticket was issued before; after a new probe, the
-// prefix or the lifetime may have changed. An id of a session this process
-// keeps is looked up whole; for a sealed ticket each prefix length up to
-// maxSealedTicketPrefix is tried, as the MAC authenticates the sealed part,
-// never the prefix.
+// unprofiledTicketSession returns the session of a ticket this process
+// issued, or nil, when the target's profile does not place it: the profile
+// may be probed or unknown for the hello's key, or a new probe may have
+// found a new prefix or lifetime. Tickets from before a restart do not
+// decrypt (ticketKeySalt), so they are not found. An id of a session this
+// process keeps is looked up whole; for a sealed ticket each prefix length
+// up to maxSealedTicketPrefix is tried, as the MAC authenticates the sealed
+// part, never the prefix.
 func (c *Config) unprofiledTicketSession(label []byte) *SessionState {
 	if c.PrivateKey == nil {
 		return nil
