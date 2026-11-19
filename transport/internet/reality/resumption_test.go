@@ -256,6 +256,13 @@ func startRealityServer(t *testing.T, target string, handlers ...func(gonet.Conn
 	if err != nil {
 		t.Fatal(err)
 	}
+	return startRealityServerWithKey(t, target, priv, handlers...)
+}
+
+// startRealityServerWithKey is startRealityServer with the private key
+// given, as a server restarted with the same configuration has it.
+func startRealityServerWithKey(t *testing.T, target string, priv *ecdh.PrivateKey, handlers ...func(gonet.Conn, *reality.Config) (*reality.Conn, error)) *realityServer {
+	t.Helper()
 	config := (&Config{
 		Type:        "tcp",
 		Dest:        target,

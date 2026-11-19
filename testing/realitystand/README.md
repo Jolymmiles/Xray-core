@@ -304,10 +304,19 @@ the time the client takes for its Finished.
 The server records authenticated browser-mode ClientHellos with a valid
 ticket and binder before it starts a REALITY handshake. A repeated
 ClientHello goes to the target. The bounded history holds up to 40,000 entries per
-process in one process-wide cache, shared by all inbounds. Protection
-for an entry ends when it expires, is evicted, or the process restarts.
-Independent replicas have independent histories. The `edge` group
-captures the replay scenario.
+process in one process-wide cache, shared by all inbounds. A ticket
+the history can no longer vouch for is treated as unknown, and a
+ClientHello that offers it gets REALITY's full handshake, as the target
+answers a ticket it did not issue:
+- the ticket key mixes in a random value drawn when the process starts,
+  so tickets issued before a restart, or by another replica with the same
+  private key, do not decrypt;
+- once the history evicts an entry to make room, tickets issued no later
+  than that entry's acceptance are not resumed.
+
+A restart or an eviction therefore costs clients one full handshake, not
+a resumption of a copy. Replicas behind one address do not resume each
+other's tickets. The `edge` group captures the replay scenario.
 
 For an invalid binder, the probe distinguishes a TLS alert, a closed
 read side, a reset, and a read deadline with no response. Silence must

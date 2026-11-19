@@ -169,8 +169,10 @@ guard it.
   behavior and XHTTP startup shaping. A client with browser mode off
   keeps the legacy server connection path even on an enabled inbound.
   Ticket encryption and the stateful cache are scoped to the server's
-  X25519 and configured ML-DSA private keys. Adding, rotating, or removing
-  the ML-DSA key invalidates existing tickets.
+  X25519 and configured ML-DSA private keys and to the process: the ticket
+  key mixes in a random value drawn at startup. Adding, rotating, or
+  removing the ML-DSA key, or restarting the process, invalidates existing
+  tickets, and replicas with the same keys do not accept each other's.
   Field 101 (`browser`) is fork-owned. Binary protobuf configurations
   from the review revision that used field 28 must be regenerated from
   their JSON source.
@@ -180,13 +182,26 @@ guard it.
   repeat of its own resumed ClientHello again (crypto/tls and OpenSSL both
   answer `[43 51 41]` twice), so a censor who replays one sees REALITY
   answer `[43 51 41]`, then `[43 51]`. The history is one process-wide
-  cache of 40,000 entries: after 40,000 newer resumed hellos the same
-  ClientHello is resumed again. After a restart or on another replica
-  that holds only for encrypted tickets; tickets that are ids of a
-  session kept in memory are forgotten on restart and unknown to other
-  replicas, so their repeat gets a full handshake.
-  Covered by `TestReplayedResumedHelloReachesTheTarget`
-  (`transport/internet/reality/resumption_wire_test.go`).
+  cache of 40,000 entries and empty after a restart. A ticket it cannot
+  vouch for is an unknown ticket, and its ClientHello gets REALITY's full
+  handshake, `[43 51]` as from the target: a ticket from before a restart
+  or from another replica does not decrypt, and once the cache evicts an
+  entry, tickets issued no later than that entry's acceptance are not
+  resumed. Before this, the restarted process resumed the copy
+  (`[43 51 41]`) for the target's ticket lifetime, 604,800 s for a Go
+  target. The cost is one full handshake per client after a restart, no
+  resumption across replicas, and, on a server that resumes 40,000 times
+  within a ticket lifetime, a shorter effective lifetime. A ClientHello
+  that offers such a ticket with a wrong binder gets the full handshake
+  too, not the target's measured refusal, as the target answers a ticket
+  it does not know.
+  Covered by `TestReplayedResumedHelloReachesTheTarget`,
+  `TestRestartedServerDoesNotResumeAReplayedHello`
+  (`transport/internet/reality/resumption_wire_test.go`,
+  `resumption_restart_test.go`), `TestTicketFromAnotherProcessIsUnknown`,
+  `TestTicketHelloCacheForgetsOlderTickets` and
+  `TestTicketForgottenBeforeTheCopyIsRecorded`
+  (`third_party/reality/reality_ticket_replay_test.go`).
   An observer on the server-to-destination path can see the probe
   connections. The probes start when an inbound with browser mode opens
   its listener, before any client connects, the bad-binder refusal

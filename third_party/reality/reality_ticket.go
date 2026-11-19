@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/hkdf"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -22,10 +23,10 @@ import (
 //
 // A client asks for tickets with realityTicketsFlag in the reserved byte of
 // its encrypted session id; others get the empty records they always got.
-// The tickets are encrypted with a key derived from the private key, so
-// every server sharing the key accepts them, across restarts. A client that
-// offers one seals its session id over the ClientHello with the binders
-// zeroed, as the binders cover the session id.
+// The tickets are encrypted with a key derived from the private key and
+// from ticketKeySalt, so only the process that issued them accepts them. A
+// client that offers one seals its session id over the ClientHello with the
+// binders zeroed, as the binders cover the session id.
 
 // realityTicketsFlag is the bit of the session id's reserved byte by which
 // a client asks for tickets.
@@ -34,18 +35,25 @@ const realityTicketsFlag = 1
 // Keep the authenticated ClientHello keys in acceptance order. A duplicate
 // refreshes neither the expiration nor the position of the entry.
 type seenTicketHello struct {
-	key     [32]byte
-	expires time.Time
+	key      [32]byte
+	accepted time.Time
+	expires  time.Time
 }
 
+// ticketHelloCache is the record of the resumed ClientHellos this process
+// accepted, by which a copy of one is not resumed again. forgotten is when
+// the newest hello it dropped to make room was accepted: a ticket issued no
+// later than that may have resumed a hello no longer here, so it is not
+// resumed any more.
 type ticketHelloCache struct {
 	sync.Mutex
-	size    int
-	entries map[[32]byte]*list.Element
-	order   list.List
+	size      int
+	entries   map[[32]byte]*list.Element
+	order     list.List
+	forgotten time.Time
 }
 
-var ticketHellos = ticketHelloCache{
+var ticketHellos = &ticketHelloCache{
 	size:    sessionCacheSize,
 	entries: make(map[[32]byte]*list.Element),
 }
@@ -65,11 +73,25 @@ func (s *ticketHelloCache) accept(key [32]byte, now, expires time.Time, remember
 	}
 	if s.order.Len() == s.size {
 		oldest := s.order.Front()
-		delete(s.entries, oldest.Value.(seenTicketHello).key)
+		seen := oldest.Value.(seenTicketHello)
+		delete(s.entries, seen.key)
 		s.order.Remove(oldest)
+		if seen.accepted.After(s.forgotten) {
+			s.forgotten = seen.accepted
+		}
 	}
-	s.entries[key] = s.order.PushBack(seenTicketHello{key: key, expires: expires})
+	s.entries[key] = s.order.PushBack(seenTicketHello{key: key, accepted: now, expires: expires})
 	return true
+}
+
+// remembers reports whether every resumed ClientHello accepted with a
+// ticket issued at createdAt is still in the cache. A ticket is issued
+// before any hello that offers it, so if it was issued after the last
+// accepted hello the cache dropped, none of its hellos was dropped.
+func (s *ticketHelloCache) remembers(createdAt uint64) bool {
+	s.Lock()
+	defer s.Unlock()
+	return time.Unix(int64(createdAt), 0).After(s.forgotten)
 }
 
 func (s *ticketHelloCache) acceptClientHello(hs *serverHandshakeStateTLS13, now time.Time, validBinder bool) bool {
@@ -124,12 +146,25 @@ func (c *Config) ticketKeyMaterial() []byte {
 	return material
 }
 
-// realityTicketKeys derives the session ticket key from the server's keys.
+// ticketKeySalt is this process's part of the session ticket key. Only the
+// process that issued a ticket has ticketHellos for it, the record that
+// tells a copy of a resumed hello from a new one. After a restart, or on
+// another server with the same private key, a copy would be resumed where
+// the target answers it with a full handshake; there the ticket does not
+// decrypt, so it is an unknown ticket and gets a full handshake too.
+var ticketKeySalt = func() []byte {
+	salt := make([]byte, 32)
+	rand.Read(salt)
+	return salt
+}()
+
+// realityTicketKeys derives the session ticket key from the server's keys
+// and ticketKeySalt.
 func (c *Config) realityTicketKeys() []ticketKey {
 	if c.PrivateKey == nil {
 		return nil
 	}
-	secret, err := hkdf.Key(sha256.New, c.ticketKeyMaterial(), nil, "REALITY session ticket", 32)
+	secret, err := hkdf.Key(sha256.New, c.ticketKeyMaterial(), ticketKeySalt, "REALITY session ticket", 32)
 	if err != nil {
 		return nil
 	}
@@ -394,7 +429,8 @@ func (hs *serverHandshakeStateTLS13) postHandshakeRecords(lens []int) ([]int, []
 // that has not expired, or nil. A ticket that is an id of a session kept
 // here is taken out when take is set; REALITY keeps them until they
 // expire, as nginx's session cache does: a used one is still refused with
-// a wrong binder there.
+// a wrong binder there. A ticket older than ticketHellos remembers is
+// unknown: a copy of a hello that offered it could be resumed again.
 func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take bool) *SessionState {
 	if c.PrivateKey == nil || !bytes.HasPrefix(label, shape.Prefix) {
 		return nil
@@ -413,6 +449,9 @@ func (c *Config) realityTicketSession(shape *TicketShape, label []byte, take boo
 	}
 	age := c.time().Sub(time.Unix(int64(session.createdAt), 0))
 	if age < -time.Minute || age > min(time.Duration(shape.Lifetime)*time.Second, maxSessionTicketLifetime) {
+		return nil
+	}
+	if !ticketHellos.remembers(session.createdAt) {
 		return nil
 	}
 	return session
