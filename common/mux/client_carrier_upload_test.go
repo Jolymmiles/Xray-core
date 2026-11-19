@@ -712,3 +712,148 @@ func TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhi
 		}
 	})
 }
+
+// lastBatchInput is a session's input that is not a pipe and whose one batch
+// comes with the result that ends it: the end of the input, or an error.
+type lastBatchInput struct {
+	ready  <-chan struct{}
+	result error
+	reads  int
+}
+
+func (r *lastBatchInput) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	r.reads++
+	if r.reads > 1 {
+		return nil, io.EOF
+	}
+	if r.ready != nil {
+		<-r.ready
+	}
+	block := buf.New()
+	if _, err := block.WriteString("tail"); err != nil {
+		block.Release()
+		return nil, err
+	}
+	return buf.MultiBuffer{block}, r.result
+}
+
+// A batch the uplink refuses may be the upload's last, its read bringing the
+// end of the input with it. That upload ran to its end: the session is kept
+// for its reply and the input is not read again.
+func TestDialingWorkerKeepsQueuedReplyWhenTheRefusedBatchIsTheLast(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		sink := &acceptedWriter{Writer: output, accepted: make(chan struct{})}
+		stop := make(chan struct{})
+		defer close(stop)
+		carrier := &answeringCarrier{
+			delivering: sink.accepted,
+			stop:       stop,
+			result:     errors.New("connection reset"),
+			returned:   make(chan struct{}),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		carrierGone := make(chan struct{})
+		release := sync.OnceFunc(func() { close(carrierGone) })
+		defer release()
+		input := &lastBatchInput{ready: carrierGone, result: io.EOF}
+		dispatched := make(chan bool, 1)
+		go func() { dispatched <- worker.Dispatch(ctx, &transport.Link{Reader: input, Writer: sink}) }()
+
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		release()
+		synctest.Wait()
+
+		var body string
+		for {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			body += data.String()
+			buf.ReleaseMulti(data)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("read %q, then: %v", body, err)
+			}
+		}
+		if body != "firstlast" || input.reads != 1 {
+			t.Fatalf("the application read %q after %d reads of its input, want the whole reply %q after one", body, input.reads, "firstlast")
+		}
+		if !await(t, dispatched, "Dispatch to return") {
+			t.Fatal("the worker refused the session")
+		}
+	})
+}
+
+// The last batch of an upload reaches the peer when its read also brings the
+// result that ends the upload, and the END that follows says whether the
+// upload ended or failed.
+func TestClientWorkerSendsTheLastBatchAndMarksAFailedUpload(t *testing.T) {
+	quietLogs(t)
+	for name, result := range map[string]error{"the input ends": io.EOF, "the input fails": errors.New("read deadline")} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				uplink, uplinkWriter := pipe.New()
+				defer uplink.Interrupt()
+				downlink, downlinkWriter := pipe.New()
+				defer downlinkWriter.Close()
+				worker, err := mux.NewClientWorker(transport.Link{Reader: downlink, Writer: uplinkWriter}, mux.ClientStrategy{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer worker.Close()
+				reply, output := pipe.New()
+				defer reply.Interrupt()
+				input := &lastBatchInput{result: result}
+				ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+					Target: net.TCPDestination(net.LocalHostIP, 80),
+				}})
+				if !worker.Dispatch(ctx, &transport.Link{Reader: input, Writer: output}) {
+					t.Fatal("the worker refused the session")
+				}
+				synctest.Wait()
+
+				frames := &buf.BufferedReader{Reader: uplink}
+				defer func() { buf.ReleaseMulti(frames.Buffer) }()
+				var frame mux.FrameMetadata
+				if err := frame.Unmarshal(frames, false); err != nil {
+					t.Fatal(err)
+				}
+				if frame.SessionStatus != mux.SessionStatusNew {
+					t.Fatalf("the first frame is %+v, want a NEW", frame)
+				}
+				if err := frame.Unmarshal(frames, false); err != nil {
+					t.Fatal(err)
+				}
+				if frame.SessionStatus != mux.SessionStatusKeep || !frame.Option.Has(mux.OptionData) {
+					t.Fatalf("the frame after NEW is %+v, want the last batch", frame)
+				}
+				data, err := mux.NewStreamReader(frames).ReadMultiBuffer()
+				defer buf.ReleaseMulti(data)
+				if (err != nil && !errors.Is(err, io.EOF)) || data.String() != "tail" {
+					t.Fatalf("the last batch is %q (%v), want %q", data.String(), err, "tail")
+				}
+				if err := frame.Unmarshal(frames, false); err != nil {
+					t.Fatal(err)
+				}
+				failed := !errors.Is(result, io.EOF)
+				if frame.SessionStatus != mux.SessionStatusEnd || frame.Option.Has(mux.OptionError) != failed {
+					t.Fatalf("the last frame is %+v, want an END marked as failed: %v", frame, failed)
+				}
+				if input.reads != 1 {
+					t.Fatalf("the input was read %d times, want once", input.reads)
+				}
+			})
+		})
+	}
+}

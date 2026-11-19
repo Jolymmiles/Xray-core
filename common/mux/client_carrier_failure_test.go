@@ -108,8 +108,12 @@ type answeringCarrier struct {
 
 func (c *answeringCarrier) Process(ctx context.Context, link *transport.Link, _ internet.Dialer) error {
 	defer close(c.returned)
+	// What the reader took beyond the opening frame's metadata goes back
+	// to the pool.
+	reader := &buf.BufferedReader{Reader: link.Reader}
+	defer func() { buf.ReleaseMulti(reader.Buffer) }()
 	var request mux.FrameMetadata
-	if err := request.Unmarshal(&buf.BufferedReader{Reader: link.Reader}, false); err != nil {
+	if err := request.Unmarshal(reader, false); err != nil {
 		return err
 	}
 	response := mux.NewResponseWriter(request.SessionID, link.Writer, protocol.TransferTypeStream)

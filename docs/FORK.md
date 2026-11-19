@@ -676,7 +676,9 @@ guard it.
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
   `TestDialingWorkerEndsASessionWhoseInputFailsOnce`,
   `TestDialingWorkerStopsReadingAnInputOnceItsSessionEnded`,
-  `TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile`
+  `TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile`,
+  `TestDialingWorkerKeepsQueuedReplyWhenTheRefusedBatchIsTheLast`,
+  `TestClientWorkerSendsTheLastBatchAndMarksAFailedUpload`
   and `TestDialingWorkerClosesBeforeItReportsItsCarrier`
   (`common/mux/client_carrier_upload_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
