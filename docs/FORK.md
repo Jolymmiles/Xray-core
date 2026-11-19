@@ -650,8 +650,9 @@ guard it.
   uplink; the worker's reader drains the downlink and then closes the
   sessions and interrupts the link. Until then the end of an upload ends
   its session as it does under a live carrier, Mux.Cool having no
-  half-close, and so does an upload that fails to be read. An upload the
-  uplink refuses does not: the application ended nothing, and a reply may
+  half-close, and so does an upload that fails to be read, and one the
+  uplink refuses while the worker is open. An upload the uplink refuses on
+  a closed worker does not: the application ended nothing, and a reply may
   still be on its way. Such an upload is read on and dropped for as long as
   its session lasts, since left unread it would hold an application that
   sends before it reads and hide one that goes away, and its session is
@@ -680,7 +681,8 @@ guard it.
   (`common/mux/client_carrier_upload_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
   `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused`,
-  `TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails` and
+  `TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails`,
+  `TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier` and
   `TestClientWorkerEndsASessionWhoseUploadIsRefusedWhileOpen`
   (`common/mux/client_carrier_first_batch_test.go`).
 - The maintained SMUX implementation is the in-tree stack under

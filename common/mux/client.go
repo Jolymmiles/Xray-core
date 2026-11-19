@@ -363,8 +363,10 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 			return
 		}
 	}
-	// The worker's state is taken before the error is reported: a log
-	// handler takes its time, and the carrier may return meanwhile.
+	// The worker's state is taken here, as the failed write or read returns
+	// and before the error is reported: a log handler takes its time, and
+	// the carrier may return meanwhile. A carrier that interrupts its
+	// uplink and returns at once is seen either way.
 	closed := m.Closed()
 	if inFirstPayload {
 		errors.LogInfoInner(ctx, err, "failed to write first payload")

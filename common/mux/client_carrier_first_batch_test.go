@@ -50,11 +50,12 @@ func await[T any](t *testing.T, signal <-chan T, what string) T {
 
 // openingOnly lets one write through to the uplink and holds the next until
 // released: the frame that opens a session reaches the carrier and nothing
-// after it does.
+// after it does. It counts the writes the uplink took.
 type openingOnly struct {
 	*MutexWriter
 	opened  bool
 	release <-chan struct{}
+	taken   int
 }
 
 func (w *openingOnly) WriteMultiBuffer(data buf.MultiBuffer) error {
@@ -62,7 +63,32 @@ func (w *openingOnly) WriteMultiBuffer(data buf.MultiBuffer) error {
 		<-w.release
 	}
 	w.opened = true
-	return w.MutexWriter.WriteMultiBuffer(data)
+	err := w.MutexWriter.WriteMultiBuffer(data)
+	if err == nil {
+		w.taken++
+	}
+	return err
+}
+
+// heldRefusal passes writes on to the uplink and holds the first error the
+// uplink gives until released: the write has failed, and the session that
+// made it has not learned so yet.
+type heldRefusal struct {
+	*MutexWriter
+	once    sync.Once
+	refused chan struct{}
+	release <-chan struct{}
+}
+
+func (w *heldRefusal) WriteMultiBuffer(data buf.MultiBuffer) error {
+	err := w.MutexWriter.WriteMultiBuffer(data)
+	if err != nil {
+		w.once.Do(func() {
+			close(w.refused)
+			<-w.release
+		})
+	}
+	return err
 }
 
 // The first thing a session uploads goes out as one frame that opens the
@@ -159,8 +185,9 @@ func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination, openingAlo
 	carrierGone := make(chan struct{})
 	releaseUplink := sync.OnceFunc(func() { close(carrierGone) })
 	defer releaseUplink()
+	gate := &openingOnly{MutexWriter: worker.link.Writer.(*MutexWriter), release: carrierGone}
 	if openingAlone {
-		worker.link.Writer = &openingOnly{MutexWriter: worker.link.Writer.(*MutexWriter), release: carrierGone}
+		worker.link.Writer = gate
 	}
 
 	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: target}})
@@ -171,9 +198,14 @@ func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination, openingAlo
 		t.Fatalf("the carrier returned %v", err)
 	}
 	await(t, worker.WaitClosed(), "the worker to close")
+	// The factory has interrupted the uplink by the time it rests.
+	synctest.Wait()
 	releaseUplink()
 	// The rest of the upload has been refused.
 	synctest.Wait()
+	if openingAlone && gate.taken != 1 {
+		t.Fatalf("the uplink took %d writes, want the opening frame alone", gate.taken)
+	}
 
 	var body string
 	for {
@@ -423,6 +455,109 @@ func TestDialingWorkerEndsAnUnansweredSessionWhenCarrierFails(t *testing.T) {
 		}
 		if active := worker.ActiveConnections(); active != 0 {
 			t.Fatalf("%d sessions after the carrier failed, want none", active)
+		}
+	})
+}
+
+// The worker's state is taken when a refused write returns to the session
+// that made it. A carrier can interrupt its uplink and return right after:
+// when it has returned by then, the worker is closed and the session is kept
+// for its reply, as after any refusal on a closed worker. The refusal is held
+// here until the carrier has returned;
+// TestDialingWorkerEndsASessionRefusedWhileOpenThoughItsCarrierReturnsMeanwhile
+// has the other order.
+func TestDialingWorkerKeepsASessionWhoseRefusalReturnsAfterItsCarrier(t *testing.T) {
+	log.RegisterHandler(discardRecords{})
+	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
+	synctest.Test(t, func(t *testing.T) {
+		target := net.TCPDestination(net.LocalHostIP, 80)
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: target}})
+		slowUpload, slowSend := pipe.New(pipe.WithSizeLimit(0))
+		defer slowSend.Close()
+		slowReply, slowOutput := pipe.New(pipe.WithSizeLimit(0))
+		defer slowReply.Interrupt()
+		slowSink := &takenWriter{Writer: slowOutput, taken: make(chan struct{})}
+
+		fail := make(chan struct{})
+		letFail := sync.OnceFunc(func() { close(fail) })
+		defer letFail()
+		carrier := carrierFunc(func(link *transport.Link) error {
+			reader := &buf.BufferedReader{Reader: link.Reader}
+			defer func() { buf.ReleaseMulti(reader.Buffer) }()
+			var opening FrameMetadata
+			if err := opening.Unmarshal(reader, false); err != nil {
+				return err
+			}
+			response := NewResponseWriter(opening.SessionID, link.Writer, protocol.TransferTypeStream)
+			for range 2 {
+				block := buf.New()
+				block.Extend(buf.Size)
+				if err := response.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+					return err
+				}
+			}
+			<-fail
+			return errors.New("connection reset")
+		})
+		worker, err := (&DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		if !worker.Dispatch(ctx, &transport.Link{Reader: slowUpload, Writer: slowSink}) {
+			t.Fatal("the worker refused the first session")
+		}
+		// The slow application's pipe holds one frame of its reply and the
+		// worker's reader is held on the next.
+		await(t, slowSink.taken, "the first frame of the slow session's reply")
+		synctest.Wait()
+
+		uplink := worker.link.Writer.(*MutexWriter)
+		returned := make(chan struct{})
+		letReturn := sync.OnceFunc(func() { close(returned) })
+		defer letReturn()
+		held := &heldRefusal{MutexWriter: uplink, refused: make(chan struct{}), release: returned}
+		worker.link.Writer = held
+		upload, send := pipe.New(pipe.WithSizeLimit(0))
+		defer send.Close()
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		sendBlock := func() {
+			block := buf.New()
+			block.Extend(buf.Size)
+			if err := send.WriteMultiBuffer(buf.MultiBuffer{block}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sendBlock()
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
+			t.Fatal("the worker refused the second session")
+		}
+		synctest.Wait()
+
+		// The carrier stops taking the upload, and the next write fails.
+		uplink.Interrupt()
+		sendBlock()
+		await(t, held.refused, "the uplink to refuse the upload")
+		if worker.Closed() {
+			t.Fatal("the worker closed before the upload was refused")
+		}
+
+		// The carrier returns before that failure reaches the session.
+		letFail()
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		letReturn()
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 2 {
+			t.Fatalf("%d sessions after the refusal returned on a closed worker, want both", active)
+		}
+
+		// The kept session ends when its application goes away.
+		upload.Interrupt()
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions after one application left, want the slow one only", active)
 		}
 	})
 }
