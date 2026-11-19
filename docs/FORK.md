@@ -607,9 +607,12 @@ guard it.
   (`common/mux/mutex_writer_test.go`).
 - A Mux.Cool client worker made by `DialingWorkerFactory` ends its sessions
   when its carrier returns, and delivers first what the carrier had written.
-  The factory closes the carrier's end of the downlink and discards the
+  The factory closes the carrier's end of the downlink and interrupts the
   uplink; the worker's reader drains the downlink and then closes the
-  sessions and interrupts the link. Upstream closes the sessions and
+  sessions and interrupts the link. Until then a session stays open when
+  its upload ends or is refused, so that the end of an upload does not cut
+  off a reply still being delivered; one whose application went away is
+  closed at once. Upstream closes the sessions and
   interrupts the link in `monitor` as soon as the carrier returns, which
   drops a response already received. The fork moved that cleanup out of
   `monitor` in `4f01e31b`, after which a failed carrier left its sessions
@@ -617,9 +620,12 @@ guard it.
   upstream's `monitor` cleanup in place of this. Covered by
   `TestDialingWorkerEndsSessionsWhenCarrierFails`,
   `TestDialingWorkerDeliversWhatItsCarrierWroteBeforeEnding`
-  (`common/mux/client_carrier_failure_test.go`) and
+  (`common/mux/client_carrier_failure_test.go`),
   `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
-  (`common/mux/client_carrier_uplink_test.go`).
+  (`common/mux/client_carrier_uplink_test.go`),
+  `TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails` and
+  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`
+  (`common/mux/client_carrier_upload_test.go`).
 - The maintained SMUX implementation is the in-tree stack under
   `common/singmux`. Mux-related production code must not directly import
   SagerNet, MetaCubeX, Hashicorp, or another mux implementation.

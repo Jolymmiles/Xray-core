@@ -177,24 +177,25 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 			}
 		}
 		// The carrier has returned. Closing its end of the downlink lets
-		// fetchOutput deliver what the carrier had written and then finish
-		// the worker, which ends the sessions. A carrier that failed leaves
-		// that end open; fetchOutput then waits on it for good and the
-		// sessions stay open and silent. Interrupting the link here instead
-		// would drop a response already received. A carrier that returns on
-		// its first error may still be copying the response: what that copy
-		// holds and has not written yet is dropped by this close.
+		// fetchOutput deliver what the carrier had written, as far as the
+		// sessions take it, and then finish the worker, which ends the
+		// sessions. A carrier that failed leaves that end open; fetchOutput
+		// then waits on it for good and the sessions stay open and silent.
+		// Interrupting the downlink here instead would drop a response
+		// already received. A carrier that returns on its first error may
+		// still be copying the response: what that copy holds and has not
+		// written yet is dropped by this close.
 		common.Close(downlinkWriter)
 		common.Must(c.Close())
+		// The uplink has lost its reader, or will with the carrier's last
+		// copy. Left open it fills, and a write to it would hold fetchOutput,
+		// which answers a reply for a closed session with an END, away from
+		// the end of the downlink and so from finish(). Interrupted, it
+		// fails every write: the next thing a session uploads ends its
+		// fetchInput, which leaves the session to finish(), the worker
+		// being closed by now.
+		common.Interrupt(uplinkReader)
 		cancel()
-		// Nobody reads the uplink any more, and what is written to it has
-		// nowhere to go. Left unread it fills, and a write to it would hold
-		// fetchOutput, which answers a reply for a closed session with an
-		// END, away from the end of the downlink and so from finish(), the
-		// only place that interrupts the uplink. Interrupting it here would
-		// end the sessions that are writing before their replies are
-		// delivered. finish() ends this read.
-		_ = buf.Copy(uplinkReader, buf.Discard)
 	}(f.Proxy, f.Dialer, c.done)
 
 	return c, nil
@@ -255,7 +256,10 @@ func (m *ClientWorker) ActiveConnections() uint32 {
 	return uint32(m.sessionManager.activeCount())
 }
 
-// Closed returns true if this Client is closed.
+// Closed returns true if this Client is closed: a dispatch that sees it is
+// refused. finish() closes it after its cleanup. A dialing worker is closed
+// earlier, when its carrier returns, and cleaned up once the downlink is
+// drained.
 func (m *ClientWorker) Closed() bool {
 	return m.done.Done()
 }
@@ -264,11 +268,12 @@ func (m *ClientWorker) WaitClosed() <-chan struct{} {
 	return m.done.Wait()
 }
 
-// finish tears down sessions and the carrier link, then signals done.
-// As with ServerWorker, done/WaitClosed follow the Interrupt but do not join
-// fetchOutput: when Close or monitor calls finish, fetchOutput can still be
-// returning from a read of the link. A caller must not release what the link
-// reads (VLESS Process leaves its reader to a reverse bridge's worker).
+// finish tears down sessions and the carrier link, then signals done, unless
+// a dialing worker's carrier has signalled it already. As with ServerWorker,
+// done/WaitClosed do not join fetchOutput: when Close or monitor calls
+// finish, fetchOutput can still be returning from a read of the link. A
+// caller must not release what the link reads (VLESS Process leaves its
+// reader to a reverse bridge's worker).
 func (m *ClientWorker) finish() {
 	m.finishOnce.Do(func() {
 		m.sessionManager.close()
@@ -316,7 +321,7 @@ func writeFirstPayload(reader buf.Reader, writer *Writer) error {
 	return nil
 }
 
-func fetchInput(ctx context.Context, s *Session, output buf.Writer) {
+func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 	transferType := protocol.TransferTypeStream
@@ -328,8 +333,18 @@ func fetchInput(ctx context.Context, s *Session, output buf.Writer) {
 	if session.IsReverseMuxFromContext(ctx) {
 		inbound = session.InboundFromContext(ctx)
 	}
-	writer := NewWriter(s.ID, ob.Target, output, transferType, xudp.GetGlobalID(ctx), inbound)
-	defer s.Close(false)
+	writer := NewWriter(s.ID, ob.Target, m.link.Writer, transferType, xudp.GetGlobalID(ctx), inbound)
+	// The end of an upload ends its session, and with it the reply. Not on
+	// a closed worker when the upload ran to its end or the uplink refused
+	// it: the carrier may be gone while fetchOutput is still delivering
+	// what it wrote for this session, and finish() closes the session
+	// after that. A session whose application went away is closed here.
+	replyMayFollow := false
+	defer func() {
+		if !replyMayFollow || !m.Closed() {
+			s.Close(false)
+		}
+	}()
 	defer writer.Close()
 
 	errors.LogInfo(ctx, "dispatching request to ", ob.Target)
@@ -339,10 +354,11 @@ func fetchInput(ctx context.Context, s *Session, output buf.Writer) {
 		return
 	}
 
-	if err := buf.Copy(s.input, writer); err != nil {
+	err := buf.Copy(s.input, writer)
+	replyMayFollow = err == nil || buf.IsWriteError(err)
+	if err != nil {
 		errors.LogInfoInner(ctx, err, "failed to fetch all input")
 		writer.hasError = true
-		return
 	}
 }
 
@@ -409,7 +425,7 @@ func (m *ClientWorker) dispatch(ctx context.Context, link *transport.Link, rvs b
 	}
 	admission.completeCommit()
 	context.AfterFunc(streamCtx, func() { _ = s.Close(false) })
-	go fetchInput(streamCtx, s, m.link.Writer)
+	go m.fetchInput(streamCtx, s)
 	if _, ok := link.Reader.(*pipe.Reader); !ok {
 		select {
 		case <-ctx.Done():
