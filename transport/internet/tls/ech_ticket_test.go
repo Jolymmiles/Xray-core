@@ -52,23 +52,34 @@ func TestRealECHOffersNoTicket(t *testing.T) {
 
 // TestRealECHKeepsGoClientSessionCache pins the one client the rule above
 // leaves alone: HelloGolang is Go's own client, which puts a ticket into the
-// inner hello, so it keeps the session cache its caller gave it.
+// inner hello, so it keeps the session cache its caller gave it. With a
+// custom spec the hello is uTLS's again, whatever the fingerprint is called.
 func TestRealECHKeepsGoClientSessionCache(t *testing.T) {
-	for name, want := range map[string]bool{"hellogolang": true, "chrome": false} {
-		id := utls.HelloChrome_Auto
-		if want {
-			id = utls.HelloGolang
-		}
+	chrome, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, test := range map[string]struct {
+		id      utls.ClientHelloID
+		options []UClientOption
+		keeps   bool
+	}{
+		"hellogolang":             {id: utls.HelloGolang, keeps: true},
+		"chrome":                  {id: utls.HelloChrome_Auto},
+		"hellogolang with a spec": {id: utls.HelloGolang, options: []UClientOption{WithClientHelloSpec(&chrome)}},
+	} {
+		cache := utls.NewLRUClientSessionCache(1)
+		cache.Put("inner.example", sessionOf(t, gotls.VersionTLS13, 224))
 		config := &utls.Config{
-			ServerName: "inner.example", InsecureSkipVerify: true,
-			ClientSessionCache:             utls.NewLRUClientSessionCache(1),
+			ServerName: "inner.example", InsecureSkipVerify: true, OmitEmptyPsk: true, AlwaysIncludePSK: true,
+			ClientSessionCache:             cache,
 			EncryptedClientHelloConfigList: testECHConfigList(),
 		}
-		if _, err := newUClient(&hellotest.Capture{}, config, id, clientSessionResumption{}, nil); err != nil {
+		if _, err := newUClient(&hellotest.Capture{}, config, test.id, clientSessionResumption{}, test.options); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if kept := config.ClientSessionCache != nil; kept != want {
-			t.Errorf("%s with real ECH keeps its session cache: %v, want %v", name, kept, want)
+		if kept := config.ClientSessionCache != nil; kept != test.keeps {
+			t.Errorf("%s with real ECH keeps its session cache: %v, want %v", name, kept, test.keeps)
 		}
 	}
 }

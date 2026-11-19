@@ -101,10 +101,11 @@ func newUClient(c net.Conn, config *utls.Config, fingerprint utls.ClientHelloID,
 	// Read before the hello is built: applying a fingerprint replaces
 	// config.NextProtos with the fingerprint's own ALPN.
 	alpn := http11ALPN(config.NextProtos)
-	if len(config.EncryptedClientHelloConfigList) > 0 && fingerprint.Client != utls.HelloGolang.Client {
+	if len(config.EncryptedClientHelloConfigList) > 0 && (settings.spec != nil || fingerprint != utls.HelloGolang) {
 		// A ticket belongs in the inner hello, where uTLS cannot put it for
-		// a fingerprint: it fails to build a hello that offers one next to
-		// real ECH. HelloGolang is Go's own client, which can.
+		// a fingerprint or a custom spec: it fails to build a hello that
+		// offers one next to real ECH. HelloGolang alone is Go's own
+		// client, which can.
 		resumption = clientSessionResumption{}
 		config.ClientSessionCache = nil
 	}

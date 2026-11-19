@@ -242,23 +242,33 @@ func TestFirefoxTicketTooLongForTheHello(t *testing.T) {
 			}
 		}
 	}
-	// The largest ticket that fits is still offered.
-	hello := firefoxHello(t, "example.com", sessionOf(t, gotls.VersionTLS13, 31000))
-	if extensions := helloExtensions(t, hello); extensions[len(extensions)-1].id != 41 {
-		t.Error("a ticket of 31000 bytes fits the hello and was not offered")
+	// The boundary for this server name and a SHA-256 binder: the largest
+	// ticket whose hello fits is offered, and one byte more is not.
+	session := sessionOf(t, gotls.VersionTLS13, 0)
+	session.SetCipherSuite(utls.TLS_AES_128_GCM_SHA256)
+	for ticketLen, offers := range map[int]bool{31832: true, 31833: false} {
+		session.SetSessionTicket(make([]byte, ticketLen))
+		extensions := helloExtensions(t, firefoxHello(t, "example.com", session))
+		total := 0
+		for _, extension := range extensions {
+			total += 4 + len(extension.body)
+		}
+		if offered := extensions[len(extensions)-1].id == 41; offered != offers || total > 65535 {
+			t.Errorf("a ticket of %d bytes: offered %v in %d bytes of extensions, want offered %v within 65535",
+				ticketLen, offered, total, offers)
+		}
 	}
 }
 
-// TestFirefoxOffersATicketOnce covers a session cache that keeps a ticket
-// after handing it out, as uTLS's own LRU does. Firefox uses a ticket once,
-// so a second connection made before the first has stored a new ticket
-// offers none.
+// TestFirefoxOffersATicketOnce pins that a ticket from the cache behind the
+// TLS settings goes to one connection: Firefox uses a ticket once, and a
+// second connection made before the first has stored a new one offers none.
 func TestFirefoxOffersATicketOnce(t *testing.T) {
-	cache := utls.NewLRUClientSessionCache(1)
-	cache.Put("example.com", sessionOf(t, gotls.VersionTLS13, 224))
+	resumption := clientSessionResumption{configured: true, source: gotls.NewLRUClientSessionCache(1)}
+	resumption.sessionCache(utls.HelloFirefox_Auto).Put("example.com", sessionOf(t, gotls.VersionTLS13, 224))
 	for connection, offers := range []bool{true, false} {
-		config := &utls.Config{ServerName: "example.com", InsecureSkipVerify: true, ClientSessionCache: cache}
-		uConn, err := newUClient(&hellotest.Capture{}, config, utls.HelloFirefox_Auto, clientSessionResumption{}, nil)
+		config := &utls.Config{ServerName: "example.com", InsecureSkipVerify: true, OmitEmptyPsk: true}
+		uConn, err := newUClient(&hellotest.Capture{}, config, utls.HelloFirefox_Auto, resumption, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

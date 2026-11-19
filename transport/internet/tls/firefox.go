@@ -206,17 +206,16 @@ func extensionsFit(uConn *utls.UConn) bool {
 	return total <= math.MaxUint16
 }
 
-// takeSession takes the session under key out of store, for one connection
-// to offer: Firefox uses a ticket once. Xray's caches give a ticket up when
-// asked for it; a cache that still returns it afterwards, as uTLS's own LRU
-// does, has it removed.
+// takeSession asks store for the session a connection may offer. Firefox
+// uses a ticket once, and Xray's caches give a ticket up when asked for it:
+// the one behind the TLS settings and REALITY's. A cache a caller of
+// NewUClient brings keeps its own policy, as it does for any fingerprint;
+// taking the ticket out of it here could not be made safe against its other
+// users.
 func takeSession(store utls.ClientSessionCache, key string) *utls.ClientSessionState {
 	session, ok := store.Get(key)
-	if !ok || session == nil {
+	if !ok {
 		return nil
-	}
-	if again, ok := store.Get(key); ok && again == session {
-		store.Put(key, nil)
 	}
 	return session
 }
