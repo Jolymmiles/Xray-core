@@ -279,6 +279,52 @@ func TestFirefoxOffersATicketOnce(t *testing.T) {
 	}
 }
 
+// publishingCache stores a newer session right after it has handed one out,
+// as another connection that ends its handshake at that moment does.
+type publishingCache struct {
+	utls.ClientSessionCache
+	newer *utls.ClientSessionState
+}
+
+func (c *publishingCache) Get(key string) (*utls.ClientSessionState, bool) {
+	session, ok := c.ClientSessionCache.Get(key)
+	if ok && c.newer != nil {
+		c.ClientSessionCache.Put(key, c.newer)
+		c.newer = nil
+	}
+	return session, ok
+}
+
+// TestFirefoxLeavesATicketStoredWhileItBuildsItsHello pins that a connection
+// reads the cache behind the TLS settings once. A second read would take, and
+// lose, the ticket another connection stored after the first.
+func TestFirefoxLeavesATicketStoredWhileItBuildsItsHello(t *testing.T) {
+	const name = "example.com"
+	store := clientSessionResumption{configured: true, source: gotls.NewLRUClientSessionCache(1)}.
+		sessionCache(utls.HelloFirefox_Auto)
+	store.Put(name, sessionOf(t, gotls.VersionTLS13, 224))
+	newer := sessionOf(t, gotls.VersionTLS13, 225)
+
+	config := &utls.Config{
+		ServerName: name, InsecureSkipVerify: true,
+		ClientSessionCache: &publishingCache{ClientSessionCache: store, newer: newer},
+	}
+	uConn, err := newUClient(&hellotest.Capture{}, config, utls.HelloFirefox_Auto, clientSessionResumption{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !offersPreSharedKey(uConn) {
+		t.Fatal("the cached ticket was not offered")
+	}
+	kept, ok := store.Get(name)
+	if !ok {
+		t.Fatal("building the hello took the ticket another connection stored meanwhile")
+	}
+	if !bytes.Equal(ticketOf(t, kept), ticketOf(t, newer)) {
+		t.Fatal("the cache holds another ticket than the newer one")
+	}
+}
+
 // missingSession is a cache whose Get reports a miss and returns a session
 // all the same.
 type missingSession struct{ session *utls.ClientSessionState }

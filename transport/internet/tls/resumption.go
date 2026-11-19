@@ -171,7 +171,9 @@ func (c *serializingUTLSSessionCache) Put(sessionKey string, session *utls.Clien
 	defer c.Unlock()
 
 	if session == nil {
-		c.cache.Put(sessionKey, nil)
+		// uTLS drops the ticket of a handshake that failed. Get took that
+		// ticket out when it was offered; what is here now is a newer one
+		// that another connection stored.
 		return
 	}
 	if cloned := cloneUTLSSession(session); cloned != nil {
