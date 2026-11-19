@@ -564,6 +564,11 @@ func (m *ClientWorker) fetchOutput() {
 	defer func() {
 		taken := dl.taken
 		dl.ended = true
+		if !taken {
+			// Nobody reads the downlink after this reader: what it had
+			// buffered past the frame that ended it goes back.
+			dl.reader.Buffer = buf.ReleaseMulti(dl.reader.Buffer)
+		}
 		dl.Unlock()
 		if !taken {
 			m.finish()

@@ -701,6 +701,11 @@ guard it.
   (`common/mux/client_carrier_siblings_test.go`),
   `TestSessionRegistryClosedAroundAKeptSessionAdmitsNothing`
   (`common/mux/registry_test.go`),
+  `TestTakeoverReleasesTheDownlinkAndKeepsALateReaderOut`,
+  `TestTakeoverLeavesAFinishedReaderAlone`,
+  `TestClientWorkerReleasesWhatItsReaderHeldWhenItEnds` and
+  `TestTailReportsAFailedWriteAfterItsSessionCloses`
+  (`common/mux/client_downlink_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenUploadIsRefusedAfterCarrierFails`,
   `TestDialingWorkerEndsAnAbandonedSessionWhileItsReplyWaits`,
   `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
