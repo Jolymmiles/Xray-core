@@ -615,7 +615,9 @@ guard it.
   uplink refuses is read to its end and dropped: left unread it would hold
   an application that sends before it reads, and hide one that goes away.
   A session whose upload fails to be read, or whose opening frame the
-  uplink refused, is closed at once. Upstream closes the sessions and
+  uplink refused, is closed at once. The factory reports the carrier's
+  error after all of this, since until the worker is closed the end of an
+  upload ends its session. Upstream closes the sessions and
   interrupts the link in `monitor` as soon as the carrier returns, which
   drops a response already received. The fork moved that cleanup out of
   `monitor` in `4f01e31b`, after which a failed carrier left its sessions
@@ -627,8 +629,10 @@ guard it.
   `TestDialingWorkerDrainsPastAFullUplinkWhenCarrierFails`
   (`common/mux/client_carrier_uplink_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenUploadEndsAfterCarrierFails`,
-  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld` and
-  `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`
+  `TestDialingWorkerEndsAnAbandonedSessionWhileItsReaderIsHeld`,
+  `TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives`,
+  `TestDialingWorkerEndsASessionWhoseInputFailsOnce` and
+  `TestDialingWorkerClosesBeforeItReportsItsCarrier`
   (`common/mux/client_carrier_upload_test.go`),
   `TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort`,
   `TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused` and

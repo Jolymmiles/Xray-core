@@ -170,12 +170,7 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		ctx := session.ContextWithOutbounds(context.Background(), outbounds)
 		ctx, cancel := context.WithCancel(ctx)
 
-		if errP := p.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, d); errP != nil {
-			errC := errors.Cause(errP)
-			if !(goerrors.Is(errC, io.EOF) || goerrors.Is(errC, io.ErrClosedPipe) || goerrors.Is(errC, context.Canceled)) {
-				errors.LogInfoInner(ctx, errP, "failed to handler mux client connection")
-			}
-		}
+		errP := p.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, d)
 		// The carrier has returned. Closing its end of the downlink lets
 		// fetchOutput deliver what the carrier had written, as far as the
 		// sessions take it, and then finish the worker, which ends the
@@ -191,11 +186,18 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		// copy. Left open it fills, and a write to it would hold fetchOutput,
 		// which answers a reply for a closed session with an END, away from
 		// the end of the downlink and so from finish(). Interrupted, it
-		// fails every write: fetchInput then drops what its session still
-		// uploads and leaves the session to finish(), the worker being
-		// closed by now.
+		// fails every write, and fetchInput deals with what its session
+		// still uploads.
 		common.Interrupt(uplinkReader)
 		cancel()
+		// Reported last: a log handler takes its time, and until the worker
+		// is closed the end of an upload still ends its session.
+		if errP != nil {
+			errC := errors.Cause(errP)
+			if !(goerrors.Is(errC, io.EOF) || goerrors.Is(errC, io.ErrClosedPipe) || goerrors.Is(errC, context.Canceled)) {
+				errors.LogInfoInner(ctx, errP, "failed to handler mux client connection")
+			}
+		}
 	}(f.Proxy, f.Dialer, c.done)
 
 	return c, nil
@@ -361,14 +363,17 @@ func (m *ClientWorker) fetchInput(ctx context.Context, s *Session) {
 	} else if err = buf.Copy(s.input, writer); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to fetch all input")
 		writer.hasError = true
+		if !buf.IsWriteError(err) {
+			// The input failed: the application went away.
+			return
+		}
 	}
 	if err != nil && m.Closed() {
-		// The upload stopped on a closed worker. When the uplink refused
-		// it, the carrier is gone and nothing takes what the application
-		// still sends; its input is read to its end all the same. Left
-		// unread it fills and holds an application that sends before it
-		// reads its reply, and an application that goes away is not seen.
-		// When the input itself failed, it fails again here.
+		// The uplink refused the upload: the carrier is gone and nothing
+		// takes what the application still sends. Its input is read to
+		// its end all the same. Left unread it fills and holds an
+		// application that sends before it reads its reply, and an
+		// application that goes away is not seen.
 		err = buf.Copy(s.input, buf.Discard)
 	}
 	replyMayFollow = err == nil

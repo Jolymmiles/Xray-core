@@ -34,11 +34,43 @@ func (w *takenWriter) WriteMultiBuffer(data buf.MultiBuffer) error {
 	return err
 }
 
+// await waits for a signal, for no longer than a test's clock allows: a
+// worker keeps a ticker, so a signal that never comes would not end a
+// synctest bubble.
+func await[T any](t *testing.T, signal <-chan T, what string) T {
+	t.Helper()
+	select {
+	case value := <-signal:
+		return value
+	case <-time.After(5 * time.Second):
+		t.Fatalf("waited 5s for %s", what)
+		panic("unreachable")
+	}
+}
+
+// openingOnly lets one write through to the uplink and holds the next until
+// released: the frame that opens a session reaches the carrier and nothing
+// after it does.
+type openingOnly struct {
+	*MutexWriter
+	opened  bool
+	release <-chan struct{}
+}
+
+func (w *openingOnly) WriteMultiBuffer(data buf.MultiBuffer) error {
+	if w.opened {
+		<-w.release
+	}
+	w.opened = true
+	return w.MutexWriter.WriteMultiBuffer(data)
+}
+
 // The first thing a session uploads goes out as one frame that opens the
 // session and as many more as its size needs. A carrier that took the
 // opening frame, answered in full and then failed leaves the rest of that
 // upload refused; the application still gets the reply. Stream and packet
-// sessions split their upload differently and both do.
+// sessions split their upload differently and both do. The uplink takes the
+// frames it has room for, or the opening frame alone.
 func TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort(t *testing.T) {
 	log.RegisterHandler(discardRecords{})
 	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
@@ -46,13 +78,15 @@ func TestDialingWorkerKeepsQueuedReplyWhenFirstUploadIsCutShort(t *testing.T) {
 		net.TCPDestination(net.LocalHostIP, 80),
 		net.UDPDestination(net.LocalHostIP, 53),
 	} {
-		t.Run(target.Network.String(), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) { keepsReplyOfCutFirstUpload(t, target) })
-		})
+		for name, openingAlone := range map[string]bool{"/several frames": false, "/opening frame alone": true} {
+			t.Run(target.Network.String()+name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) { keepsReplyOfCutFirstUpload(t, target, openingAlone) })
+			})
+		}
 	}
 }
 
-func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination) {
+func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination, openingAlone bool) {
 	upload, send := pipe.New()
 	defer send.Close()
 	reply, output := pipe.New(pipe.WithSizeLimit(0))
@@ -122,15 +156,22 @@ func keepsReplyOfCutFirstUpload(t *testing.T, target net.Destination) {
 		t.Fatal(err)
 	}
 	defer worker.Close()
+	carrierGone := make(chan struct{})
+	releaseUplink := sync.OnceFunc(func() { close(carrierGone) })
+	defer releaseUplink()
+	if openingAlone {
+		worker.link.Writer = &openingOnly{MutexWriter: worker.link.Writer.(*MutexWriter), release: carrierGone}
+	}
 
 	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: target}})
 	if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
 		t.Fatal("the worker refused the session")
 	}
-	if err := <-returned; !errors.Is(err, failure) {
+	if err := await(t, returned, "the carrier to return"); !errors.Is(err, failure) {
 		t.Fatalf("the carrier returned %v", err)
 	}
-	<-worker.WaitClosed()
+	await(t, worker.WaitClosed(), "the worker to close")
+	releaseUplink()
 	// The rest of the upload has been refused.
 	synctest.Wait()
 
@@ -167,6 +208,8 @@ func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 		slowSink := &takenWriter{Writer: slowOutput, taken: make(chan struct{})}
 
 		fail := make(chan struct{})
+		letFail := sync.OnceFunc(func() { close(fail) })
+		defer letFail()
 		failure := errors.New("connection reset")
 		carrier := carrierFunc(func(link *transport.Link) error {
 			reader := &buf.BufferedReader{Reader: link.Reader}
@@ -196,7 +239,7 @@ func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 		}
 		// The slow application's pipe holds one frame of its reply and the
 		// worker's reader is held on the next.
-		<-slowSink.taken
+		await(t, slowSink.taken, "the first frame of the slow session's reply")
 		synctest.Wait()
 
 		// The second session is dispatched and the carrier fails before the
@@ -208,8 +251,8 @@ func TestDialingWorkerEndsASessionWhoseOpeningFrameIsRefused(t *testing.T) {
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: output}) {
 			t.Fatal("the worker refused the second session")
 		}
-		close(fail)
-		<-worker.WaitClosed()
+		letFail()
+		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
 		if active := worker.ActiveConnections(); active != 2 {
 			t.Fatalf("%d sessions before the opening frame was sent, want 2", active)

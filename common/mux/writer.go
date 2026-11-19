@@ -42,8 +42,9 @@ type Writer struct {
 	transferType protocol.TransferType
 	globalID     [8]byte
 	inbound      *session.Inbound
-	// opened is set once a frame of this writer has reached the link. The
-	// first frame of a request writer opens its session at the peer.
+	// opened is set once a frame with metadata or payload has reached the
+	// link. The first such frame of a request writer opens its session at
+	// the peer. The END that Close writes does not count.
 	opened bool
 }
 

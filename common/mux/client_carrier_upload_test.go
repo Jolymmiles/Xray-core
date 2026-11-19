@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
@@ -31,6 +33,20 @@ func (w *acceptedWriter) WriteMultiBuffer(data buf.MultiBuffer) error {
 		w.once.Do(func() { close(w.accepted) })
 	}
 	return err
+}
+
+// await waits for a signal, for no longer than a test's clock allows: a
+// worker keeps a ticker, so a signal that never comes would not end a
+// synctest bubble.
+func await[T any](t *testing.T, signal <-chan T, what string) T {
+	t.Helper()
+	select {
+	case value := <-signal:
+		return value
+	case <-time.After(5 * time.Second):
+		t.Fatalf("waited 5s for %s", what)
+		panic("unreachable")
+	}
 }
 
 // An application that finishes its upload after the carrier failed still gets
@@ -78,7 +94,7 @@ func keepsQueuedReply(t *testing.T, sendsMore bool) {
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
 			t.Fatal("the worker refused the session")
 		}
-		<-worker.WaitClosed()
+		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
 
 		sent := make(chan error, 1)
@@ -171,7 +187,7 @@ func endsAbandonedSession(t *testing.T, uploads int) {
 			t.Fatal("the worker refused the first session")
 		}
 		// The slow application's pipe holds the first frame of its reply.
-		<-slowSink.accepted
+		await(t, slowSink.accepted, "the first frame of the slow session's reply")
 		upload, send, reply, sink := newSession()
 		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
 			t.Fatal("the worker refused the second session")
@@ -191,7 +207,7 @@ func endsAbandonedSession(t *testing.T, uploads int) {
 		// The carrier writes the rest of the slow session's reply and fails;
 		// the worker's reader is held on that frame.
 		close(carrierMayEnd)
-		<-worker.WaitClosed()
+		await(t, worker.WaitClosed(), "the worker to close")
 		synctest.Wait()
 		if uploads >= 2 {
 			sendBlock()
@@ -269,6 +285,176 @@ func TestDialingWorkerEndsASessionWithItsUploadWhileCarrierLives(t *testing.T) {
 		buf.ReleaseMulti(data)
 		if !errors.Is(err, io.EOF) {
 			t.Fatalf("the session's reply did not end with its upload: %v", err)
+		}
+	})
+}
+
+// heldReport is a log handler that holds the report of a failed carrier.
+type heldReport struct {
+	once    *sync.Once
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (h heldReport) Handle(message log.Message) {
+	if strings.Contains(message.String(), "failed to handler mux client connection") {
+		h.once.Do(func() { close(h.entered) })
+		<-h.resume
+	}
+}
+
+// The worker is closed before the carrier's error is reported. A log handler
+// takes its time, and an upload that ended meanwhile, on a worker still open,
+// would close its session under the reply the carrier had written.
+func TestDialingWorkerClosesBeforeItReportsItsCarrier(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		// The handler's channels belong to the bubble, so the handler is
+		// set here and taken away again before the bubble ends.
+		report := heldReport{once: new(sync.Once), entered: make(chan struct{}), resume: make(chan struct{})}
+		log.RegisterHandler(report)
+		defer close(report.resume)
+		defer log.RegisterHandler(discardLogs{})
+
+		upload, uploadWriter := pipe.New(pipe.WithSizeLimit(0))
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		defer uploadWriter.Close()
+		sink := &acceptedWriter{Writer: output, accepted: make(chan struct{})}
+		stop := make(chan struct{})
+		defer close(stop)
+		carrier := &answeringCarrier{
+			delivering: sink.accepted,
+			stop:       stop,
+			result:     errors.New("connection reset"),
+			returned:   make(chan struct{}),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		if !worker.Dispatch(ctx, &transport.Link{Reader: upload, Writer: sink}) {
+			t.Fatal("the worker refused the session")
+		}
+		await(t, report.entered, "the report of the carrier's error")
+		if !worker.Closed() {
+			t.Fatal("the carrier's error is being reported and the worker is still open")
+		}
+		if err := uploadWriter.Close(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+
+		var body string
+		for {
+			data, err := reply.ReadMultiBufferTimeout(time.Second)
+			body += data.String()
+			buf.ReleaseMulti(data)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("read %q, then: %v", body, err)
+			}
+		}
+		if body != "firstlast" {
+			t.Fatalf("the application read %q and then the end, want the whole reply %q", body, "firstlast")
+		}
+	})
+}
+
+// onceFailingInput is a session's input that is not a pipe: it gives one
+// batch, then fails one read and stays usable, as a connection does whose
+// owner put a deadline on a single read.
+type onceFailingInput struct {
+	first buf.MultiBuffer
+	fail  chan struct{}
+	idle  chan struct{}
+	state int
+}
+
+func (r *onceFailingInput) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	r.state++
+	switch r.state {
+	case 1:
+		return r.first, nil
+	case 2:
+		<-r.fail
+		return nil, errors.New("i/o timeout")
+	default:
+		<-r.idle
+		return nil, io.EOF
+	}
+}
+
+// A session whose input fails is closed at once on a closed worker too, and
+// its Dispatch returns. Its input is not read again for more: a reader that
+// is not a pipe can fail once and then wait, behind another session's slow
+// reader, for as long as that one holds the worker's reader.
+func TestDialingWorkerEndsASessionWhoseInputFailsOnce(t *testing.T) {
+	quietLogs(t)
+	synctest.Test(t, func(t *testing.T) {
+		slowUpload, slowSend := pipe.New(pipe.WithSizeLimit(0))
+		defer slowSend.Close()
+		slowReply, slowOutput := pipe.New(pipe.WithSizeLimit(0))
+		defer slowReply.Interrupt()
+		slowSink := &acceptedWriter{Writer: slowOutput, accepted: make(chan struct{})}
+		carrierMayEnd := make(chan struct{})
+		stop := make(chan struct{})
+		defer close(stop)
+		carrier := &answeringCarrier{
+			delivering: carrierMayEnd,
+			stop:       stop,
+			result:     errors.New("connection reset"),
+			returned:   make(chan struct{}),
+		}
+		worker, err := (&mux.DialingWorkerFactory{Proxy: carrier}).Create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Close()
+		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
+			Target: net.TCPDestination(net.LocalHostIP, 80),
+		}})
+		if !worker.Dispatch(ctx, &transport.Link{Reader: slowUpload, Writer: slowSink}) {
+			t.Fatal("the worker refused the first session")
+		}
+		await(t, slowSink.accepted, "the first frame of the slow session's reply")
+
+		block := buf.New()
+		block.Extend(buf.Size)
+		input := &onceFailingInput{first: buf.MultiBuffer{block}, fail: make(chan struct{}), idle: make(chan struct{})}
+		defer close(input.idle)
+		reply, output := pipe.New(pipe.WithSizeLimit(0))
+		defer reply.Interrupt()
+		// Dispatch waits for the session when its input is not a pipe.
+		dispatched := make(chan bool, 1)
+		go func() { dispatched <- worker.Dispatch(ctx, &transport.Link{Reader: input, Writer: output}) }()
+		synctest.Wait()
+
+		close(carrierMayEnd)
+		await(t, worker.WaitClosed(), "the worker to close")
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 2 {
+			t.Fatalf("%d sessions before the input failed, want 2", active)
+		}
+
+		close(input.fail)
+		synctest.Wait()
+		if active := worker.ActiveConnections(); active != 1 {
+			t.Fatalf("%d sessions after one input failed, want the slow one only", active)
+		}
+		select {
+		case accepted := <-dispatched:
+			if !accepted {
+				t.Fatal("the worker refused the second session")
+			}
+		default:
+			t.Fatal("Dispatch still waits for a session whose input failed")
 		}
 	})
 }
