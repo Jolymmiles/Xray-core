@@ -1,6 +1,7 @@
 package shadowsocks
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -288,15 +289,20 @@ func DecodeUDPPacket(validator *Validator, payload *buf.Buffer) (*protocol.Reque
 type UDPReader struct {
 	Reader io.Reader
 	User   *protocol.MemoryUser
+	// datagrams reads Reader, a UDP socket, and drops a packet longer than a
+	// read takes, which would fail its authentication cut and end the session
+	datagrams *buf.DatagramReader
 }
 
 func (v *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	buffer := buf.New()
-	_, err := buffer.ReadFrom(v.Reader)
+	if v.datagrams == nil {
+		v.datagrams = &buf.DatagramReader{Reader: v.Reader}
+	}
+	mb, err := v.datagrams.ReadMultiBuffer()
 	if err != nil {
-		buffer.Release()
 		return nil, err
 	}
+	buffer := mb[0]
 	validator := new(Validator)
 	validator.Add(v.User)
 
@@ -313,6 +319,7 @@ func (v *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 type UDPWriter struct {
 	Writer  io.Writer
 	Request *protocol.RequestHeader
+	drops   net.DropLog
 }
 
 func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -336,8 +343,17 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			buf.ReleaseMulti(mb)
 			return err
 		}
+		size := packet.Len()
 		_, err = w.Writer.Write(packet.Bytes())
 		packet.Release()
+		if net.IsMessageTooLong(err) {
+			// The inbounds hand a datagram on whole, up to 65535 bytes, which
+			// with its framing may not fit in an IP packet: drop it and go on.
+			if w.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP packet of ", size, " bytes that the socket refuses as too long")
+			}
+			continue
+		}
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err

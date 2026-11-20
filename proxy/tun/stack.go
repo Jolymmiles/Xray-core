@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"math"
 	"math/rand/v2"
 	gonet "net"
 	"net/netip"
@@ -83,6 +82,8 @@ type stack struct {
 	closed  bool
 	// opening is how many of conns wait for the answer to their SYN or SYN-ACK
 	opening atomic.Int32
+	// drops limits the log of the replies that writeUDP drops
+	drops net.DropLog
 	// fragments are the packets that are larger than a link on their way and come in parts.
 	// identification numbers the ones that leave like that: a counter for each of a few groups of destinations,
 	// each from a start of its own, so that no two of them that go one way meet, and no destination learns how much
@@ -429,8 +430,17 @@ func (s *stack) writeUDP(payload []byte, src net.Destination, dst net.Destinatio
 
 func (s *stack) sendUDP(payload []byte, src, dst netip.AddrPort) error {
 	srcIP, dstIP := src.Addr().Unmap(), dst.Addr().Unmap()
-	if !srcIP.IsValid() || srcIP.Is4() != dstIP.Is4() || len(payload) > math.MaxUint16-udpHeaderSize {
+	if !srcIP.IsValid() || srcIP.Is4() != dstIP.Is4() {
 		return errors.New("failed to write udp packet of ", len(payload), " bytes from ", src, " to ", dst)
+	}
+	// The outbounds hand a reply on whole, up to 65535 bytes: drop one whose
+	// length the 16-bit fields cannot state, and go on with the session. This
+	// also bounds what a socket of DialUDP sends.
+	if srcIP.Is4() && len(payload) > net.MaxUDPPayloadIPv4 || len(payload) > net.MaxUDPPayloadIPv6 {
+		if s.drops.Due() {
+			errors.LogDebug(s.ctx, "dropped a UDP reply of ", len(payload), " bytes, longer than an IP packet holds")
+		}
+		return nil
 	}
 	var b [ipv6HeaderSize + udpHeaderSize]byte
 	n := putIPHeader(b[:], protoUDP, srcIP, dstIP)

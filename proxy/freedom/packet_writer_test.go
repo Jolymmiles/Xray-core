@@ -2,6 +2,7 @@ package freedom
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func TestPacketWriterSendsEachBufferAsADatagram(t *testing.T) {
 		"connected conn": connected,
 	} {
 		t.Run(name, func(t *testing.T) {
-			writer := NewPacketWriter(conn, &Handler{}, nil, net.Destination{}, destination, nil)
+			writer := NewPacketWriter(context.Background(), conn, &Handler{}, nil, net.Destination{}, destination, nil)
 			mb := make(buf.MultiBuffer, 0, len(payloads))
 			for _, payload := range payloads {
 				b := buf.NewWithSize(int32(len(payload)))

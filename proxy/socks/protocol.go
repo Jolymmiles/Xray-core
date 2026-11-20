@@ -373,10 +373,14 @@ func EncodeUDPPacket(request *protocol.RequestHeader, data []byte) (*buf.Buffer,
 		b.Release()
 		return nil, err
 	}
-	// if data is too large, return an empty buffer (drop too big data)
+	// The readers hand a datagram on whole, up to 65535 bytes: one that does
+	// not fit a regular buffer with its header takes a buffer of its size,
+	// where an empty packet went out in its place.
 	if b.Available() < int32(len(data)) {
-		b.Clear()
-		return b, nil
+		large := buf.NewWithSize(b.Len() + int32(len(data)))
+		common.Must2(large.Write(b.Bytes()))
+		b.Release()
+		b = large
 	}
 	common.Must2(b.Write(data))
 	return b, nil
@@ -384,15 +388,20 @@ func EncodeUDPPacket(request *protocol.RequestHeader, data []byte) (*buf.Buffer,
 
 type UDPReader struct {
 	Reader io.Reader
+	// datagrams reads Reader, a UDP socket, and drops a packet longer than a
+	// read takes, which it would pass on cut as a whole datagram
+	datagrams *buf.DatagramReader
 }
 
 func (r *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	buffer := buf.New()
-	_, err := buffer.ReadFrom(r.Reader)
+	if r.datagrams == nil {
+		r.datagrams = &buf.DatagramReader{Reader: r.Reader}
+	}
+	mb, err := r.datagrams.ReadMultiBuffer()
 	if err != nil {
-		buffer.Release()
 		return nil, err
 	}
+	buffer := mb[0]
 	u, err := DecodeUDPPacket(buffer)
 	if err != nil {
 		buffer.Release()
@@ -406,6 +415,7 @@ func (r *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 type UDPWriter struct {
 	Writer  io.Writer
 	Request *protocol.RequestHeader
+	drops   net.DropLog
 }
 
 func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -428,8 +438,16 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			buf.ReleaseMulti(mb)
 			return err
 		}
+		size := packet.Len()
 		_, err = w.Writer.Write(packet.Bytes())
 		packet.Release()
+		if net.IsMessageTooLong(err) {
+			// with its header, a whole datagram may not fit an IP packet
+			if w.drops.Due() {
+				errors.LogDebug(context.Background(), "dropped a UDP packet of ", size, " bytes that the socket refuses as too long")
+			}
+			continue
+		}
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err
